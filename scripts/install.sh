@@ -12,7 +12,6 @@
 
 set -e
 
-REPO="hoaxisr/awg-manager"
 ENTWARE_REPO="http://repo.hoaxisr.ru"
 OPKG_CONF="/opt/etc/opkg/awg_manager.conf"
 TMP_DIR="/tmp/awg-manager-install"
@@ -54,7 +53,10 @@ detect_arch() {
         *) error "Неподдерживаемая архитектура: $ARCH" ;;
     esac
 
-    info "Архитектура: $ARCH"
+    # Convert filename arch (e.g. aarch64-3.10) to repo dir (aarch64-k3.10)
+    REPO_ARCH=$(echo "$ARCH" | sed 's/-\([0-9]\)/-k\1/')
+
+    info "Архитектура: $ARCH (repo: $REPO_ARCH)"
 }
 
 # --- Проверка текущей установки ---
@@ -68,41 +70,66 @@ check_existing() {
     fi
 }
 
-# --- Получить версию с GitHub ---
+# --- Получить последнюю версию из Packages.gz ---
 fetch_version() {
-    # Если версия передана аргументом
     if [ -n "${TARGET_VERSION:-}" ]; then
         VERSION="$TARGET_VERSION"
         info "Запрошена версия: $VERSION"
         return
     fi
 
-    info "Получаю последнюю версию с GitHub..."
+    info "Получаю последнюю версию с ${ENTWARE_REPO}/${REPO_ARCH}..."
 
-    # Метод 1: Location header из redirect /releases/latest (только stable)
-    VERSION=$(curl -sI "https://github.com/$REPO/releases/latest" 2>/dev/null \
-        | sed -n 's/^[Ll]ocation:.*\/v\([^ \t\r]*\).*/\1/p' | tr -d '\r\n')
+    PACKAGES_INDEX=$(curl -fsL "${ENTWARE_REPO}/${REPO_ARCH}/Packages.gz" 2>/dev/null | gunzip 2>/dev/null) \
+        || error "Не удалось скачать Packages.gz с ${ENTWARE_REPO}/${REPO_ARCH}"
 
-    # Метод 2: GitHub API /releases/latest (только stable)
-    if [ -z "$VERSION" ]; then
-        VERSION=$(curl -sL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
-            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p')
-    fi
+    # Parse all "Package: awg-manager" blocks and pick the highest semver Version.
+    # Output: single line "<version> <filename>"
+    LATEST=$(printf '%s\n' "$PACKAGES_INDEX" | awk '
+        function vercmp(a, b,    pa, pb, na, nb, i, m, x, y) {
+            na = split(a, pa, ".")
+            nb = split(b, pb, ".")
+            m = (na > nb) ? na : nb
+            for (i = 1; i <= m; i++) {
+                x = (i <= na) ? pa[i] + 0 : 0
+                y = (i <= nb) ? pb[i] + 0 : 0
+                if (x < y) return -1
+                if (x > y) return 1
+            }
+            return 0
+        }
+        BEGIN { RS=""; FS="\n"; bestv=""; bestf="" }
+        {
+            pkg=""; ver=""; fn=""
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^Package: /)  pkg = substr($i, 10)
+                if ($i ~ /^Version: /)  ver = substr($i, 10)
+                if ($i ~ /^Filename: /) fn  = substr($i, 11)
+            }
+            if (pkg == "awg-manager" && (bestv == "" || vercmp(ver, bestv) > 0)) {
+                bestv = ver; bestf = fn
+            }
+        }
+        END { if (bestv != "") print bestv " " bestf }
+    ')
 
-    # Метод 3: все релизы, включая pre-release (первый = самый новый)
-    if [ -z "$VERSION" ]; then
-        VERSION=$(curl -sL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
-            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/p' | head -1)
-    fi
+    [ -z "$LATEST" ] && error "Пакет awg-manager не найден в ${ENTWARE_REPO}/${REPO_ARCH}/Packages.gz"
 
-    [ -z "$VERSION" ] && error "Не удалось получить версию с GitHub. Проверьте подключение к интернету."
+    VERSION=$(echo "$LATEST" | awk '{print $1}')
+    PKG_FILENAME=$(echo "$LATEST" | awk '{print $2}')
+
     info "Последняя версия: $VERSION"
 }
 
 # --- Скачать и установить ---
 install_package() {
-    PKG_NAME="awg-manager_${VERSION}_${ARCH}-kn.ipk"
-    URL="https://github.com/$REPO/releases/download/v${VERSION}/${PKG_NAME}"
+    # When a specific version is requested, derive the filename ourselves.
+    # When fetch_version parsed Packages.gz, PKG_FILENAME is already set.
+    if [ -z "${PKG_FILENAME:-}" ]; then
+        PKG_FILENAME="awg-manager_${VERSION}_${ARCH}-kn.ipk"
+    fi
+
+    URL="${ENTWARE_REPO}/${REPO_ARCH}/${PKG_FILENAME}"
 
     mkdir -p "$TMP_DIR"
 
@@ -124,12 +151,12 @@ install_package() {
         info "Устанавливаю версию $VERSION"
     fi
 
-    info "Скачиваю $PKG_NAME..."
-    curl -fL -o "$TMP_DIR/$PKG_NAME" "$URL" \
-        || error "Ошибка загрузки. Проверьте, что версия $VERSION существует: https://github.com/$REPO/releases"
+    info "Скачиваю $PKG_FILENAME..."
+    curl -fL -o "$TMP_DIR/$PKG_FILENAME" "$URL" \
+        || error "Ошибка загрузки. Проверьте, что версия $VERSION существует: $URL"
 
     info "Устанавливаю пакет..."
-    opkg install "$TMP_DIR/$PKG_NAME" \
+    opkg install "$TMP_DIR/$PKG_FILENAME" \
         || error "Ошибка установки пакета"
 
     info "Пакет установлен"
@@ -137,8 +164,6 @@ install_package() {
 
 # --- Добавить opkg репозиторий ---
 add_repo() {
-    # Convert arch format: aarch64-3.10 → aarch64-k3.10, mipsel-3.4 → mipsel-k3.4
-    REPO_ARCH=$(echo "$ARCH" | sed 's/-\([0-9]\)/-k\1/')
     REPO_LINE="src/gz hoaxisr ${ENTWARE_REPO}/${REPO_ARCH}"
 
     if [ -f "$OPKG_CONF" ] && grep -qF "$REPO_LINE" "$OPKG_CONF" 2>/dev/null; then
