@@ -545,7 +545,7 @@ label {
 
 .setting-row > *:first-child {
 	min-width: 0;
-	flex: 1 1 220px;
+	flex: 1 1 0;
 }
 
 .setting-row:first-child {
