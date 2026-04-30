@@ -253,3 +253,86 @@ func TestSettingsMigrationV8_SchemaVersion(t *testing.T) {
 		t.Errorf("SchemaVersion = %d, want %d", settings.SchemaVersion, CurrentSchemaVersion)
 	}
 }
+
+func TestLoadFreshInstallSetsBasic(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewSettingsStore(tmpDir)
+
+	settings, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if settings.UsageLevel != UsageLevelBasic {
+		t.Errorf("fresh install UsageLevel = %q, want %q", settings.UsageLevel, UsageLevelBasic)
+	}
+	if settings.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("fresh install SchemaVersion = %d, want %d", settings.SchemaVersion, CurrentSchemaVersion)
+	}
+
+	// Verify the value was persisted on disk too.
+	data, err := os.ReadFile(filepath.Join(tmpDir, "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	if !strings.Contains(string(data), `"usageLevel": "basic"`) {
+		t.Errorf("settings.json missing basic usageLevel:\n%s", data)
+	}
+}
+
+func TestLoadUpgradeFromV15SetsAdvanced(t *testing.T) {
+	tmpDir := t.TempDir()
+	v15 := `{
+		"schemaVersion": 15,
+		"authEnabled": false,
+		"onboardingCompleted": true,
+		"server": {"port": 2222, "interface": "br0"},
+		"pingCheck": {"enabled": false, "defaults": {"method":"http","target":"8.8.8.8","interval":45,"deadInterval":120,"failThreshold":3}},
+		"logging": {"enabled": true, "maxAge": 2},
+		"disableMemorySaving": false,
+		"updates": {"checkEnabled": true},
+		"dnsRoute": {"autoRefreshEnabled": false, "refreshIntervalHours": 0},
+		"singboxRouter": {"enabled": false, "policyName": "", "refreshMode": "interval", "refreshIntervalHours": 24}
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.json"), []byte(v15), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	store := NewSettingsStore(tmpDir)
+	settings, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if settings.UsageLevel != UsageLevelAdvanced {
+		t.Errorf("upgrade UsageLevel = %q, want %q", settings.UsageLevel, UsageLevelAdvanced)
+	}
+	if settings.SchemaVersion != CurrentSchemaVersion {
+		t.Errorf("upgrade SchemaVersion = %d, want %d", settings.SchemaVersion, CurrentSchemaVersion)
+	}
+
+	// Verify legacy field was dropped from the persisted file.
+	data, _ := os.ReadFile(filepath.Join(tmpDir, "settings.json"))
+	if strings.Contains(string(data), "onboardingCompleted") {
+		t.Errorf("legacy onboardingCompleted field still present:\n%s", data)
+	}
+}
+
+func TestNormalizeUsageLevel(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"basic", "basic"},
+		{"advanced", "advanced"},
+		{"expert", "expert"},
+		{"", "advanced"},
+		{"garbage", "advanced"},
+		{"BASIC", "advanced"}, // case-sensitive
+	}
+	for _, tc := range tests {
+		got := NormalizeUsageLevel(tc.in)
+		if got != tc.want {
+			t.Errorf("NormalizeUsageLevel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
