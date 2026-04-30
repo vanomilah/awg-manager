@@ -3,4 +3,5 @@ export { default as LoggingSettings } from './LoggingSettings.svelte';
 export { default as UpdateSection } from './UpdateSection.svelte';
 export { default as DnsRouteSettings } from './DnsRouteSettings.svelte';
 export { default as IntegrationsCard } from './IntegrationsCard.svelte';
+export { default as UsageLevelCard } from './UsageLevelCard.svelte';
 export { default as SettingsFooter } from './SettingsFooter.svelte';
