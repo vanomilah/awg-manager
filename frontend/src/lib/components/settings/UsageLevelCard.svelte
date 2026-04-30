@@ -64,13 +64,11 @@
 	}
 </script>
 
-<div class="card usage-level-card">
-	<div class="card-head">
-		<h2>Уровень использования</h2>
-		<p class="muted">
-			Скрывает разделы, которые вам не нужны. Данные при понижении уровня не удаляются.
-		</p>
-	</div>
+<div class="card">
+	<div class="section-label">Уровень использования</div>
+	<p class="card-hint">
+		Скрывает разделы, которые вам не нужны. Данные при понижении уровня не удаляются.
+	</p>
 
 	<div
 		class="level-grid"
@@ -139,36 +137,22 @@
 </Modal>
 
 <style>
-	.usage-level-card {
-		margin-bottom: 1rem;
-	}
-	.card-head {
-		margin-bottom: 1rem;
-	}
-	.card-head h2 {
-		margin: 0 0 0.25rem 0;
-	}
-	.muted {
+	.card-hint {
 		color: var(--color-text-muted);
-		font-size: 0.875rem;
-		margin: 0;
+		font-size: 0.8125rem;
+		margin: 0 0 0.75rem 0;
 	}
 
 	.level-grid {
 		display: grid;
-		grid-template-columns: repeat(3, 1fr);
-		gap: 0.75rem;
-	}
-	@media (max-width: 640px) {
-		.level-grid {
-			grid-template-columns: 1fr;
-		}
+		grid-template-columns: 1fr;
+		gap: 0.5rem;
 	}
 
 	.level-card {
 		position: relative;
 		text-align: left;
-		padding: 1rem;
+		padding: 0.75rem 1rem;
 		background: var(--color-bg-tertiary);
 		border: 1px solid var(--color-border);
 		border-radius: var(--radius-md);
@@ -177,8 +161,7 @@
 		cursor: pointer;
 		transition:
 			border-color var(--t-fast) ease,
-			background var(--t-fast) ease,
-			transform var(--t-fast) ease;
+			background var(--t-fast) ease;
 	}
 	.level-card:hover:not(:disabled):not(.selected) {
 		background: var(--color-bg-hover);

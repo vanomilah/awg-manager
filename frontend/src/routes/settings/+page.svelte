@@ -262,12 +262,6 @@
 			<LoadingSpinner size="md" />
 		</div>
 	{:else if settings && systemInfo}
-		<UsageLevelCard
-			value={settings.usageLevel}
-			{saving}
-			onSelect={selectUsageLevel}
-		/>
-
 		<div class="settings-grid">
 			<aside class="settings-left">
 				<SystemInfoGrid {systemInfo} />
@@ -287,6 +281,12 @@
 			</aside>
 
 			<main class="settings-right">
+				<UsageLevelCard
+					value={settings.usageLevel}
+					{saving}
+					onSelect={selectUsageLevel}
+				/>
+
 				<div class="card">
 					<div class="section-label">Доступ</div>
 					<div class="setting-row">
