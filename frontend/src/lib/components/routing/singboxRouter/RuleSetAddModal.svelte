@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterRuleSet } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 
@@ -10,6 +11,20 @@
 		onSave: (rs: SingboxRouterRuleSet) => Promise<void> | void;
 	}
 	let { ruleSet, outboundOptions, onClose, onSave }: Props = $props();
+
+	const UPDATE_INTERVAL_OPTIONS: DropdownOption[] = [
+		{ value: '6h', label: '6h' },
+		{ value: '12h', label: '12h' },
+		{ value: '24h', label: '24h (рекомендуется)' },
+		{ value: '168h', label: '168h (неделя)' },
+	];
+
+	const downloadDetourOptions = $derived<DropdownOption[]>([
+		{ value: '', label: 'автоматически (direct)' },
+		...outboundOptions.flatMap((g) =>
+			g.items.map((i) => ({ value: i.value, label: i.label, group: g.group })),
+		),
+	]);
 
 	// svelte-ignore state_referenced_locally
 	let type: 'remote' | 'local' = $state(ruleSet?.type ?? 'remote');
@@ -96,26 +111,12 @@
 
 			<label class="field">
 				<div class="lbl">Интервал обновления</div>
-				<select bind:value={updateInterval}>
-					<option value="6h">6h</option>
-					<option value="12h">12h</option>
-					<option value="24h">24h (рекомендуется)</option>
-					<option value="168h">168h (неделя)</option>
-				</select>
+				<Dropdown bind:value={updateInterval} options={UPDATE_INTERVAL_OPTIONS} fullWidth />
 			</label>
 
 			<div class="field highlight">
 				<div class="lbl">Скачивать через (download detour)</div>
-				<select bind:value={downloadDetour}>
-					<option value="">автоматически (direct)</option>
-					{#each outboundOptions as group}
-						<optgroup label={group.group}>
-							{#each group.items as item}
-								<option value={item.value}>{item.label}</option>
-							{/each}
-						</optgroup>
-					{/each}
-				</select>
+				<Dropdown bind:value={downloadDetour} options={downloadDetourOptions} fullWidth />
 				<div class="hint">
 					Через какой outbound скачивать этот файл. Полезно если URL заблокирован у провайдера — используйте VPN-туннель.
 				</div>
@@ -169,8 +170,7 @@
 		line-height: 1.4;
 		margin-top: 0.25rem;
 	}
-	.field input,
-	.field select {
+	.field input {
 		background: var(--bg);
 		border: 1px solid var(--border);
 		padding: 0.4rem 0.6rem;

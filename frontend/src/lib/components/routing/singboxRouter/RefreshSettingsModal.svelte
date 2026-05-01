@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterSettings } from '$lib/types';
 
 	interface Props {
@@ -9,6 +10,11 @@
 		onSaved: () => Promise<void> | void;
 	}
 	let { settings, onClose, onSaved }: Props = $props();
+
+	const REFRESH_MODE_OPTIONS: DropdownOption<'interval' | 'daily'>[] = [
+		{ value: 'interval', label: 'Каждые N часов' },
+		{ value: 'daily', label: 'Ежедневно в заданное время' },
+	];
 
 	// svelte-ignore state_referenced_locally
 	let refreshMode: 'interval' | 'daily' = $state((settings.refreshMode ?? 'interval') as 'interval' | 'daily');
@@ -43,10 +49,7 @@
 	<div class="form">
 		<label class="field">
 			<div class="label">Режим</div>
-			<select bind:value={refreshMode}>
-				<option value="interval">Каждые N часов</option>
-				<option value="daily">Ежедневно в заданное время</option>
-			</select>
+			<Dropdown bind:value={refreshMode} options={REFRESH_MODE_OPTIONS} fullWidth />
 		</label>
 
 		{#if refreshMode === 'interval'}
@@ -84,7 +87,6 @@
 		font-size: 0.75rem;
 		color: var(--muted-text);
 	}
-	.field select,
 	.field input {
 		background: var(--bg);
 		border: 1px solid var(--border);

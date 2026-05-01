@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type {
 		SingboxRouterDNSServer,
 		SingboxRouterDNSType,
@@ -15,6 +16,29 @@
 		onSave: (server: SingboxRouterDNSServer) => Promise<void> | void;
 	}
 	let { server, servers, outboundOptions, onClose, onSave }: Props = $props();
+
+	const TYPE_OPTIONS: DropdownOption<SingboxRouterDNSType>[] = [
+		{ value: 'udp', label: 'UDP (обычный DNS)' },
+		{ value: 'tls', label: 'DoT (DNS over TLS)' },
+		{ value: 'https', label: 'DoH (DNS over HTTPS)' },
+		{ value: 'quic', label: 'DoQ (DNS over QUIC)' },
+		{ value: 'h3', label: 'DoH3' },
+	];
+
+	const STRATEGY_OPTIONS: DropdownOption<SingboxRouterDNSStrategy>[] = [
+		{ value: '', label: '— default —' },
+		{ value: 'ipv4_only', label: 'ipv4_only' },
+		{ value: 'ipv6_only', label: 'ipv6_only' },
+		{ value: 'prefer_ipv4', label: 'prefer_ipv4' },
+		{ value: 'prefer_ipv6', label: 'prefer_ipv6' },
+	];
+
+	const detourOptions = $derived<DropdownOption[]>([
+		{ value: '', label: '— через route (по умолчанию) —' },
+		...outboundOptions.flatMap((g) =>
+			g.items.map((i) => ({ value: i.value, label: i.label, group: g.group })),
+		),
+	]);
 
 	// svelte-ignore state_referenced_locally
 	let tag = $state(server?.tag ?? '');
@@ -42,6 +66,10 @@
 
 	const needsResolver = $derived(type !== 'udp' && !isIPLiteral(serverAddr));
 	const availableResolvers = $derived(servers.filter((s) => s.tag !== tag).map((s) => s.tag));
+	const resolverServerOptions = $derived<DropdownOption[]>([
+		{ value: '', label: '— выберите —' },
+		...availableResolvers.map((t) => ({ value: t, label: t })),
+	]);
 
 	function isIPLiteral(s: string): boolean {
 		return /^(\d{1,3}\.){3}\d{1,3}$/.test(s) || s.includes(':');
@@ -87,13 +115,7 @@
 
 		<label class="field">
 			<div class="lbl">Type <span class="req">*</span></div>
-			<select bind:value={type}>
-				<option value="udp">UDP (обычный DNS)</option>
-				<option value="tls">DoT (DNS over TLS)</option>
-				<option value="https">DoH (DNS over HTTPS)</option>
-				<option value="quic">DoQ (DNS over QUIC)</option>
-				<option value="h3">DoH3</option>
-			</select>
+			<Dropdown bind:value={type} options={TYPE_OPTIONS} fullWidth />
 		</label>
 
 		<label class="field">
@@ -118,16 +140,7 @@
 
 		<label class="field">
 			<div class="lbl">Detour (outbound)</div>
-			<select bind:value={detour}>
-				<option value="">— через route (по умолчанию) —</option>
-				{#each outboundOptions as group}
-					<optgroup label={group.group}>
-						{#each group.items as item}
-							<option value={item.value}>{item.label}</option>
-						{/each}
-					</optgroup>
-				{/each}
-			</select>
+			<Dropdown bind:value={detour} options={detourOptions} fullWidth />
 			<div class="hint">
 				Через какой outbound сам сервер отправляет запросы. <code>direct</code> — через провайдера,
 				выбранный туннель — через VPN (шифрованный DNS без утечек).
@@ -136,13 +149,7 @@
 
 		<label class="field">
 			<div class="lbl">Стратегия (IPv4/IPv6)</div>
-			<select bind:value={strategy}>
-				<option value="">— default —</option>
-				<option value="ipv4_only">ipv4_only</option>
-				<option value="ipv6_only">ipv6_only</option>
-				<option value="prefer_ipv4">prefer_ipv4</option>
-				<option value="prefer_ipv6">prefer_ipv6</option>
-			</select>
+			<Dropdown bind:value={strategy} options={STRATEGY_OPTIONS} fullWidth />
 		</label>
 
 		{#if type !== 'udp'}
@@ -160,22 +167,11 @@
 				<div class="row-2">
 					<label class="field">
 						<div class="lbl">Resolver server (tag)</div>
-						<select bind:value={resolverServer}>
-							<option value="">— выберите —</option>
-							{#each availableResolvers as t}
-								<option value={t}>{t}</option>
-							{/each}
-						</select>
+						<Dropdown bind:value={resolverServer} options={resolverServerOptions} fullWidth />
 					</label>
 					<label class="field">
 						<div class="lbl">Resolver strategy</div>
-						<select bind:value={resolverStrategy}>
-							<option value="">— default —</option>
-							<option value="ipv4_only">ipv4_only</option>
-							<option value="ipv6_only">ipv6_only</option>
-							<option value="prefer_ipv4">prefer_ipv4</option>
-							<option value="prefer_ipv6">prefer_ipv6</option>
-						</select>
+						<Dropdown bind:value={resolverStrategy} options={STRATEGY_OPTIONS} fullWidth />
 					</label>
 				</div>
 			{/if}
@@ -216,8 +212,7 @@
 	.req {
 		color: var(--danger, #dc2626);
 	}
-	.field input,
-	.field select {
+	.field input {
 		background: var(--bg);
 		border: 1px solid var(--border);
 		padding: 0.4rem 0.6rem;

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import { notifications } from '$lib/stores/notifications';
 	import type {
 		SingboxRouterDNSServer,
@@ -13,6 +14,19 @@
 		onChange: () => Promise<void> | void;
 	}
 	let { globals, servers, onChange }: Props = $props();
+
+	const STRATEGY_OPTIONS: DropdownOption<SingboxRouterDNSStrategy>[] = [
+		{ value: '', label: '— default —' },
+		{ value: 'ipv4_only', label: 'ipv4_only' },
+		{ value: 'ipv6_only', label: 'ipv6_only' },
+		{ value: 'prefer_ipv4', label: 'prefer_ipv4' },
+		{ value: 'prefer_ipv6', label: 'prefer_ipv6' },
+	];
+
+	const finalServerOptions = $derived<DropdownOption[]>([
+		{ value: '', label: '— не задан —' },
+		...servers.map((s) => ({ value: s.tag, label: s.tag })),
+	]);
 
 	let final = $derived(globals.final);
 	let strategy = $derived(globals.strategy);
@@ -46,23 +60,12 @@
 	<div class="row-2">
 		<label class="field">
 			<div class="lbl">Final сервер</div>
-			<select bind:value={draftFinal} disabled={servers.length === 0}>
-				<option value="">— не задан —</option>
-				{#each servers as s}
-					<option value={s.tag}>{s.tag}</option>
-				{/each}
-			</select>
+			<Dropdown bind:value={draftFinal} options={finalServerOptions} disabled={servers.length === 0} fullWidth />
 			<div class="hint">Сервер по умолчанию для запросов, не попавших ни под одно правило.</div>
 		</label>
 		<label class="field">
 			<div class="lbl">Стратегия (глобальная)</div>
-			<select bind:value={draftStrategy}>
-				<option value="">— default —</option>
-				<option value="ipv4_only">ipv4_only</option>
-				<option value="ipv6_only">ipv6_only</option>
-				<option value="prefer_ipv4">prefer_ipv4</option>
-				<option value="prefer_ipv6">prefer_ipv6</option>
-			</select>
+			<Dropdown bind:value={draftStrategy} options={STRATEGY_OPTIONS} fullWidth />
 			<div class="hint">Для Keenetic без IPv6 — <code>ipv4_only</code>.</div>
 		</label>
 	</div>
@@ -98,15 +101,6 @@
 	.lbl {
 		font-size: 0.75rem;
 		color: var(--muted-text);
-	}
-	.field select {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.4rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
 	}
 	.hint {
 		font-size: 0.72rem;

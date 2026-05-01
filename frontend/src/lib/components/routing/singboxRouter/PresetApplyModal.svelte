@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterPreset } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 
@@ -10,6 +11,13 @@
 		onApply: (id: string, outbound: string) => Promise<void> | void;
 	}
 	let { preset, outboundOptions, onClose, onApply }: Props = $props();
+
+	const outboundDropdownOptions = $derived<DropdownOption[]>([
+		{ value: '', label: '— выберите —' },
+		...outboundOptions.flatMap((g) =>
+			g.items.map((i) => ({ value: i.value, label: i.label, group: g.group })),
+		),
+	]);
 
 	let selectedOutbound = $state('');
 	let busy = $state(false);
@@ -57,16 +65,7 @@
 		{#if needsOutbound}
 			<label class="field">
 				<div class="lbl">Направить трафик в</div>
-				<select bind:value={selectedOutbound}>
-					<option value="">— выберите —</option>
-					{#each outboundOptions as group}
-						<optgroup label={group.group}>
-							{#each group.items as item}
-								<option value={item.value}>{item.label}</option>
-							{/each}
-						</optgroup>
-					{/each}
-				</select>
+				<Dropdown bind:value={selectedOutbound} options={outboundDropdownOptions} fullWidth />
 			</label>
 		{:else if specialHint}
 			<div class="special-hint">{specialHint}</div>
@@ -136,15 +135,6 @@
 	.lbl {
 		font-size: 0.75rem;
 		color: var(--muted-text);
-	}
-	.field select {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.45rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
 	}
 	.error {
 		color: var(--danger, #dc2626);

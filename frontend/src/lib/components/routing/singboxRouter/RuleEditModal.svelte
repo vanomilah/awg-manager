@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterRule } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 
@@ -10,6 +11,13 @@
 		onSave: (rule: SingboxRouterRule) => Promise<void> | void;
 	}
 	let { rule, outboundOptions, onClose, onSave }: Props = $props();
+
+	const outboundDropdownOptions = $derived<DropdownOption[]>([
+		{ value: '', label: '— выберите —' },
+		...outboundOptions.flatMap((g) =>
+			g.items.map((i) => ({ value: i.value, label: i.label, group: g.group })),
+		),
+	]);
 
 	// svelte-ignore state_referenced_locally
 	let domainSuffixStr = $state((rule?.domain_suffix ?? []).join('\n'));
@@ -118,16 +126,7 @@
 			{#if action === 'route'}
 				<label class="field">
 					<div class="lbl">Куда направить</div>
-					<select bind:value={outbound}>
-						<option value="">— выберите —</option>
-						{#each outboundOptions as group}
-							<optgroup label={group.group}>
-								{#each group.items as item}
-									<option value={item.value}>{item.label}</option>
-								{/each}
-							</optgroup>
-						{/each}
-					</select>
+					<Dropdown bind:value={outbound} options={outboundDropdownOptions} fullWidth />
 				</label>
 			{/if}
 		</div>
@@ -163,8 +162,7 @@
 		color: var(--muted-text);
 	}
 	.field textarea,
-	.field input,
-	.field select {
+	.field input {
 		background: var(--bg);
 		border: 1px solid var(--border);
 		padding: 0.4rem 0.6rem;

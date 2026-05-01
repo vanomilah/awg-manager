@@ -1,7 +1,13 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterOutbound } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
+
+	const STRATEGY_OPTIONS: DropdownOption[] = [
+		{ value: 'round_robin', label: 'round_robin' },
+		{ value: 'consistent_hashing', label: 'consistent_hashing' },
+	];
 
 	interface Props {
 		outbound?: SingboxRouterOutbound;
@@ -129,10 +135,7 @@
 		{:else}
 			<label class="field">
 				<div class="lbl">Strategy</div>
-				<select bind:value={strategy}>
-					<option value="round_robin">round_robin</option>
-					<option value="consistent_hashing">consistent_hashing</option>
-				</select>
+				<Dropdown bind:value={strategy} options={STRATEGY_OPTIONS} fullWidth />
 			</label>
 		{/if}
 
@@ -173,8 +176,7 @@
 		font-size: 0.75rem;
 		color: var(--muted-text);
 	}
-	.field input,
-	.field select {
+	.field input {
 		background: var(--bg);
 		border: 1px solid var(--border);
 		padding: 0.4rem 0.6rem;

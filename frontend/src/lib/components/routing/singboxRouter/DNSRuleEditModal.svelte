@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
+	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterDNSRule, SingboxRouterDNSServer } from '$lib/types';
 
 	interface Props {
@@ -9,6 +10,15 @@
 		onSave: (rule: SingboxRouterDNSRule) => Promise<void> | void;
 	}
 	let { rule, servers, onClose, onSave }: Props = $props();
+
+	const serverOptions = $derived<DropdownOption[]>([
+		{ value: '', label: '— выберите —' },
+		...servers.map((s) => ({
+			value: s.tag,
+			label: s.tag,
+			description: `${s.type} · ${s.server}`,
+		})),
+	]);
 
 	// svelte-ignore state_referenced_locally
 	let ruleSetStr = $state((rule?.rule_set ?? []).join(', '));
@@ -113,12 +123,7 @@
 			{#if action === 'route'}
 				<label class="field">
 					<div class="lbl">DNS сервер</div>
-					<select bind:value={server}>
-						<option value="">— выберите —</option>
-						{#each servers as s}
-							<option value={s.tag}>{s.tag} ({s.type} · {s.server})</option>
-						{/each}
-					</select>
+					<Dropdown bind:value={server} options={serverOptions} fullWidth />
 				</label>
 			{/if}
 		</div>
@@ -154,8 +159,7 @@
 		color: var(--muted-text);
 	}
 	.field textarea,
-	.field input,
-	.field select {
+	.field input {
 		background: var(--bg);
 		border: 1px solid var(--border);
 		padding: 0.4rem 0.6rem;
