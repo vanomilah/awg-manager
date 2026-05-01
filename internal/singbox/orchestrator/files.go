@@ -1,0 +1,108 @@
+package orchestrator
+
+import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+)
+
+// activePath returns the path where the slot's file lives when enabled.
+func (o *Orchestrator) activePath(meta SlotMeta) string {
+	return filepath.Join(o.configDir, meta.Filename)
+}
+
+// disabledPath returns the path where the slot's file lives when disabled.
+func (o *Orchestrator) disabledPath(meta SlotMeta) string {
+	return filepath.Join(o.configDir, disabledSubdir, meta.Filename)
+}
+
+// ensureDirs creates configDir and configDir/disabled if missing.
+func (o *Orchestrator) ensureDirs() error {
+	if err := os.MkdirAll(o.configDir, 0755); err != nil {
+		return fmt.Errorf("mkdir configDir: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Join(o.configDir, disabledSubdir), 0755); err != nil {
+		return fmt.Errorf("mkdir disabledSubdir: %w", err)
+	}
+	return nil
+}
+
+// writeAtomic writes data to path via a sibling .tmp file + rename.
+// Truncates and replaces any existing file.
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// fileExists returns true iff path exists and is a regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
+}
+
+// fileSize returns the size in bytes if the file exists, 0 otherwise.
+func fileSize(path string) int {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return int(info.Size())
+}
+
+// scanDirForSlot returns (existsActive, existsDisabled).
+func (o *Orchestrator) scanDirForSlot(meta SlotMeta) (bool, bool) {
+	a := fileExists(o.activePath(meta))
+	d := fileExists(o.disabledPath(meta))
+	return a, d
+}
+
+// renameForToggle moves the slot file between active and disabled
+// locations. No-op if already in target location. Returns nil if the
+// slot has no file on disk (Save will create it later).
+func (o *Orchestrator) renameForToggle(meta SlotMeta, enable bool) error {
+	var src, dst string
+	if enable {
+		src = o.disabledPath(meta)
+		dst = o.activePath(meta)
+	} else {
+		src = o.activePath(meta)
+		dst = o.disabledPath(meta)
+	}
+	if _, err := os.Stat(src); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if _, err := os.Stat(dst); err == nil {
+		// Both exist — pathological. Prefer src as truth, remove dst.
+		if err := os.Remove(dst); err != nil {
+			return err
+		}
+	}
+	return os.Rename(src, dst)
+}
+
+// removeIfExists removes path; nil if missing. Other errors propagate.
+func removeIfExists(path string) error {
+	err := os.Remove(path)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
