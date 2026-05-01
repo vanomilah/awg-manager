@@ -8,7 +8,7 @@
     import { api } from '$lib/api/client';
     import { notifications } from '$lib/stores/notifications';
     import { PageContainer, PageHeader, LoadingSpinner } from '$lib/components/layout';
-    import { Tabs, Button } from '$lib/components/ui';
+    import { Tabs, Button, Modal } from '$lib/components/ui';
     import { RoutingSearch } from '$lib/components/routing';
     import DnsRoutesTab from './DnsRoutesTab.svelte';
     import IpRoutesTab from './IpRoutesTab.svelte';
@@ -57,6 +57,7 @@
     // Search → edit rule integration
     let editRuleId = $state('');
     let editRuleCounter = $state(0);
+    let searchOpen = $state(false);
 
     function handleSearchRuleClick(id: string, type: 'dns' | 'ip') {
         if (type === 'dns') {
@@ -70,6 +71,7 @@
         }
         editRuleId = id;
         editRuleCounter++;
+        searchOpen = false;
     }
 
     // Data from SSE-driven store
@@ -194,6 +196,14 @@
 <PageContainer>
     <PageHeader title="Маршрутизация">
         {#snippet actions()}
+            <Button
+                variant="ghost"
+                size="sm"
+                onclick={() => (searchOpen = true)}
+                iconBefore={searchIcon}
+            >
+                Поиск
+            </Button>
             <!-- TODO Phase 1: warning variant for missing>0 -->
             <Button
                 variant={missing.length > 0 ? 'secondary' : 'ghost'}
@@ -210,8 +220,6 @@
             </Button>
         {/snippet}
     </PageHeader>
-
-    <RoutingSearch dnsRoutes={dnsRoutes} staticRoutes={ipRoutes} tunnels={routingTunnels} onRuleClick={handleSearchRuleClick} />
 
     {#if loading}
         <LoadingSpinner />
@@ -266,4 +274,25 @@
         {/if}
     {/if}
 </PageContainer>
+
+<Modal
+    open={searchOpen}
+    onclose={() => (searchOpen = false)}
+    title="Поиск по правилам маршрутизации"
+    size="xl"
+>
+    <RoutingSearch
+        {dnsRoutes}
+        staticRoutes={ipRoutes}
+        tunnels={routingTunnels}
+        onRuleClick={handleSearchRuleClick}
+    />
+</Modal>
+
+{#snippet searchIcon()}
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+        <circle cx="11" cy="11" r="8"/>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+{/snippet}
 
