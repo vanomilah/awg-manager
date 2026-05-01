@@ -247,6 +247,17 @@ func removeNetfilterHookScript() {
 	_ = os.Remove(netfilterHookPath)
 }
 
+// refreshNetfilterHookIfPresent rewrites the netfilter.d hook script
+// when one is already installed, so older versions get the current
+// pidof guard on daemon startup. No-op when the file is absent —
+// Install creates it on first Enable.
+func refreshNetfilterHookIfPresent() {
+	if _, err := os.Stat(netfilterHookPath); err != nil {
+		return
+	}
+	_ = writeNetfilterHook()
+}
+
 func (it *IPTables) Uninstall(ctx context.Context) error {
 	if it.cleanupHook != nil {
 		it.cleanupHook()

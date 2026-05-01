@@ -131,6 +131,11 @@ func NewService(d Deps) *ServiceImpl {
 	if d.IPTables == nil {
 		d.IPTables = NewIPTables()
 	}
+	// Idempotently refresh the netfilter hook script: if a previous
+	// version is on disk (older AWGM without pidof guard), this writes
+	// the current version. No-op when the file is absent — Install
+	// creates it on first Enable.
+	refreshNetfilterHookIfPresent()
 	return &ServiceImpl{deps: d}
 }
 
