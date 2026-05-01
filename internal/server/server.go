@@ -97,6 +97,7 @@ type Server struct {
 	bus                 *events.Bus
 	singboxHandler       *api.SingboxHandler
 	singboxRouterHandler *api.SingboxRouterHandler
+	singboxConfigHandler *api.SingboxConfigHandler
 	awgOutboundsHandler  *api.AWGOutboundsHandler
 	clashProxy          *api.ClashProxy
 	singboxOp           *singbox.Operator
@@ -218,6 +219,13 @@ func (s *Server) SetSingboxRouterHandler(h *api.SingboxRouterHandler) {
 // so /api/singbox/awg-outbounds/tags can be registered.
 func (s *Server) SetAWGOutboundsHandler(h *api.AWGOutboundsHandler) {
 	s.awgOutboundsHandler = h
+}
+
+// SetSingboxConfigHandler injects the read-only config-preview handler.
+// Wired post-construction because the orchestrator's ConfigDir is only
+// available after main wires everything up.
+func (s *Server) SetSingboxConfigHandler(h *api.SingboxConfigHandler) {
+	s.singboxConfigHandler = h
 }
 
 // generateInstanceID creates a random 16-byte hex string (32 chars).
@@ -848,6 +856,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			}
 		}))
+	}
+	if s.singboxConfigHandler != nil {
+		mux.HandleFunc("/api/singbox/config-preview", guarded(s.singboxConfigHandler.Preview))
 	}
 	if s.clashProxy != nil {
 		mux.HandleFunc("/api/singbox/clash/", guarded(s.clashProxy.ServeHTTP))

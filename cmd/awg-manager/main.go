@@ -812,6 +812,7 @@ func main() {
 
 	srv.SetSingboxRouterHandler(api.NewSingboxRouterHandler(routerSvc, loggingService))
 	srv.SetAWGOutboundsHandler(api.NewAWGOutboundsHandler(awgoutboundsSvc))
+	srv.SetSingboxConfigHandler(api.NewSingboxConfigHandler(sbOrch.ConfigDir))
 
 	// Boot status: 0 = booting, 1 = done. Used by /api/system/info.
 	var bootDone int32
