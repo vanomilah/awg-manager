@@ -12,7 +12,6 @@
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import Button from '$lib/components/ui/Button.svelte';
 	import Input from '$lib/components/ui/Input.svelte';
-	import PolicyDevicePicker from './PolicyDevicePicker.svelte';
 
 	interface Props {
 		status: SingboxRouterStatus | null;
@@ -212,7 +211,16 @@
 				{/if}
 
 				{#if settings.policyName}
-					<PolicyDevicePicker policyName={settings.policyName} onChange={onChange} />
+					<div class="policy-link-row">
+						<span class="setting-description">
+							Привязка устройств к политике
+							<strong>«{settings.policyName}»</strong>
+							настраивается на отдельной странице.
+						</span>
+						<Button variant="ghost" size="sm" href="/routing?tab=policy">
+							Управление устройствами →
+						</Button>
+					</div>
 				{/if}
 			</div>
 		{/if}
@@ -363,6 +371,13 @@
 		background: var(--bg);
 		padding: 1px 6px;
 		border-radius: 3px;
+	}
+	.policy-link-row {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-top: 0.5rem;
+		flex-wrap: wrap;
 	}
 	.issues {
 		margin-top: 1rem;
