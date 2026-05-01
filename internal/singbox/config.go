@@ -88,6 +88,24 @@ func LoadConfig(path string) (*Config, error) {
 	return &Config{raw: m}, nil
 }
 
+// MarshalJSON exposes the in-memory config as the same JSON shape Save
+// would write. Lets callers (orchestrator slot builders, migrations,
+// tests) obtain bytes without going through disk.
+func (c *Config) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.raw)
+}
+
+// UnmarshalJSON parses a sing-box config document into c. Mirrors
+// LoadConfig but for callers that already hold the bytes.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	c.raw = m
+	return nil
+}
+
 // Save atomically writes config.json to disk (tmp file + rename).
 func (c *Config) Save(path string) error {
 	b, err := json.MarshalIndent(c.raw, "", "  ")
@@ -561,6 +579,68 @@ func (c *Config) RemoveDeviceProxy() {
 	c.removeOutbound(deviceProxySelectorTag)
 	c.pruneAWGOutbounds(nil)
 	c.removeDeviceProxyRouteRule()
+}
+
+// HasDeviceProxy reports whether the config contains the device-proxy
+// inbound (tag = deviceProxyInboundTag). Used by the slot migration
+// to detect legacy single-file layouts where device-proxy lived inside
+// 10-tunnels.json.
+func (c *Config) HasDeviceProxy() bool {
+	for _, v := range c.inbounds() {
+		ib, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ib["tag"].(string); t == deviceProxyInboundTag {
+			return true
+		}
+	}
+	return false
+}
+
+// ExtractDeviceProxy returns a NEW *Config containing ONLY the
+// device-proxy artefacts (inbound, selector outbound, route rule)
+// pulled from the receiver. The receiver is NOT modified — callers
+// that want to strip the artefacts from the source must call
+// RemoveDeviceProxy on it afterwards.
+//
+// The returned config is slot-shaped: it has inbounds/outbounds/route
+// keys but NO log/dns/experimental defaults, so it can safely live in
+// its own config.d slot file without colliding with 00-base.json.
+func (c *Config) ExtractDeviceProxy() *Config {
+	out := &Config{raw: map[string]any{
+		"inbounds":  []any{},
+		"outbounds": []any{},
+		"route":     map[string]any{"rules": []any{}},
+	}}
+	for _, v := range c.inbounds() {
+		ib, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ib["tag"].(string); t == deviceProxyInboundTag {
+			out.upsertInbound(deviceProxyInboundTag, ib)
+		}
+	}
+	for _, v := range c.outbounds() {
+		ob, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ob["tag"].(string); t == deviceProxySelectorTag {
+			out.upsertOutbound(deviceProxySelectorTag, ob)
+		}
+	}
+	for _, v := range c.routeRules() {
+		r, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if inbound, _ := r["inbound"].(string); inbound == deviceProxyInboundTag {
+			out.setRouteRules(append(out.routeRules(), r))
+		}
+	}
+	return out
 }
 
 // upsertInbound replaces the inbound whose tag matches, or appends if
