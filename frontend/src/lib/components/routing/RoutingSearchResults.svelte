@@ -164,18 +164,15 @@
 
 <style>
     .search-results {
-        position: absolute;
-        left: 0;
-        right: 0;
-        top: 100%;
-        z-index: 50;
         background: var(--bg-secondary);
         border: 1px solid var(--border);
-        border-radius: 0 0 8px 8px;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-        max-height: 450px;
-        overflow-y: auto;
+        border-radius: 8px;
         padding: 6px;
+        margin-top: 0.5rem;
+        /* Modal-body owns the outer scroll; no inner max-height cap or
+           absolute positioning here — used to be a popup overlay when
+           the search lived inline at the top of /routing, but it now
+           always renders inside the search modal as a normal block. */
     }
 
     .results-close {

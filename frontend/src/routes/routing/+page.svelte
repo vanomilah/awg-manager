@@ -278,7 +278,7 @@
 <Modal
     open={searchOpen}
     onclose={() => (searchOpen = false)}
-    title="Поиск по правилам маршрутизации"
+    title="Поиск по правилам маршрутизации NDMS"
     size="xl"
 >
     <RoutingSearch
