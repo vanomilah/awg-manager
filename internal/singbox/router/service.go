@@ -164,28 +164,29 @@ func (s *ServiceImpl) disabledRouterConfigPath() string {
 // the file. When the orchestrator is wired and the slot is disabled,
 // the file lives under disabled/ — but UI callers (ListRules etc.)
 // must still see the saved rules so the user can edit them. Falls back
-// to the disabled path only when the active path is missing.
+// to the disabled path when the active path is missing OR returns the
+// "no file" sentinel (LoadConfig hides ENOENT inside an empty config,
+// which would otherwise mask the real on-disk state and overwrite the
+// user's saved rules on the next persistConfig).
 func (s *ServiceImpl) loadRouterConfig() (*RouterConfig, error) {
-	cfg, err := LoadConfig(s.routerConfigPath())
-	if err == nil {
-		return cfg, nil
+	activePath := s.routerConfigPath()
+	if _, statErr := os.Stat(activePath); statErr == nil {
+		return LoadConfig(activePath)
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
 	}
-	if !os.IsNotExist(err) {
-		return nil, err
-	}
+	// Active path is empty. Try disabled (orch-wired only).
 	if s.deps.Orch == nil {
-		return cfg, err
+		return LoadConfig(activePath) // returns NewEmptyConfig per contract
 	}
-	disabled, derr := LoadConfig(s.disabledRouterConfigPath())
-	if derr == nil {
-		return disabled, nil
+	disabledPath := s.disabledRouterConfigPath()
+	if _, statErr := os.Stat(disabledPath); statErr == nil {
+		return LoadConfig(disabledPath)
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
 	}
-	if os.IsNotExist(derr) {
-		// Neither path holds the file — surface the original (active)
-		// not-exist error so callers can use os.IsNotExist().
-		return cfg, err
-	}
-	return nil, derr
+	// Neither path holds the file — return the empty-config sentinel.
+	return LoadConfig(activePath)
 }
 
 func (s *ServiceImpl) persistConfig(ctx context.Context, cfg *RouterConfig) error {
@@ -317,9 +318,18 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 	}
 
 	if err := s.deps.IPTables.Install(ctx, mark); err != nil {
-		rollback := filterTProxyInbound(cfg.Inbounds)
-		cfg.Inbounds = rollback
-		_ = s.persistConfig(ctx, cfg)
+		// Stop sing-box from listening on the now-orphan TPROXY port,
+		// but DO NOT corrupt the persisted user config. With orchestrator
+		// wired we just park the slot back under disabled/ — sing-box
+		// stops seeing it on next reload, the file's content (including
+		// tproxy-in) is preserved verbatim. Without the orchestrator
+		// (legacy fallback) the only recourse is to strip the inbound.
+		if s.deps.Orch != nil {
+			_ = s.deps.Orch.SetEnabled(orchestrator.SlotRouter, false)
+		} else {
+			cfg.Inbounds = filterTProxyInbound(cfg.Inbounds)
+			_ = s.persistConfig(ctx, cfg)
+		}
 		return fmt.Errorf("iptables install: %w", err)
 	}
 	s.currentMark = mark
@@ -341,6 +351,24 @@ func filterTProxyInbound(in []Inbound) []Inbound {
 		}
 	}
 	return out
+}
+
+// healTProxyInbound checks the persisted router config and re-adds the
+// tproxy-in inbound if missing. Idempotent. Used by Reconcile to
+// recover from a prior failed-Install rollback (which used to strip
+// the inbound destructively).
+func (s *ServiceImpl) healTProxyInbound(ctx context.Context) error {
+	cfg, err := s.loadRouterConfig()
+	if err != nil {
+		return err
+	}
+	for _, in := range cfg.Inbounds {
+		if in.Tag == "tproxy-in" {
+			return nil // already present, nothing to do
+		}
+	}
+	cfg.Inbounds = ensureTProxyInbound(cfg.Inbounds)
+	return s.persistConfig(ctx, cfg)
 }
 
 func ensureTProxyInbound(in []Inbound) []Inbound {
@@ -489,6 +517,12 @@ func (s *ServiceImpl) Reconcile(ctx context.Context) error {
 			}
 			s.currentMark = mark
 			s.mu.Unlock()
+		}
+		// Self-heal: a previous Install rollback or upgrade hop may
+		// have left 20-router.json without the tproxy-in inbound. Re-add
+		// it idempotently so sing-box keeps listening on TPROXYPort.
+		if err := s.healTProxyInbound(ctx); err != nil {
+			s.deps.Log.Warn(fmt.Sprintf("router: heal tproxy inbound: %v", err))
 		}
 	}
 	return nil
