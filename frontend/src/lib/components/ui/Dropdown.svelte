@@ -51,12 +51,27 @@
   let triggerEl = $state<HTMLButtonElement | null>(null);
   let panelEl = $state<HTMLDivElement | null>(null);
   let activeIndex = $state(-1);
+  let menuUp = $state(false);
 
   const selectedOption = $derived(options.find((o) => o.value === value));
+
+  const VIEWPORT_PADDING = 8;
+
+  function recomputePlacement() {
+    if (!triggerEl || !panelEl) return;
+    const triggerRect = triggerEl.getBoundingClientRect();
+    const menuHeight = panelEl.getBoundingClientRect().height;
+    const viewportHeight = window.innerHeight;
+    const spaceBelow = viewportHeight - triggerRect.bottom - VIEWPORT_PADDING;
+    const spaceAbove = triggerRect.top - VIEWPORT_PADDING;
+    // Flip up only if there isn't enough room below AND there's more room above.
+    menuUp = menuHeight > spaceBelow && spaceAbove > spaceBelow;
+  }
 
   function openPanel() {
     if (disabled) return;
     open = true;
+    menuUp = false;
     // Focus the currently selected option, or the first enabled one.
     const selectedIdx = options.findIndex((o) => o.value === value);
     activeIndex = selectedIdx >= 0 ? selectedIdx : firstEnabledIndex();
@@ -65,6 +80,7 @@
   function closePanel() {
     open = false;
     activeIndex = -1;
+    menuUp = false;
   }
 
   function toggle() {
@@ -164,6 +180,25 @@
     }
   });
 
+  $effect(() => {
+    if (!open || !panelEl) return;
+    // Initial placement on the next frame so the panel has been laid out.
+    const raf = requestAnimationFrame(recomputePlacement);
+    // Recompute when the menu's own size changes (async content load, group expansion).
+    const ro = new ResizeObserver(() => recomputePlacement());
+    ro.observe(panelEl);
+    // Recompute on viewport changes (scroll inside modal, window resize).
+    const onWindowChange = () => recomputePlacement();
+    window.addEventListener('resize', onWindowChange);
+    window.addEventListener('scroll', onWindowChange, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+      window.removeEventListener('resize', onWindowChange);
+      window.removeEventListener('scroll', onWindowChange, true);
+    };
+  });
+
   onDestroy(() => {
     document.removeEventListener('mousedown', handleClickOutside);
   });
@@ -212,6 +247,7 @@
         id="{fieldId}-listbox"
         role="listbox"
         class="panel"
+        class:menu-up={menuUp}
         tabindex="-1"
         aria-label={label ?? placeholder}
         onkeydown={handlePanelKey}
@@ -380,8 +416,19 @@
     animation: dropdown-enter 120ms ease-out;
   }
 
+  .panel.menu-up {
+    top: auto;
+    bottom: calc(100% + 4px);
+    animation: dropdown-enter-up 120ms ease-out;
+  }
+
   @keyframes dropdown-enter {
     from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes dropdown-enter-up {
+    from { opacity: 0; transform: translateY(4px); }
     to { opacity: 1; transform: translateY(0); }
   }
 
