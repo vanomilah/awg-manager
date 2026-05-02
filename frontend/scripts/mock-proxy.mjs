@@ -14,6 +14,7 @@
 // Default upstream: http://127.0.0.1:8080 (Prism). Listen: 8081.
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 
 const UPSTREAM = process.env.UPSTREAM ?? 'http://127.0.0.1:8080';
 const PORT = Number(process.env.PORT ?? 8081);
@@ -178,6 +179,20 @@ const server = http.createServer((req, res) => {
 				body.data.total = (body.data.total ?? body.data.logs.length);
 			}
 			send(res, status, body);
+		});
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/singbox/connections/clients') {
+		send(res, 200, {
+			success: true,
+			data: {
+				clientsByIP: {
+					'192.168.1.5': 'Anyas-iPhone',
+					'192.168.1.7': 'macbook',
+					'192.168.1.9': 'android-tablet',
+				},
+			},
 		});
 		return;
 	}
@@ -429,4 +444,87 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
 	console.log(`mock-proxy on http://127.0.0.1:${PORT} → ${UPSTREAM} (usageLevel=${usageLevel})`);
+});
+
+function wsAccept(key) {
+	const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+	return crypto.createHash('sha1').update(key + GUID).digest('base64');
+}
+
+function encodeWSFrame(payload) {
+	const data = Buffer.from(payload, 'utf8');
+	const len = data.length;
+	let header;
+	if (len < 126) {
+		header = Buffer.from([0x81, len]);
+	} else if (len < 65536) {
+		header = Buffer.alloc(4);
+		header[0] = 0x81; header[1] = 126;
+		header.writeUInt16BE(len, 2);
+	} else {
+		header = Buffer.alloc(10);
+		header[0] = 0x81; header[1] = 127;
+		header.writeBigUInt64BE(BigInt(len), 2);
+	}
+	return Buffer.concat([header, data]);
+}
+
+function makeMockSnapshot() {
+	const hosts = ['youtube.com', 'discord.com', 'github.com', 'cloudflare.com', 'mozilla.org'];
+	const sources = ['192.168.1.5', '192.168.1.7', '192.168.1.9', '192.168.1.42'];
+	const outbounds = ['vless-1', 'urltest:auto', 'DIRECT'];
+	const rules = ['DOMAIN-SUFFIX', 'RULE-SET', 'GEOIP'];
+	const networks = ['tcp', 'tcp', 'tcp', 'udp'];
+	const conns = Array.from({ length: 6 + Math.floor(Math.random() * 4) }, (_, i) => {
+		const out = outbounds[i % outbounds.length];
+		return {
+			id: `mock-${i}-${Date.now()}`,
+			metadata: {
+				network: networks[i % networks.length],
+				type: 'Tun',
+				sourceIP: sources[i % sources.length],
+				sourcePort: String(50000 + i * 13),
+				destinationIP: `142.250.${i}.${10 + i}`,
+				destinationPort: '443',
+				host: hosts[i % hosts.length],
+			},
+			upload: 1024 * (50 + Math.floor(Math.random() * 5000)),
+			download: 1024 * (200 + Math.floor(Math.random() * 50000)),
+			start: new Date(Date.now() - (60 + i * 30) * 1000).toISOString(),
+			chains: [out],
+			rule: rules[i % rules.length],
+			rulePayload: hosts[i % hosts.length],
+		};
+	});
+	return {
+		downloadTotal: conns.reduce((s, c) => s + c.download, 0),
+		uploadTotal: conns.reduce((s, c) => s + c.upload, 0),
+		connections: conns,
+	};
+}
+
+server.on('upgrade', (req, socket) => {
+	if (req.url !== '/singbox/clash/connections') {
+		socket.destroy();
+		return;
+	}
+	const key = req.headers['sec-websocket-key'];
+	if (!key) { socket.destroy(); return; }
+	socket.write(
+		'HTTP/1.1 101 Switching Protocols\r\n' +
+		'Upgrade: websocket\r\n' +
+		'Connection: Upgrade\r\n' +
+		`Sec-WebSocket-Accept: ${wsAccept(key)}\r\n\r\n`,
+	);
+	const interval = setInterval(() => {
+		try {
+			socket.write(encodeWSFrame(JSON.stringify(makeMockSnapshot())));
+		} catch {
+			clearInterval(interval);
+		}
+	}, 1500);
+	socket.on('close', () => clearInterval(interval));
+	socket.on('error', () => clearInterval(interval));
+	// Initial frame so the UI flips to "Live" immediately.
+	try { socket.write(encodeWSFrame(JSON.stringify(makeMockSnapshot()))); } catch { /* ignore */ }
 });
