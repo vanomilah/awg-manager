@@ -52,15 +52,54 @@ type SystemTunnelInfo struct {
 	Connected     bool
 }
 
+// SingboxTunnelLister enumerates sing-box tunnels (t2sX) so they
+// appear in the matrix alongside AWG/system tunnels. Optional — when
+// nil, sing-box rows are skipped.
+type SingboxTunnelLister interface {
+	List(ctx context.Context) ([]SingboxTunnelInfo, error)
+}
+
+// SingboxTunnelInfo is the minimum subset monitoring needs from a
+// sing-box outbound to render a matrix row.
+type SingboxTunnelInfo struct {
+	Tag           string // sing-box outbound tag, e.g. "veesp"
+	Name          string // human-readable name (often equals Tag)
+	InterfaceName string // kernel iface, e.g. "t2s0"
+}
+
+// CompositeOutboundLister exposes the router's composite outbound
+// list so the scheduler can identify which sing-box tunnels are
+// members of a urltest group (eligible for Clash latency
+// augmentation). Optional — when nil, augmentation is skipped.
+type CompositeOutboundLister interface {
+	List(ctx context.Context) ([]CompositeOutboundInfo, error)
+}
+
+type CompositeOutboundInfo struct {
+	Tag     string   // group tag, e.g. "auto"
+	Type    string   // "selector" | "urltest" | "loadbalance"
+	Members []string // member tags
+}
+
+// ClashStateProvider returns the latest known per-outbound latency.
+// Implementation handles its own caching; scheduler just queries.
+// Optional — when nil, augmentation is skipped.
+type ClashStateProvider interface {
+	LatencyForOutbound(ctx context.Context, tag string) (delayMs int, ok bool)
+}
+
 // SchedulerDeps wires Scheduler against the rest of the system.
 type SchedulerDeps struct {
-	TunnelLister  traffic.TunnelLister
-	TunnelStore   *storage.AWGTunnelStore
-	SystemTunnels SystemTunnelLister // optional — when nil, system tunnels are skipped
-	Prober        Prober             // default prober for all cells
-	ICMPProber    Prober             // optional — used for self-target cells when tunnel.SelfMethod=="ping"
-	Log           logging.AppLogger
-	Bus           *events.Bus // optional — set later via SetEventBus
+	TunnelLister   traffic.TunnelLister
+	TunnelStore    *storage.AWGTunnelStore
+	SystemTunnels  SystemTunnelLister      // optional — when nil, system tunnels are skipped
+	SingboxTunnels SingboxTunnelLister     // optional — when nil, sing-box tunnels are skipped
+	Composites     CompositeOutboundLister // optional — when nil, urltest membership is skipped
+	ClashState     ClashStateProvider      // optional — when nil, ClashDelay/UrltestGroup are not populated
+	Prober         Prober                  // default prober for all cells
+	ICMPProber     Prober                  // optional — used for self-target cells when tunnel.SelfMethod=="ping"
+	Log            logging.AppLogger
+	Bus            *events.Bus // optional — set later via SetEventBus
 }
 
 // Scheduler runs ICMP probes through running tunnels on a fixed interval.
@@ -320,6 +359,38 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 					Name:            name,
 					IfaceName:       st.InterfaceName,
 					PingcheckTarget: "",
+				})
+			}
+		}
+	}
+
+	// Sing-box (t2sX) tunnels. Skipped when the lister is unconfigured
+	// (legacy installs that don't run sing-box).
+	if s.deps.SingboxTunnels != nil {
+		sb, err := s.deps.SingboxTunnels.List(ctx)
+		if err == nil {
+			// Dedupe by interface against rows already collected (AWG/system).
+			// In practice no overlap is possible, but the contract is defensive.
+			seenIface := make(map[string]bool, len(out))
+			for _, t := range out {
+				if t.IfaceName != "" {
+					seenIface[t.IfaceName] = true
+				}
+			}
+			for _, sbt := range sb {
+				if sbt.InterfaceName == "" || seenIface[sbt.InterfaceName] {
+					continue
+				}
+				out = append(out, Tunnel{
+					ID:        sbt.Tag, // tag is unique per outbound; safe as ID
+					Name:      sbt.Name,
+					IfaceName: sbt.InterfaceName,
+					// PingcheckTarget / SelfTarget left empty — sing-box
+					// tunnels don't have a per-tunnel restart pingcheck;
+					// matrix row uses BaseTargets only, augmented later
+					// with Clash data.
+					Source:     "singbox",
+					SingboxTag: sbt.Tag,
 				})
 			}
 		}

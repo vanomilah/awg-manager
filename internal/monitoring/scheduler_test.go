@@ -140,3 +140,35 @@ func TestScheduler_RunOnce_FailedProberMarksCellNotOK(t *testing.T) {
 		}
 	}
 }
+
+type fakeSingboxTunnels struct {
+	items []SingboxTunnelInfo
+	err   error
+}
+
+func (f *fakeSingboxTunnels) List(_ context.Context) ([]SingboxTunnelInfo, error) {
+	return f.items, f.err
+}
+
+func TestScheduler_SingboxTunnels_AppearInSnapshot(t *testing.T) {
+	hist := NewHistory()
+	sched := NewScheduler(SchedulerDeps{
+		TunnelLister: &fakeLister{},
+		SingboxTunnels: &fakeSingboxTunnels{items: []SingboxTunnelInfo{
+			{Tag: "veesp", Name: "veesp", InterfaceName: "t2s0"},
+			{Tag: "prague", Name: "prague", InterfaceName: "t2s1"},
+		}},
+	}, hist)
+
+	tunnels := sched.collectTunnels(context.Background())
+
+	got := map[string]string{}
+	for _, tn := range tunnels {
+		if tn.Source == "singbox" {
+			got[tn.IfaceName] = tn.SingboxTag
+		}
+	}
+	if got["t2s0"] != "veesp" || got["t2s1"] != "prague" {
+		t.Errorf("expected t2s0->veesp, t2s1->prague, got %+v", got)
+	}
+}
