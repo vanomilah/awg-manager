@@ -6,6 +6,9 @@
 // - Streams /events normally (Prism handles SSE shape).
 // - Injects 8 fake singbox log entries into GET /logs (covers all 6 subgroups
 //   and 4 levels). Honors group/subgroup/level filter query params.
+// - Sing-box composite proxies (Feature 1): stateful stubs for
+//   /singbox/router/proxies/{list,select,test} so the redesigned routing UI
+//   can be smoke-tested without a real router. Selections persist in-memory.
 // Default upstream: http://127.0.0.1:8080 (Prism). Listen: 8081.
 
 import http from 'node:http';
@@ -14,9 +17,10 @@ const UPSTREAM = process.env.UPSTREAM ?? 'http://127.0.0.1:8080';
 const PORT = Number(process.env.PORT ?? 8081);
 const VALID = new Set(['basic', 'advanced', 'expert']);
 
-// In-memory state. Default 'basic' so the welcome banner + minimal nav
-// are visible on first load (the more interesting case to inspect).
-let usageLevel = 'basic';
+// In-memory state. Default 'expert' so all advanced surfaces (singbox
+// router, rule sets, device proxy, etc.) are visible by default — the
+// realistic case for development against the redesigned routing page.
+let usageLevel = 'expert';
 let singboxInstallShouldFail = process.env.MOCK_SINGBOX_INSTALL_FAIL === '1';
 const FAKE_INSTALL_STDERR = `Collected errors:
  * verify_pkg_installable: Only have 12 KB available on filesystem /opt, pkg sing-box needs 18432
@@ -77,6 +81,38 @@ function applyFilters(entries, qs) {
 		}
 	}
 	return out;
+}
+
+// ── Sing-box composite proxies (Feature 1) ─────────────────────
+// Stateful across calls: selecting a member persists in this map
+// so the UI's optimistic update is reflected on the next /list poll.
+const mockProxies = {
+	'veesp-fast': {
+		type: 'selector',
+		now: 'vless-1',
+		all: ['vless-1', 'vless-2', 'vless-3'],
+	},
+	'auto': {
+		type: 'urltest',
+		now: 'vless-2',
+		all: ['vless-1', 'vless-2', 'vless-3', 'vless-4'],
+	},
+};
+const mockProxyDelays = {
+	'vless-1': 45,
+	'vless-2': 78,
+	'vless-3': 180,
+	'vless-4': 320,
+};
+function randomizeDelays() {
+	for (const k of Object.keys(mockProxyDelays)) {
+		const base = mockProxyDelays[k];
+		if (Math.random() < 0.05) {
+			mockProxyDelays[k] = 0; // 5% timeout
+		} else {
+			mockProxyDelays[k] = Math.max(10, base + Math.round((Math.random() - 0.5) * 40));
+		}
+	}
 }
 
 const server = http.createServer((req, res) => {
@@ -140,6 +176,97 @@ const server = http.createServer((req, res) => {
 				body.data.total = (body.data.total ?? body.data.logs.length);
 			}
 			send(res, status, body);
+		});
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/singbox/router/proxies/list') {
+		randomizeDelays();
+		const groups = Object.entries(mockProxies).map(([tag, g]) => ({
+			tag,
+			type: g.type,
+			now: g.now,
+			all: g.all.map((memberTag) => ({
+				tag: memberTag,
+				type: 'vless',
+				lastDelay: mockProxyDelays[memberTag] ?? 0,
+			})),
+		}));
+		send(res, 200, { success: true, data: { groups } });
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/router/proxies/select') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const payload = JSON.parse(raw || '{}');
+				const group = typeof payload.group === 'string' ? payload.group : '';
+				const member = typeof payload.member === 'string' ? payload.member : '';
+				const g = mockProxies[group];
+				if (!g) {
+					send(res, 404, {
+						success: false,
+						error: { code: 'PROXY_GROUP_NOT_FOUND', message: `group ${group} not found` },
+					});
+					return;
+				}
+				if (g.type !== 'selector') {
+					send(res, 400, {
+						success: false,
+						error: { code: 'PROXY_GROUP_NOT_SELECTABLE', message: `group ${group} is ${g.type}, not selector` },
+					});
+					return;
+				}
+				if (!g.all.includes(member)) {
+					send(res, 400, {
+						success: false,
+						error: { code: 'PROXY_MEMBER_NOT_FOUND', message: `member ${member} not in group ${group}` },
+					});
+					return;
+				}
+				g.now = member;
+				send(res, 200, { success: true, data: {} });
+				console.log(`[mock-proxy] proxies.select ${group} → ${member}`);
+			} catch (e) {
+				send(res, 400, {
+					success: false,
+					error: { code: 'INVALID_REQUEST', message: String(e) },
+				});
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/router/proxies/test') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const payload = JSON.parse(raw || '{}');
+				const group = typeof payload.group === 'string' ? payload.group : '';
+				const g = mockProxies[group];
+				if (!g) {
+					send(res, 404, {
+						success: false,
+						error: { code: 'PROXY_GROUP_NOT_FOUND', message: `group ${group} not found` },
+					});
+					return;
+				}
+				randomizeDelays();
+				const delays = {};
+				for (const memberTag of g.all) {
+					delays[memberTag] = mockProxyDelays[memberTag] ?? 0;
+				}
+				send(res, 200, { success: true, data: { delays } });
+				console.log(`[mock-proxy] proxies.test ${group} → ${JSON.stringify(delays)}`);
+			} catch (e) {
+				send(res, 400, {
+					success: false,
+					error: { code: 'INVALID_REQUEST', message: String(e) },
+				});
+			}
 		});
 		return;
 	}
