@@ -83,14 +83,16 @@ func TestUpdateUsageLevelInvalidRejected(t *testing.T) {
 	}
 }
 
-// TestUpdateUsageLevelEmptyPreserves verifies that a payload with an
-// empty usageLevel preserves the previously stored value (defense for
-// partial updates that omit the field).
+// TestUpdateUsageLevelEmptyPreserves verifies that a payload that
+// OMITS usageLevel preserves the previously stored value. This is
+// the partial-update defense after the SettingsPatch refactor:
+// nil pointer in the patch DTO means "field absent in payload, keep
+// existing value." An EXPLICIT empty string is now correctly rejected
+// as INVALID_USAGE_LEVEL (separate test).
 func TestUpdateUsageLevelEmptyPreserves(t *testing.T) {
 	h, store := newSettingsHandlerForTest(t)
 
-	// Pre-seed with expert. Copy by value before mutating + saving so we
-	// own a stable snapshot independent of the cache pointer aliasing.
+	// Pre-seed with expert.
 	current, _ := store.Get()
 	seed := *current
 	seed.UsageLevel = storage.UsageLevelExpert
@@ -98,11 +100,20 @@ func TestUpdateUsageLevelEmptyPreserves(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	// Build a payload that omits usageLevel (empty string) — defense
-	// logic should restore it from the saved value.
-	payload := seed
-	payload.UsageLevel = ""
-	body, _ := json.Marshal(payload)
+	// Build a payload that OMITS usageLevel entirely. Marshalling the
+	// struct with UsageLevel="" would still serialize the field (no
+	// omitempty), so we hand-craft the raw JSON instead.
+	body := []byte(`{
+		"schemaVersion": 16,
+		"authEnabled": false,
+		"server": {"port": 2222, "interface": "br0"},
+		"pingCheck": {"enabled": false, "defaults": {"method":"http","target":"8.8.8.8","interval":45,"deadInterval":120,"failThreshold":3}},
+		"logging": {"enabled": true, "maxAge": 2},
+		"disableMemorySaving": false,
+		"updates": {"checkEnabled": true},
+		"dnsRoute": {"autoRefreshEnabled": false},
+		"singboxRouter": {"enabled": false, "policyName": "", "refreshMode": "interval", "refreshIntervalHours": 24}
+	}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/settings/update", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -113,6 +124,6 @@ func TestUpdateUsageLevelEmptyPreserves(t *testing.T) {
 	}
 	got, _ := store.Get()
 	if got.UsageLevel != storage.UsageLevelExpert {
-		t.Errorf("UsageLevel = %q after empty update, want expert (preserved)", got.UsageLevel)
+		t.Errorf("UsageLevel = %q after omitted update, want expert (preserved)", got.UsageLevel)
 	}
 }
