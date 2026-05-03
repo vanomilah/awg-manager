@@ -96,14 +96,10 @@
 	async function killOne(id: string): Promise<void> {
 		const removed = snapshot.connections.find((c) => c.id === id);
 		snapshot = { ...snapshot, connections: snapshot.connections.filter((c) => c.id !== id) };
-		try {
-			const r = await fetch(`/api/singbox/clash/connections/${encodeURIComponent(id)}`, {
-				method: 'DELETE',
-				credentials: 'same-origin',
-			});
-			if (!r.ok) throw new Error(String(r.status));
+		const ok = await api.singboxKillConnection(id);
+		if (ok) {
 			notifications.success('Соединение закрыто');
-		} catch {
+		} else {
 			if (removed) {
 				snapshot = { ...snapshot, connections: [...snapshot.connections, removed] };
 			}
@@ -118,16 +114,11 @@
 			...snapshot,
 			connections: snapshot.connections.filter((c) => !removedSet.has(c.id)),
 		};
-		const results = await Promise.allSettled(
-			ids.map((id) =>
-				fetch(`/api/singbox/clash/connections/${encodeURIComponent(id)}`, {
-					method: 'DELETE',
-					credentials: 'same-origin',
-				}),
-			),
-		);
-		const ok = results.filter((r) => r.status === 'fulfilled' && (r.value as Response).ok).length;
-		notifications.success(`Закрыто ${ok} из ${ids.length}`);
+		const { ok, total } = await api.singboxKillConnections(ids);
+		const msg = `Закрыто ${ok} из ${total}`;
+		if (ok === total) notifications.success(msg);
+		else if (ok === 0) notifications.error(msg);
+		else notifications.warning(msg);
 	}
 
 	onMount(() => {

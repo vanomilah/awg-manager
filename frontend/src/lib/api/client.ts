@@ -1192,6 +1192,30 @@ class ApiClient {
 		return this.request('/singbox/connections/clients');
 	}
 
+	// Kill a single sing-box connection by Clash UUID. Bypasses request()
+	// because ClashProxy returns 204 with no JSON envelope. Returns true on
+	// success so callers can decide whether to roll back optimistic UI.
+	async singboxKillConnection(id: string): Promise<boolean> {
+		const url = `${this.baseUrl}/singbox/clash/connections/${encodeURIComponent(id)}`;
+		try {
+			const r = await fetch(url, {
+				method: 'DELETE',
+				credentials: 'same-origin',
+				signal: this.abortController.signal,
+			});
+			return r.ok;
+		} catch {
+			return false;
+		}
+	}
+
+	// Bulk-kill: returns counts so the caller can surface partial failure.
+	async singboxKillConnections(ids: string[]): Promise<{ ok: number; total: number }> {
+		const results = await Promise.all(ids.map((id) => this.singboxKillConnection(id)));
+		const ok = results.filter(Boolean).length;
+		return { ok, total: ids.length };
+	}
+
 	async singboxInstall(): Promise<SingboxStatus> {
 		return this.request('/singbox/install', { method: 'POST' });
 	}
