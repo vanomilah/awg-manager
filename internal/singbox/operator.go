@@ -16,6 +16,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/ndms/command"
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
+	"github.com/hoaxisr/awg-manager/internal/singbox/installer"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/sys/ndmsinfo"
 )
@@ -34,8 +35,10 @@ const (
 )
 
 const (
-	defaultBinary = "sing-box"
-	defaultDir    = "/opt/etc/awg-manager/singbox"
+	// defaultBinary is the absolute path used when no explicit binary is
+	// configured. Matches installer.DefaultBinaryPath so our managed binary
+	// is always used instead of a user-installed sing-box on PATH.
+	defaultBinary = installer.DefaultBinaryPath
 
 	// clashAPIAddr is the Clash API endpoint baked into our generated
 	// config.json. Port 9099 is chosen to not collide with a user-managed
@@ -44,6 +47,10 @@ const (
 	// their process and stream their tunnels into our UI.
 	clashAPIAddr = "127.0.0.1:9099"
 )
+
+// defaultDir is the directory of the managed binary. var (not const) so
+// it stays in lockstep with installer.DefaultBinaryPath if that ever moves.
+var defaultDir = filepath.Dir(installer.DefaultBinaryPath)
 
 // Operator is the high-level facade for sing-box integration.
 type Operator struct {
@@ -78,6 +85,11 @@ type Operator struct {
 	// via SetOrch — orchestrator construction needs Operator.Process()
 	// so we can't pass it through OperatorDeps without a cycle.
 	orch *orchestrator.Orchestrator
+
+	// inst is the managed-binary installer. Wired post-construction via
+	// SetInstaller so existing tests that build an Operator without an
+	// installer still work for non-install-related code paths.
+	inst *installer.Installer
 }
 
 // OperatorDeps are external dependencies for DI.
@@ -89,8 +101,10 @@ type OperatorDeps struct {
 	// log buffer (visible at /diagnostics?tab=logs). Optional — when
 	// nil, process output is only mirrored to slog.
 	AppLogger logging.AppLogger
-	Dir       string // optional; defaults to /opt/etc/awg-manager/singbox
-	Binary    string // optional; defaults to "sing-box"
+	Dir    string // optional; defaults to /opt/etc/awg-manager/singbox
+	// Binary is the absolute path to the sing-box binary. Defaults to
+	// installer.DefaultBinaryPath when empty.
+	Binary string
 }
 
 func NewOperator(d OperatorDeps) *Operator {
@@ -240,6 +254,11 @@ func (o *Operator) Process() *Process { return o.proc }
 // uses it (when non-nil) to write 10-tunnels.json through the slot
 // writer instead of the legacy direct-write path.
 func (o *Operator) SetOrch(orch *orchestrator.Orchestrator) { o.orch = orch }
+
+// SetInstaller wires the managed-binary installer. Optional — Operator
+// works without it for read-only paths; install/update/cleanup of the
+// managed binary requires it.
+func (o *Operator) SetInstaller(inst *installer.Installer) { o.inst = inst }
 
 // tunnelsFile is the canonical path for the tunnels.json fragment
 // (config.d/10-tunnels.json). Used by applyConfig + RemoveTunnel.
@@ -394,23 +413,52 @@ func (o *Operator) Start() error {
 	return o.proc.Start()
 }
 
-// IsInstalled reports whether the sing-box binary is on PATH.
-// Cheap — just an exec.LookPath probe (does not read config or check process).
+// isExecutable returns true when path exists, is a regular file, and
+// has at least one executable bit set. Shared by IsInstalled / GetStatus
+// to keep their guards identical.
+func isExecutable(path string) bool {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return false
+	}
+	return st.Mode().Perm()&0111 != 0
+}
+
+// IsInstalled reports whether the sing-box binary exists at the absolute
+// path and is executable. Uses os.Stat instead of exec.LookPath so it
+// checks our managed path only — not an unrelated user-installed sing-box
+// somewhere on PATH.
 func (o *Operator) IsInstalled() (bool, string) {
-	path, err := exec.LookPath(o.binary)
-	if err != nil || path == "" {
+	if !isExecutable(o.binary) {
 		return false, ""
 	}
-	version, _ := detectVersionAndFeatures(o.binary)
-	return true, version
+	if o.inst != nil {
+		return true, o.inst.CurrentVersion(context.Background())
+	}
+	v, _ := detectVersionAndFeatures(o.binary)
+	return true, v
+}
+
+// RequiredVersion is the version this awg-manager build is pinned to.
+// Returns empty when the installer is not wired (legacy paths or tests).
+func (o *Operator) RequiredVersion() string {
+	if o.inst == nil {
+		return ""
+	}
+	return o.inst.RequiredVersion()
 }
 
 // GetStatus returns install + run status.
 func (o *Operator) GetStatus(ctx context.Context) Status {
 	s := Status{}
-	if path, err := exec.LookPath(o.binary); err == nil && path != "" {
+	if isExecutable(o.binary) {
 		s.Installed = true
-		s.Version, s.Features = detectVersionAndFeatures(o.binary)
+		if o.inst != nil {
+			s.Version = o.inst.CurrentVersion(ctx)
+			_, s.Features = detectVersionAndFeatures(o.binary)
+		} else {
+			s.Version, s.Features = detectVersionAndFeatures(o.binary)
+		}
 	}
 	if running, pid := o.proc.IsRunning(); running {
 		s.Running = true
@@ -423,6 +471,9 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 	if !s.Running {
 		s.LastError = o.LastError()
 	}
+	s.CurrentVersion = s.Version
+	s.RequiredVersion = o.RequiredVersion()
+	s.UpdateAvailable = s.CurrentVersion != "" && s.CurrentVersion != s.RequiredVersion
 	return s
 }
 
@@ -748,23 +799,60 @@ func (o *Operator) waitClashReady(ctx context.Context, timeout time.Duration) er
 	}
 }
 
-// Install installs sing-box-naive from the awg-manager repo (Entware
-// repo list). Entware's stock `sing-box` package is built without
-// `-tags with_naive_outbound`, so importing naive+https:// links fails
-// with "naive outbound is not included in this build". Our repacked
-// package `sing-box-naive` carries the vendor-default DEFAULT_BUILD_TAGS
-// (naive + quic + wireguard + utls + clash_api + tailscale + dhcp +
-// gvisor + acme), statically linked, installed to /opt/bin/sing-box.
-//
-// opkg update runs first so a router that was provisioned before we
-// started publishing this package still sees it.
+// Install downloads the managed sing-box binary, verifies SHA256, and
+// places it at /opt/etc/awg-manager/singbox/sing-box. Used by the UI
+// "Install" action when sing-box is not yet present.
 func (o *Operator) Install(ctx context.Context) error {
-	if out, err := exec.CommandContext(ctx, "opkg", "update").CombinedOutput(); err != nil {
-		return fmt.Errorf("opkg update: %s: %w", string(out), err)
+	if o.inst == nil {
+		return fmt.Errorf("installer not wired")
 	}
-	out, err := exec.CommandContext(ctx, "opkg", "install", "sing-box-naive").CombinedOutput()
+	tmp, err := o.inst.Download(ctx)
 	if err != nil {
-		return fmt.Errorf("opkg install sing-box-naive: %s: %w", string(out), err)
+		return fmt.Errorf("download sing-box: %w", err)
+	}
+	if err := o.inst.Activate(tmp); err != nil {
+		return fmt.Errorf("activate sing-box: %w", err)
+	}
+	return nil
+}
+
+// Update replaces an installed managed binary with the version this
+// awg-manager build is pinned to. Stops sing-box, swaps the binary, restarts.
+// No-op when current and required versions match.
+func (o *Operator) Update(ctx context.Context) error {
+	if o.inst == nil {
+		return fmt.Errorf("installer not wired")
+	}
+	if o.inst.CurrentVersion(ctx) == o.inst.RequiredVersion() {
+		return nil
+	}
+	tmp, err := o.inst.Download(ctx)
+	if err != nil {
+		return fmt.Errorf("download sing-box: %w", err)
+	}
+	wasRunning, _ := o.proc.IsRunning()
+	if wasRunning {
+		if err := o.proc.Stop(); err != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("stop: %w", err)
+		}
+	}
+	if err := o.inst.Activate(tmp); err != nil {
+		// Activate already removed the tmp on failure; we now have an
+		// awkward state — daemon stopped, old binary still in place,
+		// no swap. Best-effort restore of the prior state so the user
+		// still has a working sing-box.
+		if wasRunning {
+			if startErr := o.startAndWait(ctx); startErr != nil {
+				o.log.Warn("update: failed to restart after Activate error", "err", startErr)
+			}
+		}
+		return fmt.Errorf("activate: %w", err)
+	}
+	if wasRunning {
+		if err := o.startAndWait(ctx); err != nil {
+			return fmt.Errorf("start: %w", err)
+		}
 	}
 	return nil
 }
@@ -817,6 +905,14 @@ func (o *Operator) Cleanup(ctx context.Context) error {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			o.log.Warn("cleanup: remove file failed", "path", path, "err", err)
 		}
+	}
+
+	// Remove our managed binary directory entirely — the user explicitly
+	// asked for cleanup, and our singbox subtree carries the binary, pid,
+	// and any UPX-cached state. /opt/etc/awg-manager/singbox/...
+	binDir := filepath.Dir(o.binary)
+	if err := os.RemoveAll(binDir); err != nil {
+		o.log.Warn("cleanup: remove managed binary dir", "path", binDir, "err", err)
 	}
 	return nil
 }

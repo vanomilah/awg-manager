@@ -2591,6 +2591,9 @@ definitions:
     type: object
   api.SingboxStatusData:
     properties:
+      currentVersion:
+        example: 1.13.11
+        type: string
       features:
         example:
         - with_quic
@@ -2606,12 +2609,18 @@ definitions:
       proxyComponent:
         example: true
         type: boolean
+      requiredVersion:
+        example: 1.13.11
+        type: string
       running:
         example: true
         type: boolean
       tunnelCount:
         example: 2
         type: integer
+      updateAvailable:
+        example: false
+        type: boolean
       version:
         example: 1.9.3
         type: string
@@ -8176,6 +8185,30 @@ paths:
       security:
       - CookieAuth: []
       summary: Sing-box tunnel speed test stream
+      tags:
+      - singbox
+  /singbox/update:
+    post:
+      description: Replaces the currently-installed managed sing-box with the version
+        this awg-manager build is pinned to. No-op when versions match.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.OkResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Update managed sing-box binary
       tags:
       - singbox
   /static-routes/create:

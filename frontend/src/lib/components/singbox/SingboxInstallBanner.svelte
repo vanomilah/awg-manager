@@ -4,6 +4,7 @@
 	import { Button, IconButton } from '$lib/components/ui';
 
 	let installing = $state(false);
+	let updating = $state(false);
 	let error = $state<string | null>(null);
 	let dismissedKey = $state<string>('');
 
@@ -23,6 +24,7 @@
 		if (s.features && s.features.length > 0 && !s.features.includes('with_naive_outbound')) {
 			return 'no-naive';
 		}
+		if (s.updateAvailable) return 'update-available';
 		return '';
 	});
 
@@ -49,6 +51,19 @@
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
 			installing = false;
+		}
+	}
+
+	async function update(): Promise<void> {
+		updating = true;
+		error = null;
+		try {
+			const fresh = await api.singboxUpdate();
+			singboxStatus.applyMutationResponse(fresh);
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			updating = false;
 		}
 	}
 </script>
@@ -92,6 +107,23 @@
 			</span>
 		</div>
 		<IconButton ariaLabel="Скрыть" onclick={dismiss}>&times;</IconButton>
+	</div>
+{:else if visible && signature === 'update-available'}
+	<div class="banner">
+		<div class="text">
+			<strong>Доступна новая версия sing-box</strong>
+			<span>
+				Текущая <code>{$singboxStatus.data?.currentVersion ?? '—'}</code> →
+				<code>{$singboxStatus.data?.requiredVersion}</code>
+			</span>
+		</div>
+		<Button variant="primary" size="sm" onclick={update} loading={updating} disabled={updating}>
+			{updating ? 'Обновление...' : 'Обновить sing-box'}
+		</Button>
+		<IconButton ariaLabel="Скрыть" onclick={dismiss}>&times;</IconButton>
+		{#if error}
+			<div class="error">{error}</div>
+		{/if}
 	</div>
 {/if}
 

@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/hoaxisr/awg-manager/internal/singbox/installer"
 )
 
 // StatusPublisher is the minimal SSE surface the watchdog needs. Satisfied
@@ -34,6 +36,10 @@ type Watchdog struct {
 	// lastRunning holds the previous tick's state: 1 running, 0 stopped,
 	// -1 uninitialised. atomic so Run and future inspectors don't race.
 	lastRunning atomic.Int32
+
+	// swept is flipped true after the first-tick orphan sweep so it runs
+	// exactly once per awg-manager process lifetime.
+	swept atomic.Bool
 }
 
 // NewWatchdog constructs a watchdog with the default 30s interval. pub may
@@ -73,6 +79,11 @@ func (w *Watchdog) Run(ctx context.Context) {
 // to avoid hammering NDMS with proxy-sync queries every 30s — startup
 // Reconcile already handled the initial sync.
 func (w *Watchdog) tick(ctx context.Context) {
+	if !w.swept.Load() {
+		w.runOrphanSweep()
+		w.swept.Store(true)
+	}
+
 	running, _ := w.op.proc.IsRunning()
 	if !running {
 		w.log.Info("watchdog: sing-box not running, reconciling")
@@ -82,6 +93,35 @@ func (w *Watchdog) tick(ctx context.Context) {
 		running, _ = w.op.proc.IsRunning()
 	}
 	w.publishIfFlipped(running)
+}
+
+// runOrphanSweep argv-strict kills sing-box processes that match our
+// managed [binary, run, -C, configPath] argv but are not the tracked
+// pid. Closes the lingering #40 race where a previous awg-manager
+// session crashed mid-flight leaving sing-box still alive.
+//
+// Strict argv equality means a user-launched sing-box on /opt/bin/ with
+// a different config path is invisible — guaranteed by the absolute
+// binary path established by the managed-binary architecture.
+func (w *Watchdog) runOrphanSweep() {
+	if w.op == nil {
+		return
+	}
+	binary := w.op.binary
+	configPath := w.op.configPath
+	if binary == "" || configPath == "" {
+		return
+	}
+	expectArgv := []string{binary, "run", "-C", configPath}
+
+	trackedPid := 0
+	if running, pid := w.op.proc.IsRunning(); running {
+		trackedPid = pid
+	}
+
+	if err := installer.SweepOrphans(expectArgv, trackedPid); err != nil {
+		w.log.Warn("orphan sweep failed", "err", err)
+	}
 }
 
 // publishIfFlipped emits a resource-invalidation hint only when the running

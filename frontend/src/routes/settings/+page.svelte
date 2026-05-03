@@ -403,7 +403,17 @@
 					</div>
 					<div class="action-buttons">
 						{#if singboxRunning}
-							<Button variant="ghost" size="sm" onclick={() => controlSingbox('restart')} loading={singboxBusy}>Перезапустить</Button>
+							<span title={singboxStatusValue?.updateAvailable ? `Сначала обновите sing-box до ${singboxStatusValue.requiredVersion}` : ''}>
+								<Button
+									variant="ghost"
+									size="sm"
+									onclick={() => controlSingbox('restart')}
+									loading={singboxBusy}
+									disabled={singboxStatusValue?.updateAvailable ?? false}
+								>
+									Перезапустить
+								</Button>
+							</span>
 							<Button variant="ghost" size="sm" onclick={() => controlSingbox('stop')} loading={singboxBusy}>Остановить</Button>
 						{:else}
 							<Button variant="ghost" size="sm" onclick={() => controlSingbox('start')} loading={singboxBusy}>Запустить</Button>

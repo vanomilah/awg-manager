@@ -1226,6 +1226,10 @@ class ApiClient {
 		return this.request('/singbox/install', { method: 'POST' });
 	}
 
+	async singboxUpdate(): Promise<SingboxStatus> {
+		return this.request('/singbox/update', { method: 'POST' });
+	}
+
 	async singboxControl(action: 'start' | 'stop' | 'restart'): Promise<SingboxStatus> {
 		return this.request('/singbox/control', {
 			method: 'POST',

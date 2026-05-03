@@ -60,6 +60,12 @@ type Status struct {
 	// Process.OnExit. Cleared on successful start. UI surfaces this when
 	// Running=false to explain why sing-box is down.
 	LastError string `json:"lastError,omitempty"`
+	// CurrentVersion is the version of the binary on disk ("" when not installed).
+	CurrentVersion string `json:"currentVersion,omitempty"`
+	// RequiredVersion is the version this awg-manager build is pinned to.
+	RequiredVersion string `json:"requiredVersion"`
+	// UpdateAvailable is true when CurrentVersion != "" and differs from RequiredVersion.
+	UpdateAvailable bool `json:"updateAvailable"`
 }
 
 // ProcessState is the internal lifecycle state.

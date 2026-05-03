@@ -7,6 +7,10 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # Use VERSION env if set, otherwise read from VERSION file
 VERSION="${VERSION:-$(cat "$PROJECT_ROOT/VERSION" 2>/dev/null || echo "dev")}"
 
+# ENTWARE_ARCH carries the awg-manager arch key (e.g. "mipsel-3.4").
+# Set by build-ipk.sh; defaults to empty for direct invocations.
+ENTWARE_ARCH="${ENTWARE_ARCH:-}"
+
 # Architecture (default: mipsle for MT7621)
 ARCH="${1:-mipsle}"
 
@@ -41,17 +45,17 @@ echo "Building awg-manager $VERSION for $ARCH ($($GO_CMD version))..."
 case "$ARCH" in
     mipsle|mipsel)
         GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 \
-            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION}" \
+            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
             -o build/bin/awg-manager ./cmd/awg-manager
         ;;
     mips)
         GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 \
-            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION}" \
+            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
             -o build/bin/awg-manager ./cmd/awg-manager
         ;;
     arm64|aarch64)
         GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION}" \
+            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
             -o build/bin/awg-manager ./cmd/awg-manager
         ;;
     *)

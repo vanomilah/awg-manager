@@ -66,7 +66,7 @@ mkdir -p build/ipk build/www build/bin dist
 # Build backend (export VERSION so build-backend.sh uses it)
 echo ""
 echo "Building backend..."
-VERSION="$VERSION" "$SCRIPT_DIR/build-backend.sh" "$GO_ARCH"
+VERSION="$VERSION" ENTWARE_ARCH="$ENTWARE_ARCH" "$SCRIPT_DIR/build-backend.sh" "$GO_ARCH"
 
 # Build frontend
 echo "Building frontend..."

@@ -896,6 +896,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	if s.singboxHandler != nil {
 		mux.HandleFunc("/api/singbox/status", guarded(s.singboxHandler.Status))
 		mux.HandleFunc("/api/singbox/install", guarded(s.singboxHandler.Install))
+		mux.HandleFunc("/api/singbox/update", guarded(s.singboxHandler.Update))
 		mux.HandleFunc("/api/singbox/control", guarded(s.singboxHandler.Control))
 		mux.HandleFunc("/api/singbox/tunnels/delay-check", guarded(s.singboxHandler.DelayCheck))
 		mux.HandleFunc("/api/singbox/tunnels/test/speed/stream", guarded(s.singboxHandler.SpeedTestStream))

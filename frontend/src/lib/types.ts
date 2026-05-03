@@ -1064,6 +1064,12 @@ export interface SingboxStatus {
 	 * download failed.
 	 */
 	lastError?: string;
+	/** Version of the currently installed sing-box binary. Missing when not installed. */
+	currentVersion?: string;
+	/** Minimum required sing-box version for full functionality. */
+	requiredVersion: string;
+	/** True when installedVersion is below requiredVersion. */
+	updateAvailable: boolean;
 }
 
 export interface SingboxImportResponse {

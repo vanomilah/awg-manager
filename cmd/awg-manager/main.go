@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"log/slog"
+	"runtime"
 
 	"github.com/hoaxisr/awg-manager/internal/accesspolicy"
 	"github.com/hoaxisr/awg-manager/internal/api"
@@ -46,6 +47,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/server"
 	"github.com/hoaxisr/awg-manager/internal/singbox"
 	"github.com/hoaxisr/awg-manager/internal/singbox/awgoutbounds"
+	"github.com/hoaxisr/awg-manager/internal/singbox/installer"
 	singboxorch "github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router"
 	"github.com/hoaxisr/awg-manager/internal/staticroute"
@@ -78,6 +80,30 @@ const (
 
 // version is set via ldflags at build time
 var version = "dev"
+
+// buildArch is set via ldflags at build time to one of the awg-manager
+// architecture keys: "mipsel-3.4" | "mips-3.4" | "aarch64-3.10".
+// Empty when running `go run` / `go build ./cmd/awg-manager` directly —
+// detectArch() falls back to runtime.GOARCH-based mapping.
+var buildArch string
+
+// detectArch returns the awg-manager arch key for installer.EmbeddedBinaries.
+// Prefers the build-time -X main.buildArch override; falls back to
+// runtime.GOARCH for dev builds.
+func detectArch() string {
+	if buildArch != "" {
+		return buildArch
+	}
+	switch runtime.GOARCH {
+	case "mipsle":
+		return "mipsel-3.4"
+	case "mips":
+		return "mips-3.4"
+	case "arm64":
+		return "aarch64-3.10"
+	}
+	return ""
+}
 
 func main() {
 	dataDir := flag.String("data-dir", defaultDataDir, "Data directory path")
@@ -621,6 +647,40 @@ func main() {
 	// through SlotTunnels rather than an in-place write that bypasses
 	// the orchestrator's validate / debounced reload.
 	singboxOp.SetOrch(sbOrch)
+
+	// Wire managed-binary installer into Operator. The installer is keyed
+	// by the build-time arch string (e.g. "mipsel-3.4") so it can resolve
+	// the correct download URL and SHA256 from EmbeddedBinaries.
+	arch := detectArch()
+	if arch == "" {
+		log.Warnf("could not derive arch (runtime.GOARCH=%s) — managed sing-box install/update disabled", runtime.GOARCH)
+	} else {
+		spec, ok := installer.EmbeddedBinaries[arch]
+		if !ok {
+			log.Warnf("no embedded sing-box BinarySpec for arch %q — managed sing-box install/update disabled", arch)
+		} else {
+			singboxInstaller := installer.New(installer.DefaultBinaryPath, arch, spec, loggingService)
+			singboxOp.SetInstaller(singboxInstaller)
+
+			// Auto-migration goroutine: when legacy sing-box-naive opkg
+			// package is present but managed binary is missing, run the
+			// jump from opkg → managed in the background. Failures keep
+			// awg-manager on the legacy install — retry happens on next boot.
+			go func() {
+				ctx := context.Background()
+				if singboxInstaller.CurrentVersion(ctx) != "" {
+					return // managed binary already in place
+				}
+				if !singboxInstaller.IsLegacyOpkgInstalled(ctx) {
+					return // nothing to migrate
+				}
+				lc := &operatorLifecycle{op: singboxOp}
+				if err := singboxInstaller.Migrate(ctx, lc); err != nil {
+					log.Warnf("singbox auto-migration deferred: %v", err)
+				}
+			}()
+		}
+	}
 
 	delayChecker := singbox.NewDelayChecker(singboxOp.Clash(), singboxOp, eventBus)
 	singboxHandler := api.NewSingboxHandler(singboxOp, eventBus, delayChecker, testService)
@@ -1594,4 +1654,19 @@ func (s *monitoringSystemTunnelAdapter) List(ctx context.Context) ([]monitoring.
 		})
 	}
 	return out, nil
+}
+
+// operatorLifecycle adapts *singbox.Operator to installer.Lifecycle so
+// the installer can stop/start the daemon during migration without the
+// installer package taking a circular dependency on singbox.
+type operatorLifecycle struct {
+	op *singbox.Operator
+}
+
+func (l *operatorLifecycle) Stop(ctx context.Context) error {
+	return l.op.Control(ctx, "stop")
+}
+
+func (l *operatorLifecycle) Start(ctx context.Context) error {
+	return l.op.Control(ctx, "start")
 }
