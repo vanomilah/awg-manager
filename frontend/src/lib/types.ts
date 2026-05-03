@@ -613,6 +613,8 @@ export interface LoggingSettings {
 	enabled: boolean;
 	maxAge: number;
 	logLevel: string;
+	appMaxEntries: number;
+	singboxMaxEntries: number;
 }
 
 export interface UpdateSettings {
