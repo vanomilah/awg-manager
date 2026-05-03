@@ -163,6 +163,119 @@ func TestEnsureLegacyConfigMigrated_CorruptJSON_NoOp(t *testing.T) {
 	}
 }
 
+func TestEnsureLegacyConfigMigrated_StripsDeviceProxyAndPreservesDNS(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy := filepath.Join(dir, "config.json")
+	writeLegacyConfig(t, legacy, map[string]any{
+		"dns": map[string]any{
+			"servers": []any{
+				map[string]any{"tag": "dns-bootstrap", "type": "udp", "server": "1.1.1.1"},
+				map[string]any{"tag": "dns-doh", "type": "https", "server": "cloudflare-dns.com"},
+				map[string]any{"tag": "dns-custom", "type": "udp", "server": "8.8.8.8"},
+			},
+			"rules": []any{
+				map[string]any{"domain_suffix": ".example.com", "server": "dns-custom"},
+			},
+		},
+		"inbounds": []any{
+			map[string]any{"tag": "vless-1-in", "type": "mixed", "listen_port": 1080},
+			map[string]any{"tag": "device-proxy-in", "type": "mixed", "listen_port": 1099},
+		},
+		"outbounds": []any{
+			map[string]any{"type": "direct", "tag": "direct"},
+			map[string]any{"type": "vless", "tag": "vless-1", "server": "x"},
+			map[string]any{"type": "selector", "tag": "device-proxy-selector", "outbounds": []any{"vless-1"}},
+		},
+		"route": map[string]any{
+			"rules": []any{
+				map[string]any{"inbound": "vless-1-in", "outbound": "vless-1"},
+				map[string]any{"inbound": "device-proxy-in", "outbound": "device-proxy-selector"},
+				map[string]any{"outbound": "device-proxy-selector"},
+			},
+		},
+	})
+
+	ensureLegacyConfigMigrated(dir)
+
+	target := filepath.Join(configDir, "10-tunnels.json")
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("10-tunnels.json missing: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inbounds: device-proxy-in dropped, vless-1-in kept
+	inbounds, _ := got["inbounds"].([]any)
+	if len(inbounds) != 1 {
+		t.Errorf("inbounds = %d, want 1: %+v", len(inbounds), inbounds)
+	}
+
+	// Outbounds: direct + device-proxy-selector dropped, vless-1 kept
+	outbounds, _ := got["outbounds"].([]any)
+	if len(outbounds) != 1 {
+		t.Errorf("outbounds = %d, want 1: %+v", len(outbounds), outbounds)
+	}
+
+	// Route rules: only the vless-1-in/vless-1 rule survives
+	route, _ := got["route"].(map[string]any)
+	rules, _ := route["rules"].([]any)
+	if len(rules) != 1 {
+		t.Errorf("route.rules = %d, want 1: %+v", len(rules), rules)
+	}
+
+	// DNS: dns-custom kept, dns-bootstrap + dns-doh stripped, rules kept
+	dns, _ := got["dns"].(map[string]any)
+	if dns == nil {
+		t.Fatal("dns block missing")
+	}
+	servers, _ := dns["servers"].([]any)
+	if len(servers) != 1 {
+		t.Errorf("dns.servers = %d, want 1: %+v", len(servers), servers)
+	} else {
+		s, _ := servers[0].(map[string]any)
+		if tag, _ := s["tag"].(string); tag != "dns-custom" {
+			t.Errorf("dns.servers[0].tag = %q, want dns-custom", tag)
+		}
+	}
+	dnsRules, _ := dns["rules"].([]any)
+	if len(dnsRules) != 1 {
+		t.Errorf("dns.rules = %d, want 1", len(dnsRules))
+	}
+}
+
+func TestEnsureLegacyConfigMigrated_NoCustomDNSOmitsBlock(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config.d")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyConfig(t, filepath.Join(dir, "config.json"), map[string]any{
+		"dns": map[string]any{
+			"servers": []any{
+				map[string]any{"tag": "dns-bootstrap", "type": "udp", "server": "1.1.1.1"},
+			},
+		},
+		"outbounds": []any{},
+	})
+
+	ensureLegacyConfigMigrated(dir)
+
+	data, _ := os.ReadFile(filepath.Join(configDir, "10-tunnels.json"))
+	var got map[string]any
+	_ = json.Unmarshal(data, &got)
+	if _, has := got["dns"]; has {
+		t.Error("dns block must be absent when only our bootstrap remains")
+	}
+}
+
 func TestEnsureLegacyConfigMigrated_LegacyIsDirectory_NoOp(t *testing.T) {
 	dir := t.TempDir()
 	// `config.json` is a directory (degenerate case) — ignored

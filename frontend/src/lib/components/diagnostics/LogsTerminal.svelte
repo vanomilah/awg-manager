@@ -432,7 +432,7 @@
       {#if displayLogs.length === 0}
         <div class="empty-feed">Нет записей по текущим фильтрам</div>
       {/if}
-      {#if hasMore}
+      {#if hasMore && displayLogs.length > 0}
         <div class="load-more-row">
           <button type="button" class="chip load-more" onclick={loadMore} disabled={loadingMore}>
             {loadingMore ? 'Загрузка…' : `Загрузить ещё ${nextBatch}`}

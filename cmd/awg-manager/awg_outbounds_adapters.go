@@ -15,6 +15,31 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/tunnel/nwg"
 )
 
+// settingsManagedServersAdapter satisfies awgoutbounds.ManagedServersQuery
+// by reading from storage.SettingsStore. main.go wires it into Deps so
+// the awgoutbounds package stays free of storage imports.
+type settingsManagedServersAdapter struct {
+	store *storage.SettingsStore
+}
+
+func newSettingsManagedServersAdapter(s *storage.SettingsStore) *settingsManagedServersAdapter {
+	return &settingsManagedServersAdapter{store: s}
+}
+
+func (a *settingsManagedServersAdapter) ManagedServerInterfaceNames(ctx context.Context) []string {
+	if a.store == nil {
+		return nil
+	}
+	servers := a.store.GetManagedServers()
+	out := make([]string, 0, len(servers))
+	for _, s := range servers {
+		if s.InterfaceName != "" {
+			out = append(out, s.InterfaceName)
+		}
+	}
+	return out
+}
+
 // awgStoreAdapter wraps storage.AWGTunnelStore for awgoutbounds.
 // Resolves each tunnel's kernel iface using the same convention
 // the deviceproxy adapter uses (NativeWG → nwg<NWGIndex>, Kernel →

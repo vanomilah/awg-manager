@@ -80,6 +80,20 @@ func (s *ServiceImpl) enumerate(ctx context.Context) ([]AWGEntry, error) {
 			// useful. Caller can log via app log; we don't have it here.
 			return out, nil
 		}
+
+		// Build a fast-lookup set of managed-server interface names so we can
+		// skip them in the system-tunnel branch. Keenetic's NDMS exposes our
+		// servers identically to user-created system tunnels — only the
+		// awg-manager settings know which is which.
+		managedSet := make(map[string]bool)
+		if s.deps.ManagedServers != nil {
+			for _, name := range s.deps.ManagedServers.ManagedServerInterfaceNames(ctx) {
+				if name != "" {
+					managedSet[name] = true
+				}
+			}
+		}
+
 		for _, t := range tuns {
 			if t.InterfaceName == "" {
 				continue
@@ -88,6 +102,9 @@ func (s *ServiceImpl) enumerate(ctx context.Context) ([]AWGEntry, error) {
 				continue
 			}
 			if seen[t.InterfaceName] {
+				continue
+			}
+			if managedSet[t.InterfaceName] {
 				continue
 			}
 			seen[t.InterfaceName] = true

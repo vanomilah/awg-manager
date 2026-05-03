@@ -315,11 +315,39 @@ func ensureLegacyConfigMigrated(dir string) {
 		return
 	}
 
-	slot := &Config{raw: map[string]any{
-		"inbounds":  cfg.inbounds(),
-		"outbounds": filterOutDirectPlaceholder(cfg.outbounds()),
-		"route":     map[string]any{"rules": cfg.routeRules()},
-	}}
+	// Legacy may include device-proxy artefacts; modern code emits those
+	// in their own 30-deviceproxy.json slot. Strip leftovers so the user
+	// can re-enable device proxy without tag collisions on next start.
+	inbounds := filterOutDeviceProxyTags(cfg.inbounds())
+	outbounds := filterOutDeviceProxyTags(filterOutDirectPlaceholder(cfg.outbounds()))
+	rules := filterOutDeviceProxyRouteRules(cfg.routeRules())
+
+	raw := map[string]any{
+		"inbounds":  inbounds,
+		"outbounds": outbounds,
+		"route":     map[string]any{"rules": rules},
+	}
+
+	// Custom DNS: copy user-defined servers (excluding our bootstrap/doh
+	// which 00-base owns) plus dns.rules. configmerge will concatenate
+	// across slots.
+	dnsBlock, _ := cfg.raw["dns"].(map[string]any)
+	if dnsBlock != nil {
+		dnsSlot := map[string]any{}
+		if servers, ok := dnsBlock["servers"].([]any); ok {
+			if filtered := filterOutOurDNSServers(servers); len(filtered) > 0 {
+				dnsSlot["servers"] = filtered
+			}
+		}
+		if rulesArr, ok := dnsBlock["rules"].([]any); ok && len(rulesArr) > 0 {
+			dnsSlot["rules"] = rulesArr
+		}
+		if len(dnsSlot) > 0 {
+			raw["dns"] = dnsSlot
+		}
+	}
+
+	slot := &Config{raw: raw}
 
 	if err := slot.Save(target); err != nil {
 		return
@@ -342,6 +370,86 @@ func filterOutDirectPlaceholder(in []any) []any {
 		typ, _ := ob["type"].(string)
 		tag, _ := ob["tag"].(string)
 		if typ == "direct" && tag == "direct" {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// filterOutDeviceProxyTags drops inbound/outbound entries whose "tag"
+// field starts with "device-proxy". Those artefacts belong in the
+// dedicated 30-deviceproxy.json slot; keeping them in 10-tunnels.json
+// causes a tag-collision FATAL when deviceproxy.Service later writes its
+// own slot.
+func filterOutDeviceProxyTags(in []any) []any {
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		ob, ok := v.(map[string]any)
+		if !ok {
+			out = append(out, v)
+			continue
+		}
+		tag, _ := ob["tag"].(string)
+		if strings.HasPrefix(tag, "device-proxy") {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// filterOutDeviceProxyRouteRules drops route rules whose "inbound" or
+// "outbound" field references a device-proxy tag. Both fields may be a
+// plain string or an array of strings — either form is checked.
+func filterOutDeviceProxyRouteRules(in []any) []any {
+	mentionsDeviceProxy := func(v any) bool {
+		switch s := v.(type) {
+		case string:
+			return strings.HasPrefix(s, "device-proxy")
+		case []any:
+			for _, item := range s {
+				if str, ok := item.(string); ok && strings.HasPrefix(str, "device-proxy") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		r, ok := v.(map[string]any)
+		if !ok {
+			out = append(out, v)
+			continue
+		}
+		if mentionsDeviceProxy(r["inbound"]) || mentionsDeviceProxy(r["outbound"]) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// filterOutOurDNSServers removes dns.servers entries whose tag is one of
+// the well-known tags 00-base.json owns ("dns-bootstrap", "dns-doh"). All
+// other entries — user-added custom resolvers — pass through so they end
+// up in 10-tunnels.json and survive the migration.
+func filterOutOurDNSServers(in []any) []any {
+	owned := map[string]bool{
+		"dns-bootstrap": true,
+		"dns-doh":       true,
+	}
+	out := make([]any, 0, len(in))
+	for _, v := range in {
+		s, ok := v.(map[string]any)
+		if !ok {
+			out = append(out, v)
+			continue
+		}
+		tag, _ := s["tag"].(string)
+		if owned[tag] {
 			continue
 		}
 		out = append(out, v)

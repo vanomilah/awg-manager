@@ -789,12 +789,13 @@ func main() {
 	// Must be constructed before deviceProxySvc so we can pass it as
 	// AWGOutbounds dep (deviceproxy now queries tags instead of enumerating).
 	awgoutboundsSvc := awgoutbounds.NewService(awgoutbounds.Deps{
-		AWGTunnels:    newAWGStoreAdapter(awgStore),
-		SystemTunnels: newSystemTunnelStoreAdapter(systemTunnelDPAdapter),
-		Singbox:       newAwgoutboundsSingboxAdapter(singboxOp),
-		AppLog:        logging.NewScopedLogger(loggingService, logging.GroupRouting, logging.SubAWGOutbounds),
-		Bus:           eventBus,
-		Orch:          sbOrch,
+		AWGTunnels:     newAWGStoreAdapter(awgStore),
+		SystemTunnels:  newSystemTunnelStoreAdapter(systemTunnelDPAdapter),
+		ManagedServers: newSettingsManagedServersAdapter(settingsStore),
+		Singbox:        newAwgoutboundsSingboxAdapter(singboxOp),
+		AppLog:         logging.NewScopedLogger(loggingService, logging.GroupRouting, logging.SubAWGOutbounds),
+		Bus:            eventBus,
+		Orch:           sbOrch,
 	})
 	awgoutboundsUnsub := awgoutboundsSvc.SubscribeBus(context.Background())
 	defer awgoutboundsUnsub()
