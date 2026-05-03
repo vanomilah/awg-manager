@@ -439,6 +439,15 @@ func (o *Operator) IsInstalled() (bool, string) {
 	return true, v
 }
 
+// RequiredVersion is the version this awg-manager build is pinned to.
+// Returns empty when the installer is not wired (legacy paths or tests).
+func (o *Operator) RequiredVersion() string {
+	if o.inst == nil {
+		return ""
+	}
+	return o.inst.RequiredVersion()
+}
+
 // GetStatus returns install + run status.
 func (o *Operator) GetStatus(ctx context.Context) Status {
 	s := Status{}
@@ -462,6 +471,9 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 	if !s.Running {
 		s.LastError = o.LastError()
 	}
+	s.CurrentVersion = s.Version
+	s.RequiredVersion = o.RequiredVersion()
+	s.UpdateAvailable = s.CurrentVersion != "" && s.CurrentVersion != s.RequiredVersion
 	return s
 }
 
