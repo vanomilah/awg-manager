@@ -149,7 +149,11 @@
 		<EmptyState
 			title="Нет серверов"
 			description="Создайте свой WireGuard-сервер или добавьте существующий интерфейс."
-		/>
+		>
+			{#snippet action()}
+				<Button variant="primary" size="md" onclick={openCreate}>Добавить сервер</Button>
+			{/snippet}
+		</EmptyState>
 	{:else}
 		<div class="layout">
 			<ServerRail
