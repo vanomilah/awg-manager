@@ -583,6 +583,7 @@ func (h *ManagedServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, err.Error(), "CREATE_FAILED")
 		return
 	}
+	h.svc.InvalidateCache(server.InterfaceName)
 	response.Success(w, toManagedServerResponse(server))
 	h.publishServerUpdated()
 }
@@ -612,6 +613,7 @@ func (h *ManagedServerHandler) Update(w http.ResponseWriter, r *http.Request, id
 		response.Error(w, err.Error(), "UPDATE_FAILED")
 		return
 	}
+	h.svc.InvalidateCache(id)
 	h.publishServerUpdated()
 	h.writeServersSnapshot(w, r)
 }
@@ -638,6 +640,7 @@ func (h *ManagedServerHandler) Delete(w http.ResponseWriter, r *http.Request, id
 		response.Error(w, err.Error(), "DELETE_FAILED")
 		return
 	}
+	h.svc.InvalidateCache(id)
 	h.publishServerUpdated()
 	h.writeServersSnapshot(w, r)
 }
@@ -666,6 +669,7 @@ func (h *ManagedServerHandler) SetPolicy(w http.ResponseWriter, r *http.Request,
 		response.Error(w, err.Error(), "POLICY_FAILED")
 		return
 	}
+	h.svc.InvalidateCache(id)
 	h.publishServerUpdated()
 	h.writeServersSnapshot(w, r)
 }
@@ -724,6 +728,7 @@ func (h *ManagedServerHandler) NAT(w http.ResponseWriter, r *http.Request, id st
 		response.Error(w, err.Error(), "NAT_FAILED")
 		return
 	}
+	h.svc.InvalidateCache(id)
 	h.publishServerUpdated()
 	h.writeServersSnapshot(w, r)
 }
@@ -752,6 +757,7 @@ func (h *ManagedServerHandler) SetEnabled(w http.ResponseWriter, r *http.Request
 		response.Error(w, err.Error(), "SET_ENABLED_FAILED")
 		return
 	}
+	h.svc.InvalidateCache(id)
 	h.publishServerUpdated()
 	h.writeServersSnapshot(w, r)
 }
@@ -793,6 +799,7 @@ func (h *ManagedServerHandler) ASC(w http.ResponseWriter, r *http.Request, id st
 			response.Error(w, err.Error(), "SET_ASC_FAILED")
 			return
 		}
+		h.svc.InvalidateCache(id)
 		h.publishServerUpdated()
 		h.writeServersSnapshot(w, r)
 	default:
