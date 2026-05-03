@@ -478,6 +478,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	loggingHandler := api.NewLoggingHandler(s.loggingService, appLog)
 	loggingHandler.SetEventBus(s.bus)
 	settingsHandler.SetLogsSnapshot(loggingHandler.PublishSnapshot)
+	// Wire eager re-apply of MaxAge / per-bucket MaxEntries after a
+	// settings PUT — without this the live buffers keep stale caps until
+	// the next AppLog tick (lazy apply path was removed).
+	settingsHandler.SetApplyLoggingSettings(s.loggingService.ApplySettings)
 	externalHandler := api.NewExternalTunnelsHandler(s.externalService, s.tunnelService, s.tunnels, appLog)
 	externalHandler.SetTunnelListPublisher(tunnelsHandler.PublishTunnelList)
 	updateHandler := api.NewUpdateHandler(s.updaterService, appLog)
@@ -690,6 +694,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Logging (protected + boot guarded)
 	mux.HandleFunc("/api/logs", guarded(loggingHandler.GetLogs))
 	mux.HandleFunc("/api/logs/clear", guarded(loggingHandler.ClearLogs))
+	mux.HandleFunc("/api/logs/subgroups", guarded(loggingHandler.GetSubgroups))
 
 	// Import (protected + boot guarded)
 	mux.HandleFunc("/api/import/conf", guarded(importHandler.ImportConf))
@@ -1042,8 +1047,11 @@ type diagLogAdapter struct {
 }
 
 func (a *diagLogAdapter) GetLogs(category, level string) []logging.LogEntry {
-	// For diagnostics, category maps to group (empty = all); return all entries (no pagination)
-	logs, _ := a.svc.GetLogs(category, "", level, time.Time{}, 10000, 0)
+	// For diagnostics, category maps to group (empty = all). Diagnostics
+	// only consumes app-bucket entries (tunnel/routing/system); sing-box
+	// forwarder events live in their own bucket and are not part of the
+	// diagnostic story.
+	logs, _ := a.svc.GetLogs(logging.BucketApp, category, "", level, time.Time{}, 10000, 0)
 	return logs
 }
 

@@ -809,6 +809,10 @@ export interface LogsResponse {
 	enabled: boolean;
 	logs: LogEntry[];
 	total: number;
+	bucket: 'app' | 'singbox';
+	bufferSize: number;
+	bufferCapacity: number;
+	oldestTimestamp?: string;
 }
 
 // #endregion
