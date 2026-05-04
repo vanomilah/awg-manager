@@ -26,6 +26,11 @@ type ConfigMutator interface {
 	EnsureProxy(ctx context.Context, idx, port int, description string) error
 	RemoveProxy(ctx context.Context, idx int) error
 	Reload(ctx context.Context) error
+	// SelectClashProxy hits the running sing-box Clash API to switch the
+	// selector's active member at runtime, without rewriting config or
+	// triggering a reload. The config slot's stored selector.default
+	// should be updated separately for restart persistence.
+	SelectClashProxy(selectorTag, memberTag string) error
 }
 
 // Service is the subscription business-logic facade.
@@ -270,6 +275,9 @@ func (s *Service) Update(id string, patch UpdatePatch) (*Subscription, error) {
 }
 
 // SetActiveMember updates the selector's "default" pointer to memberTag.
+// It updates the config slot for restart persistence and persists the active
+// member in the store, then hits the Clash API for an instant runtime switch
+// — no SIGHUP, no connection drop.
 func (s *Service) SetActiveMember(ctx context.Context, id, memberTag string) error {
 	mu := s.lockSub(id)
 	mu.Lock()
@@ -289,14 +297,27 @@ func (s *Service) SetActiveMember(ctx context.Context, id, memberTag string) err
 	if !found {
 		return fmt.Errorf("member %q not in subscription", memberTag)
 	}
+
+	// 1. Update config slot's selector.default for restart persistence.
+	//    NOT followed by Reload — clash API handles the runtime switch.
 	s.mutator.RemoveOutbound(sub.SelectorTag)
 	if err := s.mutator.AddOutbound(sub.SelectorTag, BuildSelector(sub.SelectorTag, sub.MemberTags, memberTag)); err != nil {
 		return err
 	}
+
+	// 2. Persist active member in store.
 	if err := s.store.SetActiveMember(id, memberTag); err != nil {
 		return err
 	}
-	return s.mutator.Reload(ctx)
+
+	// 3. Hit Clash API for instant runtime switch — no SIGHUP, no connection
+	//    drop. If clash is unreachable (sing-box not running), return error but
+	//    config is already updated so a future restart will use the new default.
+	if err := s.mutator.SelectClashProxy(sub.SelectorTag, memberTag); err != nil {
+		return fmt.Errorf("subscription: clash select: %w", err)
+	}
+
+	return nil
 }
 
 // SetDefaultRoute marks one subscription as defaultRoute (atomically clears

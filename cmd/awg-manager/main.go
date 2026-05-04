@@ -654,7 +654,7 @@ func main() {
 		log.Errorf("subscription store: %v", err)
 	}
 	subProxyMgr := singbox.NewProxyManager(ndmsQueries, ndmsCommands)
-	subAdapter := subscription.NewOperatorAdapter(sbOrch, subProxyMgr)
+	subAdapter := subscription.NewOperatorAdapter(sbOrch, subProxyMgr, singboxOp.Clash())
 	if err := subAdapter.LoadFromDisk(singboxConfigDir); err != nil {
 		log.Warnf("subscription adapter: load from disk: %v", err)
 	}

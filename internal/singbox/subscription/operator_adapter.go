@@ -45,6 +45,13 @@ type ProxyRegistrar interface {
 	RemoveProxy(ctx context.Context, idx int) error
 }
 
+// ClashSelector is the narrow interface for switching a selector outbound's
+// active member via the sing-box Clash API. The real implementation is
+// *singbox.ClashClient. A local interface avoids circular import.
+type ClashSelector interface {
+	SetSelector(selectorTag, memberTag string) error
+}
+
 // OperatorAdapter implements ConfigMutator by maintaining its own
 // config slot (40-subscriptions.json) written through the orchestrator.
 //
@@ -55,8 +62,9 @@ type ProxyRegistrar interface {
 // The adapter is safe for concurrent use — a single mutex guards all
 // state reads and writes.
 type OperatorAdapter struct {
-	orch *orchestrator.Orchestrator
-	pm   ProxyRegistrar
+	orch  *orchestrator.Orchestrator
+	pm    ProxyRegistrar
+	clash ClashSelector
 
 	mu  sync.Mutex
 	cfg slotConfig
@@ -66,12 +74,17 @@ type OperatorAdapter struct {
 // slot is registered via singboxorch.KnownSlots() before Bootstrap; in unit
 // tests the adapter registers it itself (Register is idempotent — duplicate
 // calls return ErrSlotAlreadyRegistered which is silently ignored here).
-func NewOperatorAdapter(orch *orchestrator.Orchestrator, pm ProxyRegistrar) *OperatorAdapter {
+//
+// clash is used by SelectClashProxy to switch the active selector member at
+// runtime via the sing-box Clash API. Pass nil only in tests that don't
+// exercise SetActiveMember.
+func NewOperatorAdapter(orch *orchestrator.Orchestrator, pm ProxyRegistrar, clash ClashSelector) *OperatorAdapter {
 	_ = orch.Register(SlotSubscriptionsMeta)
 	return &OperatorAdapter{
-		orch: orch,
-		pm:   pm,
-		cfg:  newEmptySlot(),
+		orch:  orch,
+		pm:    pm,
+		clash: clash,
+		cfg:   newEmptySlot(),
 	}
 }
 
@@ -292,6 +305,15 @@ func (a *OperatorAdapter) RemoveRouteRule(inboundTag, outboundTag string) error 
 // Reload() after a batch of mutations do not need a second trigger.
 func (a *OperatorAdapter) Reload(_ context.Context) error {
 	return nil
+}
+
+// SelectClashProxy hits the running sing-box Clash API to switch the
+// selector's active member at runtime, without triggering a config reload.
+func (a *OperatorAdapter) SelectClashProxy(selectorTag, memberTag string) error {
+	if a.clash == nil {
+		return fmt.Errorf("subscription adapter: ClashSelector not configured")
+	}
+	return a.clash.SetSelector(selectorTag, memberTag)
 }
 
 // --- internal helpers (caller must hold a.mu) ---

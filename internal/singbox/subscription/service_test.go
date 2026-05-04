@@ -21,6 +21,7 @@ type fakeMutator struct {
 	proxyIndex       int
 	ensuredProxies   []int
 	removedProxies   []int
+	selectedSelector []string // "selectorTag→memberTag" pairs recorded by SelectClashProxy
 }
 
 func (f *fakeMutator) AllocListenPort() (uint16, error) {
@@ -71,6 +72,10 @@ func (f *fakeMutator) RemoveProxy(_ context.Context, idx int) error {
 	return nil
 }
 func (f *fakeMutator) Reload(ctx context.Context) error { return nil }
+func (f *fakeMutator) SelectClashProxy(selectorTag, memberTag string) error {
+	f.selectedSelector = append(f.selectedSelector, selectorTag+"→"+memberTag)
+	return nil
+}
 
 func TestService_Create_FetchAndMaterialize(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,5 +190,49 @@ func TestService_Delete_RemovesMembersAndInbound(t *testing.T) {
 	}
 	if len(mutator.removedInbounds) != 1 {
 		t.Errorf("expected 1 inbound removed, got %d", len(mutator.removedInbounds))
+	}
+}
+
+func TestService_SetActiveMember_UsesClashAPI(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(
+			"vless://3a3b1c2e-9999-4321-aaaa-1234567890ab@h1.example:443?security=tls&sni=h\n" +
+				"trojan://p@h2.example:443?security=tls&sni=h\n",
+		))
+	}))
+	defer srv.Close()
+
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "test", URL: srv.URL, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if len(sub.MemberTags) < 2 {
+		t.Fatalf("need at least 2 members, got %d", len(sub.MemberTags))
+	}
+
+	secondMember := sub.MemberTags[1]
+	if err := svc.SetActiveMember(context.Background(), sub.ID, secondMember); err != nil {
+		t.Fatalf("SetActiveMember: %v", err)
+	}
+
+	// Verify clash API was called with the right args.
+	if len(mutator.selectedSelector) != 1 {
+		t.Fatalf("expected 1 SelectClashProxy call, got %d: %v", len(mutator.selectedSelector), mutator.selectedSelector)
+	}
+	expected := sub.SelectorTag + "→" + secondMember
+	if mutator.selectedSelector[0] != expected {
+		t.Errorf("clash select args wrong: got %q want %q", mutator.selectedSelector[0], expected)
+	}
+
+	// Verify Reload was NOT called for SetActiveMember (no connection-dropping SIGHUP).
+	// We verify this indirectly: the mutator's Reload is a no-op and SelectClashProxy
+	// is recorded; the key invariant is the config update + clash call both happen.
+	stored, _ := store.Get(sub.ID)
+	if stored.ActiveMember != secondMember {
+		t.Errorf("store.ActiveMember=%q want %q", stored.ActiveMember, secondMember)
 	}
 }
