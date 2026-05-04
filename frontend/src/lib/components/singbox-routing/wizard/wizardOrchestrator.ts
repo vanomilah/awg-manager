@@ -88,12 +88,14 @@ export async function runWizard(
 	if (state.presetIds.length === 0) throw new WizardError('precondition', 'no presets selected');
 	if (state.deviceMacs.length === 0) throw new WizardError('precondition', 'no devices selected');
 
+	const tunnelTag = state.tunnelTag;
+
 	const result: WizardResult = {
 		policyCreated: false,
 		devicesBound: 0,
 		presetsApplied: 0,
 		dnsServerCreated: false,
-		dnsRuleUpdated: false,
+		dnsRuleApplied: false,
 		engineStarted: false,
 	};
 
@@ -133,7 +135,7 @@ export async function runWizard(
 					tag: WIZARD_DNS_TAG,
 					type: 'udp',
 					server: state.dnsServer ?? '1.1.1.1',
-					detour: state.tunnelTag!,
+					detour: tunnelTag,
 					domain_strategy: 'ipv4_only',
 				}),
 		);
@@ -143,7 +145,7 @@ export async function runWizard(
 	// Phase 4: applyPresets
 	for (const id of state.presetIds) {
 		await step(`Применяем preset ${id}`, 'applyPreset', onProgress, () =>
-			api.singboxRouterApplyPreset(id, state.tunnelTag!),
+			api.singboxRouterApplyPreset(id, tunnelTag),
 		);
 		result.presetsApplied++;
 	}
@@ -168,7 +170,7 @@ export async function runWizard(
 			api.singboxRouterAddDNSRule({ rule_set: tags, server: WIZARD_DNS_TAG }),
 		);
 	}
-	result.dnsRuleUpdated = true;
+	result.dnsRuleApplied = true;
 
 	// Phase 6+7: enable engine + wait for running
 	await step('Запуск sing-box', 'enableEngine', onProgress, async () => {

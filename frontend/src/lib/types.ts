@@ -1437,6 +1437,6 @@ export interface WizardResult {
 	devicesBound: number;
 	presetsApplied: number;
 	dnsServerCreated: boolean;
-	dnsRuleUpdated: boolean;
+	dnsRuleApplied: boolean;
 	engineStarted: boolean;
 }

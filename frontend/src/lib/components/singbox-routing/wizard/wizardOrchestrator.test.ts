@@ -44,7 +44,15 @@ describe('runWizard', () => {
 
 	it('happy path: 7 phases all succeed', async () => {
 		const onProgress = vi.fn();
-		await runWizard(baseState(), { api, presets, onProgress });
+		const result = await runWizard(baseState(), { api, presets, onProgress });
+		expect(result).toEqual({
+			policyCreated: true,
+			devicesBound: 1,
+			presetsApplied: 1,
+			dnsServerCreated: true,
+			dnsRuleApplied: true,
+			engineStarted: true,
+		});
 		expect(api.singboxRouterCreatePolicy).toHaveBeenCalledWith('SBRouter');
 		expect(api.assignDeviceToPolicy).toHaveBeenCalledWith('aa:aa:aa:aa:aa:01', 'SBRouter');
 		expect(api.singboxRouterAddDNSServer).toHaveBeenCalled();
@@ -56,14 +64,16 @@ describe('runWizard', () => {
 
 	it('skips createPolicy if SBRouter already exists', async () => {
 		api.singboxRouterListPolicies.mockResolvedValueOnce([{ name: 'SBRouter' }]);
-		await runWizard(baseState(), { api, presets, onProgress: vi.fn() });
+		const result = await runWizard(baseState(), { api, presets, onProgress: vi.fn() });
 		expect(api.singboxRouterCreatePolicy).not.toHaveBeenCalled();
+		expect(result.policyCreated).toBe(false);
 	});
 
 	it('skips addDNSServer if wizard-upstream tag exists', async () => {
 		api.singboxRouterListDNSServers.mockResolvedValueOnce([{ tag: 'wizard-upstream' }]);
-		await runWizard(baseState(), { api, presets, onProgress: vi.fn() });
+		const result = await runWizard(baseState(), { api, presets, onProgress: vi.fn() });
 		expect(api.singboxRouterAddDNSServer).not.toHaveBeenCalled();
+		expect(result.dnsServerCreated).toBe(false);
 	});
 
 	it('throws on applyPreset failure with phase=applyPreset', async () => {
