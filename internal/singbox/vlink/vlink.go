@@ -44,20 +44,13 @@ var (
 	ErrUnsupportedScheme = errors.New("vlink: unsupported scheme")
 	ErrSchemeDropped     = errors.New("vlink: scheme intentionally dropped (vmess)")
 	ErrEmptyInput        = errors.New("vlink: empty input")
-	ErrHappRecursionMax  = errors.New("vlink: happ:// recursion limit exceeded")
 )
-
-// happRecursionLimit caps how many nested happ:// wrappers ParseLink will unwrap.
-const happRecursionLimit = 3
 
 // ParseLink dispatches a single share link to its scheme-specific parser.
 // Returns ParsedOutbound on success. Returns ErrSchemeDropped for vmess so
 // callers can count vs. report differently.
 func ParseLink(input string) (*ParsedOutbound, error) {
-	return parseLinkInner(strings.TrimSpace(input), 0)
-}
-
-func parseLinkInner(input string, happDepth int) (*ParsedOutbound, error) {
+	input = strings.TrimSpace(input)
 	if input == "" {
 		return nil, ErrEmptyInput
 	}
@@ -75,15 +68,6 @@ func parseLinkInner(input string, happDepth int) (*ParsedOutbound, error) {
 		return parseNaive(input)
 	case strings.HasPrefix(lower, "vpn://"):
 		return parseAmnezia(input)
-	case strings.HasPrefix(lower, "happ://"):
-		if happDepth >= happRecursionLimit {
-			return nil, ErrHappRecursionMax
-		}
-		inner, err := decryptHapp(input)
-		if err != nil {
-			return nil, err
-		}
-		return parseLinkInner(strings.TrimSpace(inner), happDepth+1)
 	case strings.HasPrefix(lower, "vmess://"):
 		return nil, ErrSchemeDropped
 	}
