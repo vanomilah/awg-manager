@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { SubscriptionMember } from '$lib/types';
+	import { singboxDelayHistory, triggerDelayCheck } from '$lib/stores/singbox';
 
 	interface Props {
 		member: SubscriptionMember;
@@ -9,6 +10,44 @@
 		onclick: () => void;
 	}
 	let { member, active, switching, disabled, onclick }: Props = $props();
+
+	const history = $derived($singboxDelayHistory.get(member.tag) ?? []);
+	const latest = $derived(history.length > 0 ? history[history.length - 1] : -1);
+
+	let testing = $state(false);
+	async function runTest(e: MouseEvent | KeyboardEvent): Promise<void> {
+		e.stopPropagation(); // don't trigger card-as-radio click
+		if (testing) return;
+		testing = true;
+		try {
+			await triggerDelayCheck(member.tag);
+		} finally {
+			testing = false;
+		}
+	}
+	function onTestKeydown(e: KeyboardEvent): void {
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			runTest(e);
+		}
+	}
+
+	const DELAY_OK = 200;
+	const DELAY_SLOW = 500;
+
+	function delayStateOf(d: number): 'ok' | 'slow' | 'fail' | 'unknown' {
+		if (d < 0) return 'unknown';
+		if (d === 0) return 'fail';
+		if (d < DELAY_OK) return 'ok';
+		if (d < DELAY_SLOW) return 'slow';
+		return 'fail';
+	}
+	const delayState = $derived(delayStateOf(latest));
+	const delayText = $derived.by(() => {
+		if (delayState === 'unknown') return '—';
+		if (delayState === 'fail') return 'timeout';
+		return `${latest}ms`;
+	});
 
 	const protocolLabel = $derived.by(() => {
 		switch (member.protocol) {
@@ -46,6 +85,30 @@
 		{:else if member.security === 'tls'}
 			<span class="badge tls">TLS</span>
 		{/if}
+	</div>
+	<div class="delay-row">
+		<span
+			role="button"
+			tabindex="0"
+			class="delay-btn {delayState}"
+			class:is-disabled={testing}
+			aria-disabled={testing}
+			onclick={runTest}
+			onkeydown={onTestKeydown}
+			title="Проверить delay"
+		>
+			{testing ? '...' : delayText}
+		</span>
+		<div class="spark {delayState}">
+			{#if history.length === 0}
+				{#each Array(6) as _, i (i)}<div class="bar empty"></div>{/each}
+			{:else}
+				{@const max = Math.max(...history.map((v) => (v <= 0 ? 100 : v)), 100)}
+				{#each history as d, i (i)}
+					<div class="bar" style="height: {Math.max((d <= 0 ? max : d) / max, 0.1) * 100}%;"></div>
+				{/each}
+			{/if}
+		</div>
 	</div>
 	<div class="footer">
 		<span class="tag mono" title={member.tag}>{member.tag}</span>
@@ -135,4 +198,41 @@
 	.active-badge { background: rgba(63,185,80,0.15); color: #3fb950; }
 	.switching-badge { background: rgba(88,166,255,0.15); color: var(--color-accent); }
 	.mono { font-family: var(--font-mono, ui-monospace, monospace); }
+	.delay-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-top: 0.4rem;
+	}
+	.delay-btn {
+		padding: 0.15rem 0.5rem;
+		border-radius: 4px;
+		background: var(--color-bg-tertiary);
+		color: var(--color-text-muted);
+		border: 1px solid var(--color-border);
+		font: inherit;
+		font-size: 0.7rem;
+		font-family: var(--font-mono, ui-monospace, monospace);
+		cursor: pointer;
+	}
+	.delay-btn.is-disabled { opacity: 0.5; cursor: wait; }
+	.delay-btn.ok    { color: #3fb950; }
+	.delay-btn.slow  { color: #d29922; }
+	.delay-btn.fail  { color: #f85149; }
+	.spark {
+		flex: 1;
+		display: flex;
+		gap: 1px;
+		align-items: flex-end;
+		height: 18px;
+	}
+	.bar {
+		flex: 1;
+		background: var(--color-bg-tertiary);
+		border-radius: 1px;
+	}
+	.spark.ok .bar   { background: #3fb950; }
+	.spark.slow .bar { background: #d29922; }
+	.spark.fail .bar { background: #f85149; }
+	.bar.empty       { opacity: 0.3; }
 </style>
