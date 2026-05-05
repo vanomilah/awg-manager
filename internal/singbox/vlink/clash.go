@@ -83,11 +83,13 @@ func clashFieldsToValues(p map[string]any) url.Values {
 		}
 	case "http":
 		hp := nestedMap(p, "http-opts")
-		if path := asString(hp["path"]); path != "" {
-			v.Set("path", path)
+		// http-opts.path and http-opts.host are []string per Clash spec.
+		// Take the first non-empty entry to mirror h2-opts handling above.
+		if paths := asStringSlice(hp["path"]); len(paths) > 0 {
+			v.Set("path", paths[0])
 		}
-		if host := asString(hp["host"]); host != "" {
-			v.Set("host", host)
+		if hosts := asStringSlice(hp["host"]); len(hosts) > 0 {
+			v.Set("host", hosts[0])
 		}
 	case "h2":
 		hp := nestedMap(p, "h2-opts")

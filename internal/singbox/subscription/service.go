@@ -126,7 +126,7 @@ func (s *Service) refreshLocked(ctx context.Context, id string) (*RefreshResult,
 	}
 
 	if len(parseRes.Outbounds) == 0 {
-		hint := "ни одной валидной ссылки. Поддерживаются: base64-encoded share-links, HTML с share-link якорями, plain text со ссылками vless://, trojan://, ss://, hysteria2://. Clash YAML / mihomo формат пока не поддерживается."
+		hint := "ни одной валидной ссылки. Поддерживаются: base64-encoded share-links, HTML с share-link якорями, plain text со ссылками vless://, trojan://, ss://, hysteria2://, а также Clash YAML / mihomo (типы vless, trojan, ss, hysteria2). Записи vmess пропускаются."
 		var errMsg string
 		if len(parseRes.Errors) > 0 {
 			errMsg = fmt.Sprintf("subscription: %s Первая ошибка парсера: %s", hint, parseRes.Errors[0].Error())

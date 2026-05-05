@@ -127,6 +127,25 @@ func TestClashFieldsToValues_HTTP(t *testing.T) {
 	}
 }
 
+func TestClashFieldsToValues_HTTPListHost(t *testing.T) {
+	in := map[string]any{
+		"server":  "h",
+		"port":    443,
+		"network": "http",
+		"http-opts": map[string]any{
+			"path": []any{"/api"},
+			"host": []any{"cdn.example.com"},
+		},
+	}
+	got := clashFieldsToValues(in)
+	if got.Get("host") != "cdn.example.com" {
+		t.Errorf("host=%q want cdn.example.com (no brackets)", got.Get("host"))
+	}
+	if got.Get("path") != "/api" {
+		t.Errorf("path=%q want /api", got.Get("path"))
+	}
+}
+
 func TestClashFieldsToValues_H2(t *testing.T) {
 	in := map[string]any{
 		"server":  "h",

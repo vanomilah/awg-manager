@@ -21,6 +21,7 @@ func NewSubscriptionHandler(svc *subscription.Service) *SubscriptionHandler {
 // SubscriptionMemberDTO carries per-member parsed metadata for the UI.
 type SubscriptionMemberDTO struct {
 	Tag       string `json:"tag" example:"sub-abc12345-aabbccdd"`
+	Label     string `json:"label,omitempty" example:"🇺🇸 LA-1"`
 	Protocol  string `json:"protocol" example:"vless"`
 	Server    string `json:"server" example:"de01.example.com"`
 	Port      int    `json:"port" example:"443"`
@@ -111,6 +112,7 @@ func toSubscriptionDTO(s subscription.Subscription) SubscriptionDTO {
 	for i, m := range s.Members {
 		memberDTOs[i] = SubscriptionMemberDTO{
 			Tag:       m.Tag,
+			Label:     m.Label,
 			Protocol:  m.Protocol,
 			Server:    m.Server,
 			Port:      int(m.Port),
