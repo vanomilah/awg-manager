@@ -102,7 +102,7 @@ type OperatorDeps struct {
 	// log buffer (visible at /diagnostics?tab=logs). Optional — when
 	// nil, process output is only mirrored to slog.
 	AppLogger logging.AppLogger
-	Dir    string // optional; defaults to /opt/etc/awg-manager/singbox
+	Dir       string // optional; defaults to /opt/etc/awg-manager/singbox
 	// Binary is the absolute path to the sing-box binary. Defaults to
 	// installer.DefaultBinaryPath when empty.
 	Binary string
@@ -279,6 +279,7 @@ func ensureBaseConfig(configDir string) {
 	if _, err := os.Stat(basePath); err == nil {
 		patchBaseClashPort(basePath)
 		patchBaseLogLevel(basePath)
+		patchBaseDomainResolver(basePath)
 		return
 	}
 	_ = os.MkdirAll(configDir, 0755)
@@ -518,6 +519,42 @@ func patchBaseClashPort(basePath string) {
 		return
 	}
 	clash["external_controller"] = clashAPIAddr
+	_ = writeJSONFile(basePath, m)
+}
+
+// patchBaseDomainResolver self-heals legacy 00-base.json files that
+// pre-date the route.default_domain_resolver requirement. sing-box 1.12
+// deprecates and 1.13+ FATALs on startup with:
+//
+//	missing `route.default_domain_resolver` or `domain_resolver` in dial
+//	fields is deprecated in sing-box 1.12.0 and will be removed in
+//	sing-box 1.14.0
+//
+// Without the resolver, sing-box refuses to start and the user sees only
+// the FATAL line in /logs. Adds route.default_domain_resolver = "dns-bootstrap"
+// when missing; idempotent on already-correct files.
+//
+// Only fires when a route block already exists. A user who deleted the
+// route block entirely is honoured — we don't materialise it just to
+// inject a key. Old freshBaseConfig versions always wrote route, so
+// legacy installs are still covered.
+func patchBaseDomainResolver(basePath string) {
+	data, err := os.ReadFile(basePath)
+	if err != nil {
+		return
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return
+	}
+	route, _ := m["route"].(map[string]any)
+	if route == nil {
+		return
+	}
+	if _, has := route["default_domain_resolver"]; has {
+		return
+	}
+	route["default_domain_resolver"] = "dns-bootstrap"
 	_ = writeJSONFile(basePath, m)
 }
 

@@ -245,6 +245,74 @@ func TestEnsureBaseConfig_RespectsDebugLogLevel(t *testing.T) {
 	}
 }
 
+func TestEnsureBaseConfig_PatchesMissingDomainResolver(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config.d")
+	_ = os.MkdirAll(configDir, 0755)
+	// Legacy 00-base.json from a pre-1.12 build — has route block (final +
+	// rules) but no default_domain_resolver. sing-box 1.13+ FATALs on this.
+	stale := `{"log":{"level":"trace","timestamp":true},"experimental":{"clash_api":{"external_controller":"127.0.0.1:9099"}},"route":{"final":"direct","rules":[]}}`
+	basePath := filepath.Join(configDir, "00-base.json")
+	if err := os.WriteFile(basePath, []byte(stale), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ensureBaseConfig(configDir)
+	raw, _ := os.ReadFile(basePath)
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	route, ok := m["route"].(map[string]any)
+	if !ok {
+		t.Fatalf("route block lost: %v", m["route"])
+	}
+	if route["default_domain_resolver"] != "dns-bootstrap" {
+		t.Errorf("default_domain_resolver want dns-bootstrap, got %v", route["default_domain_resolver"])
+	}
+	// Existing route fields preserved.
+	if route["final"] != "direct" {
+		t.Errorf("route.final lost: %v", route["final"])
+	}
+}
+
+func TestEnsureBaseConfig_RespectsExistingDomainResolver(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config.d")
+	_ = os.MkdirAll(configDir, 0755)
+	// User picked a custom resolver. Heal must NOT clobber.
+	custom := `{"log":{"level":"trace","timestamp":true},"experimental":{"clash_api":{"external_controller":"127.0.0.1:9099"}},"route":{"final":"direct","default_domain_resolver":"my-resolver"}}`
+	basePath := filepath.Join(configDir, "00-base.json")
+	if err := os.WriteFile(basePath, []byte(custom), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ensureBaseConfig(configDir)
+	raw, _ := os.ReadFile(basePath)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if m["route"].(map[string]any)["default_domain_resolver"] != "my-resolver" {
+		t.Errorf("user resolver clobbered, got %v", m["route"])
+	}
+}
+
+func TestEnsureBaseConfig_NoRouteBlockUntouched(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, "config.d")
+	_ = os.MkdirAll(configDir, 0755)
+	// User explicitly removed route block. We don't materialise it just
+	// to inject the resolver — old installs always had route, so the
+	// "missing route block" case can only be a deliberate user edit.
+	custom := `{"log":{"level":"trace"},"experimental":{"clash_api":{"external_controller":"127.0.0.1:9099"}}}`
+	basePath := filepath.Join(configDir, "00-base.json")
+	if err := os.WriteFile(basePath, []byte(custom), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ensureBaseConfig(configDir)
+	raw, _ := os.ReadFile(basePath)
+	if string(raw) != custom {
+		t.Errorf("file without route block must not be touched, got %s", raw)
+	}
+}
+
 func TestClassifyProcessLine(t *testing.T) {
 	tests := []struct {
 		in   string
