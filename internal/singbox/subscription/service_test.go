@@ -127,6 +127,43 @@ func TestService_Create_FailsOnZeroOutbounds_ClashYAML(t *testing.T) {
 	}
 }
 
+// TestService_Create_RollsBackProxyOnFetchFailure asserts the bug fix
+// where each failed Create call leaked an NDMS ProxyN interface — the
+// initial-fetch failure path now also removes the proxy registered by
+// EnsureProxy.
+func TestService_Create_RollsBackProxyOnFetchFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Empty body — share-link parser sees 0 outbounds, fail-fast fires.
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+
+	// Three failed attempts at the same URL.
+	for i := 0; i < 3; i++ {
+		_, err := svc.Create(context.Background(), CreateInput{Label: "x", URL: srv.URL, Enabled: true})
+		if err == nil {
+			t.Fatalf("attempt %d: Create must fail", i+1)
+		}
+	}
+
+	// Three EnsureProxy calls and three matching RemoveProxy calls — net
+	// zero proxy interfaces leaked into the router.
+	if len(mutator.ensuredProxies) != 3 {
+		t.Errorf("ensuredProxies=%d want 3", len(mutator.ensuredProxies))
+	}
+	if len(mutator.removedProxies) != 3 {
+		t.Errorf("removedProxies=%d want 3 (one rollback per failed Create)", len(mutator.removedProxies))
+	}
+	// Storage clean.
+	if len(store.List()) != 0 {
+		t.Errorf("storage must be empty, got %d rows", len(store.List()))
+	}
+}
+
 func TestService_Refresh_AddsNewMember(t *testing.T) {
 	requestCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

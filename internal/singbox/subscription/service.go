@@ -86,11 +86,21 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, er
 		return nil, err
 	}
 	if err := s.mutator.EnsureProxy(ctx, proxyIdx, int(port), sub.Label); err != nil {
+		// Best-effort cleanup: EnsureProxy may have partially registered
+		// the interface before failing. RemoveProxy is idempotent.
+		_ = s.mutator.RemoveProxy(ctx, proxyIdx)
 		s.store.Delete(sub.ID)
 		return nil, fmt.Errorf("subscription: register NDMS proxy: %w", err)
 	}
 
 	if _, err := s.refreshLocked(ctx, sub.ID); err != nil {
+		// EnsureProxy succeeded above — the NDMS Proxy interface is now
+		// live in the router. We must roll it back before dropping the
+		// storage row; otherwise every failed Create leaks a ProxyN that
+		// only the startup cleanup sweep would eventually reap. Swallow
+		// the RemoveProxy error: the storage row is going away regardless,
+		// and a stranded ProxyN is recoverable via Settings → cleanup.
+		_ = s.mutator.RemoveProxy(ctx, proxyIdx)
 		s.store.Delete(sub.ID)
 		return nil, fmt.Errorf("subscription: initial fetch failed: %w", err)
 	}
