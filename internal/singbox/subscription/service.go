@@ -263,6 +263,22 @@ func toMemberInfo(tag string, p vlink.ParsedOutbound) MemberInfo {
 	return mi
 }
 
+// ListActiveMemberTags returns the active member tag of every enabled
+// subscription whose ActiveMember is set. Used by DelayChecker so the
+// active outbound of each subscription gets the same periodic latency
+// probe as regular sing-box tunnels.
+func (s *Service) ListActiveMemberTags() []string {
+	subs := s.store.List()
+	out := make([]string, 0, len(subs))
+	for _, sub := range subs {
+		if !sub.Enabled || sub.ActiveMember == "" {
+			continue
+		}
+		out = append(out, sub.ActiveMember)
+	}
+	return out
+}
+
 // === Helpers used by REST handlers (B-Task 5) ===
 
 func (s *Service) List() []Subscription                 { return s.store.List() }

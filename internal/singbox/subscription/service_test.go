@@ -193,6 +193,30 @@ func TestService_Delete_RemovesMembersAndInbound(t *testing.T) {
 	}
 }
 
+func TestService_ListActiveMemberTags_FiltersDisabledAndEmpty(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+
+	// Enabled with active set — should appear
+	a, _ := store.Create(CreateInput{Label: "a", URL: "u", Enabled: true})
+	store.SetMembers(a.ID, []MemberInfo{{Tag: "sub-A-1111"}}, nil)
+
+	// Disabled — should be filtered out
+	b, _ := store.Create(CreateInput{Label: "b", URL: "u", Enabled: false})
+	store.SetMembers(b.ID, []MemberInfo{{Tag: "sub-B-2222"}}, nil)
+
+	// Enabled but no members — ActiveMember stays empty, should be filtered
+	store.Create(CreateInput{Label: "c", URL: "u", Enabled: true})
+
+	svc := NewService(store, &fakeMutator{})
+	tags := svc.ListActiveMemberTags()
+	if len(tags) != 1 {
+		t.Fatalf("expected 1 active tag, got %d: %v", len(tags), tags)
+	}
+	if tags[0] != "sub-A-1111" {
+		t.Errorf("got %q want sub-A-1111", tags[0])
+	}
+}
+
 func TestService_SetActiveMember_UsesClashAPI(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(
