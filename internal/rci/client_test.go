@@ -244,3 +244,78 @@ func TestGet_DecodeError_LogsError(t *testing.T) {
 		t.Errorf("message = %q, want contains 'decode:'", e.message)
 	}
 }
+
+func TestPost_Success_EmitsNoLog(t *testing.T) {
+	c, srv, rec := newTestClientWithLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	if _, err := c.Post(context.Background(), map[string]any{"x": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.entries) != 0 {
+		t.Errorf("expected no log entries on success, got %d: %+v", len(rec.entries), rec.entries)
+	}
+}
+
+func TestPost_TransportError_LogsError(t *testing.T) {
+	rec := &recordingLogger{}
+	c := &Client{
+		http:    &http.Client{Timeout: 100 * time.Millisecond},
+		baseURL: "http://127.0.0.1:1",
+	}
+	c.SetAppLogger(rec)
+
+	_, _ = c.Post(context.Background(), map[string]any{})
+	if len(rec.entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(rec.entries))
+	}
+	e := rec.entries[0]
+	if e.level != "error" {
+		t.Errorf("level = %q, want error", e.level)
+	}
+	if !strings.Contains(e.message, "transport:") {
+		t.Errorf("message = %q, want contains 'transport:'", e.message)
+	}
+}
+
+func TestPost_Non200_LogsError(t *testing.T) {
+	c, srv, rec := newTestClientWithLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		w.Write([]byte(`internal err`))
+	}))
+	defer srv.Close()
+
+	_, _ = c.Post(context.Background(), map[string]any{})
+	if len(rec.entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(rec.entries))
+	}
+	e := rec.entries[0]
+	if e.level != "error" {
+		t.Errorf("level = %q, want error", e.level)
+	}
+	if !strings.Contains(e.message, "status 500") {
+		t.Errorf("message = %q, want contains 'status 500'", e.message)
+	}
+}
+
+func TestPost_NDMSError_LogsWarn(t *testing.T) {
+	c, srv, rec := newTestClientWithLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// HTTP 200 but body carries NDMS error envelope. ExtractError parses this.
+		w.Write([]byte(`{"status":"error","message":"address conflict"}`))
+	}))
+	defer srv.Close()
+
+	_, _ = c.Post(context.Background(), map[string]any{})
+	if len(rec.entries) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(rec.entries))
+	}
+	e := rec.entries[0]
+	if e.level != "warn" {
+		t.Errorf("level = %q, want warn", e.level)
+	}
+	if !strings.HasPrefix(e.message, "ndms-error:") {
+		t.Errorf("message = %q, want starts with 'ndms-error:'", e.message)
+	}
+}

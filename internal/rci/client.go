@@ -130,45 +130,43 @@ func (c *Client) PostBatch(ctx context.Context, commands []any) ([]json.RawMessa
 }
 
 func (c *Client) postJSON(ctx context.Context, payload any) (json.RawMessage, error) {
-	start := time.Now()
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(payload); err != nil {
-		c.appLog.Debug("POST", "", fmt.Sprintf("marshal: %v", err))
+		c.appLog.Error("POST", "", fmt.Sprintf("marshal: %v", err))
 		return nil, fmt.Errorf("rci POST: marshal: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/", &buf)
 	if err != nil {
-		c.appLog.Debug("POST", "", fmt.Sprintf("build request: %v", err))
+		c.appLog.Error("POST", "", fmt.Sprintf("build request: %v", err))
 		return nil, fmt.Errorf("rci POST: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		c.appLog.Debug("POST", "", fmt.Sprintf("transport: %v", err))
+		c.appLog.Error("POST", "", fmt.Sprintf("transport: %v", err))
 		return nil, fmt.Errorf("rci POST: %w", err)
 	}
 	defer resp.Body.Close()
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		c.appLog.Debug("POST", "", fmt.Sprintf("read body: %v", err))
+		c.appLog.Error("POST", "", fmt.Sprintf("read body: %v", err))
 		return nil, fmt.Errorf("rci POST: read: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		c.appLog.Debug("POST", "", fmt.Sprintf("status %d: %s", resp.StatusCode, string(data)))
+		c.appLog.Error("POST", "", fmt.Sprintf("status %d: %s", resp.StatusCode, string(data)))
 		return nil, fmt.Errorf("rci POST: status %d: %s", resp.StatusCode, string(data))
 	}
 
-	// NDMS returns HTTP 200 even on errors — check body.
+	// NDMS returns HTTP 200 even on application errors — check body envelope.
 	if errMsg := ExtractError(data); errMsg != "" {
-		c.appLog.Debug("POST", "", fmt.Sprintf("ndms-error: %s", errMsg))
+		c.appLog.Warn("POST", "", fmt.Sprintf("ndms-error: %s", errMsg))
 		return json.RawMessage(data), fmt.Errorf("rci POST: %s", errMsg)
 	}
 
-	c.appLog.Debug("POST", "", fmt.Sprintf("200 in %dms", time.Since(start).Milliseconds()))
 	return json.RawMessage(data), nil
 }
