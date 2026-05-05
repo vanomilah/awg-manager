@@ -254,6 +254,7 @@ func replaceTag(raw []byte, tag string) []byte {
 func toMemberInfo(tag string, p vlink.ParsedOutbound) MemberInfo {
 	mi := MemberInfo{
 		Tag:      tag,
+		Label:    p.Label,
 		Protocol: p.Protocol,
 		Server:   p.Server,
 		Port:     p.Port,

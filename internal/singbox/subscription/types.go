@@ -7,6 +7,7 @@ import "time"
 // re-parsing the raw outbound JSON each time.
 type MemberInfo struct {
 	Tag       string `json:"tag"`
+	Label     string `json:"label,omitempty"`     // human-readable name from Clash "name", empty for share-links
 	Protocol  string `json:"protocol"`            // "vless" | "trojan" | "shadowsocks" | "hysteria2" | "naive"
 	Server    string `json:"server"`              // host
 	Port      uint16 `json:"port"`
