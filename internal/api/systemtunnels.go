@@ -252,7 +252,7 @@ func (h *SystemTunnelsHandler) CheckConnectivity(w http.ResponseWriter, r *http.
 		})
 		return
 	}
-	h.appLog.Full("connectivity-check", name, fmt.Sprintf("Starting connectivity check for system tunnel %s", name))
+	h.appLog.Debug("connectivity-check", name, fmt.Sprintf("Starting connectivity check for system tunnel %s", name))
 	result := testing.CheckConnectivityByInterface(r.Context(), tunnel.InterfaceName)
 	if result.Connected {
 		h.appLog.Debug("connectivity-check", name, fmt.Sprintf("Connectivity check passed: latency=%dms", *result.Latency))
