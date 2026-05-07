@@ -25,6 +25,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/dnscheck"
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/hydraroute"
+	"github.com/hoaxisr/awg-manager/internal/openapi"
 	"github.com/hoaxisr/awg-manager/internal/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/routing"
 	"github.com/hoaxisr/awg-manager/internal/singbox"
@@ -526,6 +527,22 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Health liveness endpoint (public - used by frontend 5s poller to
 	// detect backend offline independently of SSE connection state).
 	mux.Handle("/api/health", api.NewHealthHandler(s.config.Version))
+
+	// OpenAPI spec (protected). Embedded in the binary at build time so
+	// the spec served here always matches the running awg-manager —
+	// independent of any frontend static-asset sync. Both /api/openapi.yaml
+	// and /openapi.yaml are registered for tooling that expects either path.
+	openAPIHandler := guarded(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(openapi.RawSpec)
+	})
+	mux.HandleFunc("/api/openapi.yaml", openAPIHandler)
+	mux.HandleFunc("/openapi.yaml", openAPIHandler)
 
 	// SSE event stream (protected)
 	mux.HandleFunc("/api/events", guarded(eventsHandler.Stream))
