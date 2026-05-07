@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -350,6 +351,13 @@ func validateRuleSet(rs RuleSet) error {
 	case "remote":
 		if rs.URL == "" {
 			return fmt.Errorf("rule_set %q: url required for type=remote", rs.Tag)
+		}
+		u, err := url.Parse(rs.URL)
+		if err != nil || u == nil || u.Host == "" {
+			return fmt.Errorf("rule_set %q: invalid url %q", rs.Tag, rs.URL)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			return fmt.Errorf("rule_set %q: url scheme must be http or https, got %q", rs.Tag, u.Scheme)
 		}
 	case "local":
 		if rs.Path == "" {

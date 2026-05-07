@@ -7,7 +7,7 @@ import (
 
 func TestRuleSetAddDuplicate(t *testing.T) {
 	cfg := NewEmptyConfig()
-	rs := RuleSet{Tag: "geosite-youtube", Type: "remote", Format: "binary", URL: "u", UpdateInterval: "24h"}
+	rs := RuleSet{Tag: "geosite-youtube", Type: "remote", Format: "binary", URL: "https://example.com/yt.srs", UpdateInterval: "24h"}
 	if err := cfg.AddRuleSet(rs); err != nil {
 		t.Fatal(err)
 	}
@@ -33,17 +33,49 @@ func TestRuleSetUpdate(t *testing.T) {
 	}
 
 	// Not found.
-	missing := RuleSet{Tag: "missing", Type: "remote", Format: "binary", URL: "u", UpdateInterval: "24h"}
+	missing := RuleSet{Tag: "missing", Type: "remote", Format: "binary", URL: "https://example.com/x.srs", UpdateInterval: "24h"}
 	err := cfg.UpdateRuleSet("missing", missing)
 	if !errors.Is(err, ErrRuleSetNotFound) {
 		t.Errorf("expected ErrRuleSetNotFound, got %v", err)
 	}
 
 	// Tag rename rejected.
-	renamed := RuleSet{Tag: "geosite-renamed", Type: "remote", Format: "binary", URL: "u", UpdateInterval: "24h"}
+	renamed := RuleSet{Tag: "geosite-renamed", Type: "remote", Format: "binary", URL: "https://example.com/x.srs", UpdateInterval: "24h"}
 	err = cfg.UpdateRuleSet("geosite-youtube", renamed)
 	if err == nil {
 		t.Error("expected tag-rename to be rejected, got nil")
+	}
+}
+
+func TestRuleSetRemoteURLValidation(t *testing.T) {
+	cfg := NewEmptyConfig()
+
+	// Garbage URL rejected.
+	err := cfg.AddRuleSet(RuleSet{Tag: "g1", Type: "remote", URL: "not a url"})
+	if err == nil || !contains(err.Error(), "invalid url") {
+		t.Errorf("expected 'invalid url' error, got %v", err)
+	}
+
+	// Missing host rejected (scheme but no host).
+	err = cfg.AddRuleSet(RuleSet{Tag: "g2", Type: "remote", URL: "https://"})
+	if err == nil || !contains(err.Error(), "invalid url") {
+		t.Errorf("expected 'invalid url' for empty host, got %v", err)
+	}
+
+	// Non-http/https scheme rejected.
+	err = cfg.AddRuleSet(RuleSet{Tag: "g3", Type: "remote", URL: "ftp://example.com/x.srs"})
+	if err == nil || !contains(err.Error(), "scheme must be http or https") {
+		t.Errorf("expected 'scheme' error, got %v", err)
+	}
+
+	// Valid http URL accepted.
+	if err := cfg.AddRuleSet(RuleSet{Tag: "ok-http", Type: "remote", URL: "http://example.com/x.srs"}); err != nil {
+		t.Fatalf("valid http URL: %v", err)
+	}
+
+	// Valid https URL accepted.
+	if err := cfg.AddRuleSet(RuleSet{Tag: "ok-https", Type: "remote", URL: "https://example.com/x.srs"}); err != nil {
+		t.Fatalf("valid https URL: %v", err)
 	}
 }
 
