@@ -15,14 +15,22 @@
 	let addType = $state<'geoip' | 'geosite'>('geosite');
 	let busy = $state<string | null>(null);
 	let err = $state('');
+	// URL of the in-flight add — captured at submit time so the progress
+	// bar in the Add section keeps tracking the original download even
+	// if the user starts typing a different URL into the input or the
+	// field gets cleared after success. Without this, $geoDownloadProgress
+	// lookup keyed by the live `addUrl` value would lose the bar
+	// mid-download.
+	let inFlightAddUrl = $state<string | null>(null);
 
 	const GROUND_ZERRO_GEOIP_URL =
 		'https://raw.githubusercontent.com/Ground-Zerro/Geo-Aggregator/main/geodat/geoip_GA.dat';
 	const GROUND_ZERRO_GEOSITE_URL =
 		'https://raw.githubusercontent.com/Ground-Zerro/Geo-Aggregator/main/geodat/geosite_GA.dat';
 
-	// Progress for the currently in-flight add (keyed by URL). Populated by SSE.
-	let progress = $derived($geoDownloadProgress[addUrl.trim()] ?? null);
+	// Progress for the currently in-flight add. Keyed by the submitted
+	// URL captured at submit time, not the live input value.
+	let progress = $derived(inFlightAddUrl ? ($geoDownloadProgress[inFlightAddUrl] ?? null) : null);
 	let progressByPath = $derived($geoDownloadProgress);
 
 	function progressFor(url: string) {
@@ -39,23 +47,27 @@
 
 
 	async function add() {
-		if (!addUrl.trim()) return;
+		const submitted = addUrl.trim();
+		if (!submitted) return;
 		busy = 'add';
 		err = '';
+		inFlightAddUrl = submitted;
 		try {
-			await api.addGeoFile(addType, addUrl.trim());
+			await api.addGeoFile(addType, submitted);
 			addUrl = '';
 			onrefresh();
 		} catch (e: unknown) {
 			err = e instanceof Error ? e.message : String(e);
 		} finally {
 			busy = null;
+			inFlightAddUrl = null;
 		}
 	}
 
 	async function addPreset(type: 'geoip' | 'geosite', url: string) {
 		busy = 'add';
 		err = '';
+		inFlightAddUrl = url;
 		try {
 			await api.addGeoFile(type, url);
 			onrefresh();
@@ -63,6 +75,7 @@
 			err = e instanceof Error ? e.message : String(e);
 		} finally {
 			busy = null;
+			inFlightAddUrl = null;
 		}
 	}
 
