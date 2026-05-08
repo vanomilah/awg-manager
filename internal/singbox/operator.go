@@ -1146,14 +1146,17 @@ func (o *Operator) Update(ctx context.Context) error {
 	if err := o.inst.Activate(tmp); err != nil {
 		// Activate already removed the tmp on failure; we now have an
 		// awkward state — daemon stopped, old binary still in place,
-		// no swap. Best-effort restore of the prior state so the user
-		// still has a working sing-box.
+		// no swap. Surface the terminal "error" event first so the SSE
+		// stream closes from the UI's perspective immediately, then do
+		// the best-effort restart in the background — startAndWait can
+		// take up to 15s and we don't want it to hold the progress bar
+		// hostage on a stale "activate" frame.
+		report("error", 0, 0, err.Error())
 		if wasRunning {
 			if startErr := o.startAndWait(ctx); startErr != nil {
 				o.log.Warn("update: failed to restart after Activate error", "err", startErr)
 			}
 		}
-		report("error", 0, 0, err.Error())
 		return fmt.Errorf("activate: %w", err)
 	}
 	if wasRunning {

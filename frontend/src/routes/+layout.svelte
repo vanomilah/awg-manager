@@ -94,6 +94,11 @@
 			onDisconnected: () => {
 				// Phase C: serverOnline.set() is gone (derived from healthMonitor);
 				// nothing else needs to happen on disconnect — health monitor owns the overlay.
+				// Clear in-flight singbox install progress: if SSE drops between
+				// the start of an install/update and its terminal event, the
+				// store would otherwise stay non-null forever and keep the
+				// install button hidden behind the progress widget.
+				singboxInstallProgress.clear();
 			},
 
 			// System events
