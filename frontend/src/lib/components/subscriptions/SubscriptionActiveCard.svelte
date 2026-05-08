@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { untrack } from 'svelte';
     import { goto } from '$app/navigation';
     import { api } from '$lib/api/client';
     import { Button } from '$lib/components/ui';
@@ -16,12 +16,20 @@
     interface Props {
         subscription: Subscription;
         activeMember: SubscriptionMember;
+        autoDelayCheckNonce?: number;
+        autoDelayCheckDelayMs?: number;
     }
-    let { subscription, activeMember }: Props = $props();
+    let {
+        subscription,
+        activeMember,
+        autoDelayCheckNonce = 0,
+        autoDelayCheckDelayMs = 0,
+    }: Props = $props();
 
     let pickerOpen = $state(false);
     let checking = $state(false);
     let speedtestOpen = $state(false);
+    let showEndpoint = $state(false);
 
     // NDMS Proxy interface name (Proxy<N>) and matching kernel TUN
     // (t2s<N>) — same naming convention sing-box tunnels use, just
@@ -40,19 +48,26 @@
 
     const history = $derived($singboxDelayHistory.get(activeMember.tag) ?? []);
     const latest = $derived(history.length > 0 ? history[history.length - 1] : -1);
+    const hasConsecutiveTimeout = $derived(
+        history.length >= 2 &&
+            history[history.length - 1] <= 0 &&
+            history[history.length - 2] <= 0,
+    );
     const traffic = $derived($singboxTraffic.get(activeMember.tag));
+    const endpointText = $derived(`${activeMember.server}:${activeMember.port}`);
 
     type State = 'ok' | 'slow' | 'fail' | 'unknown';
     const cardState: State = $derived.by(() => {
         if (latest < 0) return 'unknown';
-        if (latest <= 0) return 'fail';
+        if (latest <= 0) return hasConsecutiveTimeout ? 'fail' : 'slow';
         if (latest < DELAY_OK) return 'ok';
         if (latest < DELAY_SLOW) return 'slow';
-        return 'fail';
+        return 'slow';
     });
     const latText = $derived.by(() => {
         if (cardState === 'unknown') return '—';
         if (cardState === 'fail') return 'timeout';
+        if (latest <= 0) return 'проверка...';
         return `${latest}ms`;
     });
     const protocolLabel = $derived.by(() => {
@@ -77,6 +92,22 @@
         }
     }
 
+    let lastAutoDelayCheckNonce = 0;
+    $effect(() => {
+        const nonce = autoDelayCheckNonce;
+        const delay = autoDelayCheckDelayMs;
+        const tag = activeMember.tag;
+
+        if (nonce <= 0 || nonce === lastAutoDelayCheckNonce) return;
+        lastAutoDelayCheckNonce = nonce;
+        if (!tag || checking) return;
+
+        const timer = setTimeout(() => {
+            untrack(() => void triggerCheck());
+        }, delay);
+        return () => clearTimeout(timer);
+    });
+
     async function pickMember(memberTag: string): Promise<void> {
         await api.setSubscriptionActiveMember(subscription.id, memberTag);
         await subscriptionsStore.refetch();
@@ -93,14 +124,6 @@
         return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
     }
 
-    // Auto-trigger an initial delay check on mount if history is empty,
-    // so a freshly-opened tab paints meaningful data without the user
-    // pressing the button.
-    onMount(() => {
-        if (history.length === 0) {
-            void triggerCheck();
-        }
-    });
 </script>
 
 <div
@@ -152,18 +175,38 @@
     <div class="server-row">
         <span class="label">Сервер</span>
         <div class="picker-anchor">
-            <button
-                class="server-btn"
-                onclick={(e) => {
-                    e.stopPropagation();
-                    pickerOpen = !pickerOpen;
-                }}
-                aria-haspopup="listbox"
-                aria-expanded={pickerOpen}
-            >
-                <span class="server-text">{activeMember.server}:{activeMember.port}</span>
-                <span class="caret" aria-hidden="true">▾</span>
-            </button>
+            <div class="server-control">
+                <button
+                    class="server-btn"
+                    onclick={(e) => {
+                        e.stopPropagation();
+                        pickerOpen = !pickerOpen;
+                    }}
+                    aria-haspopup="listbox"
+                    aria-expanded={pickerOpen}
+                >
+                    <span class="server-text" title={showEndpoint ? endpointText : ''}>
+                        {showEndpoint ? endpointText : '•••••••••'}
+                    </span>
+                    <span class="caret" aria-hidden="true">▾</span>
+                </button>
+                <button
+                    type="button"
+                    class="eye-btn"
+                    onclick={(e) => {
+                        e.stopPropagation();
+                        showEndpoint = !showEndpoint;
+                    }}
+                    title={showEndpoint ? 'Скрыть' : 'Показать'}
+                    aria-label={showEndpoint ? 'Скрыть сервер' : 'Показать сервер'}
+                >
+                    {#if showEndpoint}
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    {:else}
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    {/if}
+                </button>
+            </div>
             {#if pickerOpen}
                 <SubscriptionMemberPicker
                     members={subscription.members ?? []}
@@ -321,6 +364,12 @@
     }
     .label { color: var(--color-text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
     .picker-anchor { position: relative; }
+    .server-control {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        min-width: 0;
+    }
     .server-btn {
         display: flex;
         align-items: center;
@@ -335,6 +384,7 @@
         font-size: 0.82rem;
         color: var(--color-text-primary);
         cursor: pointer;
+        min-width: 0;
     }
     .server-btn:hover { border-color: var(--color-accent); }
     .server-text {
@@ -345,6 +395,19 @@
         white-space: nowrap;
     }
     .caret { color: var(--color-text-muted); font-size: 0.7rem; }
+    .eye-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 auto;
+        padding: 0.35rem;
+        border: none;
+        background: none;
+        color: var(--color-text-muted);
+        cursor: pointer;
+        transition: color var(--t-fast) ease;
+    }
+    .eye-btn:hover { color: var(--color-text-secondary); }
     .divider { height: 1px; background: var(--color-border); margin: 0.4rem 0; }
     .chart-block { display: flex; flex-direction: column; gap: 0.3rem; }
     .chart-head {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,15 @@ const (
 	// 200ms keeps the wait snappy on fast starts (~200ms to detect ready)
 	// without hammering the daemon when it takes the full 15s.
 	singboxProbeInterval = 200 * time.Millisecond
+
+	// singboxVersionProbeTimeout bounds external `sing-box version` probe
+	// duration so a broken/blocked binary cannot accumulate hung child
+	// processes and starve router memory.
+	singboxVersionProbeTimeout = 2 * time.Second
+
+	// singboxVersionCacheTTL keeps version/features probe reasonably fresh
+	// while avoiding process-spawn on every /singbox/status poll.
+	singboxVersionCacheTTL = 5 * time.Minute
 )
 
 const (
@@ -91,6 +101,12 @@ type Operator struct {
 	// SetInstaller so existing tests that build an Operator without an
 	// installer still work for non-install-related code paths.
 	inst *installer.Installer
+
+	// versionProbeMu guards cached output of `sing-box version`.
+	versionProbeMu       sync.Mutex
+	versionProbeValue    string
+	versionProbeFeatures []string
+	versionProbeAt       time.Time
 }
 
 // OperatorDeps are external dependencies for DI.
@@ -646,7 +662,7 @@ func (o *Operator) IsInstalled() (bool, string) {
 	if o.inst != nil {
 		return true, o.inst.CurrentVersion(context.Background())
 	}
-	v, _ := detectVersionAndFeatures(o.binary)
+	v, _ := o.detectVersionAndFeaturesCached(context.Background())
 	return true, v
 }
 
@@ -664,11 +680,18 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 	s := Status{}
 	if isExecutable(o.binary) {
 		s.Installed = true
+		detectedVersion, detectedFeatures := o.detectVersionAndFeaturesCached(ctx)
+		s.Features = detectedFeatures
 		if o.inst != nil {
 			s.Version = o.inst.CurrentVersion(ctx)
-			_, s.Features = detectVersionAndFeatures(o.binary)
+			// Some builds print a slightly different version banner that
+			// CurrentVersion may fail to parse. Fall back to runtime detect
+			// so status always exposes a usable semantic version.
+			if s.Version == "" {
+				s.Version = detectedVersion
+			}
 		} else {
-			s.Version, s.Features = detectVersionAndFeatures(o.binary)
+			s.Version = detectedVersion
 		}
 	}
 	if running, pid := o.proc.IsRunning(); running {
@@ -691,12 +714,30 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 // detectVersionAndFeatures shells out to `<binary> version` and returns
 // the version string and build tags parsed from its output. Exec
 // failure returns empty values.
-func detectVersionAndFeatures(binary string) (string, []string) {
-	out, err := exec.Command(binary, "version").Output()
+func detectVersionAndFeatures(ctx context.Context, binary string) (string, []string) {
+	probeCtx, cancel := context.WithTimeout(ctx, singboxVersionProbeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(probeCtx, binary, "version").Output()
 	if err != nil {
 		return "", nil
 	}
 	return parseSingboxVersionOutput(string(out))
+}
+
+func (o *Operator) detectVersionAndFeaturesCached(ctx context.Context) (string, []string) {
+	now := time.Now()
+	o.versionProbeMu.Lock()
+	defer o.versionProbeMu.Unlock()
+
+	if !o.versionProbeAt.IsZero() && now.Sub(o.versionProbeAt) < singboxVersionCacheTTL {
+		return o.versionProbeValue, append([]string(nil), o.versionProbeFeatures...)
+	}
+
+	v, f := detectVersionAndFeatures(ctx, o.binary)
+	o.versionProbeValue = v
+	o.versionProbeFeatures = append([]string(nil), f...)
+	o.versionProbeAt = now
+	return v, append([]string(nil), f...)
 }
 
 // parseSingboxVersionOutput parses the multi-line text produced by
@@ -715,20 +756,21 @@ func detectVersionAndFeatures(binary string) (string, []string) {
 func parseSingboxVersionOutput(out string) (string, []string) {
 	var version string
 	var features []string
+	versionRe := regexp.MustCompile(`(?i)\bsing-?box\b\s+version\b\s+([^\s]+)`)
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if version == "" && strings.HasPrefix(line, "sing-box version") {
-			parts := strings.Fields(line)
-			if len(parts) >= 3 {
-				version = parts[2]
+		if version == "" {
+			if m := versionRe.FindStringSubmatch(line); len(m) == 2 {
+				version = strings.TrimSpace(m[1])
+				continue
 			}
-			continue
 		}
-		if strings.HasPrefix(line, "Tags:") {
-			tagsRaw := strings.TrimSpace(strings.TrimPrefix(line, "Tags:"))
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "tags:") {
+			tagsRaw := strings.TrimSpace(line[len("Tags:"):])
 			for _, t := range strings.Split(tagsRaw, ",") {
 				t = strings.TrimSpace(t)
 				if t != "" {
@@ -738,6 +780,12 @@ func parseSingboxVersionOutput(out string) (string, []string) {
 		}
 	}
 	return version, features
+}
+
+// IsPresent reports whether the managed sing-box binary exists and is executable.
+// Fast path for UI/system probes that must not block on `sing-box version`.
+func (o *Operator) IsPresent() bool {
+	return isExecutable(o.binary)
 }
 
 // ListTunnels returns the current tunnels from config.json enriched with

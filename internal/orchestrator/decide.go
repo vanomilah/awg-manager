@@ -73,22 +73,57 @@ func decideReconnect(state *State) []Action {
 	actions = append(actions, Action{Type: ActionRestoreEndpointTracking})
 
 	for _, t := range state.tunnels {
-		if !t.Running {
+		if t.Running {
+			switch t.Backend {
+			case "kernel":
+				// Re-apply NDMS config, firewall, routing around the running process.
+				actions = append(actions, Action{Type: ActionReconcileKernel, Tunnel: t.ID})
+			case "nativewg":
+				if state.supportsASC {
+					// KeenOS 5+ ASC mode has no kmod proxy to restore. A running
+					// NativeWG interface may still need a full resync after awgm
+					// restart/update so ASC bindings, routes and persistence are
+					// refreshed without first dropping NDMS to conf=disabled.
+					actions = append(actions, Action{Type: ActionStartNativeWG, Tunnel: t.ID})
+					actions = appendPostStartActions(actions, t)
+				} else {
+					// KeenOS 4 proxy/kmod mode is more sensitive: the NDMS
+					// interface is already running, so a full Start can flap the
+					// interface and trigger repeated restart hooks. Restore only
+					// the proxy slot and peer endpoint around the live tunnel.
+					actions = append(actions, Action{Type: ActionRestoreKmod, Tunnel: t.ID})
+					if t.PingCheck != nil && t.PingCheck.Enabled {
+						actions = append(actions, Action{Type: ActionStartMonitoring, Tunnel: t.ID})
+					}
+				}
+			}
+
+			// NativeWG monitoring is handled inside the backend-specific branch above.
+			if t.Backend == "nativewg" {
+				continue
+			}
+			if t.PingCheck != nil && t.PingCheck.Enabled {
+				actions = append(actions, Action{Type: ActionStartMonitoring, Tunnel: t.ID})
+			}
 			continue
 		}
 
+		// Reconnect after daemon reinstall/restart: an enabled tunnel may no
+		// longer be running. Bring it back just like on boot.
+		if !t.Enabled {
+			continue
+		}
 		switch t.Backend {
 		case "kernel":
-			// Re-apply NDMS config, firewall, routing around the running process.
-			actions = append(actions, Action{Type: ActionReconcileKernel, Tunnel: t.ID})
+			actions = append(actions, Action{Type: ActionColdStartKernel, Tunnel: t.ID})
+			actions = appendPostStartActions(actions, t)
 		case "nativewg":
-			if !state.supportsASC {
-				actions = append(actions, Action{Type: ActionRestoreKmod, Tunnel: t.ID})
-			}
-		}
-
-		if t.PingCheck != nil && t.PingCheck.Enabled {
-			actions = append(actions, Action{Type: ActionStartMonitoring, Tunnel: t.ID})
+			// Reconnect must restore desired state from storage regardless of
+			// ASC support. After daemon reinstall/restart, an enabled NativeWG
+			// tunnel may be down and NDMS might not emit a fresh conf=running
+			// edge by itself, so we explicitly start it.
+			actions = append(actions, Action{Type: ActionStartNativeWG, Tunnel: t.ID})
+			actions = appendPostStartActions(actions, t)
 		}
 	}
 
