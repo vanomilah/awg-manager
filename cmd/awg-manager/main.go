@@ -945,7 +945,7 @@ func main() {
 		return err
 	})
 	subSched.Start(context.Background())
-	srv.SetSubscriptionHandler(api.NewSubscriptionHandler(subSvc))
+	srv.SetSubscriptionHandler(api.NewSubscriptionHandler(subSvc, singboxOp))
 	srv.AddShutdownHook(subSched.Stop)
 
 	// Boot status: 0 = booting, 1 = done. Used by /api/system/info.

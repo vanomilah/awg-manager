@@ -9,13 +9,22 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 )
 
-// SubscriptionHandler exposes /api/singbox/subscriptions/* endpoints.
-type SubscriptionHandler struct {
-	svc *subscription.Service
+// SingboxPresenceProbe reports whether the managed sing-box binary is
+// available on disk. Subscriptions register an NDMS Proxy interface
+// pointing at sing-box's inbound listener, so creating one without
+// sing-box installed leaves the Proxy slot pointing at nothing.
+type SingboxPresenceProbe interface {
+	IsPresent() bool
 }
 
-func NewSubscriptionHandler(svc *subscription.Service) *SubscriptionHandler {
-	return &SubscriptionHandler{svc: svc}
+// SubscriptionHandler exposes /api/singbox/subscriptions/* endpoints.
+type SubscriptionHandler struct {
+	svc      *subscription.Service
+	presence SingboxPresenceProbe
+}
+
+func NewSubscriptionHandler(svc *subscription.Service, presence SingboxPresenceProbe) *SubscriptionHandler {
+	return &SubscriptionHandler{svc: svc, presence: presence}
 }
 
 // SubscriptionMemberDTO carries per-member parsed metadata for the UI.
@@ -182,6 +191,12 @@ func (h *SubscriptionHandler) List(w http.ResponseWriter, r *http.Request) {
 func (h *SubscriptionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.MethodNotAllowed(w)
+		return
+	}
+	if h.presence != nil && !h.presence.IsPresent() {
+		response.ErrorWithStatus(w, http.StatusPreconditionFailed,
+			"Sing-box не установлен — установите перед добавлением подписки",
+			"SINGBOX_NOT_INSTALLED")
 		return
 	}
 	var req CreateSubscriptionRequest

@@ -59,6 +59,7 @@
 	});
 
 	const goArch = $derived(sysInfo?.goArch ?? '');
+	const singboxInstalled = $derived($singboxStatus.data?.installed ?? false);
 
 	let showUnsupportedBlock = $derived(
 		sysInfo !== null &&
@@ -619,16 +620,19 @@
 		{/if}
 		{/if}
 		{:else if activeTab === 'subscriptions'}
-			<div class="tunnels-toolbar">
-				<span class="tunnel-count">
-					{subscriptionsList.length}
-					{subscriptionsList.length === 1 ? 'подписка' : subscriptionsList.length < 5 ? 'подписки' : 'подписок'}
-				</span>
-				<div class="toolbar-actions">
-					<Button variant="primary" size="md" onclick={() => (createModalOpen = true)}>+ Добавить подписку</Button>
+			<SingboxInstallBanner />
+			{#if singboxInstalled}
+				<div class="tunnels-toolbar">
+					<span class="tunnel-count">
+						{subscriptionsList.length}
+						{subscriptionsList.length === 1 ? 'подписка' : subscriptionsList.length < 5 ? 'подписки' : 'подписок'}
+					</span>
+					<div class="toolbar-actions">
+						<Button variant="primary" size="md" onclick={() => (createModalOpen = true)}>+ Добавить подписку</Button>
+					</div>
 				</div>
-			</div>
-			<SubscriptionList subscriptions={subscriptionsList} onAdd={() => (createModalOpen = true)} />
+				<SubscriptionList subscriptions={subscriptionsList} onAdd={() => (createModalOpen = true)} />
+			{/if}
 		{:else}
 			<SingboxInstallBanner />
 			{#if singboxTunnelsList.length > 0 || subscriptionsActiveCards.length > 0}
