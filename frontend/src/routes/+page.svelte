@@ -10,13 +10,13 @@
 	import { PageContainer, LoadingSpinner, WelcomeBanner } from '$lib/components/layout';
 	import { Modal, StoreStatusBadge, TrafficChartModal, Button, Badge, Tabs } from '$lib/components/ui';
 	import { singboxStatus, singboxTunnels } from '$lib/stores/singbox';
-	import { SingboxInstallBanner, SingboxTunnelCard, SingboxGhostTerminal } from '$lib/components/singbox';
+	import { SingboxInstallBanner, SingboxTunnelCard } from '$lib/components/singbox';
 	import { feedTraffic } from '$lib/stores/traffic';
 	import { usageLevel } from '$lib/stores/settings';
 	import { isSectionVisible } from '$lib/types/usageLevel';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
 	import SubscriptionList from '$lib/components/subscriptions/SubscriptionList.svelte';
-	import SubscriptionCreateModal from '$lib/components/subscriptions/SubscriptionCreateModal.svelte';
+	import AddTunnelWizard from '$lib/components/subscriptions/AddTunnelWizard.svelte';
 	import SubscriptionActiveCard from '$lib/components/subscriptions/SubscriptionActiveCard.svelte';
 	import type { Subscription, SubscriptionMember } from '$lib/types';
 
@@ -182,6 +182,12 @@
 
 	let subscriptionsList = $derived($subscriptionsStore.data ?? []);
 	let createModalOpen = $state(false);
+	let wizardPreselect = $state<'choose' | 'single' | 'inline' | 'url'>('choose');
+
+	function openWizard(preselect: 'choose' | 'single' | 'inline' | 'url'): void {
+		wizardPreselect = preselect;
+		createModalOpen = true;
+	}
 
 	const subscriptionsActiveCards = $derived(
 		($subscriptionsStore.data ?? [])
@@ -628,10 +634,10 @@
 						{subscriptionsList.length === 1 ? 'подписка' : subscriptionsList.length < 5 ? 'подписки' : 'подписок'}
 					</span>
 					<div class="toolbar-actions">
-						<Button variant="primary" size="md" onclick={() => (createModalOpen = true)}>+ Добавить подписку</Button>
+						<Button variant="primary" size="md" onclick={() => openWizard('url')}>+ Добавить</Button>
 					</div>
 				</div>
-				<SubscriptionList subscriptions={subscriptionsList} onAdd={() => (createModalOpen = true)} />
+				<SubscriptionList subscriptions={subscriptionsList} onAdd={() => openWizard('url')} />
 			{/if}
 		{:else}
 			<SingboxInstallBanner />
@@ -642,12 +648,46 @@
 						{singboxTunnelsList.length === 1 ? 'туннель' : singboxTunnelsList.length < 5 ? 'туннеля' : 'туннелей'}
 					</span>
 					<div class="toolbar-actions">
-						<Button variant="primary" size="md" href="/singbox/new">+ Добавить</Button>
+						<Button variant="primary" size="md" onclick={() => openWizard('single')}>+ Добавить</Button>
 					</div>
 				</div>
 			{/if}
 			{#if singboxTunnelsList.length === 0 && subscriptionsActiveCards.length === 0}
-				<SingboxGhostTerminal />
+				<div class="empty-kinds">
+					<button type="button" class="empty-kind-card" onclick={() => openWizard('single')}>
+						<svg class="empty-kind-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07L11 5" />
+							<path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07L13 19" />
+						</svg>
+						<div class="empty-kind-title">Один сервер</div>
+						<div class="empty-kind-desc">
+							Вставь share-link — получишь sing-box туннель со своим Proxy NDMS.
+						</div>
+					</button>
+					<button type="button" class="empty-kind-card" onclick={() => openWizard('inline')}>
+						<svg class="empty-kind-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<rect x="3" y="3" width="7" height="7" rx="1" />
+							<rect x="14" y="3" width="7" height="7" rx="1" />
+							<rect x="3" y="14" width="7" height="7" rx="1" />
+							<rect x="14" y="14" width="7" height="7" rx="1" />
+						</svg>
+						<div class="empty-kind-title">Группа серверов</div>
+						<div class="empty-kind-desc">
+							Несколько ссылок одной группой с общим Proxy: ручной выбор или автовыбор по скорости.
+						</div>
+					</button>
+					<button type="button" class="empty-kind-card" onclick={() => openWizard('url')}>
+						<svg class="empty-kind-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+							<circle cx="12" cy="12" r="10" />
+							<line x1="2" y1="12" x2="22" y2="12" />
+							<path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+						</svg>
+						<div class="empty-kind-title">Подписка по URL</div>
+						<div class="empty-kind-desc">
+							Адрес подписки провайдера — список обновляется автоматически.
+						</div>
+					</button>
+				</div>
 				<div class="info-card">
 					<h3 class="info-title">О Sing-box</h3>
 					<p class="info-section-desc">
@@ -728,7 +768,7 @@
 	onclose={() => { referencedDetails = null; referencedTunnelName = ''; }}
 />
 
-<SubscriptionCreateModal bind:open={createModalOpen} />
+<AddTunnelWizard bind:open={createModalOpen} preselect={wizardPreselect} />
 
 {#if detailId}
 	{@const managed = awgList.find((x) => x.id === detailId)}
@@ -956,6 +996,45 @@
 		font-size: 1.0625rem;
 		font-weight: 500;
 	}
+
+	/* Empty-state kind picker — three clickable cards opening the wizard
+	   on the matching step 2. Mirrors the wizard's step-1 visual so the
+	   transition into the modal feels continuous. */
+	.empty-kinds {
+		display: grid;
+		grid-template-columns: 1fr;
+		gap: 0.7rem;
+		margin-top: 0.5rem;
+	}
+	@media (min-width: 600px) {
+		.empty-kinds { grid-template-columns: 1fr 1fr 1fr; }
+	}
+	.empty-kind-card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+		padding: 1.1rem 1.2rem;
+		background: var(--color-bg-primary);
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		text-align: left;
+		cursor: pointer;
+		font: inherit;
+		color: var(--color-text-primary);
+		transition: border-color 120ms, transform 120ms, background 120ms;
+	}
+	.empty-kind-card:hover {
+		border-color: var(--color-primary, #3b82f6);
+		background: rgba(59, 130, 246, 0.04);
+		transform: translateY(-1px);
+	}
+	.empty-kind-card:focus-visible {
+		outline: 2px solid var(--color-primary, #3b82f6);
+		outline-offset: 2px;
+	}
+	.empty-kind-icon { width: 28px; height: 28px; color: var(--color-primary, #3b82f6); }
+	.empty-kind-title { font-weight: 600; font-size: 0.95rem; }
+	.empty-kind-desc { color: var(--color-text-muted); font-size: 0.8rem; line-height: 1.4; }
 
 	/* "About AmneziaWG / Sing-box" info card — page-specific */
 	.info-card {
