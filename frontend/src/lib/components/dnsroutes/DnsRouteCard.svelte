@@ -44,8 +44,14 @@
 			: 'badge-ndms'
 	);
 
-	let cidrCount = $derived((route.domains ?? []).filter(d => d.includes('/')).length);
-	let domainCount = $derived((route.domains?.length ?? 0) - cidrCount);
+	// Post-split data stores CIDRs in route.subnets; legacy lists created
+	// before commit a65b76f4 (2026-04-15) may still have CIDRs mixed into
+	// route.domains until the next save re-runs splitDomainsAndSubnets.
+	let cidrCount = $derived(
+		(route.subnets?.length ?? 0) +
+		(route.domains ?? []).filter(d => d.includes('/')).length
+	);
+	let domainCount = $derived((route.domains ?? []).filter(d => !d.includes('/')).length);
 	let subCount = $derived(route.subscriptions?.length ?? 0);
 	let manualCount = $derived(route.manualDomains?.length ?? 0);
 
