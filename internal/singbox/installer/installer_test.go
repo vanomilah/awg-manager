@@ -125,6 +125,27 @@ func TestInstaller_CurrentVersion_AcceptsMixedCaseBanner(t *testing.T) {
 	}
 }
 
+func TestInstaller_CurrentVersion_AllowsSlowBanner(t *testing.T) {
+	// Entware/UPX builds can take several seconds before the version
+	// banner appears. The probe timeout must be wide enough that a
+	// 4-second-delayed banner still parses — narrower timeouts (e.g.
+	// the previous 3s) caused empty version strings on slow targets
+	// and made the UI fall back to "v—".
+	if runtime.GOOS == "windows" {
+		t.Skip("executable script fixture is POSIX-only")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sing-box")
+	script := "#!/bin/sh\nsleep 4\necho 'sing-box version 1.13.11'\n"
+	if err := os.WriteFile(target, []byte(script), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	inst := New(target, "x", BinarySpec{}, nil)
+	if v := inst.CurrentVersion(context.Background()); v != "1.13.11" {
+		t.Errorf("CurrentVersion() = %q, want 1.13.11", v)
+	}
+}
+
 func TestInstaller_BinaryPathAndRequiredVersion(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "sing-box")

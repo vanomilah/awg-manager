@@ -151,7 +151,10 @@ func (i *Installer) CurrentVersion(ctx context.Context) string {
 	if _, err := os.Stat(i.binaryPath); err != nil {
 		return ""
 	}
-	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	// Entware/UPX builds on Keenetic can take several seconds to emit
+	// the version banner — keep the headroom so first-call probes
+	// still succeed on slow targets.
+	cctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(cctx, i.binaryPath, "version").Output()
 	if err != nil {

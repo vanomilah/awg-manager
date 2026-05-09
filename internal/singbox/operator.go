@@ -38,7 +38,12 @@ const (
 	// singboxVersionProbeTimeout bounds external `sing-box version` probe
 	// duration so a broken/blocked binary cannot accumulate hung child
 	// processes and starve router memory.
-	singboxVersionProbeTimeout = 2 * time.Second
+	//
+	// Entware/UPX builds on Keenetic (especially older MIPS with UPX
+	// self-decompression) can spend several seconds inflating before
+	// emitting the banner. Keep the headroom so the first probe still
+	// completes successfully on slow targets.
+	singboxVersionProbeTimeout = 6 * time.Second
 
 	// singboxVersionCacheTTL keeps version/features probe reasonably fresh
 	// while avoiding process-spawn on every /singbox/status poll.
