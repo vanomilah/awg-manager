@@ -65,7 +65,7 @@
 <style>
 	.policy-grid {
 		display: grid;
-		grid-template-columns: repeat(2, 1fr);
+		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 12px;
 	}
 
@@ -181,6 +181,12 @@
 		width: 1rem;
 		height: 1rem;
 		cursor: pointer;
+	}
+
+	@media (max-width: 1024px) {
+		.policy-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 
 	@media (max-width: 768px) {
