@@ -792,7 +792,11 @@ const server = http.createServer(async (req, res) => {
 	if (req.method === 'GET' && path === '/singbox/awg-outbounds/tags') {
 		send(res, 200, {
 			success: true,
-			data: [{ tag: 'awg-vpn0', label: 'DE Frankfurt', kind: 'managed', iface: 't2s0' }],
+			data: [
+				{ tag: 'awg-vpn0',             label: 'DE Frankfurt', kind: 'managed', iface: 't2s0' },
+				{ tag: 'awg-sys-Wireguard0',   label: 'NL Amsterdam', kind: 'system',  iface: 'nwg0' },
+				{ tag: 'awg-sys-Wireguard1',   label: 'FI Helsinki',  kind: 'system',  iface: 'nwg1' },
+			],
 		});
 		return;
 	}

@@ -68,23 +68,34 @@
 {#if loading}
 	<div class="hint">Загрузка...</div>
 {:else if tags.length === 1}
-	<div class="toast">Используем туннель <b>{tags[0].tag}</b>. Шаг проскакивается автоматически.</div>
+	<div class="toast">Используем туннель <b>{tags[0].label || tags[0].tag}</b>. Шаг проскакивается автоматически.</div>
 {:else if tags.length > 1}
 	<div class="hint">Выберите AWG-туннель, через который пойдут выбранные пресеты.</div>
 	<div class="radio-list">
 		{#each tags as t (t.tag)}
-			<button
-				type="button"
-				class="radio"
-				class:checked={selected === t.tag}
-				onclick={() => pick(t.tag)}
-			>
-				<span class="mark"></span>
-				<div class="rad-body">
-					<div class="rad-name">{t.tag}</div>
-					{#if t.label}<div class="rad-meta mono">{t.label}</div>{/if}
-				</div>
-			</button>
+			{@const checked = selected === t.tag}
+			<label class="option" class:checked>
+				<input
+					type="radio"
+					name="wizard-tunnel-tag"
+					value={t.tag}
+					{checked}
+					onchange={() => pick(t.tag)}
+				/>
+				<span class="option-content">
+					<span class="option-name">{t.label || t.tag}</span>
+					{#if t.label && t.tag !== t.label}
+						<span class="option-meta">{t.tag}</span>
+					{/if}
+				</span>
+				<span class="option-check" aria-hidden="true">
+					{#if checked}
+						<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+							<polyline points="20 6 9 17 4 12"/>
+						</svg>
+					{/if}
+				</span>
+			</label>
 		{/each}
 	</div>
 {:else}
@@ -120,54 +131,73 @@
 		color: var(--color-text-primary);
 		font-size: 0.85rem;
 	}
-	.radio-list { display: flex; flex-direction: column; gap: 0.5rem; }
-	.radio {
-		padding: 0.6rem 0.85rem;
-		border: 1px solid var(--color-border);
-		border-radius: 6px;
-		background: var(--color-bg-secondary);
-		display: flex;
-		align-items: flex-start;
-		gap: 0.6rem;
-		cursor: pointer;
-		font: inherit;
-		text-align: left;
-		color: var(--color-text-primary);
-	}
-	.radio.checked { border-color: var(--color-accent); background: rgba(88,166,255,0.06); }
-	.mark {
-		width: 14px; height: 14px;
-		border-radius: 50%;
-		border: 2px solid var(--color-border);
-		flex-shrink: 0;
-		margin-top: 2px;
-	}
-	.radio.checked .mark {
-		border-color: var(--color-accent);
-		background: var(--color-accent);
-		box-shadow: inset 0 0 0 3px var(--color-bg-secondary);
-	}
-	.rad-body {
+
+	.radio-list {
 		display: flex;
 		flex-direction: column;
-		gap: 0.15rem;
-		min-width: 0;
-		flex: 1;
+		gap: 0.375rem;
 	}
-	.rad-name {
+
+	.option {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		padding: 0.625rem 0.875rem;
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
+		border-radius: 6px;
+		cursor: pointer;
+		transition: background 0.15s ease, border-color 0.15s ease;
+		min-width: 0;
+	}
+	.option:hover:not(.checked) {
+		border-color: var(--color-border-hover);
+		background: var(--color-bg-hover);
+	}
+	.option.checked {
+		border-color: var(--color-accent);
+		background: rgba(122, 162, 247, 0.08);
+	}
+	.option input[type='radio'] {
+		position: absolute;
+		opacity: 0;
+		pointer-events: none;
+		width: 0;
+		height: 0;
+	}
+	.option-content {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+		flex: 1;
+		min-width: 0;
+	}
+	.option-name {
+		font-size: 0.875rem;
 		color: var(--color-text-primary);
+		font-weight: 500;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.rad-meta {
-		font-size: 0.75rem;
+	.option-meta {
+		font-family: var(--font-mono);
+		font-size: 0.6875rem;
 		color: var(--color-text-muted);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.mono { font-family: var(--font-mono, ui-monospace, monospace); }
+	.option-check {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		flex-shrink: 0;
+		color: var(--color-accent);
+	}
+
 	.input {
 		display: block;
 		width: 100%;
