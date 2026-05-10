@@ -210,6 +210,12 @@ definitions:
         example: true
         type: boolean
     type: object
+  api.ActiveNowResponse:
+    properties:
+      now:
+        example: sub-abc-aaaa
+        type: string
+    type: object
   api.AddGeoFileRequest:
     properties:
       type:
@@ -217,6 +223,12 @@ definitions:
         type: string
       url:
         example: https://cdn.example.com/geosite.db
+        type: string
+    type: object
+  api.AddMemberRequest:
+    properties:
+      shareLink:
+        example: vless://...@h.example:443?security=tls&sni=h
         type: string
     type: object
   api.AddPeerRequestDTO:
@@ -662,6 +674,9 @@ definitions:
       enabled:
         example: true
         type: boolean
+      iconUrl:
+        example: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Telegram.png
+        type: string
       id:
         example: dns_xyz789
         type: string
@@ -1643,6 +1658,11 @@ definitions:
         example: true
         type: boolean
     type: object
+  api.RemoveMemberRequest:
+    properties:
+      memberTag:
+        type: string
+    type: object
   api.ResolveResponse:
     properties:
       domain:
@@ -2209,6 +2229,12 @@ definitions:
         items:
           type: string
         type: array
+      source:
+        enum:
+        - router
+        - subscription
+        example: router
+        type: string
       strategy:
         example: prefer_ipv4
         type: string
@@ -2315,6 +2341,9 @@ definitions:
     type: object
   api.SingboxRouterPresetDTO:
     properties:
+      category:
+        example: social
+        type: string
       featured:
         example: true
         type: boolean
@@ -2444,6 +2473,11 @@ definitions:
       path:
         example: /opt/etc/singbox/rulesets/geosite-cn.srs
         type: string
+      rules:
+        items:
+          additionalProperties: {}
+          type: object
+        type: array
       tag:
         example: geosite-cn
         type: string
@@ -2468,6 +2502,14 @@ definitions:
     type: object
   api.SingboxRouterRuleSetRefreshRequest:
     properties:
+      tag:
+        example: geosite-cn
+        type: string
+    type: object
+  api.SingboxRouterRuleSetUpdateRequest:
+    properties:
+      ruleSet:
+        $ref: '#/definitions/api.SingboxRouterRuleSetDTO'
       tag:
         example: geosite-cn
         type: string
@@ -2760,6 +2802,9 @@ definitions:
       fallback:
         example: ""
         type: string
+      iconUrl:
+        example: https://cdn.jsdelivr.net/gh/Koolson/Qure@master/IconSet/Color/Cloudflare.png
+        type: string
       id:
         example: sr_001
         type: string
@@ -2806,6 +2851,121 @@ definitions:
       success:
         example: true
         type: boolean
+    type: object
+  api.SubscriptionDTO:
+    properties:
+      activeMember:
+        example: sub-abc-aaaa
+        type: string
+      enabled:
+        type: boolean
+      headers:
+        items:
+          $ref: '#/definitions/api.SubscriptionHeader'
+        type: array
+      id:
+        example: abc123
+        type: string
+      inboundTag:
+        example: sub-abc12345-in
+        type: string
+      isInline:
+        example: false
+        type: boolean
+      label:
+        example: Provider X
+        type: string
+      lastError:
+        type: string
+      lastFetched:
+        type: string
+      listenPort:
+        example: 11080
+        type: integer
+      memberTags:
+        items:
+          type: string
+        type: array
+      members:
+        items:
+          $ref: '#/definitions/api.SubscriptionMemberDTO'
+        type: array
+      mode:
+        example: selector
+        type: string
+      orphanTags:
+        items:
+          type: string
+        type: array
+      proxyIndex:
+        example: 3
+        type: integer
+      refreshHours:
+        example: 24
+        type: integer
+      selectorTag:
+        example: sub-abc12345
+        type: string
+      url:
+        example: https://prov.example/sub/a
+        type: string
+      urlTest:
+        $ref: '#/definitions/api.SubscriptionURLTestDTO'
+    type: object
+  api.SubscriptionHeader:
+    properties:
+      name:
+        example: User-Agent
+        type: string
+      value:
+        example: Happ/4.6.0
+        type: string
+    type: object
+  api.SubscriptionMemberDTO:
+    properties:
+      label:
+        example: "\U0001F1FA\U0001F1F8 LA-1"
+        type: string
+      port:
+        example: 443
+        type: integer
+      protocol:
+        example: vless
+        type: string
+      security:
+        example: tls
+        type: string
+      server:
+        example: de01.example.com
+        type: string
+      sni:
+        example: de01.example.com
+        type: string
+      tag:
+        example: sub-abc12345-aabbccdd
+        type: string
+      transport:
+        example: ws
+        type: string
+    type: object
+  api.SubscriptionResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.SubscriptionDTO'
+      success:
+        type: boolean
+    type: object
+  api.SubscriptionURLTestDTO:
+    properties:
+      intervalSec:
+        example: 60
+        type: integer
+      toleranceMs:
+        example: 50
+        type: integer
+      url:
+        example: https://www.gstatic.com/generate_204
+        type: string
     type: object
   api.SuggestAddressData:
     properties:
@@ -7900,6 +8060,43 @@ paths:
       summary: Refresh singbox-router ruleset
       tags:
       - singbox-router
+  /singbox/router/rulesets/update:
+    post:
+      consumes:
+      - application/json
+      description: Replaces the ruleset identified by tag with new content. Tag rename
+        is not supported.
+      parameters:
+      - description: Tag + new RuleSet payload
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.SingboxRouterRuleSetUpdateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.OkResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Update singbox-router ruleset
+      tags:
+      - singbox-router
   /singbox/router/settings:
     get:
       description: Reads the current singbox-router settings (policy mode, defaults,
@@ -8043,6 +8240,167 @@ paths:
       summary: Sing-box status
       tags:
       - singbox
+  /singbox/subscriptions/active-now:
+    get:
+      description: Returns the currently-active member tag as reported by the running
+        sing-box Clash API. For urltest mode this reflects the auto-selected fastest
+        member. Empty `now` means Clash is unreachable or no member selected yet.
+      parameters:
+      - description: Subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.OkResponse'
+            - properties:
+                data:
+                  $ref: '#/definitions/api.ActiveNowResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Live active member from Clash
+      tags:
+      - subscriptions
+  /singbox/subscriptions/get-stream:
+    get:
+      description: 'Streams a subscription as Server-Sent Events: one `meta` event
+        with subscription header (incl. total member count), then one `member` event
+        per server member, then a `done` event with finalisation (orphans, active
+        member). Frontend uses this to show a progress bar and render cards as they
+        arrive instead of waiting for the full payload. Service.Get is itself sync;
+        the streaming is the handler''s contract — it writes events with Flush() between,
+        so TCP + browser deliver progressively.'
+      parameters:
+      - description: Subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: 'Stream of SSE events: meta, member×N, done'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Stream subscription details progressively (SSE)
+      tags:
+      - subscriptions
+  /singbox/subscriptions/members/add:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Subscription ID
+        in: query
+        name: id
+        required: true
+        type: string
+      - description: Share-link
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AddMemberRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Add a manual member to an inline subscription
+      tags:
+      - subscriptions
+  /singbox/subscriptions/members/remove:
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Removing the last member tears the whole subscription
+        down. The response indicates whether the subscription
+        itself was deleted via deleted=true.
+      parameters:
+      - description: Subscription ID
+        in: query
+        name: id
+        required: true
+        type: string
+      - description: Member tag
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.RemoveMemberRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Remove a member from an inline subscription
+      tags:
+      - subscriptions
   /singbox/tunnels:
     delete:
       produces:
