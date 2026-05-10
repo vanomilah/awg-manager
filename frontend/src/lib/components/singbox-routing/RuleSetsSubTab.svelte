@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { singboxRouter } from '$lib/stores/singboxRouter';
@@ -102,6 +104,14 @@
 
 	function requestDelete(tag: string): void {
 		deleteTag = tag;
+	}
+
+	function createRuleWithRuleSet(tag: string): void {
+		const sp = new URLSearchParams($page.url.search);
+		sp.set('sub', 'rules');
+		sp.set('newRuleSet', tag);
+		const url = $page.url.pathname + '?' + sp.toString() + $page.url.hash;
+		void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 	}
 
 	async function confirmDelete(): Promise<void> {
@@ -301,6 +311,15 @@
 							{refreshing.has(rs.tag) ? '...' : 'Обновить'}
 						</Button>
 					{/if}
+					<span title="Создать правило с этим набором">
+						<Button
+							variant="ghost"
+							size="sm"
+							onclick={() => createRuleWithRuleSet(rs.tag)}
+						>
+							+ Правило
+						</Button>
+					</span>
 					<Button variant="ghost" size="sm" onclick={() => (editRuleSet = rs)}>
 						Редактировать
 					</Button>
