@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
+	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import type { TunnelListItem, SingboxTunnel, Subscription } from '$lib/types';
@@ -21,19 +22,18 @@
 		{ id: 'checks', label: 'Проверки' },
 	];
 
-	// Deep-link: ?tab=logs|connections|checks. Legacy `tests`/`dnscheck`
-	// (which used to render the health rail inside the logs tab) now map
-	// to `checks` since the rail moved into its own tab.
-	$effect(() => {
-		const tabParam = $page.url.searchParams.get('tab');
-		if (tabParam === 'connections') {
-			activeTab = 'connections';
-		} else if (tabParam === 'checks' || tabParam === 'tests' || tabParam === 'dnscheck') {
-			activeTab = 'checks';
-		} else {
-			activeTab = 'logs';
+	// Legacy URL sanitizer — rewrite ?tab=tests / ?tab=dnscheck (which used
+	// to render the health rail inside the logs tab) to ?tab=checks BEFORE
+	// the Tabs primitive reads the URL. Runs synchronously at init.
+	{
+		const sp = new URLSearchParams($page.url.search);
+		const t = sp.get('tab');
+		if (t === 'tests' || t === 'dnscheck') {
+			sp.set('tab', 'checks');
+			const url = $page.url.pathname + (sp.toString() ? `?${sp}` : '') + $page.url.hash;
+			void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
 		}
-	});
+	}
 
 	onMount(async () => {
 		// Combine three target sources for the diagnostics rail:
@@ -103,6 +103,8 @@
 		tabs={diagnosticsTabs}
 		active={activeTab}
 		onchange={(id) => (activeTab = id as ActiveTab)}
+		urlParam="tab"
+		defaultTab="logs"
 	/>
 
 	{#if activeTab === 'logs'}
