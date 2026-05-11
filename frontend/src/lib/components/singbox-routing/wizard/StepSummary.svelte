@@ -31,6 +31,8 @@
 		if (tag.startsWith('awg-')) return tag.slice(4);
 		return null;
 	}
+	let existingPolicyDescription = $state('');
+
 	onMount(async () => {
 		const tag = $wizardState.tunnelTag;
 		if (!tag) return;
@@ -43,13 +45,48 @@
 		} catch {
 			// silent; orchestrator will use the Cloudflare fallback
 		}
+
+		if ($wizardState.policyMode === 'existing' && $wizardState.existingPolicyName) {
+			try {
+				const policies = await api.singboxRouterListPolicies();
+				const p = policies.find((x) => x.name === $wizardState.existingPolicyName);
+				existingPolicyDescription = p?.description ?? $wizardState.existingPolicyName;
+			} catch {
+				existingPolicyDescription = $wizardState.existingPolicyName ?? '';
+			}
+		}
 	});
+
+	const initialMacs = $derived($wizardState.initialDeviceMacs);
+	const selectedMacs = $derived($wizardState.deviceMacs);
+	const toBind = $derived(selectedMacs.filter((m) => !initialMacs.includes(m)));
+	const toUnbind = $derived(initialMacs.filter((m) => !selectedMacs.includes(m)));
 </script>
 
 <div class="title">Что будет сделано</div>
 
-<div class="row"><div class="lbl">Policy</div><div class="val">создаётся <b>{$wizardState.policyName}</b></div></div>
-<div class="row"><div class="lbl">Устройства</div><div class="val">привязка {$wizardState.deviceMacs.length} устройств</div></div>
+<div class="row">
+	<div class="lbl">Policy</div>
+	<div class="val">
+		{#if $wizardState.policyMode === 'create'}
+			создаётся <b>{$wizardState.policyName}</b>
+		{:else}
+			используется существующая <b>{existingPolicyDescription || $wizardState.existingPolicyName}</b>
+		{/if}
+	</div>
+</div>
+<div class="row">
+	<div class="lbl">Устройства</div>
+	<div class="val">
+		{#if toBind.length === 0 && toUnbind.length === 0}
+			без изменений
+		{:else}
+			{#if toBind.length > 0}+{toBind.length} новых{/if}
+			{#if toBind.length > 0 && toUnbind.length > 0}, {/if}
+			{#if toUnbind.length > 0}-{toUnbind.length} убрать{/if}
+		{/if}
+	</div>
+</div>
 <div class="row"><div class="lbl">Туннель</div><div class="val">{$wizardState.tunnelTag}</div></div>
 <div class="row">
 	<div class="lbl">Пресеты</div>
