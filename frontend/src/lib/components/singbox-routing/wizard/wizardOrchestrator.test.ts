@@ -120,6 +120,61 @@ describe('runWizard', () => {
 			.rejects.toMatchObject({ phase: 'enableEngine', message: expect.stringContaining('подтвердил') });
 	});
 
+	it('existing mode: verifies policy exists, uses it, persists if changed', async () => {
+		const state: WizardState = {
+			...baseState(),
+			policyMode: 'existing',
+			existingPolicyName: 'Policy0',
+		};
+		api.singboxRouterGetSettings.mockResolvedValueOnce({ policyName: '', enabled: false });
+		api.singboxRouterListPolicies.mockResolvedValueOnce([{ name: 'Policy0', description: 'SBRouter' }]);
+		const result = await runWizard(state, { api, presets, onProgress: vi.fn() });
+		expect(api.singboxRouterCreatePolicy).not.toHaveBeenCalled();
+		expect(api.singboxRouterPutSettings).toHaveBeenCalledWith(
+			expect.objectContaining({ policyName: 'Policy0' }),
+		);
+		expect(result.policyCreated).toBe(false);
+		expect(api.assignDeviceToPolicy).toHaveBeenCalledWith('aa:aa:aa:aa:aa:01', 'Policy0');
+	});
+
+	it('existing mode: skips putSettings when policyName already matches', async () => {
+		const state: WizardState = {
+			...baseState(),
+			policyMode: 'existing',
+			existingPolicyName: 'Policy0',
+		};
+		api.singboxRouterGetSettings.mockResolvedValueOnce({ policyName: 'Policy0', enabled: false });
+		api.singboxRouterListPolicies.mockResolvedValueOnce([{ name: 'Policy0', description: 'SBRouter' }]);
+		await runWizard(state, { api, presets, onProgress: vi.fn() });
+		expect(api.singboxRouterPutSettings).not.toHaveBeenCalled();
+	});
+
+	it('existing mode: throws if chosen policy no longer exists', async () => {
+		const state: WizardState = {
+			...baseState(),
+			policyMode: 'existing',
+			existingPolicyName: 'Policy99',
+		};
+		api.singboxRouterGetSettings.mockResolvedValueOnce({ policyName: '', enabled: false });
+		api.singboxRouterListPolicies.mockResolvedValueOnce([{ name: 'Policy0', description: 'SBRouter' }]);
+		await expect(runWizard(state, { api, presets, onProgress: vi.fn() })).rejects.toMatchObject({
+			phase: 'createPolicy',
+			message: expect.stringContaining('не существует'),
+		});
+	});
+
+	it('existing mode: throws if existingPolicyName is null', async () => {
+		const state: WizardState = {
+			...baseState(),
+			policyMode: 'existing',
+			existingPolicyName: null,
+		};
+		await expect(runWizard(state, { api, presets, onProgress: vi.fn() })).rejects.toMatchObject({
+			phase: 'createPolicy',
+			message: expect.stringContaining('не указана'),
+		});
+	});
+
 	it('updates existing DNS-rule with new rule_sets in append mode', async () => {
 		api.singboxRouterListDNSRules.mockResolvedValueOnce([
 			{ rule_set: ['geosite-spotify'], server: 'wizard-upstream' },

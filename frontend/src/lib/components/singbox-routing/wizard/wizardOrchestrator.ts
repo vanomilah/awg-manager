@@ -1,4 +1,5 @@
 import type { WizardState, SingboxRouterPreset, SingboxRouterDNSRule, WizardResult } from '$lib/types';
+import { singboxWizard } from '$lib/stores/singboxWizard';
 
 export interface OrchestratorApi {
 	singboxRouterListPolicies(): Promise<{ name: string; description?: string }[]>;
@@ -105,39 +106,65 @@ export async function runWizard(
 		engineStarted: false,
 	};
 
-	// Phase 1: resolve policy name. If already persisted in settings, reuse it.
-	// Otherwise: create + persist immediately. This is what makes retries safe —
-	// on second attempt settings.policyName is non-empty so we skip create.
+	// Phase 1: resolve policy name.
+	// 'existing' mode: user chose a pre-existing NDMS policy — verify it still
+	//   exists, then use it directly. No createPolicy call.
+	// 'create' mode: reuse whatever is persisted in settings (retry-safe), or
+	//   check NDMS for a matching description, or create a new policy.
 	const currentSettings = await step('Читаем настройки', 'getSettings', onProgress, () =>
 		api.singboxRouterGetSettings(),
 	);
 	let policyName: string;
-	if (currentSettings.policyName) {
-		policyName = currentSettings.policyName;
-	} else {
-		const existing = await step('Список политик', 'listPolicies', onProgress, () =>
-			api.singboxRouterListPolicies(),
-		);
-		// Match by description (the user-supplied label). NDMS auto-assigns
-		// p.name like "Policy0", "Policy1" — these never equal state.policyName.
-		const found = existing.find((p) => p.description === state.policyName);
-		if (found) {
-			policyName = found.name;
-		} else {
-			const created = await step(
-				`Создаём policy ${state.policyName}`,
-				'createPolicy',
-				onProgress,
-				() => api.singboxRouterCreatePolicy(state.policyName),
-			);
-			policyName = created.name;
-			result.policyCreated = true;
+
+	if (state.policyMode === 'existing') {
+		if (!state.existingPolicyName) {
+			throw new WizardError('createPolicy', 'выбранная policy не указана');
 		}
-		// Merge policyName into existing settings to avoid zeroing other fields
-		await step('Сохраняем настройки', 'saveSettings', onProgress, () =>
-			api.singboxRouterPutSettings({ ...currentSettings, policyName }),
-		);
+		await step('Проверяем policy', 'createPolicy', onProgress, async () => {
+			const policies = await api.singboxRouterListPolicies();
+			const found = policies.find((p) => p.name === state.existingPolicyName);
+			if (!found) {
+				throw new Error('выбранная policy больше не существует');
+			}
+		});
+		policyName = state.existingPolicyName;
+		if (currentSettings.policyName !== policyName) {
+			await step('Сохраняем настройки', 'saveSettings', onProgress, () =>
+				api.singboxRouterPutSettings({ ...currentSettings, policyName }),
+			);
+		}
+	} else {
+		// 'create' mode
+		if (currentSettings.policyName) {
+			// Already persisted from a prior wizard run — reuse without re-creating.
+			policyName = currentSettings.policyName;
+		} else {
+			const existing = await step('Список политик', 'listPolicies', onProgress, () =>
+				api.singboxRouterListPolicies(),
+			);
+			// Match by description (the user-supplied label). NDMS auto-assigns
+			// p.name like "Policy0", "Policy1" — these never equal state.policyName.
+			const found = existing.find((p) => p.description === state.policyName);
+			if (found) {
+				policyName = found.name;
+			} else {
+				const created = await step(
+					`Создаём policy ${state.policyName}`,
+					'createPolicy',
+					onProgress,
+					() => api.singboxRouterCreatePolicy(state.policyName),
+				);
+				policyName = created.name;
+				result.policyCreated = true;
+			}
+			// Merge policyName into existing settings to avoid zeroing other fields
+			await step('Сохраняем настройки', 'saveSettings', onProgress, () =>
+				api.singboxRouterPutSettings({ ...currentSettings, policyName }),
+			);
+		}
 	}
+
+	singboxWizard.setResolvedPolicyName(policyName);
 
 	// Phase 2: bind devices (use resolved policyName, not the wizard's
 	// local default — what's in settings/NDMS is the source of truth)
