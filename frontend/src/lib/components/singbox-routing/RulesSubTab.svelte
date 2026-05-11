@@ -14,7 +14,7 @@
 	} from '$lib/components/ui';
 	import type { StatTile } from '$lib/components/ui';
 	import type { SingboxRouterRule, SingboxRouterRuleSet } from '$lib/types';
-	import { RuleEditModal } from '$lib/components/routing/singboxRouter';
+	import { RuleEditModal, RouteGlobals } from '$lib/components/routing/singboxRouter';
 
 	const statusStore = singboxRouter.status;
 	const rulesStore = singboxRouter.rules;
@@ -138,6 +138,12 @@
 </script>
 
 {#if status}
+	<RouteGlobals
+		currentFinal={status.final}
+		{outboundOptions}
+		onChange={refresh}
+	/>
+
 	<div class="stat-row-wrap">
 		<StatRow tiles={statTiles} columns={3} />
 	</div>

@@ -1612,6 +1612,13 @@ class ApiClient {
 		});
 	}
 
+	async singboxRouterPutRouteFinal(final: string): Promise<void> {
+		await this.request('/singbox/router/route/final', {
+			method: 'POST',
+			body: JSON.stringify({ final }),
+		});
+	}
+
 	async singboxRouterInspectRoute(
 		req: SingboxRouterInspectRequest,
 	): Promise<SingboxRouterInspectResult> {

@@ -14,6 +14,7 @@ export { default as DNSServerEditModal } from './DNSServerEditModal.svelte';
 export { default as DNSRulesList } from './DNSRulesList.svelte';
 export { default as DNSRuleEditModal } from './DNSRuleEditModal.svelte';
 export { default as DNSGlobals } from './DNSGlobals.svelte';
+export { default as RouteGlobals } from './RouteGlobals.svelte';
 export { default as ConnectionsSubTab } from './ConnectionsSubTab.svelte';
 export { default as ConnectionsBreakdown } from './ConnectionsBreakdown.svelte';
 export { default as ConnectionsBreakdownPanel } from './ConnectionsBreakdownPanel.svelte';
