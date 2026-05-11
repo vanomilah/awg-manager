@@ -38,6 +38,7 @@ func (m *mockRouterSvc) UpdateRule(ctx context.Context, index int, rule router.R
 }
 func (m *mockRouterSvc) DeleteRule(ctx context.Context, index int) error           { return nil }
 func (m *mockRouterSvc) MoveRule(ctx context.Context, from, to int) error          { return nil }
+func (m *mockRouterSvc) SetRouteFinal(ctx context.Context, tag string) error       { return nil }
 func (m *mockRouterSvc) ListRuleSets(ctx context.Context) ([]router.RuleSet, error) { return nil, nil }
 func (m *mockRouterSvc) AddRuleSet(ctx context.Context, rs router.RuleSet) error { return nil }
 func (m *mockRouterSvc) UpdateRuleSet(ctx context.Context, tag string, rs router.RuleSet) error {
