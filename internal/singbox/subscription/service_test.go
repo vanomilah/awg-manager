@@ -10,6 +10,13 @@ import (
 	"testing"
 )
 
+// ensuredProxyCall records one EnsureProxy invocation with all arguments.
+type ensuredProxyCall struct {
+	idx         int
+	port        int
+	description string
+}
+
 // fakeMutator records what the service tries to commit.
 type fakeMutator struct {
 	addedOutbounds   []string
@@ -21,10 +28,10 @@ type fakeMutator struct {
 	removedRules     int
 	listenPort       uint16
 	proxyIndex       int
-	ensuredProxies   []int
+	ensuredProxies   []ensuredProxyCall
 	removedProxies   []int
-	selectedSelector []string            // "selectorTag→memberTag" pairs recorded by SelectClashProxy
-	clashActiveByTag map[string]string   // selectorTag → live active member
+	selectedSelector []string          // "selectorTag→memberTag" pairs recorded by SelectClashProxy
+	clashActiveByTag map[string]string // selectorTag → live active member
 }
 
 func (f *fakeMutator) AllocListenPort() (uint16, error) {
@@ -67,7 +74,7 @@ func (f *fakeMutator) RemoveRouteRule(inboundTag, outboundTag string) error {
 	return nil
 }
 func (f *fakeMutator) EnsureProxy(_ context.Context, idx, port int, description string) error {
-	f.ensuredProxies = append(f.ensuredProxies, idx)
+	f.ensuredProxies = append(f.ensuredProxies, ensuredProxyCall{idx: idx, port: port, description: description})
 	return nil
 }
 func (f *fakeMutator) RemoveProxy(_ context.Context, idx int) error {
@@ -1048,5 +1055,44 @@ func TestService_GetActiveNow_ClashUnreachable_ReturnsEmpty(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("expected empty for clash-unreachable, got %q", got)
+	}
+}
+
+func TestUpdate_LabelChangeUpdatesProxyDescription(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("vless://3a3b1c2e-9999-4321-aaaa-1234567890ab@example.com:443?security=tls&sni=h\n"))
+	}))
+	defer srv.Close()
+
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "Original Label", URL: srv.URL, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Reset recorded calls so we only observe Update-triggered EnsureProxy.
+	mutator.ensuredProxies = nil
+
+	newLabel := "Renamed Label"
+	updated, err := svc.Update(sub.ID, UpdatePatch{Label: &newLabel})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	if updated.Label != newLabel {
+		t.Errorf("stored label=%q want %q", updated.Label, newLabel)
+	}
+	if len(mutator.ensuredProxies) != 1 {
+		t.Fatalf("expected 1 EnsureProxy call, got %d", len(mutator.ensuredProxies))
+	}
+	got := mutator.ensuredProxies[0]
+	if got.description != newLabel {
+		t.Errorf("EnsureProxy description=%q want %q", got.description, newLabel)
+	}
+	if got.idx != sub.ProxyIndex {
+		t.Errorf("EnsureProxy idx=%d want %d", got.idx, sub.ProxyIndex)
 	}
 }

@@ -419,8 +419,9 @@ func (s *Service) Update(id string, patch UpdatePatch) (*Subscription, error) {
 	}
 	// Mode / urltest config changes require a fresh group outbound in
 	// sing-box config and a SIGHUP so the new wrapper takes effect.
-	// Other patch fields (label / URL / headers / refresh-cadence /
-	// enabled) only mutate metadata and don't need a config rewrite.
+	// URL / headers / refresh-cadence / enabled only mutate metadata.
+	// Label changes mutate store AND must propagate to NDMS Proxy
+	// description so the rename is visible in the router UI.
 	if patch.Mode != nil || patch.URLTest != nil {
 		s.mutator.RemoveOutbound(sub.SelectorTag)
 		if err := s.mutator.AddOutbound(sub.SelectorTag, BuildGroupOutbound(*sub, sub.MemberTags, sub.ActiveMember)); err != nil {
@@ -428,6 +429,15 @@ func (s *Service) Update(id string, patch UpdatePatch) (*Subscription, error) {
 		}
 		if err := s.mutator.Reload(context.Background()); err != nil {
 			return sub, fmt.Errorf("reload after mode change: %w", err)
+		}
+	}
+	if patch.Label != nil {
+		// EnsureProxy is idempotent — re-running with new description updates
+		// NDMS Proxy.description in place. Best-effort: on failure the store
+		// already has the new label, the proxy description stays stale until
+		// next refresh; we surface the error so the UI can show a warning.
+		if err := s.mutator.EnsureProxy(context.Background(), sub.ProxyIndex, int(sub.ListenPort), sub.Label); err != nil {
+			return sub, fmt.Errorf("sync proxy description: %w", err)
 		}
 	}
 	return sub, nil
