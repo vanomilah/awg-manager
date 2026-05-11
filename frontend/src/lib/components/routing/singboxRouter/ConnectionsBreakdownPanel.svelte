@@ -59,7 +59,7 @@
 
 	<div class="pie-block">
 		<svg width="96" height="96" viewBox="0 0 96 96" class="pie">
-			<circle cx="48" cy="48" r={RADIUS} fill="none" stroke="var(--surface-2, #2c3134)" stroke-width="14" />
+			<circle cx="48" cy="48" r={RADIUS} fill="none" stroke="var(--color-bg-tertiary)" stroke-width="14" />
 			{#each donutSlices as s, i}
 				{@const prev = donutSlices.slice(0, i).reduce((sum, x) => sum + x.pct, 0)}
 				<circle
@@ -115,8 +115,8 @@
 
 <style>
 	.panel {
-		background: var(--surface-1, #1f2425);
-		border: 1px solid var(--border-1, #2c3134);
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		overflow: hidden;
 		display: flex;
@@ -125,18 +125,18 @@
 	}
 	.panel-head {
 		padding: 8px 12px;
-		border-bottom: 1px solid var(--border-1, #2c3134);
+		border-bottom: 1px solid var(--color-border);
 		display: flex;
 		justify-content: space-between;
 		font-size: 10px;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
-		color: var(--text-secondary, #b8b6b3);
+		color: var(--color-text-secondary);
 	}
 	.muted { opacity: 0.5; }
 	.pie-block {
 		padding: 14px 12px;
-		border-bottom: 1px solid var(--border-1, #2c3134);
+		border-bottom: 1px solid var(--color-border);
 		display: flex;
 		align-items: center;
 		gap: 14px;
@@ -153,11 +153,11 @@
 	}
 	.pie-num {
 		font-size: 14px; font-weight: 600;
-		color: var(--text-primary, #e8e6e3);
+		color: var(--color-text-primary);
 		font-family: ui-monospace, monospace;
 	}
 	.pie-lbl {
-		font-size: 9px; color: var(--text-tertiary, #6e6e6e);
+		font-size: 9px; color: var(--color-text-muted);
 		text-transform: uppercase; letter-spacing: 0.05em;
 	}
 	.legend {
@@ -168,10 +168,10 @@
 	.legend-dot { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
 	.legend-name {
 		flex: 1; overflow: hidden; text-overflow: ellipsis;
-		white-space: nowrap; color: var(--text-secondary, #b8b6b3);
+		white-space: nowrap; color: var(--color-text-secondary);
 	}
 	.legend-pct {
-		color: var(--text-tertiary, #6e6e6e);
+		color: var(--color-text-muted);
 		font-family: ui-monospace, monospace; font-size: 10px;
 	}
 	.buckets { height: 240px; overflow-y: auto; }
@@ -180,12 +180,12 @@
 		display: block;
 		width: 100%;
 		padding: 6px 12px;
-		border-bottom: 1px solid var(--border-1, #2c3134);
+		border-bottom: 1px solid var(--color-border);
 		position: relative;
 		cursor: pointer;
 		box-sizing: border-box;
 	}
-	.bucket:hover { background: var(--surface-hover, #262a2c); }
+	.bucket:hover { background: var(--color-bg-hover); }
 	.bucket.active { background: rgba(218, 119, 86, 0.12); }
 	.bg {
 		position: absolute;
@@ -197,19 +197,19 @@
 		display: flex; justify-content: space-between; align-items: baseline;
 		gap: 8px;
 	}
-	.bucket-key { font-size: 12px; color: var(--text-primary, #e8e6e3); }
+	.bucket-key { font-size: 12px; color: var(--color-text-primary); }
 	.bucket.active .bucket-key { color: #da7756; font-weight: 500; }
 	.bucket-stats {
 		display: flex; gap: 6px; flex-shrink: 0;
 		font-family: ui-monospace, monospace;
-		font-size: 11px; color: var(--text-secondary, #b8b6b3);
+		font-size: 11px; color: var(--color-text-secondary);
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 	}
-	.dot { color: var(--text-tertiary, #6e6e6e); }
-	.count { color: var(--text-tertiary, #6e6e6e); }
+	.dot { color: var(--color-text-muted); }
+	.count { color: var(--color-text-muted); }
 	.empty {
 		text-align: center; padding: 20px; font-size: 12px;
-		color: var(--text-tertiary, #6e6e6e);
+		color: var(--color-text-muted);
 	}
 </style>

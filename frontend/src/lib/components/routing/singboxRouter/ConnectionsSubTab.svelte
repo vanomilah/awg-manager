@@ -180,14 +180,14 @@
 	.totals {
 		display: flex; justify-content: space-between; align-items: center;
 		padding: 8px 12px; margin-bottom: 12px;
-		background: var(--surface-1, #1f2425);
-		border: 1px solid var(--border-1, #2c3134);
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
 		border-radius: 6px;
 		font-size: 13px;
 		min-height: 36px;
 	}
-	.muted { color: var(--text-tertiary, #6e6e6e); }
-	.dot { color: var(--text-tertiary, #6e6e6e); margin: 0 6px; }
+	.muted { color: var(--color-text-muted); }
+	.dot { color: var(--color-text-muted); margin: 0 6px; }
 	.num { font-variant-numeric: tabular-nums; }
 	.totals-text { display: inline-flex; align-items: baseline; gap: 0; white-space: nowrap; }
 	.totals-count { display: inline-block; min-width: 220px; }
