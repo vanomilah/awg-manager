@@ -1,11 +1,21 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+// DraftValidator is the slim contract ApplyDraft uses to run
+// `sing-box check` over the tmpdir snapshot. The real implementation
+// lives in internal/singbox; tests pass a stub.
+type DraftValidator interface {
+	Validate(ctx context.Context, configDir string) error
+}
 
 // ProcessController is the subset of sing-box.Process the orchestrator
 // uses. The real *singbox.Process satisfies it.
@@ -30,6 +40,10 @@ type Orchestrator struct {
 	// reload. Task 4 wires this into a debounced reloader. For now Save
 	// / SetEnabled just flip it.
 	dirty bool
+
+	// validator runs `sing-box check` on a directory. nil = skip
+	// check (used by tests that don't need it).
+	validator DraftValidator
 
 	// logf, if non-nil, receives short human-readable messages about
 	// reload outcomes (validation errors, lifecycle transitions). Set
@@ -101,6 +115,11 @@ func (o *Orchestrator) Bootstrap() error {
 	if err := o.ensureDirs(); err != nil {
 		return err
 	}
+	if err := o.sweepStaleApplyCheckDirs(); err != nil {
+		// Sweep failure is non-fatal — log and continue. Stale dirs
+		// are harmless cosmetic noise.
+		o.log("warn", fmt.Sprintf("orchestrator: sweep .apply-check: %v", err))
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	for slot, meta := range o.slots {
@@ -144,6 +163,29 @@ func (o *Orchestrator) Bootstrap() error {
 // only to resolve a both-locations conflict during Bootstrap.
 func (o *Orchestrator) removeDisabledCopy(meta SlotMeta) error {
 	return removeIfExists(o.disabledPath(meta))
+}
+
+// sweepStaleApplyCheckDirs removes leftover .apply-check-* directories
+// from crashed Apply runs. Tmpdir creation uses MkdirTemp with a
+// well-known prefix; cleanup is best-effort.
+func (o *Orchestrator) sweepStaleApplyCheckDirs() error {
+	entries, err := os.ReadDir(o.configDir)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(e.Name(), ".apply-check-") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(o.configDir, e.Name())); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // Save writes the slot's JSON atomically to whichever location matches
@@ -216,6 +258,15 @@ func (o *Orchestrator) SetEnabled(slot Slot, enabled bool) error {
 	o.dirty = true
 	o.scheduleReload()
 	return nil
+}
+
+// SetValidator wires a DraftValidator used by ApplyDraft. Pass nil to
+// skip the external check (the default). Production wiring lives in
+// main.go alongside SetLogger.
+func (o *Orchestrator) SetValidator(v DraftValidator) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.validator = v
 }
 
 // Snapshot returns the current state of all registered slots in

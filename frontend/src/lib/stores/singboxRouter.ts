@@ -14,6 +14,7 @@ import type {
 	SingboxRouterDNSServer,
 	SingboxRouterDNSRule,
 	SingboxRouterDNSGlobals,
+	RouterStagingStatusResponse,
 } from '$lib/types';
 
 function createSingboxRouterStore() {
@@ -26,6 +27,7 @@ function createSingboxRouterStore() {
 	const dnsServers = writable<SingboxRouterDNSServer[]>([]);
 	const dnsRules = writable<SingboxRouterDNSRule[]>([]);
 	const dnsGlobals = writable<SingboxRouterDNSGlobals>({ final: '', strategy: '' });
+	const staging = writable<RouterStagingStatusResponse | null>(null);
 	const loading = writable(false);
 	const error = writable<string | null>(null);
 
@@ -88,6 +90,35 @@ function createSingboxRouterStore() {
 		} finally {
 			loading.set(false);
 		}
+		void loadStaging();
+	}
+
+	async function loadStaging(): Promise<void> {
+		try {
+			const data = await api.singboxRouterStagingStatus();
+			staging.set(data);
+		} catch {
+			staging.set(null);
+		}
+	}
+
+	// Reload the live rule snapshot (rules + rule-sets + outbounds + status)
+	// after a staging apply/discard flips the running config.
+	async function loadRulesSnapshot(): Promise<void> {
+		try {
+			const [r, rs, o, st] = await Promise.all([
+				api.singboxRouterListRules(),
+				api.singboxRouterListRuleSets(),
+				api.singboxRouterListOutbounds(),
+				api.singboxRouterStatus(),
+			]);
+			rules.set(r);
+			ruleSets.set(rs);
+			outbounds.set(o);
+			status.set(st);
+		} catch {
+			// silent — stale data is better than an uncaught error
+		}
 	}
 
 	async function reloadStatus(): Promise<void> {
@@ -136,12 +167,15 @@ function createSingboxRouterStore() {
 		dnsServers: { subscribe: dnsServers.subscribe },
 		dnsRules: { subscribe: dnsRules.subscribe },
 		dnsGlobals: { subscribe: dnsGlobals.subscribe },
+		staging: { subscribe: staging.subscribe } as import('svelte/store').Readable<RouterStagingStatusResponse | null>,
 		options: { subscribe: options.subscribe },
 		optionsReady: { subscribe: optionsReady.subscribe },
 		loading: { subscribe: loading.subscribe },
 		error: { subscribe: error.subscribe },
 		loadAll,
 		reloadStatus,
+		loadStaging,
+		loadRulesSnapshot,
 		applyStatus,
 		applyRules,
 		applyRuleSets,
