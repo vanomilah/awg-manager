@@ -22,11 +22,11 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/accesspolicy"
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/auth"
-	"github.com/hoaxisr/awg-manager/internal/diagnostics"
-	"github.com/hoaxisr/awg-manager/internal/deviceproxy"
 	"github.com/hoaxisr/awg-manager/internal/cleanup"
 	"github.com/hoaxisr/awg-manager/internal/clientroute"
 	"github.com/hoaxisr/awg-manager/internal/connectivity"
+	"github.com/hoaxisr/awg-manager/internal/deviceproxy"
+	"github.com/hoaxisr/awg-manager/internal/diagnostics"
 	"github.com/hoaxisr/awg-manager/internal/dnscheck"
 	"github.com/hoaxisr/awg-manager/internal/dnsroute"
 	"github.com/hoaxisr/awg-manager/internal/events"
@@ -384,7 +384,7 @@ func main() {
 
 	operator.SetAppLogger(loggingService)
 
-	// Traffic history (in-memory, 24h)
+	// Traffic history (in-memory, 48h)
 	trafficHistory := traffic.New()
 	defer trafficHistory.Stop()
 
@@ -407,7 +407,6 @@ func main() {
 			log.Info("ttyd autostarted", map[string]interface{}{"port": port})
 		}
 	}
-
 
 	// Client route service (per-device VPN routing)
 	clientRouteStore := storage.NewClientRouteStore(*dataDir)

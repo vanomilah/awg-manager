@@ -348,9 +348,22 @@ function buildAwgSnapshot() {
 	};
 }
 
+const TRAFFIC_PERIOD_MS = {
+	'5m': 5 * 60_000,
+	'10m': 10 * 60_000,
+	'30m': 30 * 60_000,
+	'1h': 60 * 60_000,
+	'3h': 3 * 60 * 60_000,
+	'6h': 6 * 60 * 60_000,
+	'12h': 12 * 60 * 60_000,
+	'24h': 24 * 60 * 60_000,
+	'48h': 48 * 60 * 60_000,
+};
+
 function buildTrafficPoints(id, period) {
-	const count = period === '24h' ? 144 : 72;
-	const stepMs = period === '24h' ? 10 * 60_000 : 60_000;
+	const durationMs = TRAFFIC_PERIOD_MS[period] ?? TRAFFIC_PERIOD_MS['1h'];
+	const count = Math.min(360, Math.max(2, Math.round(durationMs / 10_000)));
+	const stepMs = durationMs / Math.max(count - 1, 1);
 	const now = NOW();
 	const points = [];
 	const profile = trafficProfile(id);
@@ -932,7 +945,8 @@ const server = http.createServer(async (req, res) => {
 
 	if (req.method === 'GET' && path === '/tunnels/traffic') {
 		const id = url.searchParams.get('id') ?? '';
-		const period = url.searchParams.get('period') === '24h' ? '24h' : '1h';
+		const requestedPeriod = url.searchParams.get('period') ?? '1h';
+		const period = Object.prototype.hasOwnProperty.call(TRAFFIC_PERIOD_MS, requestedPeriod) ? requestedPeriod : '1h';
 		send(res, 200, buildTrafficResponse(id || 'awg-demo-1', period));
 		return;
 	}

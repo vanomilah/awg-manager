@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { TrafficPeriod } from '$lib/api/client';
 	import { formatBitRate } from '$lib/utils/format';
 	import { fetchTrafficDetail, subscribeTraffic, getTrafficRates } from '$lib/stores/traffic';
 	import Modal from './Modal.svelte';
@@ -13,8 +14,33 @@
 
 	let { open, tunnelId, tunnelName = '', ifaceName = '', onclose }: Props = $props();
 
+	const PERIOD_OPTIONS: { value: TrafficPeriod; label: string }[] = [
+		{ value: '5m', label: '5 мин' },
+		{ value: '10m', label: '10 мин' },
+		{ value: '30m', label: '30 мин' },
+		{ value: '1h', label: '1 ч' },
+		{ value: '3h', label: '3 ч' },
+		{ value: '6h', label: '6 ч' },
+		{ value: '12h', label: '12 ч' },
+		{ value: '24h', label: '24 ч' },
+		{ value: '48h', label: '48 ч' }
+	];
+
+	const PERIOD_LABELS: Record<TrafficPeriod, string> = {
+		'5m': 'последние 5 минут',
+		'10m': 'последние 10 минут',
+		'30m': 'последние 30 минут',
+		'1h': 'последний час',
+		'3h': 'последние 3 часа',
+		'6h': 'последние 6 часов',
+		'12h': 'последние 12 часов',
+		'24h': 'последние сутки',
+		'48h': 'последние 2 дня'
+	};
+
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let selectedPeriod = $state<TrafficPeriod>('24h');
 	let timestamps = $state<number[]>([]);
 	let rxRates = $state<number[]>([]);
 	let txRates = $state<number[]>([]);
@@ -32,12 +58,20 @@
 	// from the shared traffic store so the KPI doesn't stay frozen.
 	let liveCurrentRx = $state(0);
 	let liveCurrentTx = $state(0);
+	let lastLoadToken = 0;
 
-	async function load(id: string) {
+	function periodLabel(period: TrafficPeriod): string {
+		return PERIOD_LABELS[period];
+	}
+
+	async function load(id: string, period: TrafficPeriod) {
+		const token = ++lastLoadToken;
 		loading = true;
 		error = null;
+		hoverIndex = null;
 		try {
-			const d = await fetchTrafficDetail(id);
+			const d = await fetchTrafficDetail(id, period);
+			if (token !== lastLoadToken) return;
 			timestamps = d.timestamps;
 			rxRates = d.rxRates;
 			txRates = d.txRates;
@@ -45,16 +79,19 @@
 			liveCurrentRx = d.stats.currentRx;
 			liveCurrentTx = d.stats.currentTx;
 		} catch (e) {
+			if (token !== lastLoadToken) return;
 			error = e instanceof Error ? e.message : 'Не удалось загрузить историю';
 		} finally {
+			if (token !== lastLoadToken) return;
 			loading = false;
 		}
 	}
 
-	// Re-fetch whenever the modal opens or the tunnel id changes while open.
+	// Re-fetch whenever the modal opens, the tunnel id changes, or the
+	// selected period changes while open.
 	$effect(() => {
 		if (open && tunnelId) {
-			load(tunnelId);
+			load(tunnelId, selectedPeriod);
 		}
 	});
 
@@ -160,18 +197,23 @@
 	let rxArea = $derived(buildArea(rxLine));
 	let txArea = $derived(buildArea(txLine));
 
-	// Two timestamps at bottom corners (first + last point).
-	function fmtTime(t: number): string {
+	function fmtTime(t: number, withDate = false): string {
 		const d = new Date(t * 1000);
+		const dd = d.getDate().toString().padStart(2, '0');
+		const mon = (d.getMonth() + 1).toString().padStart(2, '0');
 		const hh = d.getHours().toString().padStart(2, '0');
 		const mm = d.getMinutes().toString().padStart(2, '0');
 		const ss = d.getSeconds().toString().padStart(2, '0');
-		return `${hh}:${mm}:${ss}`;
+		return withDate ? `${dd}.${mon} ${hh}:${mm}` : `${hh}:${mm}:${ss}`;
 	}
 
-	let timeStart = $derived(timestamps.length >= 2 ? fmtTime(timestamps[0]) : '');
+	let showDateInLabels = $derived(selectedPeriod === '12h' || selectedPeriod === '24h');
+
+	let timeStart = $derived(
+		timestamps.length >= 2 ? fmtTime(timestamps[0], showDateInLabels) : ''
+	);
 	let timeEnd = $derived(
-		timestamps.length >= 2 ? fmtTime(timestamps[timestamps.length - 1]) : ''
+		timestamps.length >= 2 ? fmtTime(timestamps[timestamps.length - 1], showDateInLabels) : ''
 	);
 
 	// ---- Hover crosshair + tooltip ---------------------------------------
@@ -201,7 +243,7 @@
 
 	let hoverTime = $derived.by(() => {
 		if (hoverIndex === null || timestamps.length === 0) return '';
-		return fmtTime(timestamps[Math.min(hoverIndex, timestamps.length - 1)]);
+		return fmtTime(timestamps[Math.min(hoverIndex, timestamps.length - 1)], showDateInLabels);
 	});
 
 	// Tooltip placement: flip to left of cursor on the right 30% of the
@@ -218,8 +260,23 @@
 
 <Modal {open} title={tunnelName || tunnelId} size="xl" {onclose}>
 	<div class="meta-row">
-		{#if ifaceName}<span class="pill">{ifaceName}</span>{/if}
-		<span class="pill-muted">последние 24 часа</span>
+		<div class="meta-pills">
+			{#if ifaceName}<span class="pill">{ifaceName}</span>{/if}
+			<span class="pill-muted">{periodLabel(selectedPeriod)}</span>
+		</div>
+		<div class="period-switch" role="group" aria-label="Период графика трафика">
+			{#each PERIOD_OPTIONS as option (option.value)}
+				<button
+					type="button"
+					class="period-btn"
+					class:active={selectedPeriod === option.value}
+					aria-pressed={selectedPeriod === option.value}
+					onclick={() => (selectedPeriod = option.value)}
+				>
+					{option.label}
+				</button>
+			{/each}
+		</div>
 	</div>
 
 	<div class="stats-line">
@@ -251,7 +308,7 @@
 	{:else if error}
 		<div class="state-msg state-err">{error}</div>
 	{:else if !hasData}
-		<div class="state-msg">Недостаточно данных за 24 часа</div>
+		<div class="state-msg">Недостаточно данных за выбранный период</div>
 	{:else}
 		<div class="chart-wrap">
 			<div class="chart-top">
@@ -264,7 +321,7 @@
 				viewBox={`0 0 ${CHART_W} ${CHART_H}`}
 				preserveAspectRatio="none"
 				role="img"
-				aria-label="График трафика за 24 часа"
+				aria-label={`График трафика за период: ${periodLabel(selectedPeriod)}`}
 				onmousemove={handleMouseMove}
 				onmouseleave={handleMouseLeave}
 			>
@@ -395,8 +452,16 @@
 <style>
 	.meta-row {
 		display: flex;
-		gap: 8px;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
 		margin-bottom: 12px;
+	}
+	.meta-pills {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 	.pill,
 	.pill-muted {
@@ -411,6 +476,46 @@
 	.pill-muted {
 		background: var(--bg-tertiary, rgba(255, 255, 255, 0.04));
 		color: var(--text-muted, #888);
+	}
+
+	.period-switch {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: 0.375rem;
+	}
+
+	.period-btn {
+		border: 1px solid var(--color-border);
+		background: var(--color-bg-tertiary);
+		color: var(--color-text-secondary);
+		border-radius: 999px;
+		padding: 0.3rem 0.625rem;
+		font: inherit;
+		font-size: 0.75rem;
+		line-height: 1.2;
+		cursor: pointer;
+		transition:
+			background var(--t-fast) ease,
+			border-color var(--t-fast) ease,
+			color var(--t-fast) ease;
+	}
+
+	.period-btn:hover {
+		border-color: var(--color-border-strong);
+		background: var(--color-bg-hover);
+		color: var(--color-text-primary);
+	}
+
+	.period-btn.active {
+		border-color: var(--color-accent);
+		background: var(--color-accent-tint);
+		color: var(--color-accent);
+	}
+
+	.period-btn:focus-visible {
+		outline: 2px solid var(--color-accent);
+		outline-offset: 2px;
 	}
 
 	.stats-line {
@@ -535,5 +640,11 @@
 	}
 	.state-msg.state-err {
 		color: var(--error, #f52a65);
+	}
+
+	@media (max-width: 720px) {
+		.period-switch {
+			justify-content: flex-start;
+		}
 	}
 </style>

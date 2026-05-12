@@ -8,7 +8,7 @@
  *   the sliding "last hour" window the card chart renders.
  *
  * Modal-scoped flow:
- * - fetchTrafficDetail(id) does a one-shot 24h fetch with server-side
+ * - fetchTrafficDetail(id, period) does a one-shot fetch with server-side
  *   aggregate stats. The result is held locally by the modal and
  *   discarded on close. The shared SSE buffer is not touched.
  *
@@ -18,6 +18,7 @@
  */
 
 import { api } from '$lib/api/client';
+import type { TrafficPeriod } from '$lib/api/client';
 
 const MAX_POINTS = 6000;
 
@@ -128,12 +129,12 @@ export async function loadHistory(tunnelId: string): Promise<void> {
 }
 
 /**
- * Fetch the full 24h history + stats for the detail modal. Returns raw
+ * Fetch history + stats for the detail modal. Returns raw
  * rate points and aggregates without touching the card-scoped SSE buffer.
  * Callers typically invoke this when the modal opens and discard the
  * result when it closes.
  */
-export async function fetchTrafficDetail(tunnelId: string): Promise<{
+export async function fetchTrafficDetail(tunnelId: string, period: TrafficPeriod): Promise<{
 	timestamps: number[];
 	rxRates: number[];
 	txRates: number[];
@@ -146,7 +147,7 @@ export async function fetchTrafficDetail(tunnelId: string): Promise<{
 		currentTx: number;
 	};
 }> {
-	const resp = await api.getTraffic(tunnelId, '24h');
+	const resp = await api.getTraffic(tunnelId, period);
 	return {
 		timestamps: resp.points.map((p) => p.t),
 		rxRates: resp.points.map((p) => p.rx),

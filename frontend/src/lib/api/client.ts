@@ -86,6 +86,8 @@ import type {
 	RouterStagingStatusResponse
 } from '$lib/types';
 
+export type TrafficPeriod = '5m' | '10m' | '30m' | '1h' | '3h' | '6h' | '12h' | '24h' | '48h';
+
 interface ApiResponse<T> {
 	success?: boolean;
 	error?: boolean;
@@ -194,7 +196,7 @@ class ApiClient {
 
 	async getTraffic(
 		id: string,
-		period: '1h' | '24h'
+		period: TrafficPeriod
 	): Promise<{
 		points: { t: number; rx: number; tx: number }[];
 		stats: {

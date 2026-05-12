@@ -32,12 +32,12 @@ type History struct {
 	stopOnce sync.Once
 }
 
-// New creates a History that retains points for 24 hours.
+// New creates a History that retains points for 48 hours.
 // Starts a background goroutine that prunes old points every 5 minutes.
 func New() *History {
 	h := &History{
 		tunnels: make(map[string]*tunnelHistory),
-		maxAge:  24 * time.Hour,
+		maxAge:  48 * time.Hour,
 		stopCh:  make(chan struct{}),
 	}
 	go h.cleanupLoop()
