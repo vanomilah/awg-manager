@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/singbox/vlink"
 )
 
@@ -45,10 +46,19 @@ type Service struct {
 	mutator   ConfigMutator
 	muById    sync.Map // map[string]*sync.Mutex
 	fetchOpts FetchOpts
+	log       *logging.ScopedLogger // nil-safe; populated via SetAppLogger
 }
 
 func NewService(store *Store, mutator ConfigMutator) *Service {
 	return &Service{store: store, mutator: mutator}
+}
+
+// SetAppLogger wires UI-visible logging for events outside of the
+// success/error envelope returned to the caller — currently used for
+// "URL rewritten from web-view to raw" notices that would otherwise
+// be invisible to the user.
+func (s *Service) SetAppLogger(app logging.AppLogger) {
+	s.log = logging.NewScopedLogger(app, "subscriptions", "refresh")
 }
 
 func (s *Service) lockSub(id string) *sync.Mutex {
@@ -154,7 +164,19 @@ func (s *Service) refreshLocked(ctx context.Context, id string) (*RefreshResult,
 		body = []byte(sub.Inline)
 		ct = "text/plain; charset=utf-8"
 	} else {
-		fetched, fetchedCT, fetchErr := Fetch(sub.URL, sub.Headers, s.fetchOpts)
+		// Rewrite well-known git-hosting web-view URLs (github blob /
+		// gitlab /-/blob/ / gitea src/branch/) to the raw-content URL.
+		// Skipping this leg downloads an HTML page whose embedded React
+		// payload JSON-escapes the share-links beyond what extractFromHTML
+		// can safely recover — at best a hot path of recovery, at worst
+		// silently garbled outbounds (see PR adding RewriteForRaw for the
+		// HardVPN-bypass-WhiteLists/good_keys.txt regression).
+		fetchURL, rewrote := RewriteForRaw(sub.URL)
+		if rewrote {
+			s.log.Warn("rewrite-url", id,
+				fmt.Sprintf("rewrote web-view URL to raw: %s → %s", sub.URL, fetchURL))
+		}
+		fetched, fetchedCT, fetchErr := Fetch(fetchURL, sub.Headers, s.fetchOpts)
 		if fetchErr != nil {
 			masked := fmt.Errorf("%s", MaskURL(fetchErr.Error(), sub.URL))
 			s.store.UpdateState(id, RefreshResult{When: time.Now(), Err: masked})

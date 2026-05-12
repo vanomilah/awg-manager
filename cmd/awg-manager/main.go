@@ -658,6 +658,7 @@ func main() {
 		log.Warnf("subscription adapter: load from disk: %v", err)
 	}
 	subSvc := subscription.NewService(subStore, subAdapter)
+	subSvc.SetAppLogger(loggingService)
 
 	// Wire orchestrator into Operator so ApplyConfig writes 10-tunnels.json
 	// through SlotTunnels rather than an in-place write that bypasses

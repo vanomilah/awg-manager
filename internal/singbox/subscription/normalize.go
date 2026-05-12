@@ -59,12 +59,27 @@ func isHTML(body []byte, contentType string) bool {
 
 // extractFromHTML pulls all scheme:// URLs out of an HTML body — anchor
 // hrefs first, then any plain-text occurrence not already captured.
+//
+// Each match is run through jsonUnescapeURL to recover share-links
+// embedded as JSON-escaped strings inside React/Vue/etc. payloads. The
+// motivating case is GitHub's blob view: it serialises the file body
+// as a JSON string inside a script tag, so a real `&` separator in a
+// share-link surfaces in the HTML as the six-character literal `&`.
+// The schemeLineRegex character class accepts that sequence as part of
+// the URL, and downstream `url.Parse` then treats `\` and `u0026` as
+// part of a single query parameter value — yielding the classic
+// "everything after the first `=` is one giant `flow=` value" failure.
+//
+// Other JSON escapes worth unwrapping (`<` / `>` / `'` /
+// `\/` / `\"` / `\\`) appear in the same envelope for similar reasons.
+// The order of replacements is significant — backslash must be last so
+// we don't mangle the front of the other escapes mid-pass.
 func extractFromHTML(body []byte) []string {
 	matches := schemeLineRegex.FindAll(body, -1)
 	out := make([]string, 0, len(matches))
 	seen := make(map[string]bool)
 	for _, m := range matches {
-		s := string(m)
+		s := jsonUnescapeURL(string(m))
 		if seen[s] {
 			continue
 		}
@@ -72,4 +87,26 @@ func extractFromHTML(body []byte) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// jsonUnescapeURL decodes the common JSON string-escape sequences that
+// leak into share-link substrings when they're scraped from HTML pages
+// whose content was serialised as JSON for a client-side framework.
+// Returns the input unchanged when no escape markers are present, so
+// the fast path is one substring check.
+func jsonUnescapeURL(s string) string {
+	if !strings.Contains(s, `\u`) && !strings.Contains(s, `\/`) &&
+		!strings.Contains(s, `\"`) && !strings.Contains(s, `\\`) {
+		return s
+	}
+	r := strings.NewReplacer(
+		`&`, "&",
+		`<`, "<",
+		`>`, ">",
+		`'`, "'",
+		`\/`, "/",
+		`\"`, `"`,
+		`\\`, `\`, // last — must not chew the leading backslash of the others
+	)
+	return r.Replace(s)
 }
