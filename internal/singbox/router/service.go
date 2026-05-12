@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -171,12 +172,42 @@ type Deps struct {
 	// flow (SaveDraft, ApplyDraft, DiscardDraft). Optional — when nil,
 	// staging event emission is silently skipped.
 	Bus StagingEventBus
+	// WANIPCollector returns the router's own IP addresses on
+	// default-route interfaces. Used by Enable to populate WAN-IP
+	// exclusions in the AWGM-TPROXY/AWGM-REDIRECT chains so LAN
+	// traffic destined to the router's public WAN/tunnel IPs does
+	// not loop back into sing-box. Optional — when nil, NewService
+	// defaults to the production collector backed by d.Log.
+	WANIPCollector WANIPCollector
+}
+
+// routerLoggerAdapter narrows *logger.Logger to the wanLogger
+// interface required by NewWANIPCollector. Needed because
+// logger.Logger.Warn / .Info have variadic fields, which doesn't
+// satisfy a literal Warn(msg string) / Info(msg string) interface.
+type routerLoggerAdapter struct {
+	log *logger.Logger
+}
+
+func (a *routerLoggerAdapter) Warn(msg string) {
+	if a.log == nil {
+		return
+	}
+	a.log.Warn(msg)
+}
+
+func (a *routerLoggerAdapter) Info(msg string) {
+	if a.log == nil {
+		return
+	}
+	a.log.Info(msg)
 }
 
 type ServiceImpl struct {
-	deps        Deps
-	mu          sync.Mutex
-	currentMark string // last-installed iptables mark; used by Reconcile to detect change
+	deps           Deps
+	mu             sync.Mutex
+	currentMark    string   // last-installed iptables mark; used by Reconcile to detect change
+	currentWANIPs  []string // last-collected WAN IPs; used by Reconcile to detect change
 
 	// inspectCache backs the route-inspector's rule_set match path. Lazy
 	// constructed on first Inspect call so dev-machine builds (no
@@ -188,6 +219,9 @@ type ServiceImpl struct {
 func NewService(d Deps) *ServiceImpl {
 	if d.IPTables == nil {
 		d.IPTables = NewIPTables()
+	}
+	if d.WANIPCollector == nil {
+		d.WANIPCollector = NewWANIPCollector(&routerLoggerAdapter{log: d.Log})
 	}
 	// Idempotently refresh the netfilter hook script: if a previous
 	// version is on disk (older AWGM without pidof guard), this writes
@@ -378,7 +412,18 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 		}
 	}
 
-	if err := s.deps.IPTables.Install(ctx, mark); err != nil {
+	// Collect WAN IPs BEFORE Install: the router's own public-IP
+	// addresses on default-route interfaces become RETURN rules in
+	// AWGM-TPROXY/AWGM-REDIRECT, preventing LAN-to-router-WAN-IP
+	// traffic from looping back into sing-box. A collector failure
+	// is fatal — installing without the exclusions would silently
+	// expose the loop edge case to users.
+	wanIPs, err := s.deps.WANIPCollector.Collect(ctx)
+	if err != nil {
+		return fmt.Errorf("collect WAN IPs: %w", err)
+	}
+
+	if err := s.deps.IPTables.Install(ctx, RestoreInputSpec{PolicyMark: mark, WANIPs: wanIPs}); err != nil {
 		// Stop sing-box from listening on the now-orphan TPROXY port,
 		// but DO NOT corrupt the persisted user config. With orchestrator
 		// wired we just park the slot back under disabled/ — sing-box
@@ -394,6 +439,7 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 		return fmt.Errorf("iptables install: %w", err)
 	}
 	s.currentMark = mark
+	s.currentWANIPs = wanIPs
 
 	settings.SingboxRouter = sr
 	if err := s.deps.Settings.Save(settings); err != nil {
@@ -597,6 +643,7 @@ func (s *ServiceImpl) Disable(ctx context.Context) error {
 		s.deps.Log.Warn(fmt.Sprintf("router iptables uninstall: %v", err))
 	}
 	s.currentMark = ""
+	s.currentWANIPs = nil
 
 	if s.deps.Orch != nil {
 		// Move 20-router.json under disabled/ — sing-box's non-recursive
@@ -649,26 +696,47 @@ func (s *ServiceImpl) Reconcile(ctx context.Context) error {
 	case !sr.Enabled && installed:
 		return s.Disable(ctx)
 	case sr.Enabled && installed:
-		mark, err := s.deps.Policies.GetPolicyMark(ctx, sr.PolicyName)
-		if err != nil || mark == "" {
-			// Policy gone upstream — fail-safe disable, no auto-recovery.
-			return s.Disable(ctx)
-		}
-		if mark != s.currentMark {
-			s.mu.Lock()
-			if err := s.deps.IPTables.Install(ctx, mark); err != nil {
-				s.mu.Unlock()
-				return err
-			}
-			s.currentMark = mark
+		return s.reconcileInstalled(ctx, sr)
+	}
+	return nil
+}
+
+// reconcileInstalled handles the "Enabled && installed" branch:
+// detect mark or WAN-IP changes and re-Install. Extracted from Reconcile
+// to keep the decision tree testable without stubbing IsInstalled.
+func (s *ServiceImpl) reconcileInstalled(ctx context.Context, sr storage.SingboxRouterSettings) error {
+	mark, err := s.deps.Policies.GetPolicyMark(ctx, sr.PolicyName)
+	if err != nil || mark == "" {
+		// Policy gone upstream — fail-safe disable, no auto-recovery.
+		return s.Disable(ctx)
+	}
+	wanIPs, err := s.deps.WANIPCollector.Collect(ctx)
+	if err != nil {
+		return fmt.Errorf("collect WAN IPs: %w", err)
+	}
+
+	markChanged := mark != s.currentMark
+	wanIPsChanged := !slices.Equal(s.currentWANIPs, wanIPs)
+
+	if markChanged || wanIPsChanged {
+		s.mu.Lock()
+		if err := s.deps.IPTables.Install(ctx, RestoreInputSpec{
+			PolicyMark: mark,
+			WANIPs:     wanIPs,
+		}); err != nil {
 			s.mu.Unlock()
+			return err
 		}
-		// Self-heal: a previous Install rollback or upgrade hop may
-		// have left 20-router.json without the tproxy-in inbound. Re-add
-		// it idempotently so sing-box keeps listening on TPROXYPort.
-		if err := s.healTProxyInbound(ctx); err != nil {
-			s.deps.Log.Warn(fmt.Sprintf("router: heal tproxy inbound: %v", err))
-		}
+		s.currentMark = mark
+		s.currentWANIPs = wanIPs
+		s.mu.Unlock()
+	}
+
+	// Self-heal: a previous Install rollback or upgrade hop may
+	// have left 20-router.json without the tproxy-in inbound. Re-add
+	// it idempotently so sing-box keeps listening on TPROXYPort.
+	if err := s.healTProxyInbound(ctx); err != nil {
+		s.deps.Log.Warn(fmt.Sprintf("router: heal tproxy inbound: %v", err))
 	}
 	return nil
 }

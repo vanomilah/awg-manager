@@ -133,11 +133,22 @@ type RestoreInputSpec struct {
 	// policy. Empty means no PREROUTING jump (defensive — caller should
 	// never reach Install with empty mark, but iptables doesn't panic).
 	PolicyMark string
+
+	// WANIPs is a list of router-owned IP addresses (in "X.X.X.X/32" form)
+	// that must NOT be TPROXY'd: traffic from LAN to the router's own
+	// public-WAN or tunnel-endpoint IPs would otherwise loop back into
+	// sing-box. Collected dynamically by WANIPCollector before Install.
+	// Empty list = no extra exclusions (router still works, just exposes
+	// the WAN-IP loop edge case).
+	WANIPs []string
 }
 
 var bypassCIDRs = []string{
 	"127.0.0.0/8",
 	"169.254.0.0/16",
+	"100.64.0.0/10",  // CGNAT (RFC 6598)
+	"0.0.0.0/8",      // this network (RFC 1122)
+	"192.0.0.0/24",   // IETF Protocol Assignments (NAT64 well-known)
 	"224.0.0.0/4",
 	"255.255.255.255/32",
 	"10.0.0.0/8",
@@ -152,8 +163,18 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	b.WriteString("*mangle\n")
 	fmt.Fprintf(&b, ":%s - [0:0]\n", ChainName)
 
+	// DNS-перехват MUST precede the dst-based bypass: LAN clients
+	// configured with DNS=router-LAN-IP (e.g. 192.168.1.1) would
+	// otherwise hit the 192.168.0.0/16 RETURN below before this rule
+	// gets a chance to fire, leaking DNS into NDMS-resolver.
+	fmt.Fprintf(&b, "-A %s -p udp --dport 53 -j TPROXY --on-port %d --on-ip 127.0.0.1 --tproxy-mark 0x%x\n",
+		ChainName, TPROXYPort, Fwmark)
+
 	for _, cidr := range bypassCIDRs {
 		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", ChainName, cidr)
+	}
+	for _, ip := range spec.WANIPs {
+		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", ChainName, ip)
 	}
 	fmt.Fprintf(&b, "-A %s -m mark --mark 0xff -j RETURN\n", ChainName)
 	fmt.Fprintf(&b, "-A %s -p udp -j TPROXY --on-port %d --on-ip 127.0.0.1 --tproxy-mark 0x%x\n",
@@ -179,8 +200,15 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	// on this kernel.
 	b.WriteString("*nat\n")
 	fmt.Fprintf(&b, ":%s - [0:0]\n", RedirectChain)
+
+	// DNS-перехват on TCP — same ordering rationale as mangle chain.
+	fmt.Fprintf(&b, "-A %s -p tcp --dport 53 -j REDIRECT --to-ports %d\n", RedirectChain, RedirectPort)
+
 	for _, cidr := range bypassCIDRs {
 		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", RedirectChain, cidr)
+	}
+	for _, ip := range spec.WANIPs {
+		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", RedirectChain, ip)
 	}
 	// Bypass router admin port so we don't redirect our own UI traffic.
 	fmt.Fprintf(&b, "-A %s -p tcp --dport 79 -j RETURN\n", RedirectChain)
@@ -221,7 +249,7 @@ func NewIPTables() *IPTables {
 	}
 }
 
-func (it *IPTables) Install(ctx context.Context, mark string) error {
+func (it *IPTables) Install(ctx context.Context, spec RestoreInputSpec) error {
 	// Scrub any existing PREROUTING jumps to AWGM-TPROXY before inserting
 	// the new one. iptables-restore --noflush + -I PREROUTING 1 would
 	// otherwise stack a duplicate jump on every restart / mark-change /
@@ -230,9 +258,7 @@ func (it *IPTables) Install(ctx context.Context, mark string) error {
 	// Idempotent: a no-op when no prior jumps exist.
 	it.removeSourceHooks(ctx)
 
-	input := buildRestoreInput(RestoreInputSpec{
-		PolicyMark: mark,
-	})
+	input := buildRestoreInput(spec)
 	if it.persistRules != nil {
 		if err := it.persistRules(input); err != nil {
 			return fmt.Errorf("write netfilter rules: %w", err)

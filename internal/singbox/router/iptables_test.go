@@ -141,7 +141,7 @@ func TestBuildRestoreInput_TablesAndRulesPresent(t *testing.T) {
 func TestIPTablesInstallSequence(t *testing.T) {
 	fe := &fakeExec{}
 	it := newFakeIPTables(fe)
-	if err := it.Install(context.Background(), "0xffffaaa"); err != nil {
+	if err := it.Install(context.Background(), RestoreInputSpec{PolicyMark: "0xffffaaa"}); err != nil {
 		t.Fatal(err)
 	}
 	// Find the operation phases in the call list rather than asserting
@@ -280,14 +280,112 @@ func TestInstall_IdempotentOnFileExists(t *testing.T) {
 		persistHook:    func() error { return nil },
 		cleanupHook:    func() {},
 	}
-	if err := it.Install(context.Background(), "0xff"); err != nil {
+	if err := it.Install(context.Background(), RestoreInputSpec{PolicyMark: "0xff"}); err != nil {
 		t.Fatalf("first Install: %v", err)
 	}
 
 	// Simulate "File exists" failure on subsequent ip-rule/ip-route add.
 	rec.runIPErr = errors.New("exit status 2 (exit 2, stderr: RTNETLINK answers: File exists)")
-	if err := it.Install(context.Background(), "0xff"); err != nil {
+	if err := it.Install(context.Background(), RestoreInputSpec{PolicyMark: "0xff"}); err != nil {
 		t.Fatalf("second Install (idempotent): %v", err)
+	}
+}
+
+func TestBuildRestoreInput_ExpandedBypassCIDRs(t *testing.T) {
+	input := buildRestoreInput(RestoreInputSpec{PolicyMark: "0xffffaaa"})
+
+	// New CIDRs that close edge cases SKeen covered:
+	// - CGNAT (RFC 6598) — ISPs deploying carrier-grade NAT
+	// - 0.0.0.0/8 "this network" (RFC 1122) — never routable
+	// - 192.0.0.0/24 IETF Protocol Assignments — includes NAT64 well-known
+	expected := []string{
+		"-A AWGM-TPROXY -d 100.64.0.0/10 -j RETURN",
+		"-A AWGM-TPROXY -d 0.0.0.0/8 -j RETURN",
+		"-A AWGM-TPROXY -d 192.0.0.0/24 -j RETURN",
+		"-A AWGM-REDIRECT -d 100.64.0.0/10 -j RETURN",
+		"-A AWGM-REDIRECT -d 0.0.0.0/8 -j RETURN",
+		"-A AWGM-REDIRECT -d 192.0.0.0/24 -j RETURN",
+	}
+	for _, line := range expected {
+		if !strings.Contains(input, line) {
+			t.Errorf("missing expanded-bypass line: %q\nin:\n%s", line, input)
+		}
+	}
+}
+
+func TestBuildRestoreInput_DNSInterceptUDP(t *testing.T) {
+	input := buildRestoreInput(RestoreInputSpec{PolicyMark: "0xffffaaa"})
+
+	// DNS rule MUST exist in AWGM-TPROXY: -p udp --dport 53 -j TPROXY ...
+	wantDNS := "-A AWGM-TPROXY -p udp --dport 53 -j TPROXY --on-port 51271 --on-ip 127.0.0.1 --tproxy-mark 0x1"
+	if !strings.Contains(input, wantDNS) {
+		t.Errorf("missing DNS UDP TPROXY rule\nwant: %s\ngot:\n%s", wantDNS, input)
+	}
+
+	// CRITICAL ORDERING: DNS rule MUST precede the 192.168.0.0/16 bypass.
+	// Otherwise DNS-to-router-LAN-IP gets bypassed before the DNS rule fires.
+	dnsIdx := strings.Index(input, wantDNS)
+	bypassIdx := strings.Index(input, "-A AWGM-TPROXY -d 192.168.0.0/16 -j RETURN")
+	if dnsIdx < 0 || bypassIdx < 0 {
+		t.Fatalf("DNS or bypass rule not found")
+	}
+	if dnsIdx > bypassIdx {
+		t.Errorf("DNS rule at offset %d must precede 192.168/16 bypass at offset %d", dnsIdx, bypassIdx)
+	}
+}
+
+func TestBuildRestoreInput_DNSInterceptTCP(t *testing.T) {
+	input := buildRestoreInput(RestoreInputSpec{PolicyMark: "0xffffaaa"})
+
+	// TCP DNS rule MUST exist in AWGM-REDIRECT.
+	wantDNS := "-A AWGM-REDIRECT -p tcp --dport 53 -j REDIRECT --to-ports 51272"
+	if !strings.Contains(input, wantDNS) {
+		t.Errorf("missing DNS TCP REDIRECT rule\nwant: %s\ngot:\n%s", wantDNS, input)
+	}
+
+	// Ordering: DNS rule MUST precede the 192.168/16 bypass in AWGM-REDIRECT.
+	dnsIdx := strings.Index(input, wantDNS)
+	bypassIdx := strings.Index(input, "-A AWGM-REDIRECT -d 192.168.0.0/16 -j RETURN")
+	if dnsIdx < 0 || bypassIdx < 0 {
+		t.Fatalf("DNS or bypass rule not found")
+	}
+	if dnsIdx > bypassIdx {
+		t.Errorf("TCP DNS rule at offset %d must precede 192.168/16 bypass at offset %d", dnsIdx, bypassIdx)
+	}
+}
+
+func TestBuildRestoreInput_WANIPsRendered(t *testing.T) {
+	// Synthetic RFC 5737 TEST-NET-3 + RFC 1918 — mirrors a real multi-WAN
+	// router with public WAN + tunnel addresses.
+	spec := RestoreInputSpec{
+		PolicyMark: "0xffffaaa",
+		WANIPs:     []string{"203.0.113.207/32", "10.8.1.3/32"},
+	}
+	input := buildRestoreInput(spec)
+
+	// WAN-IP rules MUST appear in BOTH chains.
+	expected := []string{
+		"-A AWGM-TPROXY -d 203.0.113.207/32 -j RETURN",
+		"-A AWGM-TPROXY -d 10.8.1.3/32 -j RETURN",
+		"-A AWGM-REDIRECT -d 203.0.113.207/32 -j RETURN",
+		"-A AWGM-REDIRECT -d 10.8.1.3/32 -j RETURN",
+	}
+	for _, line := range expected {
+		if !strings.Contains(input, line) {
+			t.Errorf("missing WAN-IP line: %q\nin:\n%s", line, input)
+		}
+	}
+}
+
+func TestBuildRestoreInput_EmptyWANIPs_NoExclusions(t *testing.T) {
+	spec := RestoreInputSpec{PolicyMark: "0xffffaaa", WANIPs: nil}
+	input := buildRestoreInput(spec)
+
+	// No /32 host-routes should appear other than 255.255.255.255/32.
+	for _, line := range strings.Split(input, "\n") {
+		if strings.Contains(line, "/32 -j RETURN") && !strings.Contains(line, "255.255.255.255") {
+			t.Errorf("unexpected /32 exclusion when WANIPs empty: %s", line)
+		}
 	}
 }
 
