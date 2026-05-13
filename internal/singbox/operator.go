@@ -1305,10 +1305,13 @@ func (o *Operator) Reconcile(ctx context.Context) error {
 // a no-op for the process when already stopped; "restart" is stop + start
 // regardless of current state. Errors only on actual transition failures.
 //
-// All three actions persist the sticky-stop intent BEFORE touching the
-// process: "stop" sets it to true, "start" and "restart" clear it. The
-// intent persists across awgm restarts (settings.json) so the watchdog
-// never resurrects a daemon the user shut down.
+// All three actions update the in-memory sticky-stop flag and persist it
+// to settings.json BEFORE touching the process: "stop" sets the intent
+// true, "start" and "restart" clear it. On persistence failure the flag
+// is rolled back (see setManualStop) and the process is left untouched —
+// so a partial state where the disk and the daemon disagree is impossible.
+// The persisted intent survives awgm restarts so the watchdog never
+// resurrects a daemon the user shut down.
 func (o *Operator) Control(ctx context.Context, action string) error {
 	if installed, _ := o.IsInstalled(); !installed {
 		return fmt.Errorf("sing-box is not installed")

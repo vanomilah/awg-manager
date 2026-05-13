@@ -656,16 +656,11 @@ func main() {
 		AppLogger: loggingService,
 		// Seed the sticky-stop flag from disk so the watchdog respects
 		// a user-pressed Stop across awgm restarts. SetManuallyStopped
-		// writes the new intent back through the same store.
+		// writes the new intent back through a single-field updater so
+		// concurrent writers on other Settings fields (e.g. router
+		// service toggling SingboxRouter) cannot silently overwrite it.
 		InitialManuallyStopped: settings.SingboxManuallyStopped,
-		SetManuallyStopped: func(v bool) error {
-			cur, err := settingsStore.Load()
-			if err != nil {
-				return err
-			}
-			cur.SingboxManuallyStopped = v
-			return settingsStore.Save(cur)
-		},
+		SetManuallyStopped:     settingsStore.SetSingboxManuallyStopped,
 	})
 
 	// config.d orchestrator — the single writer of slot files (00-base /

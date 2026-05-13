@@ -425,6 +425,20 @@ func (s *SettingsStore) SaveManagedServers(servers []ManagedServer) error {
 	return s.saveUnlocked(s.settings)
 }
 
+// SetSingboxManuallyStopped atomically updates the sing-box sticky-stop
+// flag under the store lock so concurrent Load→mutate→Save writers on
+// other Settings fields (e.g. SingboxRouter toggles from router service)
+// cannot silently overwrite the change. Mirrors SaveManagedServers.
+func (s *SettingsStore) SetSingboxManuallyStopped(v bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settings == nil {
+		return fmt.Errorf("settings not loaded")
+	}
+	s.settings.SingboxManuallyStopped = v
+	return s.saveUnlocked(s.settings)
+}
+
 // MarkServerInterface adds an interface ID to the server interfaces list.
 func (s *SettingsStore) MarkServerInterface(id string) error {
 	s.mu.Lock()
