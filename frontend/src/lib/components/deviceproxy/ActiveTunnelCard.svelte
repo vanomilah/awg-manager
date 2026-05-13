@@ -312,6 +312,7 @@
 		gap: 0.125rem;
 		flex: 1;
 		min-width: 0;
+		overflow: hidden;
 	}
 
 	.option-name {
@@ -393,5 +394,79 @@
 	.badge-muted {
 		background: rgba(107, 114, 128, 0.15);
 		color: var(--color-text-muted);
+	}
+
+	@media (max-width: 640px) {
+		.card {
+			padding: 0.75rem;
+		}
+
+		.card-header {
+			align-items: flex-start;
+			flex-direction: column;
+			gap: 0.5rem;
+		}
+
+		.section-title {
+			font-size: 0.9375rem;
+		}
+
+		.radio-list {
+			max-height: none;
+		}
+
+		.group-title {
+			font-size: 0.625rem;
+			padding-top: 0.375rem;
+		}
+
+		.option {
+			padding: 0.5rem 0.625rem;
+			gap: 0.5rem;
+			align-items: flex-start;
+		}
+
+		.option-name {
+			font-size: 0.8125rem;
+			white-space: normal;
+			overflow-wrap: anywhere;
+		}
+
+		.option-meta {
+			font-size: 0.625rem;
+			gap: 0.25rem;
+			align-items: flex-start;
+		}
+
+		.option-meta-text {
+			white-space: normal;
+			overflow: visible;
+			text-overflow: initial;
+			overflow-wrap: anywhere;
+			word-break: break-word;
+			line-height: 1.25;
+		}
+
+		.option-check {
+			width: 16px;
+			height: 16px;
+			margin-top: 0.125rem;
+		}
+
+		.detail-eye {
+			width: 16px;
+			height: 16px;
+			margin-top: 0.125rem;
+		}
+
+		.hint-row {
+			flex-direction: column;
+			align-items: flex-start;
+			padding: 0.5rem;
+		}
+
+		.hint-text {
+			font-size: 0.75rem;
+		}
 	}
 </style>

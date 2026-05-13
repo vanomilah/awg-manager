@@ -85,6 +85,7 @@
 		font-size: 0.8125rem;
 		color: var(--color-text-secondary);
 		text-align: right;
+		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -94,5 +95,36 @@
 		display: flex;
 		gap: 0.5rem;
 		margin-top: 0.875rem;
+	}
+
+	@media (max-width: 640px) {
+		.card {
+			padding: 0.75rem;
+		}
+
+		.section-title {
+			font-size: 0.9375rem;
+		}
+
+		.info-row {
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 0.25rem;
+		}
+
+		.info-key {
+			font-size: 0.625rem;
+		}
+
+		.info-val {
+			width: 100%;
+			text-align: left;
+			white-space: normal;
+			overflow-wrap: anywhere;
+		}
+
+		.actions {
+			flex-wrap: wrap;
+		}
 	}
 </style>
