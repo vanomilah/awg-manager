@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Smoke test for the Modal.hasUnsavedChanges flow.
+
+Run with mock-proxy already up (``npm run dev:mock:proxy`` in another terminal):
+    python3 frontend/scripts/smoke-modal-unsaved.py
+
+For each SCENARIO, opens the modal, types into a designated field, then
+verifies:
+  - clicking the backdrop pops the ConfirmModal (original modal stays)
+  - clicking "Продолжить редактирование" closes the confirm, original stays
+  - clicking backdrop again + "Закрыть без сохранения" closes both modals
+  - reopening + immediate backdrop click (clean form) closes silently
+"""
+
+import sys
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+from playwright.sync_api import sync_playwright, Page, TimeoutError as PWTimeout
+
+BASE = "http://localhost:5173"
+
+
+@dataclass
+class Scenario:
+    name: str
+    navigate: Callable[[Page], None]
+    trigger: Callable[[Page], None]
+    input_selector: str
+    typed_value: str = "x"
+
+
+SCENARIOS: list[Scenario] = [
+    # populated by per-modal tasks below
+]
+
+
+def goto(page: Page, path: str):
+    page.goto(f"{BASE}{path}")
+    page.wait_for_load_state("domcontentloaded")
+    page.wait_for_timeout(1500)
+
+
+def click_tab(page: Page, label: str):
+    page.locator(f'.overflow-tabs .tab:has-text("{label}")').first.click(
+        force=True, timeout=4000
+    )
+    page.wait_for_timeout(500)
+
+
+def assert_modal_open(page: Page):
+    page.locator(".modal-card").first.wait_for(state="visible", timeout=4000)
+
+
+def assert_confirm_open(page: Page):
+    page.locator('.modal-card:has-text("Несохранённые изменения")').wait_for(
+        state="visible", timeout=3000
+    )
+
+
+def click_backdrop_corner(page: Page):
+    page.mouse.move(10, 10)
+    page.mouse.down()
+    page.mouse.up()
+    page.wait_for_timeout(400)
+
+
+def run_scenario(page: Page, sc: Scenario) -> str:
+    """Returns 'PASS' or a short error string."""
+    try:
+        sc.navigate(page)
+        sc.trigger(page)
+        assert_modal_open(page)
+
+        # Type something to mark the form dirty.
+        page.locator(sc.input_selector).first.fill(sc.typed_value, timeout=3000)
+        page.wait_for_timeout(200)
+
+        # Backdrop while dirty -> ConfirmModal appears.
+        click_backdrop_corner(page)
+        assert_confirm_open(page)
+
+        # Cancel from confirm -> confirm closes, parent stays.
+        page.locator('button:has-text("Продолжить редактирование")').first.click(timeout=2000)
+        page.wait_for_timeout(300)
+        if page.locator('.modal-card:has-text("Несохранённые изменения")').count() > 0:
+            return "confirm did not close on cancel"
+        assert_modal_open(page)
+
+        # Backdrop again + confirm-destroy.
+        click_backdrop_corner(page)
+        assert_confirm_open(page)
+        page.locator('button:has-text("Закрыть без сохранения")').first.click(timeout=2000)
+        page.wait_for_timeout(400)
+        if page.locator('.modal-card').count() > 0:
+            return "parent did not close on destroy"
+
+        # Reopen clean -> backdrop closes silently.
+        sc.trigger(page)
+        assert_modal_open(page)
+        click_backdrop_corner(page)
+        if page.locator('.modal-card').count() > 0:
+            return "clean form did not close silently"
+
+        return "PASS"
+    except PWTimeout as e:
+        return f"timeout: {str(e)[:120]}"
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)[:120]}"
+
+
+def main():
+    if not SCENARIOS:
+        print("No SCENARIOS defined yet; nothing to run.")
+        return 0
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        ctx = browser.new_context(viewport={"width": 1600, "height": 1000})
+        page = ctx.new_page()
+        fails = 0
+        for sc in SCENARIOS:
+            res = run_scenario(page, sc)
+            mark = "PASS" if res == "PASS" else "FAIL"
+            if res != "PASS":
+                fails += 1
+            print(f"{mark}  {sc.name:40s} {res if res != 'PASS' else ''}")
+        browser.close()
+        return 0 if fails == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
