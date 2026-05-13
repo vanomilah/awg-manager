@@ -41,6 +41,48 @@
 	let error = $state('');
 	let memberPicker = $state('');
 
+	// Snapshot initial state for isDirty detection
+	let initialType: 'urltest' | 'selector' = $state('urltest');
+	let initialTag = $state('');
+	let initialMembers = $state<string[]>([]);
+	let initialUrl = $state('https://www.gstatic.com/generate_204');
+	let initialInterval = $state('3m');
+	let initialTolerance = $state(50);
+	let initialDefaultOutbound = $state('');
+
+	// Initialize snapshot when modal opens
+	$effect(() => {
+		if (outbound) {
+			initialType = outbound.type === 'selector' ? 'selector' : 'urltest';
+			initialTag = outbound.tag;
+			initialMembers = [...(outbound.outbounds ?? [])];
+			initialUrl = outbound.url ?? 'https://www.gstatic.com/generate_204';
+			initialInterval = outbound.interval ?? '3m';
+			initialTolerance = outbound.tolerance ?? 50;
+			initialDefaultOutbound = outbound.default ?? '';
+		} else {
+			initialType = 'urltest';
+			initialTag = '';
+			initialMembers = [];
+			initialUrl = 'https://www.gstatic.com/generate_204';
+			initialInterval = '3m';
+			initialTolerance = 50;
+			initialDefaultOutbound = '';
+		}
+	});
+
+	const isDirty = $derived.by(() => {
+		return (
+			type !== initialType ||
+			tag !== initialTag ||
+			[...members].join(',') !== [...initialMembers].join(',') ||
+			url !== initialUrl ||
+			interval !== initialInterval ||
+			tolerance !== initialTolerance ||
+			defaultOutbound !== initialDefaultOutbound
+		);
+	});
+
 	// Flat options with group labels for the Dropdown native grouping.
 	// Filter out tags already added so the user can't pick duplicates.
 	const memberDropdownOptions = $derived<DropdownOption[]>(
@@ -112,7 +154,7 @@
 	);
 </script>
 
-<Modal open onclose={onClose} title={outbound ? 'Редактировать outbound' : 'Новый outbound'}>
+<Modal open onclose={onClose} title={outbound ? 'Редактировать outbound' : 'Новый outbound'} hasUnsavedChanges={() => isDirty}>
 	<div class="form">
 		<div class="section-label">Тип</div>
 		<div class="segment">

@@ -55,6 +55,48 @@
 	let busy = $state(false);
 	let error = $state('');
 
+	// Snapshot initial state for isDirty detection
+	let initialDomainSuffixStr = $state('');
+	let initialIpCidrStr = $state('');
+	let initialSourceIpCidrStr = $state('');
+	let initialRuleSetTagsSnapshot = $state<string[]>([]);
+	let initialPortStr = $state('');
+	let initialAction: 'route' | 'reject' = $state('route');
+	let initialOutbound = $state('');
+
+	// Initialize snapshot when modal opens
+	$effect(() => {
+		if (rule) {
+			initialDomainSuffixStr = (rule.domain_suffix ?? []).join('\n');
+			initialIpCidrStr = (rule.ip_cidr ?? []).join('\n');
+			initialSourceIpCidrStr = (rule.source_ip_cidr ?? []).join('\n');
+			initialRuleSetTagsSnapshot = [...(rule.rule_set ?? [])];
+			initialPortStr = (rule.port ?? []).join(', ');
+			initialAction = rule.action === 'reject' ? 'reject' : 'route';
+			initialOutbound = rule.outbound ?? '';
+		} else {
+			initialDomainSuffixStr = '';
+			initialIpCidrStr = '';
+			initialSourceIpCidrStr = '';
+			initialRuleSetTagsSnapshot = [...(initialRuleSetTags ?? [])];
+			initialPortStr = '';
+			initialAction = 'route';
+			initialOutbound = '';
+		}
+	});
+
+	const isDirty = $derived.by(() => {
+		return (
+			domainSuffixStr !== initialDomainSuffixStr ||
+			ipCidrStr !== initialIpCidrStr ||
+			sourceIpCidrStr !== initialSourceIpCidrStr ||
+			[...ruleSetTags].join(',') !== [...initialRuleSetTagsSnapshot].join(',') ||
+			portStr !== initialPortStr ||
+			action !== initialAction ||
+			outbound !== initialOutbound
+		);
+	});
+
 	function parseLines(text: string): string[] {
 		return text.split('\n').map((s) => s.trim()).filter(Boolean);
 	}
@@ -112,7 +154,7 @@
 	}
 </script>
 
-<Modal open onclose={onClose} title={rule ? 'Редактировать правило' : 'Новое правило'}>
+<Modal open onclose={onClose} title={rule ? 'Редактировать правило' : 'Новое правило'} hasUnsavedChanges={() => isDirty}>
 	<div class="form">
 		<div class="section-label">Matchers (минимум один)</div>
 

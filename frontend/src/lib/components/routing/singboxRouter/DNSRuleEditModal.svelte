@@ -38,6 +38,48 @@
 	let busy = $state(false);
 	let error = $state('');
 
+	// Snapshot initial state for isDirty detection
+	let initialRuleSetStr = $state('');
+	let initialDomainSuffixStr = $state('');
+	let initialDomainStr = $state('');
+	let initialDomainKeywordStr = $state('');
+	let initialQueryTypeStr = $state('');
+	let initialAction: 'route' | 'reject' = $state('route');
+	let initialServer = $state('');
+
+	// Initialize snapshot when modal opens
+	$effect(() => {
+		if (rule) {
+			initialRuleSetStr = (rule.rule_set ?? []).join(', ');
+			initialDomainSuffixStr = (rule.domain_suffix ?? []).join('\n');
+			initialDomainStr = (rule.domain ?? []).join('\n');
+			initialDomainKeywordStr = (rule.domain_keyword ?? []).join(', ');
+			initialQueryTypeStr = (rule.query_type ?? []).join(', ');
+			initialAction = rule.action === 'reject' ? 'reject' : 'route';
+			initialServer = rule.server ?? '';
+		} else {
+			initialRuleSetStr = '';
+			initialDomainSuffixStr = '';
+			initialDomainStr = '';
+			initialDomainKeywordStr = '';
+			initialQueryTypeStr = '';
+			initialAction = 'route';
+			initialServer = '';
+		}
+	});
+
+	const isDirty = $derived.by(() => {
+		return (
+			ruleSetStr !== initialRuleSetStr ||
+			domainSuffixStr !== initialDomainSuffixStr ||
+			domainStr !== initialDomainStr ||
+			domainKeywordStr !== initialDomainKeywordStr ||
+			queryTypeStr !== initialQueryTypeStr ||
+			action !== initialAction ||
+			server !== initialServer
+		);
+	});
+
 	async function save(): Promise<void> {
 		busy = true;
 		error = '';
@@ -84,7 +126,7 @@
 	}
 </script>
 
-<Modal open onclose={onClose} title={rule ? 'Редактировать DNS правило' : 'Новое DNS правило'}>
+<Modal open onclose={onClose} title={rule ? 'Редактировать DNS правило' : 'Новое DNS правило'} hasUnsavedChanges={() => isDirty}>
 	<div class="form">
 		<div class="section-label">Matchers (минимум один)</div>
 

@@ -25,6 +25,26 @@
 	let busy = $state(false);
 	let error = $state('');
 
+	// Snapshot initial state for isDirty detection
+	let initialRefreshMode: 'interval' | 'daily' = $state('interval');
+	let initialRefreshIntervalHours = $state(24);
+	let initialRefreshDailyTime = $state('03:00');
+
+	// Initialize snapshot when modal opens
+	$effect(() => {
+		initialRefreshMode = (settings.refreshMode ?? 'interval') as 'interval' | 'daily';
+		initialRefreshIntervalHours = settings.refreshIntervalHours ?? 24;
+		initialRefreshDailyTime = settings.refreshDailyTime ?? '03:00';
+	});
+
+	const isDirty = $derived.by(() => {
+		return (
+			refreshMode !== initialRefreshMode ||
+			refreshIntervalHours !== initialRefreshIntervalHours ||
+			refreshDailyTime !== initialRefreshDailyTime
+		);
+	});
+
 	async function save(): Promise<void> {
 		busy = true;
 		error = '';
@@ -45,7 +65,7 @@
 	}
 </script>
 
-<Modal open onclose={onClose} title="Настройки автообновления">
+<Modal open onclose={onClose} title="Настройки автообновления" hasUnsavedChanges={() => isDirty}>
 	<div class="form">
 		<label class="field">
 			<div class="label">Режим</div>

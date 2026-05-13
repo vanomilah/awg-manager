@@ -64,6 +64,60 @@
 	let busy = $state(false);
 	let error = $state('');
 
+	// Snapshot initial state for isDirty detection
+	let initialTag = $state('');
+	let initialType = $state<SingboxRouterDNSType>('udp');
+	let initialServerAddr = $state('');
+	let initialServerPort = $state<number | ''>('');
+	let initialPath = $state('');
+	let initialDetour = $state('');
+	let initialStrategy = $state<SingboxRouterDNSStrategy>('');
+	let initialResolverEnabled = $state(false);
+	let initialResolverServer = $state('');
+	let initialResolverStrategy = $state<SingboxRouterDNSStrategy>('');
+
+	// Initialize snapshot when modal opens
+	$effect(() => {
+		if (server) {
+			initialTag = server.tag;
+			initialType = server.type;
+			initialServerAddr = server.server;
+			initialServerPort = server.server_port ?? '';
+			initialPath = server.path ?? '';
+			initialDetour = server.detour ?? '';
+			initialStrategy = server.domain_strategy ?? '';
+			initialResolverEnabled = server.domain_resolver != null;
+			initialResolverServer = server.domain_resolver?.server ?? '';
+			initialResolverStrategy = server.domain_resolver?.strategy ?? '';
+		} else {
+			initialTag = '';
+			initialType = 'udp';
+			initialServerAddr = '';
+			initialServerPort = '';
+			initialPath = '';
+			initialDetour = '';
+			initialStrategy = '';
+			initialResolverEnabled = false;
+			initialResolverServer = '';
+			initialResolverStrategy = '';
+		}
+	});
+
+	const isDirty = $derived.by(() => {
+		return (
+			tag !== initialTag ||
+			type !== initialType ||
+			serverAddr !== initialServerAddr ||
+			serverPort !== initialServerPort ||
+			path !== initialPath ||
+			detour !== initialDetour ||
+			strategy !== initialStrategy ||
+			resolverEnabled !== initialResolverEnabled ||
+			resolverServer !== initialResolverServer ||
+			resolverStrategy !== initialResolverStrategy
+		);
+	});
+
 	const needsResolver = $derived(type !== 'udp' && !isIPLiteral(serverAddr));
 	const availableResolvers = $derived(servers.filter((s) => s.tag !== tag).map((s) => s.tag));
 	const resolverServerOptions = $derived<DropdownOption[]>([
@@ -106,7 +160,7 @@
 	}
 </script>
 
-<Modal open onclose={onClose} title={server ? 'Редактировать DNS сервер' : 'Новый DNS сервер'}>
+<Modal open onclose={onClose} title={server ? 'Редактировать DNS сервер' : 'Новый DNS сервер'} hasUnsavedChanges={() => isDirty}>
 	<div class="form">
 		<label class="field">
 			<div class="lbl">Tag <span class="req">*</span></div>
