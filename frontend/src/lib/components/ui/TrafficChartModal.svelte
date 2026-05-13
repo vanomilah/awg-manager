@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { TrafficPeriod } from '$lib/api/client';
-	import { formatBitRate } from '$lib/utils/format';
+	import { formatBitRate, formatBytes } from '$lib/utils/format';
 	import { fetchTrafficDetail, subscribeTraffic, getTrafficRates } from '$lib/stores/traffic';
 	import Modal from './Modal.svelte';
 
@@ -11,6 +11,17 @@
 		ifaceName?: string;
 		onclose: () => void;
 	}
+
+	type TrafficModalStats = {
+		points: number;
+		peakRate: number;
+		avgRx: number;
+		avgTx: number;
+		currentRx: number;
+		currentTx: number;
+		volumeRx?: number;
+		volumeTx?: number;
+	};
 
 	let { open, tunnelId, tunnelName = '', ifaceName = '', onclose }: Props = $props();
 
@@ -38,13 +49,26 @@
 		'48h': 'последние 2 дня'
 	};
 
+	/** Длительность выбранного окна (сек) — для оценки объёма по средним скоростям из API. */
+	const PERIOD_SECONDS: Record<TrafficPeriod, number> = {
+		'5m': 5 * 60,
+		'10m': 10 * 60,
+		'30m': 30 * 60,
+		'1h': 3600,
+		'3h': 3 * 3600,
+		'6h': 6 * 3600,
+		'12h': 12 * 3600,
+		'24h': 24 * 3600,
+		'48h': 48 * 3600
+	};
+
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let selectedPeriod = $state<TrafficPeriod>('24h');
 	let timestamps = $state<number[]>([]);
 	let rxRates = $state<number[]>([]);
 	let txRates = $state<number[]>([]);
-	let stats = $state({
+	let stats = $state<TrafficModalStats>({
 		points: 0,
 		peakRate: 0,
 		avgRx: 0,
@@ -75,7 +99,7 @@
 			timestamps = d.timestamps;
 			rxRates = d.rxRates;
 			txRates = d.txRates;
-			stats = d.stats;
+			stats = d.stats as TrafficModalStats;
 			liveCurrentRx = d.stats.currentRx;
 			liveCurrentTx = d.stats.currentTx;
 		} catch (e) {
@@ -95,8 +119,8 @@
 		}
 	});
 
-	// Subscribe to SSE traffic updates while the modal is open. Both the
-	// legend KPIs and the chart itself advance in real time — the live
+	// Subscribe to SSE traffic updates while the modal is open. The chart
+	// footer legend and the right edge advance in real time — the live
 	// buffer in the shared store is small, so a full swap is cheap.
 	$effect(() => {
 		if (!open || !tunnelId) return;
@@ -258,6 +282,23 @@
 	let tooltipYClamped = $derived(Math.max(PAD_TOP, tooltipY));
 	let showChart = $derived(hasData);
 	let showChartOverlay = $derived(loading && hasData);
+
+	let periodSeconds = $derived(PERIOD_SECONDS[selectedPeriod]);
+	let periodRxBytes = $derived.by(() => {
+		if (stats.points >= 2 && stats.volumeRx !== undefined && stats.volumeTx !== undefined) {
+			return stats.volumeRx;
+		}
+		return stats.avgRx * periodSeconds;
+	});
+	let periodTxBytes = $derived.by(() => {
+		if (stats.points >= 2 && stats.volumeRx !== undefined && stats.volumeTx !== undefined) {
+			return stats.volumeTx;
+		}
+		return stats.avgTx * periodSeconds;
+	});
+	let useServerVolume = $derived(
+		stats.points >= 2 && stats.volumeRx !== undefined && stats.volumeTx !== undefined
+	);
 </script>
 
 <Modal {open} title={tunnelName || tunnelId} size="xl" {onclose}>
@@ -282,14 +323,20 @@
 	</div>
 
 	<div class="stats-line">
-		<span class="stat">
-			<span class="label">Прием:</span>
-			<span class="val rx">{formatBitRate(liveCurrentRx)}</span>
-		</span>
-		<span class="sep">·</span>
-		<span class="stat">
-			<span class="label">Передача:</span>
-			<span class="val tx">{formatBitRate(liveCurrentTx)}</span>
+		<span
+			class="stat stat--period-est"
+			title={useServerVolume
+				? 'Объём за период на сервере: сумма (скорость×Δt) по сырым точкам истории между опросами.'
+				: 'Оценка: средняя скорость × длительность окна (мало точек или ответ API без полей volume).'}
+		>
+			<span class="label">Трафик:</span>
+			{#if !loading && stats.points > 0}
+				<span class="val rx">↓ {formatBytes(periodRxBytes)}</span>
+				<span class="sep">/</span>
+				<span class="val tx">↑ {formatBytes(periodTxBytes)}</span>
+			{:else}
+				<span class="val">—</span>
+			{/if}
 		</span>
 		<span class="sep">·</span>
 		<span class="stat">
@@ -298,7 +345,7 @@
 		</span>
 		<span class="sep">·</span>
 		<span class="stat">
-			<span class="label">Среднее</span>
+			<span class="label">Средняя:</span>
 			<span class="val rx">↓ {formatBitRate(stats.avgRx)}</span>
 			<span class="label">/</span>
 			<span class="val tx">↑ {formatBitRate(stats.avgTx)}</span>
@@ -531,6 +578,7 @@
 		display: flex;
 		flex-wrap: wrap;
 		align-items: baseline;
+		justify-content: space-between;
 		gap: 6px 14px;
 		margin-bottom: 12px;
 		font-size: 0.8125rem;
@@ -542,6 +590,12 @@
 		align-items: baseline;
 		gap: 5px;
 		white-space: nowrap;
+	}
+
+	.stats-line .stat--period-est {
+		row-gap: 2px;
+		white-space: normal;
+		max-width: 100%;
 	}
 
 	.stats-line .label {

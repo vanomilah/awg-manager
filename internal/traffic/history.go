@@ -4,6 +4,7 @@
 package traffic
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -230,6 +231,25 @@ func downsample(pts []Point, maxPoints int) []Point {
 	return result
 }
 
+// windowVolumeBytes estimates bytes transferred over consecutive rate samples.
+// For each i>=1, sample i's rates apply over [t_{i-1}, t_i] (same dt as in Feed),
+// so rxVol += RxRate_i * (t_i - t_{i-1}).
+func windowVolumeBytes(pts []Point) (rxVol, txVol int64) {
+	if len(pts) < 2 {
+		return 0, 0
+	}
+	var accRx, accTx float64
+	for i := 1; i < len(pts); i++ {
+		dt := float64(pts[i].Timestamp - pts[i-1].Timestamp)
+		if dt <= 0 {
+			continue
+		}
+		accRx += pts[i].RxRate * dt
+		accTx += pts[i].TxRate * dt
+	}
+	return int64(math.Round(accRx)), int64(math.Round(accTx))
+}
+
 // Stats is a set of aggregates over a tunnel's recent rate history,
 // used by the detail modal to fill KPI tiles without forcing the
 // frontend to re-compute them from the raw point array.
@@ -245,6 +265,10 @@ type Stats struct {
 	AvgTx     float64 `json:"avgTx"`     // bytes/sec
 	CurrentRx float64 `json:"currentRx"` // bytes/sec, last point
 	CurrentTx float64 `json:"currentTx"` // bytes/sec, last point
+	// VolumeRx is estimated bytes received over the stats window (Σ rxRate×Δt between raw samples).
+	VolumeRx int64 `json:"volumeRx"`
+	// VolumeTx is estimated bytes sent over the stats window (Σ txRate×Δt between raw samples).
+	VolumeTx int64 `json:"volumeTx"`
 }
 
 // Stats returns aggregates over the points within the given window.
@@ -283,5 +307,6 @@ func (h *History) Stats(tunnelID string, since time.Duration) Stats {
 	last := window[len(window)-1]
 	s.CurrentRx = last.RxRate
 	s.CurrentTx = last.TxRate
+	s.VolumeRx, s.VolumeTx = windowVolumeBytes(window)
 	return s
 }

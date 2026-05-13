@@ -367,8 +367,12 @@ function buildTrafficPoints(id, period) {
 	const now = NOW();
 	const points = [];
 	const profile = trafficProfile(id);
+	// SSE advances awgTrafficCounters.tick; tie synthetic rates to it so GET /tunnels/traffic
+	// drifts with the same mock "session" as tunnel:traffic (otherwise the chart looks frozen).
+	const live = awgTrafficCounters.get(id);
+	const phaseOffset = live?.tick ?? 0;
 	for (let i = count - 1; i >= 0; i--) {
-		const tick = count - i;
+		const tick = count - i + phaseOffset;
 		const wave = Math.sin((tick + id.length) / 4.5);
 		const drift = Math.cos((tick + id.length) / 8);
 		const burst = profile.burstEvery > 0 && tick % profile.burstEvery === 0;

@@ -169,6 +169,25 @@ func TestStats(t *testing.T) {
 	if s.AvgTx != 10 {
 		t.Errorf("AvgTx: want 10, got %f", s.AvgTx)
 	}
+	if s.VolumeRx != 0 || s.VolumeTx != 0 {
+		t.Errorf("Volume with <2 usable dt segments: want 0, got rx=%d tx=%d", s.VolumeRx, s.VolumeTx)
+	}
+}
+
+func TestWindowVolumeBytes(t *testing.T) {
+	now := int64(1_700_000_000)
+	rx, tx := windowVolumeBytes([]Point{
+		{Timestamp: now - 100, RxRate: 10, TxRate: 20},
+		{Timestamp: now - 60, RxRate: 30, TxRate: 40},
+		{Timestamp: now, RxRate: 50, TxRate: 60},
+	})
+	// 30*40 + 50*60 = 4200 rx; 40*40 + 60*60 = 5200 tx
+	if rx != 4200 {
+		t.Errorf("VolumeRx: want 4200, got %d", rx)
+	}
+	if tx != 5200 {
+		t.Errorf("VolumeTx: want 5200, got %d", tx)
+	}
 }
 
 func TestStatsUnknownTunnel(t *testing.T) {

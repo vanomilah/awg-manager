@@ -206,6 +206,8 @@ class ApiClient {
 			avgTx: number;
 			currentRx: number;
 			currentTx: number;
+			volumeRx?: number;
+			volumeTx?: number;
 		};
 	}> {
 		return this.request(

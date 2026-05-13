@@ -160,6 +160,10 @@ type TunnelTrafficStats struct {
 	AvgTx     float64 `json:"avgTx" example:"262144"`
 	CurrentRx float64 `json:"currentRx" example:"102400"`
 	CurrentTx float64 `json:"currentTx" example:"51200"`
+	// VolumeRx is estimated bytes received over the selected window (Σ rxRate×Δt on raw history samples).
+	VolumeRx int64 `json:"volumeRx" example:"1073741824"`
+	// VolumeTx is estimated bytes sent over the selected window (Σ txRate×Δt on raw history samples).
+	VolumeTx int64 `json:"volumeTx" example:"536870912"`
 }
 
 // TunnelTrafficData is the payload for GET /tunnels/traffic.
@@ -668,24 +672,7 @@ func (h *TunnelsHandler) writeAll(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Traffic returns rate history + aggregates for a single tunnel.
-// GET /api/tunnels/traffic?id=<tunnelID>&period=5m|10m|30m|1h|3h|6h|12h|24h|48h
-//
-// Only a fixed set of short/long-range presets is accepted — anything
-// else returns 400. 1h is what the card chart fetches on mount to
-// backfill before SSE takes over; the detail modal can request any of
-// the supported presets.
-//
-//	@Summary		Tunnel traffic history
-//	@Tags			tunnels
-//	@Produce		json
-//	@Security		CookieAuth
-//	@Param			id		query	string	true	"Tunnel id"
-//	@Param			period	query	string	true	"5m, 10m, 30m, 1h, 3h, 6h, 12h, 24h, or 48h"
-//	@Success		200	{object}	TunnelTrafficResponse
-//	@Failure		400	{object}	APIErrorEnvelope
-//	@Failure		500	{object}	APIErrorEnvelope
-//	@Router			/tunnels/traffic [get]
+// parseTrafficPeriod maps the period query value to a duration.
 func parseTrafficPeriod(raw string) (time.Duration, bool) {
 	switch raw {
 	case "5m":
@@ -711,6 +698,27 @@ func parseTrafficPeriod(raw string) (time.Duration, bool) {
 	}
 }
 
+// Traffic returns rate history + aggregates for a single tunnel.
+// GET /api/tunnels/traffic?id=<tunnelID>&period=5m|10m|30m|1h|3h|6h|12h|24h|48h
+//
+// Only a fixed set of short/long-range presets is accepted — anything
+// else returns 400. 1h is what the card chart fetches on mount to
+// backfill before SSE takes over; the detail modal can request any of
+// the supported presets.
+//
+// data.stats.volumeRx and data.stats.volumeTx are byte estimates for the
+// selected window from raw in-memory samples (zero if fewer than two samples).
+//
+//	@Summary		Tunnel traffic history
+//	@Tags			tunnels
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			id		query	string	true	"Tunnel id"
+//	@Param			period	query	string	true	"5m, 10m, 30m, 1h, 3h, 6h, 12h, 24h, or 48h"
+//	@Success		200	{object}	TunnelTrafficResponse
+//	@Failure		400	{object}	APIErrorEnvelope
+//	@Failure		500	{object}	APIErrorEnvelope
+//	@Router			/tunnels/traffic [get]
 func (h *TunnelsHandler) Traffic(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		response.MethodNotAllowed(w)

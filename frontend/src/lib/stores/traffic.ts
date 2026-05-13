@@ -145,6 +145,8 @@ export async function fetchTrafficDetail(tunnelId: string, period: TrafficPeriod
 		avgTx: number;
 		currentRx: number;
 		currentTx: number;
+		volumeRx?: number;
+		volumeTx?: number;
 	};
 }> {
 	const resp = await api.getTraffic(tunnelId, period);
