@@ -404,7 +404,7 @@
         font-size: 0.82rem;
     }
     .label { color: var(--color-text-muted); font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px; }
-    .picker-anchor { position: relative; }
+    .picker-anchor { position: relative; min-width: 0; }
     .server-control {
         display: flex;
         align-items: center;
