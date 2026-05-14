@@ -4,9 +4,14 @@
 	import { api } from '$lib/api/client';
 	import type { Subscription } from '$lib/types';
 	import { PageContainer, PageHeader, LoadingSpinner } from '$lib/components/layout';
-	import { Tabs } from '$lib/components/ui';
+	import { Tabs, GridListToggle } from '$lib/components/ui';
 	import SubscriptionMembersTab from '$lib/components/subscriptions/SubscriptionMembersTab.svelte';
 	import SubscriptionSettingsTab from '$lib/components/subscriptions/SubscriptionSettingsTab.svelte';
+	import { usageLevel } from '$lib/stores/settings';
+	import {
+		SINGBOX_LAYOUT_STORAGE_KEY,
+		type SingboxLayoutMode,
+	} from '$lib/constants/singboxLayout';
 
 	// Poll Clash for the live "now" pointer this often when on members tab in urltest
 	// mode. 5s balances responsiveness with Clash API load.
@@ -30,6 +35,17 @@
 	let currentSubscriptionSurface = '';
 	let subscriptionSurfaceEntryNonce = $state(0);
 	let lastAutoDelayCheckKey = '';
+
+	let singboxLayoutMode = $state<SingboxLayoutMode>('grid');
+	let singboxLayoutReady = false;
+	const showSingboxListOption = $derived($usageLevel !== 'basic');
+	const singboxEffectiveLayout = $derived<SingboxLayoutMode>(
+		!showSingboxListOption && singboxLayoutMode === 'list' ? 'grid' : singboxLayoutMode,
+	);
+
+	function isSingboxLayoutMode(value: string | null): value is SingboxLayoutMode {
+		return value === 'grid' || value === 'list';
+	}
 
 	let evtSrc: EventSource | null = null;
 
@@ -95,7 +111,12 @@
 		};
 	}
 
-	onMount(loadStream);
+	onMount(() => {
+		const sb = localStorage.getItem(SINGBOX_LAYOUT_STORAGE_KEY);
+		if (isSingboxLayoutMode(sb)) singboxLayoutMode = sb;
+		singboxLayoutReady = true;
+		loadStream();
+	});
 	onDestroy(() => {
 		evtSrc?.close();
 		evtSrc = null;
@@ -152,6 +173,11 @@
 		lastAutoDelayCheckKey = key;
 		membersAutoDelayCheckNonce += 1;
 	});
+
+	$effect(() => {
+		if (!singboxLayoutReady) return;
+		localStorage.setItem(SINGBOX_LAYOUT_STORAGE_KEY, singboxLayoutMode);
+	});
 </script>
 
 <svelte:head>
@@ -191,11 +217,21 @@
 		{/if}
 		<section class="content">
 			{#if active === 'members'}
+				{#if subscription.memberTags.length > 0}
+					<div class="members-toolbar">
+						<GridListToggle
+							value={singboxEffectiveLayout}
+							showListOption={showSingboxListOption}
+							onchange={(v) => (singboxLayoutMode = v)}
+						/>
+					</div>
+				{/if}
 				<SubscriptionMembersTab
 					{subscription}
 					{liveActiveMember}
 					onUpdated={loadStream}
 					autoDelayCheckNonce={membersAutoDelayCheckNonce}
+					layout={singboxEffectiveLayout}
 				/>
 			{:else}
 				<SubscriptionSettingsTab {subscription} onUpdated={loadStream} />
@@ -207,6 +243,11 @@
 <style>
 	.err { color: #f85149; margin-top: 1rem; }
 	.content { margin-top: 1rem; }
+	.members-toolbar {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 0.75rem;
+	}
 	.loading-progress {
 		margin: 1rem 0;
 		display: flex;
