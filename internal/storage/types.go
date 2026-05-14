@@ -59,15 +59,22 @@ type SingboxRouterSettings struct {
 
 // ManagedServer represents the user-created WireGuard server interface.
 type ManagedServer struct {
-	InterfaceName string `json:"interfaceName"`         // e.g. "Wireguard3"
+	InterfaceName string `json:"interfaceName"` // e.g. "Wireguard3"
 	Description   string `json:"description,omitempty"` // user-facing display name, synced to NDMS interface description
-	Address       string `json:"address"`               // e.g. "10.0.0.1"
-	Mask          string `json:"mask"`                  // e.g. "255.255.255.0"
+	Address       string `json:"address"` // e.g. "10.0.0.1"
+	Mask          string `json:"mask"`    // e.g. "255.255.255.0"
 	ListenPort    int    `json:"listenPort"`
 	Endpoint      string `json:"endpoint,omitempty"` // custom endpoint (IP or domain); empty = WAN IP
 	DNS           string `json:"dns,omitempty"`      // custom DNS for client configs; empty = "1.1.1.1, 8.8.8.8"
 	MTU           int    `json:"mtu,omitempty"`      // custom MTU for client configs; 0 = 1376
 	NATEnabled    bool   `json:"natEnabled,omitempty"`
+	// PrivateKey is the server's WireGuard private key. Populated by
+	// Service.Create immediately after NDMS auto-generates the keypair,
+	// or by Service.MigratePrivateKeys on first boot after upgrade for
+	// pre-existing servers. Empty value means migration has not yet run
+	// or the kernel device is unreachable; Export and drift-Restore skip
+	// such entries with a clear outcome message.
+	PrivateKey string `json:"privateKey,omitempty"`
 	// Policy is the ip hotspot policy applied to this server's interface.
 	// "none" = no policy (default-permit), "permit"/"deny" = literal RCI
 	// values, anything else = IP Policy profile name (e.g. "Policy0").
