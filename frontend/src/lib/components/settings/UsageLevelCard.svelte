@@ -66,7 +66,10 @@
 	let infoFor = $state<UsageLevel | null>(null);
 	const infoOpt = $derived(infoFor ? OPTIONS.find((o) => o.value === infoFor) : null);
 
-	let expanded = $state(initialExpanded);
+	let expanded = $state(false);
+	$effect(() => {
+		expanded = initialExpanded;
+	});
 
 	function selectLevel(level: UsageLevel) {
 		if (level === value || saving) return;

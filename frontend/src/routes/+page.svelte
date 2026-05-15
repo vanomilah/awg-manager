@@ -7,7 +7,7 @@
 	import { notifications } from '$lib/stores/notifications';
 	import { api } from '$lib/api/client';
 	import { TunnelCard, ExternalTunnelCard, AdoptTunnelDialog, SystemTunnelCard, TunnelReferencedModal } from '$lib/components/tunnels';
-	import { PageContainer, PageHeader, LoadingSpinner, WelcomeBanner } from '$lib/components/layout';
+	import { PageContainer, PageHeader, LoadingSpinner, EmptyState, WelcomeBanner } from '$lib/components/layout';
 	import {
 		Modal,
 		StoreStatusBadge,
@@ -77,7 +77,11 @@
 	// Wait for both system info AND the first tunnels snapshot before leaving
 	// the loading state — otherwise sysInfo arrives first and the empty-state
 	// flashes until /api/tunnels/all lands.
-	let loading = $derived(!sysInfo || tunnelSnap.lastFetchedAt === 0);
+	let loading = $derived(
+		!sysInfo ||
+		tunnelSnap.status === 'idle' ||
+		tunnelSnap.status === 'loading',
+	);
 
 	// System tunnels don't emit tunnel:traffic stream events (no awg-manager
 	// peer entry tracks them) — feed the traffic store from the polled
@@ -997,6 +1001,11 @@
 		<div class="py-12">
 			<LoadingSpinner size="lg" message="Загрузка туннелей..." />
 		</div>
+	{:else if tunnelSnap.status === 'error' && !tunnelSnap.data}
+		<EmptyState
+			title="Ошибка загрузки"
+			description={tunnelSnap.error ?? 'Не удалось получить список туннелей'}
+		/>
 	{:else}
 		<Tabs
 			tabs={tunnelTabs}

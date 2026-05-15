@@ -4,8 +4,6 @@
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { ConnectionsStats, ConnectionsTable } from '$lib/components/connections';
-	import { LoadingSpinner } from '$lib/components/layout';
-
 	let data = $state<ConnectionsResponse | null>(null);
 	let loading = $state(false);
 	const AUTO_REFRESH_MS = 30_000;
@@ -210,12 +208,6 @@
 {/if}
 
 <style>
-	.loading-wrap {
-		display: flex;
-		justify-content: center;
-		padding: 2rem 0 1rem;
-	}
-
 	.filter-row {
 		display: flex;
 		flex-wrap: wrap;
