@@ -10,6 +10,13 @@ describe('PresetsPreflightBanner', () => {
 		expect(container.textContent?.trim()).toBe('');
 	});
 
+	it('renders nothing when status is loading', () => {
+		const { container } = render(PresetsPreflightBanner, {
+			props: { status: 'loading', policyName: null },
+		});
+		expect(container.textContent?.trim()).toBe('');
+	});
+
 	it('renders yellow banner with CTA for no-policy', () => {
 		render(PresetsPreflightBanner, {
 			props: { status: 'no-policy', policyName: null },

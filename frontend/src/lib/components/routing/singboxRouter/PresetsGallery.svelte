@@ -1,23 +1,18 @@
 <script lang="ts">
 	import type { SingboxRouterPreset, SingboxRouterPresetCategory } from '$lib/types';
-	import type { OutboundGroup } from './outboundOptions';
 	import PresetIcon from './PresetIcon.svelte';
 
 	interface Props {
 		presets: SingboxRouterPreset[];
-		outboundOptions: OutboundGroup[];
 		selectedIds: Set<string>;
 		onToggleSelect: (id: string) => void;
 		onPresetClick: (p: SingboxRouterPreset) => void;
-		onApplied: () => Promise<void> | void;
 	}
 	let {
 		presets,
-		outboundOptions,
 		selectedIds,
 		onToggleSelect,
 		onPresetClick,
-		onApplied,
 	}: Props = $props();
 
 	type CategoryFilter = 'all' | SingboxRouterPresetCategory;
@@ -88,7 +83,7 @@
 	);
 </script>
 
-<div class="hint">Готовые наборы из SagerNet. Клик — добавить rule_set и правило в движок.</div>
+<div class="hint">Готовые наборы правил. Клик — добавить rule_set и правило в движок.</div>
 
 {#if featured.length > 0}
 	<div class="section-label">Рекомендуемые</div>

@@ -24,13 +24,15 @@
 	const status = $derived($statusStore);
 
 	const preflight = $derived<PreflightStatus>(
-		!status?.policyName
-			? 'no-policy'
-			: !status.policyExists
-				? 'no-policy-in-ndms'
-				: status.deviceCount === 0
-					? 'no-devices'
-					: 'ok',
+		!status
+			? 'loading'
+			: !status.policyName
+				? 'no-policy'
+				: !status.policyExists
+					? 'no-policy-in-ndms'
+					: status.deviceCount === 0
+						? 'no-devices'
+						: 'ok',
 	);
 
 	let selectedIds = $state<Set<string>>(new Set());
@@ -131,11 +133,9 @@
 
 <PresetsGallery
 	{presets}
-	{outboundOptions}
 	{selectedIds}
 	onToggleSelect={toggleSelect}
 	onPresetClick={openSingleApply}
-	onApplied={() => singboxRouter.loadAll()}
 />
 
 <PresetsBulkBar

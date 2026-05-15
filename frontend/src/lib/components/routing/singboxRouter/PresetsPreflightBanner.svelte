@@ -1,5 +1,10 @@
 <script lang="ts">
-	export type PreflightStatus = 'ok' | 'no-policy' | 'no-policy-in-ndms' | 'no-devices';
+	export type PreflightStatus =
+		| 'loading'
+		| 'ok'
+		| 'no-policy'
+		| 'no-policy-in-ndms'
+		| 'no-devices';
 
 	interface Props {
 		status: PreflightStatus;
