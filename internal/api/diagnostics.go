@@ -145,8 +145,10 @@ func (h *DiagnosticsHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	restart := r.URL.Query().Get("restart") == "true"
+	tunnelID := r.URL.Query().Get("tunnelId")
 	opts := diagnostics.RunOptions{
 		IncludeRestart: restart,
+		TunnelID:       tunnelID,
 	}
 
 	ch, err := h.runner.RunWithStream(r.Context(), opts)

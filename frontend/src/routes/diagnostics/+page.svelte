@@ -15,6 +15,14 @@
 
 	type ActiveTab = 'logs' | 'connections' | 'checks' | 'awgConfig';
 
+	function singboxKind(protocol: string, security?: string): string {
+		if (protocol === 'vless' && security === 'reality') return 'xray';
+		if (protocol === 'vless') return 'vless';
+		if (protocol === 'hysteria2') return 'hy2';
+		if (protocol === 'naive') return 'ss';
+		return protocol;
+	}
+
 	let activeTab = $state<ActiveTab>('logs');
 	let tunnels = $state<DiagnosticsTargetSeed[]>([]);
 
@@ -76,30 +84,41 @@
 				id: t.id,
 				name: t.name,
 				status: t.status,
+				kind: t.awgVersion ?? 'awg',
 			}));
 
 			const singbox: DiagnosticsTargetSeed[] = singboxTunnels.map((t) => ({
 				id: `singbox:${t.tag}`,
 				name: t.tag,
 				status: t.running ? 'running' : 'stopped',
+				kind: singboxKind(t.protocol, t.security),
 			}));
 
 			const subscriptionMembers: DiagnosticsTargetSeed[] = [];
 			for (const sub of subscriptions) {
 				if (!sub.enabled) continue;
-				for (const m of sub.members ?? []) {
-					subscriptionMembers.push({
-						id: `singbox:${m.tag}`,
-						name: m.label || m.tag,
-						// Members are checked through the sing-box process,
-						// so default to 'running' for rail visibility.
-						status: 'running',
-					});
-				}
+				const activeTag =
+					(sub.activeMember && sub.memberTags.includes(sub.activeMember)
+						? sub.activeMember
+						: sub.memberTags[0]) ?? '';
+				if (!activeTag) continue;
+				const m = (sub.members ?? []).find((member) => member.tag === activeTag);
+				subscriptionMembers.push({
+					id: `singbox:${activeTag}`,
+					// Prefer subscription label so the user sees the subscription
+					// name rather than a raw outbound tag.
+					name: sub.label || m?.label || activeTag,
+					kind: m?.protocol ? singboxKind(m.protocol) : undefined,
+					// Members are checked through the sing-box process,
+					// so default to 'running' for rail visibility.
+					status: 'running',
+				});
 			}
 
+			// Subscription members come before raw sing-box tunnels so their
+			// friendly names win the dedup map when the ids collide.
 			const uniq = new Map<string, DiagnosticsTargetSeed>();
-			for (const t of [...awg, ...singbox, ...subscriptionMembers]) {
+			for (const t of [...awg, ...subscriptionMembers, ...singbox]) {
 				if (!uniq.has(t.id)) uniq.set(t.id, t);
 			}
 			tunnels = Array.from(uniq.values());

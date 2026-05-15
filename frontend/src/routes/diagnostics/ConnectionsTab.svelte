@@ -115,12 +115,6 @@
 	}
 </script>
 
-{#if loading && !data}
-	<div class="loading-wrap">
-		<LoadingSpinner size="lg" message="Загрузка соединений..." />
-	</div>
-{/if}
-
 {#if data || loading}
 	<ConnectionsStats stats={data?.stats ?? null} showSkeleton={loading && !data} />
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -249,6 +250,10 @@ func SetProcessStartedAt(t time.Time) {
 // RunOptions configures a diagnostic run.
 type RunOptions struct {
 	IncludeRestart bool
+	// TunnelID, when non-empty, limits the run to the named tunnel only.
+	// Set to a tunnel UUID for AWG tunnels or "singbox:<tag>" for sing-box.
+	// Global system tests are skipped; only per-tunnel probes run.
+	TunnelID string
 }
 
 // DiagEvent is a single event emitted during a diagnostic run.
@@ -317,6 +322,9 @@ var testLevels = map[string]string{
 	"singbox_runtime":             LevelBasic,
 	"singbox_tunnel_state":        LevelBasic,
 	"singbox_tunnel_connectivity": LevelBasic,
+	"singbox_tunnel_latency":      LevelBasic,
+	"singbox_proxy_port":          LevelBasic,
+	"singbox_alt_connectivity":    LevelBasic,
 }
 
 func testLevel(name string) string {
@@ -539,6 +547,10 @@ func (r *Runner) executeStream(ctx context.Context) {
 		GeneratedAt: start,
 	}
 
+	singleTunnel := r.opts.TunnelID
+	isGlobalOnly := singleTunnel == "__global__"
+	isSingleSingbox := strings.HasPrefix(singleTunnel, "singbox:")
+
 	var allResults []TestResult
 
 	defer func() {
@@ -568,11 +580,14 @@ func (r *Runner) executeStream(ctx context.Context) {
 			}
 		}
 
-		anonymize(report)
-		r.mu.Lock()
-		r.result = report
-		r.mu.Unlock()
-		summary.HasReport = true
+		// Full report only available for complete runs, not quick single-target probes.
+		if singleTunnel == "" && !isGlobalOnly {
+			anonymize(report)
+			r.mu.Lock()
+			r.result = report
+			r.mu.Unlock()
+			summary.HasReport = true
+		}
 
 		r.emit(DiagEvent{Type: "done", Summary: summary})
 
@@ -583,23 +598,32 @@ func (r *Runner) executeStream(ctx context.Context) {
 		r.closeSubscribers()
 	}()
 
-	r.emitPhase("collect_system", "Сбор информации о системе...")
-	report.System = r.collectSystem(ctx)
+	// System-wide collection: full runs and global-only probes need it;
+	// per-tunnel sing-box probes can skip it entirely.
+	if singleTunnel == "" || isGlobalOnly {
+		r.emitPhase("collect_system", "Сбор информации о системе...")
+		report.System = r.collectSystem(ctx)
 
-	r.emitPhase("collect_wan", "Сбор информации о WAN...")
-	report.WAN = r.collectWAN(ctx)
+		r.emitPhase("collect_wan", "Сбор информации о WAN...")
+		report.WAN = r.collectWAN(ctx)
 
-	r.emitPhase("collect_boot_health", "Проверка boot-состояния...")
-	report.BootHealth = r.collectBootHealth(ctx)
+		r.emitPhase("collect_boot_health", "Проверка boot-состояния...")
+		report.BootHealth = r.collectBootHealth(ctx)
 
-	r.emitPhase("collect_proxy_module", "Состояние awg-proxy...")
-	report.AWGProxyModule = r.collectAWGProxyModule(ctx)
+		r.emitPhase("collect_proxy_module", "Состояние awg-proxy...")
+		report.AWGProxyModule = r.collectAWGProxyModule(ctx)
+	}
 
-	r.emitPhase("collect_tunnels", "Сбор информации о туннелях...")
-	report.Tunnels = r.collectTunnels(ctx)
+	// AWG tunnel collection: needed for full runs and single AWG-tunnel probes.
+	if singleTunnel == "" || (!isSingleSingbox && !isGlobalOnly) {
+		r.emitPhase("collect_tunnels", "Сбор информации о туннелях...")
+		report.Tunnels = r.collectTunnels(ctx)
+	}
 
-	r.emitPhase("collect_logs", "Сбор логов...")
-	report.Logs = r.collectLogs()
+	if singleTunnel == "" {
+		r.emitPhase("collect_logs", "Сбор логов...")
+		report.Logs = r.collectLogs()
+	}
 
 	allResults = r.runTestsWithEvents(ctx, report)
 }

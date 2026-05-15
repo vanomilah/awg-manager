@@ -939,6 +939,8 @@ export interface TargetSummary {
 	id: string; // '__global__' | tunnelId
 	name: string;
 	isGlobal: boolean;
+	/** Protocol/version badge, e.g. 'xray' | 'hy2' | 'ss' | 'awg2.0' | 'wg' */
+	kind?: string;
 	tunnelStatus?: 'running' | 'stopped';
 	counts: {
 		pass: number;

@@ -9,6 +9,8 @@ export interface DiagnosticsTargetSeed {
 	id: string;
 	name: string;
 	status: string;
+	/** Protocol/version hint used to render the type badge and planned-test preview. */
+	kind?: string;
 }
 
 interface DiagnosticsState {
@@ -50,6 +52,7 @@ function rebuildTargets(tests: DiagTestEvent[], tunnels: DiagnosticsTargetSeed[]
 			id: t.id,
 			name: t.name,
 			isGlobal: false,
+			kind: t.kind,
 			tunnelStatus: t.status === 'running' ? 'running' : 'stopped',
 			counts: emptyCounts(),
 			overallLed: 'gray',
@@ -113,6 +116,26 @@ function createDiagnosticsStore() {
 				errorMessage: '',
 				targets: rebuildTargets([], tunnels),
 			}));
+		},
+		/** Start a single-tunnel probe: keeps other tunnels' results intact. */
+		startSingleTunnel(tunnelId: string, tunnels: DiagnosticsTargetSeed[]) {
+			update((s) => {
+				const keepTests = s.tests.filter(
+					(t) => (t.tunnelId || GLOBAL_TARGET_ID) !== tunnelId,
+				);
+				return {
+					...s,
+					running: true,
+					currentPhase: '',
+					errorMessage: '',
+					tests: keepTests,
+					targets: rebuildTargets(keepTests, tunnels),
+				};
+			});
+		},
+		/** Finish a single-tunnel probe without touching the full-run summary. */
+		finishSingle() {
+			update((s) => ({ ...s, running: false, currentPhase: '', lastRunAt: new Date() }));
 		},
 		setPhase(phase: string) {
 			update((s) => ({ ...s, currentPhase: phase }));

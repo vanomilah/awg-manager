@@ -47,18 +47,44 @@ func (r *Runner) runTestsWithEvents(ctx context.Context, report *Report) []TestR
 		r.emitTest(tr)
 	}
 
-	r.emitPhase("global_tests", "Проверка системы...")
-	run(r.testWANConnectivity(ctx))
-	run(r.testNDMSHealth(ctx))
-	run(r.testKernelModule(ctx, report))
-	run(r.testClockSkew(ctx))
-	run(r.testDirectConnectivity(ctx))
-	run(r.testSingboxRuntime(ctx))
-	for _, tr := range r.testSingboxTunnelConnectivity(ctx) {
-		run(tr)
+	singleTunnel := r.opts.TunnelID
+	isGlobalOnly := singleTunnel == "__global__"
+	isSingleSingbox := strings.HasPrefix(singleTunnel, "singbox:")
+	isFullRun := singleTunnel == ""
+
+	// Global system tests — run for full runs and global-only probes.
+	if isFullRun || isGlobalOnly {
+		r.emitPhase("global_tests", "Проверка системы...")
+		run(r.testWANConnectivity(ctx))
+		run(r.testNDMSHealth(ctx))
+		run(r.testKernelModule(ctx, report))
+		run(r.testClockSkew(ctx))
+		run(r.testDirectConnectivity(ctx))
+		run(r.testSingboxRuntime(ctx))
 	}
 
+	// Sing-box per-tunnel tests — full runs and single sing-box probes only.
+	if isFullRun || isSingleSingbox {
+		if isFullRun {
+			for _, tr := range r.testSingboxTunnelConnectivity(ctx) {
+				run(tr)
+			}
+		} else {
+			filterTag := strings.TrimPrefix(singleTunnel, "singbox:")
+			r.emitPhase("singbox_tests", fmt.Sprintf("Проверка %s...", filterTag))
+			for _, tr := range r.testSingboxTunnelConnectivity(ctx) {
+				if tr.TunnelID == singleTunnel {
+					run(tr)
+				}
+			}
+		}
+	}
+
+	// AWG per-tunnel tests — full runs and single AWG-tunnel probes only.
 	for _, t := range report.Tunnels {
+		if !isFullRun && t.ID != singleTunnel {
+			continue
+		}
 		r.emitPhase("tunnel_tests", fmt.Sprintf("Тестирование %s...", t.Name))
 
 		run(r.testDNSResolve(t))
@@ -75,16 +101,19 @@ func (r *Runner) runTestsWithEvents(ctx context.Context, report *Report) []TestR
 		run(r.testRPFilter(t))
 	}
 
-	r.emitPhase("cross_tunnel_tests", "Проверка маршрутов...")
-	run(r.testRouteLeak(ctx, report))
+	// Cross-tunnel and DNS leak tests only in full runs.
+	if isFullRun {
+		r.emitPhase("cross_tunnel_tests", "Проверка маршрутов...")
+		run(r.testRouteLeak(ctx, report))
 
-	for _, t := range report.Tunnels {
-		if t.Status == "running" {
-			run(r.testDNSLeak(ctx, t))
+		for _, t := range report.Tunnels {
+			if t.Status == "running" {
+				run(r.testDNSLeak(ctx, t))
+			}
 		}
 	}
 
-	includeRestart := r.opts.IncludeRestart
+	includeRestart := isFullRun && r.opts.IncludeRestart
 	if includeRestart {
 		for _, t := range report.Tunnels {
 			if t.Enabled && t.Status == "running" {
@@ -467,28 +496,115 @@ func (r *Runner) testSingboxTunnelConnectivity(ctx context.Context) []TestResult
 		stateRes.Detail = fmt.Sprintf("running=true, local proxy 127.0.0.1:%d", t.ListenPort)
 		out = append(out, stateRes)
 
-		proxy := fmt.Sprintf("http://127.0.0.1:%d", t.ListenPort)
-		probe := TestResult{
-			Name:        "singbox_tunnel_connectivity",
-			Description: "Sing-box tunnel HTTP-check",
+		// TCP port check — verify the proxy port is actually listening before
+		// attempting expensive HTTP probes through it.
+		tcpProbe := TestResult{
+			Name:        "singbox_proxy_port",
+			Description: "Proxy port (TCP)",
 			TunnelID:    tunnelID,
 			TunnelName:  tunnelName,
 		}
-		result, err := exec.Run(ctx, curl, "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "8", "-x", proxy, "https://www.gstatic.com/generate_204")
+		conn, tcpErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", t.ListenPort), 2*time.Second)
+		if tcpErr != nil {
+			tcpProbe.Status = StatusFail
+			tcpProbe.Detail = fmt.Sprintf("Порт %d недоступен: %s", t.ListenPort, tcpErr.Error())
+			out = append(out, tcpProbe)
+			continue // no point running HTTP checks if the port is closed
+		}
+		conn.Close()
+		tcpProbe.Status = StatusPass
+		tcpProbe.Detail = fmt.Sprintf("127.0.0.1:%d → open", t.ListenPort)
+		out = append(out, tcpProbe)
+
+		proxy := fmt.Sprintf("http://127.0.0.1:%d", t.ListenPort)
+
+		// Primary HTTP check (gstatic) — also captures RTT in one curl call.
+		probe := TestResult{
+			Name:        "singbox_tunnel_connectivity",
+			Description: "HTTP-check (gstatic)",
+			TunnelID:    tunnelID,
+			TunnelName:  tunnelName,
+		}
+		result, err := exec.Run(ctx, curl, "-s", "-o", "/dev/null", "-w", "%{http_code}|%{time_total}", "--max-time", "8", "-x", proxy, "https://www.gstatic.com/generate_204")
+
+		var httpCode, latencyRaw string
+		if err == nil {
+			parts := strings.SplitN(strings.TrimSpace(result.Stdout), "|", 2)
+			httpCode = strings.TrimSpace(parts[0])
+			if len(parts) == 2 {
+				latencyRaw = strings.TrimSpace(parts[1])
+			}
+		}
+
 		if err != nil {
 			probe.Status = StatusFail
 			probe.Detail = fmt.Sprintf("Proxy-check не удался (%s)", proxy)
+		} else if httpCode == "204" || httpCode == "200" {
+			probe.Status = StatusPass
+			probe.Detail = fmt.Sprintf("HTTP %s через %s", httpCode, proxy)
 		} else {
-			code := strings.TrimSpace(result.Stdout)
-			if code == "204" || code == "200" {
-				probe.Status = StatusPass
-				probe.Detail = fmt.Sprintf("HTTP %s через %s", code, proxy)
-			} else {
-				probe.Status = StatusFail
-				probe.Detail = fmt.Sprintf("Неожиданный HTTP-код %q через %s", code, proxy)
-			}
+			probe.Status = StatusFail
+			probe.Detail = fmt.Sprintf("Неожиданный HTTP-код %q через %s", httpCode, proxy)
 		}
 		out = append(out, probe)
+
+		// Latency row — only emit when connectivity succeeded.
+		if probe.Status == StatusPass && latencyRaw != "" {
+			latProbe := TestResult{
+				Name:        "singbox_tunnel_latency",
+				Description: "Задержка (RTT)",
+				TunnelID:    tunnelID,
+				TunnelName:  tunnelName,
+			}
+			if f, ferr := strconv.ParseFloat(latencyRaw, 64); ferr == nil {
+				ms := int(f * 1000)
+				latProbe.Detail = fmt.Sprintf("%d мс", ms)
+				switch {
+				case ms <= 800:
+					latProbe.Status = StatusPass
+				case ms <= 3000:
+					latProbe.Status = StatusWarn
+				default:
+					latProbe.Status = StatusFail
+				}
+			} else {
+				latProbe.Status = StatusWarn
+				latProbe.Detail = fmt.Sprintf("Не удалось распарсить RTT: %q", latencyRaw)
+			}
+			out = append(out, latProbe)
+		}
+
+		// Alt connectivity check (Cloudflare) — confirms routing isn't
+		// specific to a single CDN/destination.
+		altProbe := TestResult{
+			Name:        "singbox_alt_connectivity",
+			Description: "Alt-check (Cloudflare)",
+			TunnelID:    tunnelID,
+			TunnelName:  tunnelName,
+		}
+		altResult, altErr := exec.Run(ctx, curl, "-s", "-o", "/dev/null", "-w", "%{http_code}|%{time_total}", "--max-time", "8", "-x", proxy, "https://cp.cloudflare.com/")
+		if altErr != nil {
+			altProbe.Status = StatusFail
+			altProbe.Detail = fmt.Sprintf("Alt-check не удался (%s)", proxy)
+		} else {
+			parts := strings.SplitN(strings.TrimSpace(altResult.Stdout), "|", 2)
+			altCode := strings.TrimSpace(parts[0])
+			altLatency := ""
+			if len(parts) == 2 {
+				if f, ferr := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64); ferr == nil {
+					altLatency = fmt.Sprintf(", %d мс", int(f*1000))
+				}
+			}
+			switch altCode {
+			case "200", "204", "301", "302":
+				altProbe.Status = StatusPass
+				altProbe.Detail = fmt.Sprintf("HTTP %s cf.com%s", altCode, altLatency)
+			default:
+				altProbe.Status = StatusWarn
+				altProbe.Detail = fmt.Sprintf("HTTP %q от cf.com%s", altCode, altLatency)
+			}
+		}
+		out = append(out, altProbe)
 	}
 
 	return out

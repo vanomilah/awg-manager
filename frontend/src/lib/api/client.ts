@@ -902,11 +902,11 @@ class ApiClient {
 	streamDiagnostics(
 		restart: boolean,
 		onEvent: (event: DiagEvent) => void,
-		onError: (error: Event) => void
+		onError: (error: Event) => void,
+		tunnelId?: string,
 	): EventSource {
-		const params = new URLSearchParams({
-			restart: String(restart),
-		});
+		const params = new URLSearchParams({ restart: String(restart) });
+		if (tunnelId) params.set('tunnelId', tunnelId);
 		const es = new EventSource(`/api/diagnostics/stream?${params}`);
 
 		const handleEvent = (e: MessageEvent) => {

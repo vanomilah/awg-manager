@@ -4,6 +4,17 @@
 	import type { DnsCheckResult } from '$lib/types';
 	import ChecksGroup, { type GroupLed } from './ChecksGroup.svelte';
 
+	interface Props {
+		/** Increment to trigger a DNS check run externally (e.g. from "run all"). */
+		triggerRun?: number;
+	}
+
+	let { triggerRun = 0 }: Props = $props();
+
+	$effect(() => {
+		if (triggerRun > 0) runCheck();
+	});
+
 	type CheckStatus = 'pending' | 'ok' | 'fail' | 'warning';
 
 	interface CheckRow {
