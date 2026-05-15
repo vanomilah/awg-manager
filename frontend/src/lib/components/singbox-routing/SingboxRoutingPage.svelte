@@ -14,8 +14,6 @@
 	import DnsSubTab from './DnsSubTab.svelte';
 	import DeviceProxySubTab from './DeviceProxySubTab.svelte';
 	import { ConnectionsSubTab } from '$lib/components/routing/singboxRouter';
-	import { WizardModal, WizardEntry } from './wizard';
-	import { singboxWizard } from '$lib/stores/singboxWizard';
 	import { singboxRouter } from '$lib/stores/singboxRouter';
 	import { stripAnsi } from '$lib/utils/ansi';
 	import { StagingBanner } from '.';
@@ -144,19 +142,6 @@
 	});
 
 	const tabsItems = $derived(order.map((id) => ({ id, label: labels[id] })));
-
-	const wizRulesStore = singboxRouter.rules;
-	const wizOutboundsStore = singboxRouter.outbounds;
-	const wizSettingsStore = singboxRouter.settings;
-	// Settings is null until loadAll() (called from sub-tabs onMount) has
-	// completed at least once. Gate the WizardEntry on that to avoid a
-	// brief flash on initial page paint when stores still hold defaults.
-	const isEmpty = $derived(
-		$wizSettingsStore !== null &&
-		($wizRulesStore?.length ?? 0) === 0 &&
-		($wizOutboundsStore?.length ?? 0) === 0 &&
-		(!$wizSettingsStore.policyName || $wizSettingsStore.policyName === '')
-	);
 </script>
 
 <header class="page-header">
@@ -172,15 +157,10 @@
 		sing-box · {headerLabel}
 	</span>
 	<div class="header-actions">
-		<Button size="sm" variant="primary" onclick={() => singboxWizard.start()}>Мастер</Button>
 		<Button size="sm" variant="ghost" onclick={() => (inspectorOpen = true)}>Инспектор</Button>
 		<Button size="sm" variant="ghost" onclick={() => (drawerOpen = true)}>Конфиг</Button>
 	</div>
 </header>
-
-{#if isEmpty}
-	<WizardEntry />
-{/if}
 
 <StagingBanner />
 
@@ -208,7 +188,6 @@
 
 <JsonConfigDrawer open={drawerOpen} onClose={() => (drawerOpen = false)} />
 <RouteInspector open={inspectorOpen} onClose={() => (inspectorOpen = false)} />
-<WizardModal />
 
 <style>
 	.page-header {
