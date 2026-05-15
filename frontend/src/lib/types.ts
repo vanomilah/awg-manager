@@ -1473,30 +1473,6 @@ export interface ApplyLogEntry {
 	message?: string;
 }
 
-export interface WizardState {
-	step: WizardStep;
-	presetIds: string[];
-	tunnelTag: string | null;
-	deviceMacs: string[];
-	policyMode: 'create' | 'existing';
-	policyName: string;
-	existingPolicyName: string | null;
-	resolvedPolicyName: string | null;
-	initialDeviceMacs: string[];
-	dnsServer: string | null;
-	applyLog: ApplyLogEntry[];
-	error: { phase: string; message: string } | null;
-}
-
-export interface WizardResult {
-	policyCreated: boolean;
-	devicesBound: number;
-	presetsApplied: number;
-	dnsServerCreated: boolean;
-	dnsRuleApplied: boolean;
-	engineStarted: boolean;
-}
-
 // === Subscriptions ===
 
 export interface SubscriptionHeader {
