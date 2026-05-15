@@ -28,6 +28,9 @@ docs/
 debug.md
 tree.md
 pub.md
+diff.md
+build.log
+frontend/package-lock.json
 
 # Windows-only helper scripts (personal tooling — never commit)
 *.bat

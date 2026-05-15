@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/deviceproxy"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
@@ -221,6 +222,7 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 	}
 	out := make([]monitoring.SingboxTunnelInfo, 0, len(tunnels))
 	seen := make(map[string]bool, len(tunnels))
+	subLabelByActiveTag := make(map[string]string)
 	for _, t := range tunnels {
 		// Keep config-backed sing-box rows probeable by interface.
 		// Runtime-only subscription member tags are appended separately below.
@@ -234,6 +236,41 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 			InterfaceName: t.KernelInterface,
 		})
 	}
+	if a.sub != nil {
+		for _, sub := range a.sub.List() {
+			if !sub.Enabled {
+				continue
+			}
+			label := strings.TrimSpace(sub.Label)
+			if label == "" {
+				label = strings.TrimSpace(sub.SelectorTag)
+			}
+			if label == "" {
+				label = strings.TrimSpace(sub.ActiveMember)
+			}
+			if sub.ActiveMember != "" {
+				subLabelByActiveTag[sub.ActiveMember] = label
+			}
+			for _, tag := range sub.MemberTags {
+				tag = strings.TrimSpace(tag)
+				if tag == "" {
+					continue
+				}
+				if _, exists := subLabelByActiveTag[tag]; !exists {
+					subLabelByActiveTag[tag] = label
+				}
+			}
+			for _, member := range sub.Members {
+				tag := strings.TrimSpace(member.Tag)
+				if tag == "" {
+					continue
+				}
+				if _, exists := subLabelByActiveTag[tag]; !exists {
+					subLabelByActiveTag[tag] = label
+				}
+			}
+		}
+	}
 	// Add active member tags from enabled subscriptions. These outbounds are
 	// often "runtime-only" (no dedicated inbound/listen_port), so they may not
 	// have a kernel interface in config-derived TunnelInfo, but they are still
@@ -244,9 +281,13 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 				continue
 			}
 			seen[tag] = true
+			name := tag
+			if label := subLabelByActiveTag[tag]; label != "" {
+				name = label
+			}
 			out = append(out, monitoring.SingboxTunnelInfo{
 				Tag:           tag,
-				Name:          tag,
+				Name:          name,
 				InterfaceName: "",
 			})
 		}
