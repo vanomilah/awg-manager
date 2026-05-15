@@ -37,17 +37,17 @@ const SECTION_MIN_LEVEL: Record<Section, UsageLevel> = {
 	systemTunnels: 'basic',
 	diagnostics: 'basic',
 	settings: 'basic',
+	routing: 'basic',
 	singboxTunnels: 'advanced',
 	servers: 'advanced',
 	subscriptions: 'advanced',
-	routing: 'advanced',
 	monitoring: 'advanced',
 	terminal: 'advanced',
 };
 
 const ROUTING_SUBTAB_MIN_LEVEL: Record<RoutingSubTab, UsageLevel> = {
-	accessPolicies: 'advanced',
-	clientRoutes: 'advanced',
+	accessPolicies: 'basic',
+	clientRoutes: 'basic',
 	dnsRoutes: 'advanced',
 	ipRoutes: 'advanced',
 	hrNeo: 'expert',

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onDestroy, onMount } from "svelte";
 	import { afterNavigate } from "$app/navigation";
+	import { page } from "$app/stores";
 	import { api } from "$lib/api/client";
 	import { notifications } from "$lib/stores/notifications";
 	import { singboxStatus } from "$lib/stores/singbox";
@@ -30,6 +31,8 @@
 		type UsageLevel,
 	} from "$lib/types/usageLevel";
 	import { usageLevel } from "$lib/stores/settings";
+
+	const expandUsageLevel = $derived($page.url.searchParams.has('mode'));
 
 	let systemInfo: SystemInfo | null = $state(null);
 	let settings = $state<Settings | null>(null);
@@ -450,11 +453,13 @@ onMount(() => {
 			</aside>
 
 			<main class="settings-right">
-				<UsageLevelCard
-					value={settings.usageLevel}
-					{saving}
-					onSelect={selectUsageLevel}
-				/>
+			<UsageLevelCard
+				value={settings.usageLevel}
+				{saving}
+				onSelect={selectUsageLevel}
+				initialExpanded={expandUsageLevel}
+				highlighted={expandUsageLevel}
+			/>
 
 				{#if $usageLevel === "expert"}
 					<ThemeSchemeCard />

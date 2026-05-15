@@ -2,23 +2,32 @@
 	import { onMount } from 'svelte';
 	import { usageLevel } from '$lib/stores/settings';
 
-	const STORAGE_KEY = 'awgm.welcomeBannerDismissed';
+	const STORAGE_KEY_BASIC = 'awgm.welcomeBannerDismissed';
+	const STORAGE_KEY_ADVANCED = 'awgm.welcomeBannerAdvancedDismissed';
 
-	let dismissed = $state(true);
+	let dismissedBasic = $state(true);
+	let dismissedAdvanced = $state(true);
 
 	onMount(() => {
-		dismissed = localStorage.getItem(STORAGE_KEY) === '1';
+		dismissedBasic = localStorage.getItem(STORAGE_KEY_BASIC) === '1';
+		dismissedAdvanced = localStorage.getItem(STORAGE_KEY_ADVANCED) === '1';
 	});
 
-	const visible = $derived($usageLevel === 'basic' && !dismissed);
+	const visibleBasic = $derived($usageLevel === 'basic' && !dismissedBasic);
+	const visibleAdvanced = $derived($usageLevel === 'advanced' && !dismissedAdvanced);
 
-	function dismiss() {
-		localStorage.setItem(STORAGE_KEY, '1');
-		dismissed = true;
+	function dismissBasic() {
+		localStorage.setItem(STORAGE_KEY_BASIC, '1');
+		dismissedBasic = true;
+	}
+
+	function dismissAdvanced() {
+		localStorage.setItem(STORAGE_KEY_ADVANCED, '1');
+		dismissedAdvanced = true;
 	}
 </script>
 
-{#if visible}
+{#if visibleBasic}
 	<div class="welcome-banner" role="status">
 		<div class="banner-icon" aria-hidden="true">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -30,16 +39,47 @@
 		<div class="banner-body">
 			<strong>Вы в Базовом режиме</strong>
 			<p>
-				Доступны только туннели и диагностика. Чтобы открыть серверы, маршрутизацию,
-				мониторинг и другие возможности — выберите более высокий уровень в
-				<a href="/settings">Настройках</a>.
+				Доступны туннели, диагностика, VPN для устройств и политики доступа. Чтобы открыть
+				серверы, мониторинг, IP-маршруты и другие возможности — выберите более высокий уровень в
+				<a href="/settings?mode">Настройках</a>.
 			</p>
 		</div>
 		<button
 			type="button"
 			class="banner-close"
 			aria-label="Скрыть подсказку"
-			onclick={dismiss}
+			onclick={dismissBasic}
+		>
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<line x1="18" y1="6" x2="6" y2="18" />
+				<line x1="6" y1="6" x2="18" y2="18" />
+			</svg>
+		</button>
+	</div>
+{/if}
+
+{#if visibleAdvanced}
+	<div class="welcome-banner" role="status">
+		<div class="banner-icon" aria-hidden="true">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+				<circle cx="12" cy="12" r="10" />
+				<line x1="12" y1="8" x2="12" y2="12" />
+				<circle cx="12" cy="16" r="0.8" fill="currentColor" />
+			</svg>
+		</div>
+		<div class="banner-body">
+			<strong>Вы в Расширенном режиме</strong>
+			<p>
+				Если не хватает функционала — например: HR Neo или Sing-box Router — переключитесь на
+				продвинутый режим в <a href="/settings?mode">настройках</a>.
+				Если всё кажется слишком сложным, вернитесь на Базовый.
+			</p>
+		</div>
+		<button
+			type="button"
+			class="banner-close"
+			aria-label="Скрыть подсказку"
+			onclick={dismissAdvanced}
 		>
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 				<line x1="18" y1="6" x2="6" y2="18" />

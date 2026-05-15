@@ -7,9 +7,11 @@
 		value: UsageLevel;
 		saving: boolean;
 		onSelect: (level: UsageLevel) => void | Promise<void>;
+		initialExpanded?: boolean;
+		highlighted?: boolean;
 	}
 
-	let { value, saving, onSelect }: Props = $props();
+	let { value, saving, onSelect, initialExpanded = false, highlighted = false }: Props = $props();
 
 	type LevelOption = {
 		value: UsageLevel;
@@ -22,23 +24,24 @@
 		{
 			value: 'basic',
 			title: USAGE_LEVEL_LABELS.basic,
-			summary: 'Основные туннели и базовая диагностика',
+			summary: 'Основные туннели, диагностика и базовая маршрутизация',
 			includes: [
 				'AmneziaWG-туннели',
 				'Системные WireGuard-туннели',
 				'Диагностика и проверки',
+				'Маршрутизация: VPN для устройств и политики доступа',
 				'Карточка «Система»: базовые данные',
 			],
 		},
 		{
 			value: 'advanced',
 			title: USAGE_LEVEL_LABELS.advanced,
-			summary: 'Туннели, серверы и основная маршрутизация',
+			summary: 'Туннели, серверы и полная маршрутизация',
 			includes: [
 				'Всё из уровня "Базовый"',
 				'SingBox-туннели и подписки',
 				'Серверы WireGuard и DeviceProxy',
-				'Маршрутизация: политики, клиенты, DNS и IP',
+				'Маршрутизация: DNS, IP-адреса, Sing-box Router',
 				'Веб-терминал и режим списка для AWG',
 				'Системный мониторинг',
 				'Карточка «Система»: добавляются данные по железу',
@@ -63,7 +66,7 @@
 	let infoFor = $state<UsageLevel | null>(null);
 	const infoOpt = $derived(infoFor ? OPTIONS.find((o) => o.value === infoFor) : null);
 
-	let expanded = $state(false);
+	let expanded = $state(initialExpanded);
 
 	function selectLevel(level: UsageLevel) {
 		if (level === value || saving) return;
@@ -76,7 +79,7 @@
 	}
 </script>
 
-<div class="card">
+<div class="card" class:highlighted>
 	<button
 		type="button"
 		class="collapsible-header"
@@ -421,5 +424,19 @@
 		stroke-linecap: round;
 		stroke-linejoin: round;
 		stroke-width: 2;
+	}
+
+	.card.highlighted {
+		animation: usage-level-glow 2.8s ease-out forwards;
+	}
+
+	@keyframes usage-level-glow {
+		0%   { box-shadow: none; }
+		12%  { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 55%, transparent), 0 0 18px 2px color-mix(in srgb, var(--color-accent) 22%, transparent); }
+		30%  { box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent); }
+		48%  { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 40%, transparent), 0 0 14px 2px color-mix(in srgb, var(--color-accent) 15%, transparent); }
+		65%  { box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 15%, transparent); }
+		82%  { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 22%, transparent), 0 0 8px 1px color-mix(in srgb, var(--color-accent) 10%, transparent); }
+		100% { box-shadow: none; }
 	}
 </style>
