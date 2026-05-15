@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { X } from 'lucide-svelte';
 	import type { PreflightStatus } from './PresetsPreflightBanner.svelte';
 
 	interface Props {
@@ -33,7 +34,7 @@
 			class="btn-clear"
 			aria-label="Отменить выбор"
 			onclick={onClear}
-		>✕</button>
+		><X size={16} /></button>
 	</div>
 {/if}
 

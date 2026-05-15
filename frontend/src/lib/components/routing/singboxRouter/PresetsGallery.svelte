@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { Square, SquareCheckBig } from 'lucide-svelte';
 	import type { SingboxRouterPreset, SingboxRouterPresetCategory } from '$lib/types';
 	import PresetIcon from './PresetIcon.svelte';
 
@@ -100,7 +101,11 @@
 					}}
 				>
 					<span class="checkbox" class:checked={selectedIds.has(p.id)} aria-hidden="true">
-						{selectedIds.has(p.id) ? '☑' : '☐'}
+						{#if selectedIds.has(p.id)}
+							<SquareCheckBig size={20} />
+						{:else}
+							<Square size={20} />
+						{/if}
 					</span>
 				</button>
 				<button type="button" class="card-body-btn" onclick={() => onPresetClick(p)}>
@@ -158,7 +163,11 @@
 						}}
 					>
 						<span class="checkbox" class:checked={selectedIds.has(p.id)} aria-hidden="true">
-							{selectedIds.has(p.id) ? '☑' : '☐'}
+							{#if selectedIds.has(p.id)}
+								<SquareCheckBig size={20} />
+							{:else}
+								<Square size={20} />
+							{/if}
 						</span>
 					</button>
 					<button type="button" class="card-body-btn" onclick={() => onPresetClick(p)}>
@@ -198,7 +207,11 @@
 						}}
 					>
 						<span class="checkbox" class:checked={selectedIds.has(p.id)} aria-hidden="true">
-							{selectedIds.has(p.id) ? '☑' : '☐'}
+							{#if selectedIds.has(p.id)}
+								<SquareCheckBig size={20} />
+							{:else}
+								<Square size={20} />
+							{/if}
 						</span>
 					</button>
 					<button type="button" class="card-body-btn" onclick={() => onPresetClick(p)}>
@@ -259,19 +272,24 @@
 		background: rgba(59, 130, 246, 0.10);
 	}
 	.card-select {
+		all: unset;
 		position: absolute;
 		top: 4px;
-		right: 6px;
-		background: transparent;
-		border: 0;
-		padding: 2px;
+		right: 4px;
+		padding: 6px;
 		cursor: pointer;
-		color: var(--text);
-		z-index: 1;
-	}
-	.checkbox {
-		font-size: 14px;
 		color: var(--muted-text);
+		z-index: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 4px;
+		line-height: 0;
+	}
+	.card-select:hover { color: var(--text); }
+	.checkbox {
+		display: inline-flex;
+		color: inherit;
 	}
 	.checkbox.checked {
 		color: var(--accent, #3b82f6);
