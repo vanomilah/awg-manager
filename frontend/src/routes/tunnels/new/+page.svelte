@@ -6,7 +6,12 @@
 	import { PageContainer } from '$lib/components/layout';
 	import { Button, ConfirmModal } from '$lib/components/ui';
 	import AmneziaConfEditor from '$lib/components/tunnels/AmneziaConfEditor.svelte';
-	import { classifyVpnLink, decodeVpnLink, isVpnLink } from '$lib/utils/vpnlink';
+	import {
+		classifyVpnLink,
+		decodeVpnLink,
+		isVpnLink,
+		vpnLinkUnsupportedPortalReason
+	} from '$lib/utils/vpnlink';
 	import { api } from '$lib/api/client';
 	import type { AmneziaPremiumCountry, AmneziaPremiumIssuedConfig, SystemInfo } from '$lib/types';
 
@@ -246,6 +251,15 @@
 			return;
 		}
 
+		const portalBlock = vpnLinkUnsupportedPortalReason(raw);
+		if (portalBlock) {
+			resetPremiumCatalogState();
+			linkPreview = '';
+			importContent = '';
+			linkError = portalBlock;
+			return;
+		}
+
 		linkPreview = '';
 		importContent = '';
 		resetPremiumCatalogState();
@@ -261,6 +275,11 @@
 		}
 
 		if (isVpnLink(content)) {
+			const unsupported = vpnLinkUnsupportedPortalReason(content);
+			if (unsupported) {
+				notifications.error(unsupported);
+				return;
+			}
 			try {
 				const result = decodeVpnLink(content);
 				content = result.config;

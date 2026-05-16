@@ -46,21 +46,48 @@ func base64URLDecode(input string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
 }
 
-func decompressVPNBytes(raw []byte) (string, error) {
-	if len(raw) < 5 {
-		return "", errors.New("неверный формат vpn:// ссылки")
+func zlibHeaderOffset(raw []byte) int {
+	for i := 0; i+1 < len(raw); i++ {
+		if raw[i] == 0x78 && (raw[i+1] == 0x9c || raw[i+1] == 0x01 || raw[i+1] == 0xda || raw[i+1] == 0x5e) {
+			return i
+		}
 	}
-	zr, err := zlib.NewReader(bytes.NewReader(raw[4:]))
+	return -1
+}
+
+func tryReadZlib(data []byte) (string, bool) {
+	zr, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
-		// Legacy (frontend vpnlink.ts): entire blob as UTF-8 JSON.
-		return string(raw), nil
+		return "", false
 	}
 	defer zr.Close()
 	out, err := io.ReadAll(zr)
 	if err != nil {
-		return string(raw), nil
+		return "", false
 	}
-	return string(out), nil
+	return string(out), true
+}
+
+func decompressVPNBytes(raw []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("неверный формат vpn:// ссылки")
+	}
+
+	if len(raw) >= 5 {
+		if s, ok := tryReadZlib(raw[4:]); ok {
+			return s, nil
+		}
+	}
+	if z := zlibHeaderOffset(raw); z >= 0 {
+		if s, ok := tryReadZlib(raw[z:]); ok {
+			return s, nil
+		}
+	}
+	if s, ok := tryReadZlib(raw); ok {
+		return s, nil
+	}
+	// Legacy: entire blob as UTF-8 JSON (frontend vpnlink.ts).
+	return string(raw), nil
 }
 
 func extractConfFromVPNJSON(jsonStr string) (string, error) {

@@ -46,6 +46,27 @@ function looksLikePremiumVpnPayload(data: Record<string, unknown>): boolean {
 }
 
 /**
+ * vpn:// с API другого портала, который текущий экран импорта не проксирует (отличие от каталога премиум-ЛК).
+ */
+export function vpnLinkUnsupportedPortalReason(input: string): string | null {
+	const payload = decodeVpnLinkPayload(input);
+	if (!payload) {
+		return null;
+	}
+	const ac = payload.api_config;
+	if (!ac || typeof ac !== 'object' || ac === null) {
+		return null;
+	}
+	const st = (ac as Record<string, unknown>).service_type;
+	if (st === 'amnezia-free') {
+		return (
+			'Это ключ Amnezia Free (облачный API другого типа) и не поддерживается в рамках данного функционала'
+		);
+	}
+	return null;
+}
+
+/**
  * Обычная клиентская vpn:// (containers + last_config) vs ключ Premium / API (api_config, auth_data, …).
  */
 export function classifyVpnLink(input: string): VpnLinkFlavor {
@@ -76,7 +97,7 @@ export interface VpnLinkResult {
 /**
  * Decode an AmneziaVPN vpn:// link into a WireGuard/AWG .conf string.
  *
- * Format: vpn://{base64url(4-byte-length-prefix + zlib(JSON))}
+ * Format: vpn://{base64url(blob)} — обычно 4 байта длины + zlib(JSON); zlib может начинаться с первого маркера 0x78 0x9c.
  * JSON contains containers[].awg.last_config.config with the .conf content.
  */
 export function decodeVpnLink(input: string): VpnLinkResult {
@@ -123,25 +144,52 @@ function base64UrlDecode(input: string): Uint8Array {
 	}
 }
 
+function zlibHeaderOffset(bytes: Uint8Array): number {
+	for (let i = 0; i + 1 < bytes.length; i++) {
+		if (
+			bytes[i] === 0x78 &&
+			(bytes[i + 1] === 0x9c || bytes[i + 1] === 0x01 || bytes[i + 1] === 0xda || bytes[i + 1] === 0x5e)
+		) {
+			return i;
+		}
+	}
+	return -1;
+}
+
 function decompress(bytes: Uint8Array): string {
-	// First 4 bytes are big-endian uint32 (expected uncompressed length)
-	if (bytes.length < 5) {
-		throw new Error('Неверный формат vpn:// ссылки');
+	const tryInflate = (payload: Uint8Array): string | null => {
+		try {
+			const decompressed = pako.inflate(payload);
+			return new TextDecoder().decode(decompressed);
+		} catch {
+			return null;
+		}
+	};
+
+	if (bytes.length >= 5) {
+		const fromPrefix = tryInflate(bytes.slice(4));
+		if (fromPrefix !== null) {
+			return fromPrefix;
+		}
 	}
 
-	const payload = bytes.slice(4);
-
-	// Try zlib decompression first
-	try {
-		const decompressed = pako.inflate(payload);
-		return new TextDecoder().decode(decompressed);
-	} catch {
-		// Fallback: try entire bytes as plain JSON (legacy format)
-		try {
-			return new TextDecoder().decode(bytes);
-		} catch {
-			throw new Error('Не удалось распаковать данные');
+	const z = zlibHeaderOffset(bytes);
+	if (z >= 0) {
+		const fromMagic = tryInflate(bytes.slice(z));
+		if (fromMagic !== null) {
+			return fromMagic;
 		}
+	}
+
+	const whole = tryInflate(bytes);
+	if (whole !== null) {
+		return whole;
+	}
+
+	try {
+		return new TextDecoder().decode(bytes);
+	} catch {
+		throw new Error('Не удалось распаковать данные');
 	}
 }
 
