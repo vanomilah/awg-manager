@@ -2,8 +2,8 @@ package storage
 
 // Settings represents /opt/etc/awg-manager/settings.json
 type Settings struct {
-	SchemaVersion       int               `json:"schemaVersion,omitempty"`
-	AuthEnabled         bool              `json:"authEnabled"`
+	SchemaVersion int  `json:"schemaVersion,omitempty"`
+	AuthEnabled   bool `json:"authEnabled"`
 	// ApiKey is an opaque secret accepted in place of a session cookie via
 	// `Authorization: Bearer <key>` header. Empty disables key-based access
 	// (session is still required when AuthEnabled). Generated client-side
@@ -15,20 +15,21 @@ type Settings struct {
 	DisableMemorySaving bool              `json:"disableMemorySaving"` // false = auto, true = soft mode
 	Updates             UpdateSettings    `json:"updates"`
 	DNSRoute            DNSRouteSettings  `json:"dnsRoute"`
-	UsageLevel             string            `json:"usageLevel"`
-	ServerInterfaces       []string          `json:"serverInterfaces,omitempty"`
-	ManagedServers         []ManagedServer   `json:"managedServers,omitempty"`
+	UsageLevel          string            `json:"usageLevel"`
+	ServerInterfaces    []string          `json:"serverInterfaces,omitempty"`
+	ManagedServers      []ManagedServer   `json:"managedServers,omitempty"`
 	// ManagedServer is retained for one release as the migration source.
 	// migrateManagedServers() moves it into ManagedServers[0] on first read
 	// and clears it on the next save.
-	ManagedServer          *ManagedServer    `json:"managedServer,omitempty"`
-	ManagedPolicies        []string          `json:"managedPolicies,omitempty"`
-	SingboxRouter          SingboxRouterSettings `json:"singboxRouter"`
+	ManagedServer             *ManagedServer        `json:"managedServer,omitempty"`
+	ManagedPolicies           []string              `json:"managedPolicies,omitempty"`
+	MonitoringExcludedTunnels []string              `json:"monitoringExcludedTunnels,omitempty"`
+	SingboxRouter             SingboxRouterSettings `json:"singboxRouter"`
 	// SingboxManuallyStopped is the sticky-stop intent: when true, the
 	// daemon stays down even though tunnels are configured. Watchdog
 	// reconciles only when this is false. Cleared by Control("start")
 	// and Control("restart"); set by Control("stop").
-	SingboxManuallyStopped bool                  `json:"singboxManuallyStopped,omitempty"`
+	SingboxManuallyStopped bool `json:"singboxManuallyStopped,omitempty"`
 }
 
 type SingboxRouterSettings struct {
@@ -41,15 +42,15 @@ type SingboxRouterSettings struct {
 
 // ManagedServer represents the user-created WireGuard server interface.
 type ManagedServer struct {
-	InterfaceName string        `json:"interfaceName"` // e.g. "Wireguard3"
-	Description   string        `json:"description,omitempty"` // user-facing display name, synced to NDMS interface description
-	Address       string        `json:"address"`       // e.g. "10.0.0.1"
-	Mask          string        `json:"mask"`          // e.g. "255.255.255.0"
-	ListenPort    int           `json:"listenPort"`
-	Endpoint      string        `json:"endpoint,omitempty"` // custom endpoint (IP or domain); empty = WAN IP
-	DNS           string        `json:"dns,omitempty"`      // custom DNS for client configs; empty = "1.1.1.1, 8.8.8.8"
-	MTU           int           `json:"mtu,omitempty"`      // custom MTU for client configs; 0 = 1376
-	NATEnabled    bool          `json:"natEnabled,omitempty"`
+	InterfaceName string `json:"interfaceName"`         // e.g. "Wireguard3"
+	Description   string `json:"description,omitempty"` // user-facing display name, synced to NDMS interface description
+	Address       string `json:"address"`               // e.g. "10.0.0.1"
+	Mask          string `json:"mask"`                  // e.g. "255.255.255.0"
+	ListenPort    int    `json:"listenPort"`
+	Endpoint      string `json:"endpoint,omitempty"` // custom endpoint (IP or domain); empty = WAN IP
+	DNS           string `json:"dns,omitempty"`      // custom DNS for client configs; empty = "1.1.1.1, 8.8.8.8"
+	MTU           int    `json:"mtu,omitempty"`      // custom MTU for client configs; 0 = 1376
+	NATEnabled    bool   `json:"natEnabled,omitempty"`
 	// Policy is the ip hotspot policy applied to this server's interface.
 	// "none" = no policy (default-permit), "permit"/"deny" = literal RCI
 	// values, anything else = IP Policy profile name (e.g. "Policy0").
@@ -67,12 +68,12 @@ type ManagedServer struct {
 // ManagedPeer represents a client peer on the managed server.
 type ManagedPeer struct {
 	PublicKey    string `json:"publicKey"`
-	PrivateKey  string `json:"privateKey"`  // stored for .conf generation
+	PrivateKey   string `json:"privateKey"` // stored for .conf generation
 	PresharedKey string `json:"presharedKey"`
-	Description string `json:"description"`
-	TunnelIP    string `json:"tunnelIP"`    // e.g. "10.0.0.2/32"
-	DNS         string `json:"dns,omitempty"` // per-peer DNS for .conf generation
-	Enabled     bool   `json:"enabled"`
+	Description  string `json:"description"`
+	TunnelIP     string `json:"tunnelIP"`      // e.g. "10.0.0.2/32"
+	DNS          string `json:"dns,omitempty"` // per-peer DNS for .conf generation
+	Enabled      bool   `json:"enabled"`
 }
 
 // ServerSettings contains HTTP server configuration.
@@ -112,52 +113,52 @@ type UpdateSettings struct {
 
 // DNSRouteSettings contains DNS route auto-refresh configuration.
 type DNSRouteSettings struct {
-	AutoRefreshEnabled   bool   `json:"autoRefreshEnabled"`             // default: false
-	RefreshIntervalHours int    `json:"refreshIntervalHours"`           // default: 0 (user must choose)
-	RefreshMode          string `json:"refreshMode,omitempty"`          // "interval" (default/empty) or "daily"
-	RefreshDailyTime     string `json:"refreshDailyTime,omitempty"`     // "HH:MM" 24h format, e.g. "03:00"
+	AutoRefreshEnabled   bool   `json:"autoRefreshEnabled"`         // default: false
+	RefreshIntervalHours int    `json:"refreshIntervalHours"`       // default: 0 (user must choose)
+	RefreshMode          string `json:"refreshMode,omitempty"`      // "interval" (default/empty) or "daily"
+	RefreshDailyTime     string `json:"refreshDailyTime,omitempty"` // "HH:MM" 24h format, e.g. "03:00"
 }
 
 // ConnectivityCheckConfig holds per-tunnel connectivity check settings.
 type ConnectivityCheckConfig struct {
-	Method     string `json:"method"`              // "http" (default), "ping", "handshake", "disabled"
+	Method     string `json:"method"`               // "http" (default), "ping", "handshake", "disabled"
 	PingTarget string `json:"pingTarget,omitempty"` // IP address for ping method
 }
 
 // AWGTunnel represents AmneziaWG tunnel metadata.
 type AWGTunnel struct {
-	ID                string           `json:"id"`
-	Name              string           `json:"name"`
-	Type              string           `json:"type,omitempty"` // "awg"
-	Enabled           bool             `json:"enabled"`
-	DefaultRoute    bool `json:"defaultRoute"`              // Create NDMS default route (ip route default OpkgTunX)
-	DefaultRouteSet bool `json:"defaultRouteSet,omitempty"` // Migration sentinel: false = field never saved, default to true
-	ISPInterface       string           `json:"ispInterface,omitempty"`        // Override ISP interface for endpoint route (empty = auto-detect)
-	ISPInterfaceLabel  string           `json:"ispInterfaceLabel,omitempty"`   // Human-readable name for UI display
-	ResolvedEndpointIP string           `json:"resolvedEndpointIP,omitempty"` // Persisted resolved endpoint IP for reliable cleanup
-	ActiveWAN          string           `json:"activeWAN,omitempty"`          // Persisted resolved WAN for WAN event matching
-	StartedAt         string           `json:"startedAt,omitempty"`          // RFC3339 timestamp of last successful start
-	Backend           string           `json:"backend,omitempty"`            // "nativewg" | "kernel" | "" (legacy=kernel)
-	NWGIndex          int              `json:"nwgIndex"`                     // Wireguard{N} index, nativewg only (0 is valid!)
-	CreatedAt         string           `json:"createdAt"`
-	Interface         AWGInterface     `json:"interface"`
-	Peer              AWGPeer          `json:"peer"`
-	PingCheck         *TunnelPingCheck        `json:"pingCheck,omitempty"`
-	ConnectivityCheck *ConnectivityCheckConfig `json:"connectivityCheck,omitempty"`
+	ID                 string                   `json:"id"`
+	Name               string                   `json:"name"`
+	Type               string                   `json:"type,omitempty"` // "awg"
+	Enabled            bool                     `json:"enabled"`
+	DefaultRoute       bool                     `json:"defaultRoute"`                 // Create NDMS default route (ip route default OpkgTunX)
+	DefaultRouteSet    bool                     `json:"defaultRouteSet,omitempty"`    // Migration sentinel: false = field never saved, default to true
+	ISPInterface       string                   `json:"ispInterface,omitempty"`       // Override ISP interface for endpoint route (empty = auto-detect)
+	ISPInterfaceLabel  string                   `json:"ispInterfaceLabel,omitempty"`  // Human-readable name for UI display
+	ResolvedEndpointIP string                   `json:"resolvedEndpointIP,omitempty"` // Persisted resolved endpoint IP for reliable cleanup
+	ActiveWAN          string                   `json:"activeWAN,omitempty"`          // Persisted resolved WAN for WAN event matching
+	StartedAt          string                   `json:"startedAt,omitempty"`          // RFC3339 timestamp of last successful start
+	Backend            string                   `json:"backend,omitempty"`            // "nativewg" | "kernel" | "" (legacy=kernel)
+	NWGIndex           int                      `json:"nwgIndex"`                     // Wireguard{N} index, nativewg only (0 is valid!)
+	CreatedAt          string                   `json:"createdAt"`
+	Interface          AWGInterface             `json:"interface"`
+	Peer               AWGPeer                  `json:"peer"`
+	PingCheck          *TunnelPingCheck         `json:"pingCheck,omitempty"`
+	ConnectivityCheck  *ConnectivityCheckConfig `json:"connectivityCheck,omitempty"`
 }
 
 // TunnelPingCheck contains per-tunnel ping check configuration.
 type TunnelPingCheck struct {
-	Enabled            bool    `json:"enabled"`
-	Method             string  `json:"method"`              // "icmp", "connect", "tls", "uri"
-	Target             string  `json:"target"`              // host to check
-	Interval           int     `json:"interval"`            // check interval in seconds
-	DeadInterval       int     `json:"deadInterval"`        // dead tunnel check interval (kernel only)
-	FailThreshold      int     `json:"failThreshold"`       // max fails before dead
-	MinSuccess         int     `json:"minSuccess"`          // min successes to recover (nativewg, default 1)
-	Timeout            int     `json:"timeout"`             // check timeout seconds (nativewg, default 5)
-	Port               int     `json:"port,omitempty"`      // port for connect/tls modes
-	Restart            bool    `json:"restart"`             // restart tunnel on dead (nativewg)
+	Enabled       bool   `json:"enabled"`
+	Method        string `json:"method"`         // "icmp", "connect", "tls", "uri"
+	Target        string `json:"target"`         // host to check
+	Interval      int    `json:"interval"`       // check interval in seconds
+	DeadInterval  int    `json:"deadInterval"`   // dead tunnel check interval (kernel only)
+	FailThreshold int    `json:"failThreshold"`  // max fails before dead
+	MinSuccess    int    `json:"minSuccess"`     // min successes to recover (nativewg, default 1)
+	Timeout       int    `json:"timeout"`        // check timeout seconds (nativewg, default 5)
+	Port          int    `json:"port,omitempty"` // port for connect/tls modes
+	Restart       bool   `json:"restart"`        // restart tunnel on dead (nativewg)
 }
 
 // AWGObfuscation groups all AmneziaWG obfuscation parameters into a
@@ -166,14 +167,14 @@ type TunnelPingCheck struct {
 // comparison automatically picks it up. Embedded into AWGInterface so
 // JSON serialization stays flat (no schema migration).
 type AWGObfuscation struct {
-	Qlen int `json:"qlen"`
-	Jc   int `json:"jc"`
-	Jmin int `json:"jmin"`
-	Jmax int `json:"jmax"`
-	S1   int `json:"s1"`
-	S2   int `json:"s2"`
-	S3   int `json:"s3"`
-	S4   int `json:"s4"`
+	Qlen int    `json:"qlen"`
+	Jc   int    `json:"jc"`
+	Jmin int    `json:"jmin"`
+	Jmax int    `json:"jmax"`
+	S1   int    `json:"s1"`
+	S2   int    `json:"s2"`
+	S3   int    `json:"s3"`
+	S4   int    `json:"s4"`
 	H1   string `json:"h1"`
 	H2   string `json:"h2"`
 	H3   string `json:"h3"`

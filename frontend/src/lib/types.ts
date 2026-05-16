@@ -671,6 +671,7 @@ export interface Settings {
 	dnsRoute: DNSRouteSettings;
 	usageLevel: UsageLevel;
 	hiddenSystemTunnels?: string[];
+	monitoringExcludedTunnels?: string[];
 }
 
 // #endregion

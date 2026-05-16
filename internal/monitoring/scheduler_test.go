@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/traffic"
 )
 
@@ -145,6 +146,41 @@ func TestScheduler_RunOnce_FailedProberMarksCellNotOK(t *testing.T) {
 	}
 }
 
+func TestScheduler_RunOnce_ExcludesConfiguredTunnels(t *testing.T) {
+	prober := &fakeProber{ok: true, latency: 12}
+	hist := NewHistory()
+	settingsStore := storage.NewSettingsStore(t.TempDir())
+	settings, err := settingsStore.Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	settings.MonitoringExcludedTunnels = []string{"tn-B"}
+	if err := settingsStore.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	sched := NewScheduler(SchedulerDeps{
+		TunnelLister: &fakeLister{tunnels: []traffic.RunningTunnel{
+			{ID: "tn-A", IfaceName: "wg0"},
+			{ID: "tn-B", IfaceName: "wg1"},
+		}},
+		SettingsStore: settingsStore,
+		Prober:        prober,
+	}, hist)
+
+	sched.RunOnce(context.Background())
+
+	snap := sched.LatestSnapshot()
+	if len(snap.Tunnels) != 1 || snap.Tunnels[0].ID != "tn-A" {
+		t.Fatalf("expected only tn-A in snapshot tunnels, got %+v", snap.Tunnels)
+	}
+	for _, c := range snap.Cells {
+		if c.TunnelID == "tn-B" {
+			t.Fatalf("excluded tunnel tn-B must not appear in cells, got %+v", c)
+		}
+	}
+}
+
 type fakeSingboxTunnels struct {
 	items []SingboxTunnelInfo
 	err   error
@@ -152,6 +188,57 @@ type fakeSingboxTunnels struct {
 
 func (f *fakeSingboxTunnels) List(_ context.Context) ([]SingboxTunnelInfo, error) {
 	return f.items, f.err
+}
+
+type fakeSystemTunnels struct {
+	items []SystemTunnelInfo
+	err   error
+}
+
+func (f *fakeSystemTunnels) List(_ context.Context) (systemTunnels, error) {
+	return f.items, f.err
+}
+
+func TestScheduler_RunOnce_ExcludesConfiguredSystemAndSingboxTunnels(t *testing.T) {
+	prober := &fakeProber{ok: true, latency: 11}
+	hist := NewHistory()
+	settingsStore := storage.NewSettingsStore(t.TempDir())
+	settings, err := settingsStore.Load()
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	// sys-* ids are formed as "sys-"+SystemTunnelInfo.ID in collectTunnels;
+	// sing-box ids are raw outbound tags.
+	settings.MonitoringExcludedTunnels = []string{"sys-Wireguard2", "veesp"}
+	if err := settingsStore.Save(settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	sched := NewScheduler(SchedulerDeps{
+		TunnelLister: &fakeLister{tunnels: []traffic.RunningTunnel{
+			{ID: "tn-A", IfaceName: "wg0"},
+		}},
+		SystemTunnels: &fakeSystemTunnels{items: []SystemTunnelInfo{
+			{ID: "Wireguard2", InterfaceName: "nwg2", Description: "System WG 2", Connected: true},
+		}},
+		SingboxTunnels: &fakeSingboxTunnels{items: []SingboxTunnelInfo{
+			{Tag: "veesp", Name: "Veesp", InterfaceName: "t2s0"},
+		}},
+		SettingsStore: settingsStore,
+		Prober:        prober,
+	}, hist)
+
+	sched.RunOnce(context.Background())
+
+	snap := sched.LatestSnapshot()
+	if len(snap.Tunnels) != 1 || snap.Tunnels[0].ID != "tn-A" {
+		t.Fatalf("expected only tn-A tunnel after exclusions, got %+v", snap.Tunnels)
+	}
+	for _, c := range snap.Cells {
+		if c.TunnelID == "sys-Wireguard2" || c.TunnelID == "veesp" {
+			t.Fatalf("excluded tunnel %q must not appear in cells: %+v", c.TunnelID, c)
+		}
+	}
 }
 
 func TestScheduler_SingboxTunnels_AppearInSnapshot(t *testing.T) {
@@ -174,6 +261,35 @@ func TestScheduler_SingboxTunnels_AppearInSnapshot(t *testing.T) {
 	}
 	if got["t2s0"] != "veesp" || got["t2s1"] != "prague" {
 		t.Errorf("expected t2s0->veesp, t2s1->prague, got %+v", got)
+	}
+}
+
+func TestScheduler_SystemTunnels_AppearInSnapshot(t *testing.T) {
+	hist := NewHistory()
+	sched := NewScheduler(SchedulerDeps{
+		TunnelLister: &fakeLister{},
+		SystemTunnels: &fakeSystemTunnels{items: []SystemTunnelInfo{
+			{ID: "Wireguard2", InterfaceName: "nwg2", Description: "Office VPN", Connected: true},
+		}},
+	}, hist)
+
+	tunnels := sched.collectTunnels(context.Background())
+
+	var got *Tunnel
+	for i := range tunnels {
+		if tunnels[i].ID == "sys-Wireguard2" {
+			got = &tunnels[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected system tunnel sys-Wireguard2 in collected tunnels, got %+v", tunnels)
+	}
+	if got.Name != "Office VPN" {
+		t.Errorf("expected system tunnel name 'Office VPN', got %q", got.Name)
+	}
+	if got.IfaceName != "nwg2" {
+		t.Errorf("expected iface nwg2, got %q", got.IfaceName)
 	}
 }
 

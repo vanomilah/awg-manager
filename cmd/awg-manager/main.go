@@ -521,6 +521,7 @@ func main() {
 	monitoringService = monitoring.NewService(monitoring.SchedulerDeps{
 		TunnelLister:  tunnelService,
 		TunnelStore:   awgStore,
+		SettingsStore: settingsStore,
 		SystemTunnels: &monitoringSystemTunnelAdapter{svc: systemTunnelSvc},
 		Prober:        monitoring.NewHTTPProber(),
 		ICMPProber:    monitoring.NewICMPProber(),

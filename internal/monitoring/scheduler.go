@@ -107,6 +107,7 @@ type SingboxDelayProber interface {
 type SchedulerDeps struct {
 	TunnelLister   traffic.TunnelLister
 	TunnelStore    *storage.AWGTunnelStore
+	SettingsStore  *storage.SettingsStore
 	SystemTunnels  SystemTunnelLister      // optional — when nil, system tunnels are skipped
 	SingboxTunnels SingboxTunnelLister     // optional — when nil, sing-box tunnels are skipped
 	Composites     CompositeOutboundLister // optional — when nil, urltest membership is skipped
@@ -319,6 +320,32 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	}
 }
 
+// monitoringExcludedSet returns the persisted set of tunnel IDs that should
+// be excluded from matrix monitoring. Empty map means "no exclusions" and is
+// safe on any store/read error.
+func (s *Scheduler) monitoringExcludedSet() map[string]bool {
+	settingsStore := s.deps.SettingsStore
+	if settingsStore == nil {
+		return nil
+	}
+	settings, err := settingsStore.Get()
+	if err != nil || settings == nil || len(settings.MonitoringExcludedTunnels) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(settings.MonitoringExcludedTunnels))
+	for _, id := range settings.MonitoringExcludedTunnels {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out[id] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // proberFor picks the right Prober for the cell. Self-target cells with
 // the tunnel's method=="ping" use the ICMP prober when available; everything
 // else falls back to the default HTTPS prober.
@@ -487,7 +514,18 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 		}
 	}
 
-	return out
+	excluded := s.monitoringExcludedSet()
+	if len(excluded) == 0 {
+		return out
+	}
+	filtered := make([]Tunnel, 0, len(out))
+	for _, t := range out {
+		if excluded[t.ID] {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
 }
 
 // augmentSingboxClashData walks the tunnels list and, for each

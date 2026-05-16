@@ -2041,6 +2041,13 @@ definitions:
         $ref: '#/definitions/api.DNSRouteSettingsDTO'
       logging:
         $ref: '#/definitions/api.LoggingSettingsDTO'
+      monitoringExcludedTunnels:
+        example:
+        - tn-1
+        - sys-2
+        items:
+          type: string
+        type: array
       pingCheck:
         $ref: '#/definitions/api.PingCheckSettingsDTO'
       schemaVersion:
@@ -9343,6 +9350,87 @@ paths:
       security:
       - CookieAuth: []
       summary: Sing-box delay check
+      tags:
+      - singbox
+  /singbox/tunnels/test/connectivity:
+    get:
+      description: Tests connectivity through a sing-box tunnel. Provide either `tag`
+        (resolved to tunnel kernel interface) or `iface` (direct kernel interface
+        override, useful for subscription tests).
+      parameters:
+      - description: Tunnel tag (required when iface is not set)
+        in: query
+        name: tag
+        type: string
+      - description: Kernel interface override (e.g. t2s12)
+        in: query
+        name: iface
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Sing-box tunnel connectivity test
+      tags:
+      - singbox
+  /singbox/tunnels/test/ip:
+    get:
+      description: Resolves current external IP through a sing-box tunnel. Provide
+        either `tag` (resolved to tunnel kernel interface) or `iface` (direct kernel
+        interface override, useful for subscription tests). Optional `service` overrides
+        IP-check endpoint.
+      parameters:
+      - description: Tunnel tag (required when iface is not set)
+        in: query
+        name: tag
+        type: string
+      - description: Kernel interface override (e.g. t2s12)
+        in: query
+        name: iface
+        type: string
+      - description: Custom IP-check service URL
+        in: query
+        name: service
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Sing-box tunnel IP test
       tags:
       - singbox
   /singbox/tunnels/test/speed/stream:

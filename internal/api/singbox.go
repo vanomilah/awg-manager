@@ -414,7 +414,19 @@ func (h *SingboxHandler) UpdateTunnel(w http.ResponseWriter, r *http.Request) {
 }
 
 // CheckConnectivity performs connectivity test through a sing-box tunnel.
-// GET /api/singbox/tunnels/test/connectivity?tag=...
+//
+//	@Summary		Sing-box tunnel connectivity test
+//	@Description	Tests connectivity through a sing-box tunnel. Provide either `tag` (resolved to tunnel kernel interface) or `iface` (direct kernel interface override, useful for subscription tests).
+//	@Tags			singbox
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			tag		query		string	false	"Tunnel tag (required when iface is not set)"
+//	@Param			iface	query		string	false	"Kernel interface override (e.g. t2s12)"
+//	@Success		200		{object}	APIEnvelope
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		404		{object}	APIErrorEnvelope
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Router			/singbox/tunnels/test/connectivity [get]
 func (h *SingboxHandler) CheckConnectivity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		response.MethodNotAllowed(w)
@@ -452,7 +464,20 @@ func (h *SingboxHandler) CheckConnectivity(w http.ResponseWriter, r *http.Reques
 }
 
 // CheckIP tests IP through a sing-box tunnel.
-// GET /api/singbox/tunnels/test/ip?tag=...&service=optional
+//
+//	@Summary		Sing-box tunnel IP test
+//	@Description	Resolves current external IP through a sing-box tunnel. Provide either `tag` (resolved to tunnel kernel interface) or `iface` (direct kernel interface override, useful for subscription tests). Optional `service` overrides IP-check endpoint.
+//	@Tags			singbox
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			tag		query		string	false	"Tunnel tag (required when iface is not set)"
+//	@Param			iface	query		string	false	"Kernel interface override (e.g. t2s12)"
+//	@Param			service	query		string	false	"Custom IP-check service URL"
+//	@Success		200		{object}	APIEnvelope
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		404		{object}	APIErrorEnvelope
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Router			/singbox/tunnels/test/ip [get]
 func (h *SingboxHandler) CheckIP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		response.MethodNotAllowed(w)

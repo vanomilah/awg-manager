@@ -8,9 +8,16 @@
 	interface Props {
 		snapshot: MonitoringSnapshot;
 		onCellClick: (target: MonitoringTarget, tunnel: MonitoringTunnel) => void;
+		excludedTunnelIds?: Set<string>;
+		onToggleTunnelExcluded?: (tunnelId: string, excluded: boolean, tunnelName: string) => void;
 	}
 
-	let { snapshot, onCellClick }: Props = $props();
+	let {
+		snapshot,
+		onCellClick,
+		excludedTunnelIds = new Set<string>(),
+		onToggleTunnelExcluded = () => {},
+	}: Props = $props();
 
 	const sortedTunnels = $derived(
 		[...snapshot.tunnels].sort((a, b) => a.name.localeCompare(b.name)),
@@ -42,6 +49,19 @@
 	function findCell(targetId: string, tunnelId: string): MonitoringCell | null {
 		return cellByKey.get(`${targetId}|${tunnelId}`) ?? null;
 	}
+
+	function isExcluded(tunnelId: string): boolean {
+		return excludedTunnelIds.has(tunnelId);
+	}
+
+	// Matrix exclusions are intentionally available for all row sources
+	// (awg/system/singbox): this toggle controls visibility/probing in
+	// the monitoring matrix only, not per-source pingcheck engines.
+	function tunnelMatrixToggleTitle(tunnelId: string): string {
+		return isExcluded(tunnelId)
+			? 'Показывать туннель в матрице мониторинга'
+			: 'Скрыть туннель из матрицы мониторинга';
+	}
 </script>
 
 {#if sortedTunnels.length === 0}
@@ -54,20 +74,36 @@
 					<th class="th-target">Target</th>
 					{#each sortedTunnels as t (t.id)}
 						<th class="th-tunnel">
-							{#if isSystem(t)}
-								<span class="tunnel-system" title="Системный туннель роутера — pingcheck управляется в системе">
-									{t.name}
-								</span>
-							{:else if isSingbox(t)}
-								<span class="tunnel-system" title="Sing-box туннель — мониторинг через Clash urltest, NDMS pingcheck не применяется">
-									{t.name}
-								</span>
-							{:else}
-								<a href={tunnelHref(t)} class="tunnel-link" title="Открыть настройки pingcheck">
-									{t.name}
-									<span class="settings-icon" aria-hidden="true">›</span>
-								</a>
-							{/if}
+							<div class="tunnel-head">
+								{#if isSystem(t)}
+									<span class="tunnel-system" title="Системный туннель роутера — pingcheck управляется в системе">
+										{t.name}
+									</span>
+								{:else if isSingbox(t)}
+									<span class="tunnel-system" title="Sing-box туннель — мониторинг через Clash urltest, NDMS pingcheck не применяется">
+										{t.name}
+									</span>
+								{:else}
+									<a href={tunnelHref(t)} class="tunnel-link" title="Открыть настройки pingcheck">
+										{t.name}
+										<span class="settings-icon" aria-hidden="true">›</span>
+									</a>
+								{/if}
+								<button
+									type="button"
+									class="exclude-toggle"
+									class:is-excluded={isExcluded(t.id)}
+									onclick={() => onToggleTunnelExcluded(t.id, !isExcluded(t.id), t.name)}
+									title={tunnelMatrixToggleTitle(t.id)}
+									aria-label={tunnelMatrixToggleTitle(t.id)}
+									aria-pressed={isExcluded(t.id)}
+								>
+									<span class="toggle-track" aria-hidden="true">
+										<span class="toggle-thumb"></span>
+									</span>
+									<span class="toggle-text">{#if isExcluded(t.id)}выкл{:else}вкл{/if}</span>
+								</button>
+							</div>
 							{#if t.source === 'singbox' && t.clashDelay && t.clashDelay > 0}
 								<Badge
 									variant={latencyTier(t.clashDelay)}
@@ -168,6 +204,12 @@
 		z-index: 1;
 	}
 
+	.tunnel-head {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+
 	.tunnel-link {
 		display: inline-flex;
 		align-items: center;
@@ -185,6 +227,70 @@
 	.settings-icon {
 		font-size: 14px;
 		opacity: 0.7;
+	}
+
+	.exclude-toggle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.3125rem;
+		height: 22px;
+		padding: 0 0.375rem 0 0.25rem;
+		border-radius: 999px;
+		border: 1px solid var(--color-border);
+		background: var(--color-bg-secondary);
+		color: var(--color-text-muted);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		cursor: pointer;
+		transition:
+			background var(--t-fast) ease,
+			color var(--t-fast) ease,
+			border-color var(--t-fast) ease,
+			box-shadow var(--t-fast) ease;
+	}
+	.exclude-toggle:hover {
+		background: var(--color-bg-hover);
+		color: var(--color-text-primary);
+	}
+	.exclude-toggle:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 45%, transparent);
+	}
+	.exclude-toggle.is-excluded {
+		border-color: color-mix(in srgb, var(--color-error) 45%, var(--color-border));
+		color: var(--color-error);
+	}
+	.toggle-track {
+		position: relative;
+		width: 24px;
+		height: 12px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-success) 35%, var(--color-bg-secondary));
+		transition: background var(--t-fast) ease;
+	}
+	.toggle-thumb {
+		position: absolute;
+		top: 1px;
+		left: 13px;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: color-mix(in srgb, var(--color-success) 75%, white);
+		transition: left var(--t-fast) ease, background var(--t-fast) ease;
+	}
+	.exclude-toggle.is-excluded .toggle-track {
+		background: color-mix(in srgb, var(--color-error) 35%, var(--color-bg-secondary));
+	}
+	.exclude-toggle.is-excluded .toggle-thumb {
+		left: 1px;
+		background: color-mix(in srgb, var(--color-error) 72%, white);
+	}
+	.toggle-text {
+		min-width: 3.2ch;
+		text-align: left;
 	}
 
 	.tunnel-system {

@@ -536,16 +536,17 @@ class ApiClient {
 		return this.request('/settings/get');
 	}
 
-	async updateSettings(settings: Settings): Promise<Settings> {
+	async updateSettings(settings: Partial<Settings>): Promise<Settings> {
 		const updated = await this.request<Settings>('/settings/update', {
 			method: 'POST',
 			body: JSON.stringify(settings)
 		});
 		// Prism mock is stateless: it often returns schema examples instead of
 		// echoing persisted values. In mock-dev mode keep UI controls usable by
-		// honoring the submitted payload.
+		// merging the patch into current settings snapshot.
 		if (this.isMockDevMode()) {
-			return settings;
+			const current = await this.getSettings().catch(() => ({} as Settings));
+			return { ...current, ...settings };
 		}
 		return updated;
 	}

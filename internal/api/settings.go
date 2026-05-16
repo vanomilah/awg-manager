@@ -1,9 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/logging"
@@ -58,14 +62,15 @@ type DNSRouteSettingsDTO struct {
 
 // SettingsData is the payload for GET /settings/get.
 type SettingsData struct {
-	SchemaVersion       int                  `json:"schemaVersion" example:"16"`
-	AuthEnabled         bool                 `json:"authEnabled" example:"false"`
-	Server              ServerSettingsDTO    `json:"server"`
-	PingCheck           PingCheckSettingsDTO `json:"pingCheck"`
-	Logging             LoggingSettingsDTO   `json:"logging"`
-	DisableMemorySaving bool                 `json:"disableMemorySaving" example:"false"`
-	Updates             UpdateSettingsDTO    `json:"updates"`
-	DnsRoute            DNSRouteSettingsDTO  `json:"dnsRoute"`
+	SchemaVersion             int                  `json:"schemaVersion" example:"16"`
+	AuthEnabled               bool                 `json:"authEnabled" example:"false"`
+	Server                    ServerSettingsDTO    `json:"server"`
+	PingCheck                 PingCheckSettingsDTO `json:"pingCheck"`
+	Logging                   LoggingSettingsDTO   `json:"logging"`
+	MonitoringExcludedTunnels []string             `json:"monitoringExcludedTunnels,omitempty" example:"tn-1,sys-2"`
+	DisableMemorySaving       bool                 `json:"disableMemorySaving" example:"false"`
+	Updates                   UpdateSettingsDTO    `json:"updates"`
+	DnsRoute                  DNSRouteSettingsDTO  `json:"dnsRoute"`
 	// UsageLevel controls which UI sections are visible to the user.
 	// Filtering is frontend-only — the API does not enforce it.
 	// enums: expert,advanced,basic
@@ -87,17 +92,26 @@ type PingCheckToggleService interface {
 	StopMonitoringAll()
 }
 
+// MonitoringRefreshService defines the interface for forcing an immediate
+// monitoring snapshot recalculation after settings mutations.
+type MonitoringRefreshService interface {
+	RefreshNow(ctx context.Context)
+}
+
 // SettingsHandler handles settings API endpoints.
 type SettingsHandler struct {
-	store              *storage.SettingsStore
-	tunnels            *storage.AWGTunnelStore
-	pingCheck          PingCheckToggleService
-	pingCheckSnapshot  func()
-	logsSnapshot       func()
-	applyLogSettings   func()
-	log                *logging.ScopedLogger
-	bus                *events.Bus
+	store             *storage.SettingsStore
+	tunnels           *storage.AWGTunnelStore
+	pingCheck         PingCheckToggleService
+	monitoring        MonitoringRefreshService
+	pingCheckSnapshot func()
+	logsSnapshot      func()
+	applyLogSettings  func()
+	log               *logging.ScopedLogger
+	bus               *events.Bus
 }
+
+const settingsMonitoringRefreshTimeout = 10 * time.Second
 
 // NewSettingsHandler creates a new settings handler.
 func NewSettingsHandler(store *storage.SettingsStore, appLogger logging.AppLogger) *SettingsHandler {
@@ -115,6 +129,12 @@ func (h *SettingsHandler) SetTunnelStore(tunnels *storage.AWGTunnelStore) {
 // SetPingCheckService sets the ping check service for toggle operations.
 func (h *SettingsHandler) SetPingCheckService(svc PingCheckToggleService) {
 	h.pingCheck = svc
+}
+
+// SetMonitoringService sets the monitoring service for forced snapshot refresh
+// after settings changes that affect matrix composition.
+func (h *SettingsHandler) SetMonitoringService(svc MonitoringRefreshService) {
+	h.monitoring = svc
 }
 
 // SetPingCheckSnapshot sets the function that publishes a pingcheck snapshot.
@@ -226,6 +246,10 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// Detect logging toggle change
 	loggingWasEnabled := oldSettings.Logging.Enabled
 	loggingNowEnabled := merged.Logging.Enabled
+	monitoringExcludedChanged := !equalExcludedTunnelIDs(
+		oldSettings.MonitoringExcludedTunnels,
+		merged.MonitoringExcludedTunnels,
+	)
 
 	// Update tunnel configs if enabling
 	if h.tunnels != nil && toggleEnabled {
@@ -263,6 +287,9 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if monitoringExcludedChanged && h.monitoring != nil {
+		h.triggerMonitoringRefresh()
 	}
 
 	// Log specific changes
@@ -411,4 +438,43 @@ func (h *SettingsHandler) disablePingCheckOnAllTunnels() error {
 		}
 	}
 	return nil
+}
+
+func equalExcludedTunnelIDs(a, b []string) bool {
+	an := normalizeExcludedTunnelIDs(a)
+	bn := normalizeExcludedTunnelIDs(b)
+	if len(an) != len(bn) {
+		return false
+	}
+	slices.Sort(an)
+	slices.Sort(bn)
+	return slices.Equal(an, bn)
+}
+
+func normalizeExcludedTunnelIDs(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, id := range in {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+func (h *SettingsHandler) triggerMonitoringRefresh() {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), settingsMonitoringRefreshTimeout)
+		defer cancel()
+		h.monitoring.RefreshNow(ctx)
+	}()
 }

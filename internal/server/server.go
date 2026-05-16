@@ -514,6 +514,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	settingsHandler := api.NewSettingsHandler(s.settings, appLog)
 	settingsHandler.SetTunnelStore(s.tunnels)
 	settingsHandler.SetPingCheckService(s.pingCheckService)
+	settingsHandler.SetMonitoringService(s.monitoringService)
 	settingsHandler.SetEventBus(s.bus)
 	importHandler := api.NewImportHandler(s.tunnelService, s.tunnels, appLog)
 	importHandler.SetSettingsStore(s.settings)
