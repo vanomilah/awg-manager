@@ -16,6 +16,8 @@
 //   After Prism, injects data.tunnels: "" → Direct (count = stats.direct) plus
 //   MOCK_AWG_TUNNELS rows with counts split from stats.tunneled so the tunnel chip
 //   row matches diagnostics UI (same as a real router).
+// - Amnezia Premium CP: POST /amnezia-premium/login | account-info | download-config
+//   (paths without /api — Vite rewrite). Stub session + two countries + .conf text.
 // Default upstream: http://127.0.0.1:8080 (Prism). Listen: 8081.
 
 import http from 'node:http';
@@ -1799,6 +1801,28 @@ function randomizeDelays() {
 	}
 }
 
+const MOCK_AMNEZIA_PREMIUM_SID = 'mock-v_sid-amnezia-premium-dev';
+const MOCK_AMNEZIA_PREMIUM_COUNTRIES = [
+	{ server_country_code: 'ru', server_country_name: 'Russia (mock)' },
+	{ server_country_code: 'nl', server_country_name: 'Netherlands (mock)' },
+];
+
+function buildMockAmneziaPremiumConf(countryCode) {
+	const cc = String(countryCode || 'xx').toLowerCase();
+	return `# Amnezia Premium mock — country ${cc}
+[Interface]
+PrivateKey = YNaK+9G1J6K1G3K1G3K1G3K1G3K1G3K1G3K1G2E=
+Address = 10.77.0.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = RT7K+9G1J6K1G3K1G3K1G3K1G3K1G3K1G3K1G2E=
+Endpoint = mock-premium-${cc}.example:51820
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+`;
+}
+
 const server = http.createServer(async (req, res) => {
 	const url = new URL(req.url, `http://${req.headers.host}`);
 	const path = url.pathname;
@@ -1876,6 +1900,110 @@ const server = http.createServer(async (req, res) => {
 				console.log(`[mock-proxy] usageLevel → ${usageLevel}`);
 			} catch (e) {
 				send(res, 500, { success: false, error: String(e) });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/amnezia-premium/login') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const payload = JSON.parse(raw || '{}');
+				const key = String(payload.vpnKey ?? '').trim();
+				if (!key) {
+					send(res, 400, {
+						error: true,
+						message: 'vpnKey обязателен',
+						code: 'MISSING_VPN_KEY',
+					});
+					return;
+				}
+				// Локальный стаб: реальный cp.amnezia.org может вернуть 422 на неверный ключ —
+				// здесь принимаем любой непустой ключ (не только vpn://), чтобы UI на :5173
+				// не блокировать разработку тестовой строкой.
+				console.log('[mock-proxy] amnezia-premium/login ok (stub sid)');
+				send(res, 200, { success: true, data: { sid: MOCK_AMNEZIA_PREMIUM_SID } });
+			} catch {
+				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/amnezia-premium/account-info') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const payload = JSON.parse(raw || '{}');
+				const sid = String(payload.sid ?? '').trim();
+				if (sid !== MOCK_AMNEZIA_PREMIUM_SID) {
+					send(res, 401, {
+						error: true,
+						message: 'Сессия Amnezia Premium недействительна (mock)',
+						code: 'AMNEZIA_CP_ERROR',
+					});
+					return;
+				}
+				send(res, 200, {
+					success: true,
+					data: {
+						http_status: 200,
+						available_countries: MOCK_AMNEZIA_PREMIUM_COUNTRIES,
+						issued_configs: [
+							{
+								server_country_code: 'nl',
+								server_country_name: 'Netherlands (mock issued)',
+								last_downloaded: new Date().toISOString(),
+								source_type: 'country_config',
+								os_version: 'Web',
+								installation_uuid: '00000000-0000-4000-8000-000000000001',
+							},
+						],
+						subscription_status: 'active',
+						vpn_key: 'vpn://mock',
+					},
+				});
+			} catch {
+				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/amnezia-premium/download-config') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const payload = JSON.parse(raw || '{}');
+				const sid = String(payload.sid ?? '').trim();
+				const countryCode = String(payload.countryCode ?? '').trim().toLowerCase();
+				if (sid !== MOCK_AMNEZIA_PREMIUM_SID) {
+					send(res, 401, {
+						error: true,
+						message: 'Сессия Amnezia Premium недействительна (mock)',
+						code: 'AMNEZIA_CP_ERROR',
+					});
+					return;
+				}
+				if (!countryCode) {
+					send(res, 400, {
+						error: true,
+						message: 'sid и countryCode обязательны',
+						code: 'MISSING_FIELDS',
+					});
+					return;
+				}
+				console.log(`[mock-proxy] amnezia-premium/download-config ${countryCode}`);
+				send(res, 200, {
+					success: true,
+					data: { config: buildMockAmneziaPremiumConf(countryCode) },
+				});
+			} catch {
+				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
 			}
 		});
 		return;

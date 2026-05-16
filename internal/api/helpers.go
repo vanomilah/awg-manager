@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/hoaxisr/awg-manager/internal/response"
 )
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // parseJSON guards method + reads the request body into T. On any
 // error — wrong method, body-read failure, decode failure — it writes
@@ -22,7 +26,18 @@ func parseJSON[T any](w http.ResponseWriter, r *http.Request, method string) (T,
 		return dst, false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
-	if err := json.NewDecoder(r.Body).Decode(&dst); err != nil {
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid body", "INVALID_BODY")
+		return dst, false
+	}
+	raw = bytes.TrimSpace(raw)
+	raw = bytes.TrimPrefix(raw, utf8BOM)
+	if len(raw) == 0 {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON", "INVALID_JSON")
+		return dst, false
+	}
+	if err := json.Unmarshal(raw, &dst); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON", "INVALID_JSON")
 		return dst, false
 	}

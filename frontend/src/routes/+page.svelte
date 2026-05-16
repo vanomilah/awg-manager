@@ -1095,7 +1095,7 @@
 						<button class="term-cmd" onclick={() => fileInput?.click()}>
 							<span class="term-arrow">{'>'}</span> импортировать файл
 						</button>
-						<button class="term-cmd" onclick={() => goto('/tunnels/new?tab=link')}>
+						<button class="term-cmd" onclick={() => goto('/tunnels/new?tab=vpn')}>
 							<span class="term-arrow">{'>'}</span> импортировать ссылку
 						</button>
 					</div>

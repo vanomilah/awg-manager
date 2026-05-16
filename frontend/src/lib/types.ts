@@ -1455,6 +1455,34 @@ export interface TunnelReferencedError {
 
 // #endregion
 
+// === Amnezia Premium (cp.amnezia.org via backend proxy) ===
+
+/** Country row from GET account-info `data.available_countries`. */
+export interface AmneziaPremiumCountry {
+	server_country_code: string;
+	server_country_name: string;
+}
+
+/** Запись из `data.issued_configs` (уже выданные конфиги в Amnezia CP). */
+export interface AmneziaPremiumIssuedConfig {
+	installation_uuid?: string;
+	worker_last_updated?: string;
+	last_downloaded?: string;
+	server_country_code?: string;
+	server_country_name?: string;
+	source_type?: string;
+	os_version?: string;
+}
+
+/** Nested JSON under Amnezia CP account-info `data`. */
+export interface AmneziaPremiumAccountInfo {
+	http_status?: number;
+	available_countries?: AmneziaPremiumCountry[];
+	issued_configs?: AmneziaPremiumIssuedConfig[];
+	subscription_status?: string;
+	vpn_key?: string;
+}
+
 // === Subscriptions ===
 
 export interface SubscriptionHeader {

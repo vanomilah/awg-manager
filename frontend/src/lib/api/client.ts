@@ -85,7 +85,8 @@ import type {
 	SubscriptionActiveNowResponse,
 	CreateSubscriptionInput,
 	UpdateSubscriptionInput,
-	RouterStagingStatusResponse
+	RouterStagingStatusResponse,
+	AmneziaPremiumAccountInfo
 } from '$lib/types';
 import { isMockDevMode } from '$lib/env';
 
@@ -327,6 +328,30 @@ class ApiClient {
 		return this.request(`/tunnels/replace?id=${encodeURIComponent(id)}`, {
 			method: 'POST',
 			body: JSON.stringify({ content, name: name || '' })
+		});
+	}
+
+	async amneziaPremiumLogin(vpnKey: string): Promise<{ sid: string }> {
+		return this.request('/amnezia-premium/login', {
+			method: 'POST',
+			body: JSON.stringify({ vpnKey: vpnKey.trim(), remember: true })
+		});
+	}
+
+	async amneziaPremiumAccountInfo(sid: string): Promise<AmneziaPremiumAccountInfo> {
+		return this.request('/amnezia-premium/account-info', {
+			method: 'POST',
+			body: JSON.stringify({ sid })
+		});
+	}
+
+	async amneziaPremiumDownloadConfig(
+		sid: string,
+		countryCode: string
+	): Promise<{ config: string }> {
+		return this.request('/amnezia-premium/download-config', {
+			method: 'POST',
+			body: JSON.stringify({ sid, countryCode })
 		});
 	}
 

@@ -4,27 +4,69 @@
 	import { tunnels } from '$lib/stores/tunnels';
 	import { notifications } from '$lib/stores/notifications';
 	import { PageContainer } from '$lib/components/layout';
-	import { Button } from '$lib/components/ui';
+	import { Button, ConfirmModal } from '$lib/components/ui';
 	import AmneziaConfEditor from '$lib/components/tunnels/AmneziaConfEditor.svelte';
-	import { decodeVpnLink, isVpnLink } from '$lib/utils/vpnlink';
+	import { classifyVpnLink, decodeVpnLink, isVpnLink } from '$lib/utils/vpnlink';
 	import { api } from '$lib/api/client';
-	import type { SystemInfo } from '$lib/types';
+	import type { AmneziaPremiumCountry, AmneziaPremiumIssuedConfig, SystemInfo } from '$lib/types';
 
-	const initialTab = (['file', 'paste', 'link'] as const).includes(
-		$page.url.searchParams.get('tab') as 'file' | 'paste' | 'link'
-	) ? $page.url.searchParams.get('tab') as 'file' | 'paste' | 'link' : 'file';
+	type TunnelImportTab = 'file' | 'paste' | 'vpn';
+
+	function normalizeTunnelImportTab(raw: string | null): TunnelImportTab {
+		if (raw === 'file' || raw === 'paste' || raw === 'vpn') return raw;
+		if (raw === 'link' || raw === 'premium') return 'vpn';
+		return 'file';
+	}
+
+	const initialTab = normalizeTunnelImportTab($page.url.searchParams.get('tab'));
 
 	let loading = $state(false);
 	let importContent = $state('');
 	let importName = $state('');
 	let fileInput = $state<HTMLInputElement>();
 	let dragOver = $state(false);
-	let activeTab = $state<'file' | 'paste' | 'link'>(initialTab);
-	let linkInput = $state('');
+	let activeTab = $state<TunnelImportTab>(initialTab);
+	/** Единое поле vpn:// для клиентской ссылки и Amnezia Premium */
+	let vpnPasteInput = $state('');
 	let linkPreview = $state('');
 	let linkError = $state('');
+	let vpnDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	/** Инвалидация устаревших async-веток при новом вводе / переключении вкладки */
+	let vpnAnalysisGen = 0;
 	let systemInfo = $state<SystemInfo | null>(null);
 	let selectedBackend = $state<'nativewg' | 'kernel'>('nativewg');
+
+	let premiumSid = $state('');
+	let premiumCountries = $state<AmneziaPremiumCountry[]>([]);
+	let premiumIssuedConfigs = $state<AmneziaPremiumIssuedConfig[]>([]);
+	let premiumBusy = $state(false);
+	let premiumBusyDepth = 0;
+	let premiumPickBusy = $state('');
+	let premiumError = $state('');
+	let premiumReissueConfirm = $state<{ code: string; label: string } | null>(null);
+	let premiumConfirmBusy = $state(false);
+
+	type VpnPastePresentation =
+		| { kind: 'neutral'; label: string }
+		| { kind: 'regular'; label: string }
+		| { kind: 'premium'; label: string };
+
+	let vpnPastePresentation = $derived.by((): VpnPastePresentation => {
+		const raw = vpnPasteInput.trim();
+		if (!raw || !isVpnLink(raw)) {
+			return { kind: 'neutral', label: 'Вставить ссылку' };
+		}
+		if (classifyVpnLink(raw) === 'regular') {
+			return { kind: 'regular', label: 'Вставить ссылку' };
+		}
+		return { kind: 'premium', label: 'Amnezia Premium' };
+	});
+
+	let showPremiumChrome = $derived.by(() => {
+		const raw = vpnPasteInput.trim();
+		if (!raw || !isVpnLink(raw)) return false;
+		return classifyVpnLink(raw) !== 'regular';
+	});
 
 	// Sync activeTab → URL (?tab=). Mirrors what canonical Tabs urlParam
 	// does — kept inline because this page uses a custom div-based tab UI.
@@ -34,7 +76,7 @@
 		if (t === 'file') {
 			sp.delete('tab');
 		} else {
-			sp.set('tab', t);
+			sp.set('tab', t === 'vpn' ? 'vpn' : t);
 		}
 		const nextSearch = sp.toString();
 		if (nextSearch === $page.url.searchParams.toString()) return;
@@ -95,36 +137,129 @@
 		reader.readAsText(file);
 	}
 
-	function handleLinkInput() {
-		linkError = '';
-		linkPreview = '';
+	function resetPremiumCatalogState() {
+		premiumSid = '';
+		premiumCountries = [];
+		premiumIssuedConfigs = [];
+	}
 
-		if (!linkInput.trim()) {
-			importContent = '';
-			return;
-		}
+	function beginPremiumBusy() {
+		premiumBusyDepth++;
+		premiumBusy = true;
+	}
 
+	function endPremiumBusy() {
+		premiumBusyDepth = Math.max(0, premiumBusyDepth - 1);
+		premiumBusy = premiumBusyDepth > 0;
+	}
+
+	function scheduleVpnPasteAnalysis() {
+		if (vpnDebounceTimer) clearTimeout(vpnDebounceTimer);
+		vpnDebounceTimer = setTimeout(() => void runVpnPasteAnalysis(), 420);
+	}
+
+	function activateVpnTab() {
+		activeTab = 'vpn';
+		if (vpnDebounceTimer) clearTimeout(vpnDebounceTimer);
+		vpnDebounceTimer = null;
+		void runVpnPasteAnalysis();
+	}
+
+	async function fetchPremiumCatalogForGen(gen: number) {
+		const key = vpnPasteInput.trim();
+		if (!key || !isVpnLink(key)) return;
+		if (classifyVpnLink(key) === 'regular') return;
+
+		beginPremiumBusy();
+		premiumError = '';
 		try {
-			const result = decodeVpnLink(linkInput);
-			linkPreview = result.config;
-			importContent = result.config;
-			if (result.name && !importName) {
-				importName = result.name;
+			const { sid } = await api.amneziaPremiumLogin(key);
+			if (gen !== vpnAnalysisGen) return;
+			premiumSid = sid;
+			const info = await api.amneziaPremiumAccountInfo(sid);
+			if (gen !== vpnAnalysisGen) return;
+			premiumCountries = info.available_countries ?? [];
+			premiumIssuedConfigs = info.issued_configs ?? [];
+			if (!premiumCountries.length) {
+				notifications.warning('Список стран пуст — проверьте подписку');
 			}
 		} catch (e) {
-			linkError = e instanceof Error ? e.message : 'Ошибка декодирования';
-			importContent = '';
+			if (gen !== vpnAnalysisGen) return;
+			if (e instanceof DOMException && e.name === 'AbortError') return;
+			resetPremiumCatalogState();
+			const msg = e instanceof Error ? e.message : 'Ошибка запроса к cp.amnezia.org';
+			premiumError = msg;
+			notifications.error(msg);
+		} finally {
+			endPremiumBusy();
 		}
 	}
 
-	async function handleImport() {
-		let content = importContent.trim();
+	async function fetchPremiumCatalog() {
+		const gen = ++vpnAnalysisGen;
+		await fetchPremiumCatalogForGen(gen);
+	}
+
+	async function runVpnPasteAnalysis() {
+		if (vpnDebounceTimer !== null) {
+			clearTimeout(vpnDebounceTimer);
+			vpnDebounceTimer = null;
+		}
+
+		const gen = ++vpnAnalysisGen;
+
+		const raw = vpnPasteInput.trim();
+		linkError = '';
+		linkPreview = '';
+
+		if (!raw) {
+			resetPremiumCatalogState();
+			importContent = '';
+			premiumError = '';
+			premiumBusyDepth = 0;
+			premiumBusy = false;
+			return;
+		}
+
+		if (!isVpnLink(raw)) {
+			resetPremiumCatalogState();
+			importContent = '';
+			linkError = 'Ожидается ссылка вида vpn://…';
+			return;
+		}
+
+		const flavor = classifyVpnLink(raw);
+
+		if (flavor === 'regular') {
+			resetPremiumCatalogState();
+			importContent = '';
+			try {
+				const result = decodeVpnLink(raw);
+				if (gen !== vpnAnalysisGen) return;
+				linkPreview = result.config;
+				importContent = result.config;
+				if (result.name && !importName) importName = result.name;
+			} catch (e) {
+				importContent = '';
+				linkError = e instanceof Error ? e.message : 'Ошибка декодирования';
+			}
+			return;
+		}
+
+		linkPreview = '';
+		importContent = '';
+		resetPremiumCatalogState();
+		await fetchPremiumCatalogForGen(gen);
+	}
+
+	/** Импорт из сырого текста (.conf или vpn:// с клиентским конфигом). Обновляет importContent после успешного декода vpn:// */
+	async function executeImport(rawContent: string) {
+		let content = rawContent.trim();
 		if (!content) {
 			notifications.error('Вставьте содержимое конфигурации, загрузите файл или вставьте vpn:// ссылку');
 			return;
 		}
 
-		// Auto-detect vpn:// in paste tab
 		if (isVpnLink(content)) {
 			try {
 				const result = decodeVpnLink(content);
@@ -137,6 +272,8 @@
 				return;
 			}
 		}
+
+		importContent = content;
 
 		loading = true;
 		try {
@@ -152,6 +289,55 @@
 			loading = false;
 		}
 	}
+
+	async function handleImport() {
+		await executeImport(importContent);
+	}
+
+	function isPremiumCountryIssued(code: string): boolean {
+		const cc = code.trim().toLowerCase();
+		return premiumIssuedConfigs.some(
+			(ic) => String(ic.server_country_code ?? '').trim().toLowerCase() === cc
+		);
+	}
+
+	function requestPremiumCountryPick(code: string, label: string) {
+		if (!premiumSid) {
+			notifications.error('Сначала загрузите список стран');
+			return;
+		}
+		if (isPremiumCountryIssued(code)) {
+			premiumReissueConfirm = { code, label };
+			return;
+		}
+		void downloadAndImportPremiumCountry(code, label);
+	}
+
+	async function confirmPremiumReissue() {
+		const ctx = premiumReissueConfirm;
+		if (!ctx || !premiumSid) return;
+		premiumConfirmBusy = true;
+		try {
+			await downloadAndImportPremiumCountry(ctx.code, ctx.label);
+			premiumReissueConfirm = null;
+		} finally {
+			premiumConfirmBusy = false;
+		}
+	}
+
+	async function downloadAndImportPremiumCountry(code: string, label: string) {
+		premiumPickBusy = code;
+		try {
+			const { config } = await api.amneziaPremiumDownloadConfig(premiumSid, code);
+			if (!importName) importName = label || code.toUpperCase();
+			await executeImport(config);
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : 'Не удалось скачать конфигурацию');
+		} finally {
+			premiumPickBusy = '';
+		}
+	}
+
 </script>
 
 <svelte:head>
@@ -236,16 +422,18 @@
 			</svg>
 			Вставить текст
 		</button>
-		<button
-			class="tab"
-			class:tab-active={activeTab === 'link'}
-			onclick={() => activeTab = 'link'}
-		>
-			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-				<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-				<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-			</svg>
-			Ссылка
+		<button type="button" class="tab" class:tab-active={activeTab === 'vpn'} onclick={activateVpnTab}>
+			{#if vpnPastePresentation.kind === 'premium'}
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true">
+					<path d="M11.562 3.266a.5.5 0 0 1 .876 0L15.39 8.87a1 1 0 0 0 1.516.294L21.183 5.5a.5.5 0 0 1 .798.519l-2.834 10.246a1 1 0 0 1-.956.734H5.81a1 1 0 0 1-.957-.734L2.078 6.02a.5.5 0 0 1 .798-.519l4.276 3.664a1 1 0 0 0 1.516-.294z" />
+				</svg>
+			{:else}
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
+					<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+					<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+				</svg>
+			{/if}
+			{vpnPastePresentation.label}
 		</button>
 	</div>
 
@@ -307,27 +495,91 @@ PublicKey = ...
 Endpoint = vpn.example.com:51820
 AllowedIPs = 0.0.0.0/0"
 			/>
-		{:else if activeTab === 'link'}
-			<textarea
-				class="config-textarea link-input"
-				bind:value={linkInput}
-				oninput={handleLinkInput}
-				placeholder="Вставьте vpn:// ссылку из AmneziaVPN"
-			></textarea>
-			{#if linkError}
-				<p class="link-error">{linkError}</p>
-			{/if}
-			{#if linkPreview}
-				<AmneziaConfEditor bind:value={linkPreview} variant="preview" readonly />
-			{/if}
+		{:else if activeTab === 'vpn'}
+			<div class="vpn-import-stack">
+				<textarea
+					id="vpn-paste"
+					class="config-textarea vpn-paste-input"
+					bind:value={vpnPasteInput}
+					oninput={scheduleVpnPasteAnalysis}
+					onpaste={() => queueMicrotask(() => void runVpnPasteAnalysis())}
+					placeholder="Вставьте vpn:// — клиентский конфиг или ключ Amnezia Premium"
+					spellcheck="false"
+				></textarea>
+				{#if showPremiumChrome}
+					<p class="premium-cp-note">
+						Если распознан ключ для получения параметров подписки, приложение может обратиться к внешнему сервису по вашей инициативе.<br>
+						AWG Manager не связан с операторами таких сервисов, не проверяет и не гарантирует ключи, доступность их API а так же стабильность работы данного функционала.<br>
+						В рамках использования приложения и связанных решений вы принимаете на себя ответственность за соблюдение законодательства страны, в которой находитесь.<br>
+						Данный функционал не является официальной интеграцией и не подлежит технической поддержке.
+					</p>
+					<div class="premium-actions">
+						<Button variant="secondary" size="md" onclick={() => fetchPremiumCatalog()} loading={premiumBusy} disabled={premiumBusy}>
+							Обновить список стран
+						</Button>
+					</div>
+				{/if}
+				{#if premiumError}
+					<p class="link-error">{premiumError}</p>
+				{/if}
+				{#if premiumCountries.length}
+					<p class="field-label premium-countries-label">Страны</p>
+					<ul class="premium-country-list" role="listbox">
+						{#each premiumCountries as c (c.server_country_code)}
+							{@const issued = isPremiumCountryIssued(c.server_country_code)}
+							<li>
+								<button
+									type="button"
+									class="premium-country-row"
+									class:premium-country-row--issued={issued}
+									disabled={!!premiumPickBusy}
+									onclick={() => requestPremiumCountryPick(c.server_country_code, c.server_country_name)}
+								>
+									<span class="premium-country-name">{c.server_country_name}</span>
+									{#if issued}
+										<span class="premium-country-issued-badge">Выдано</span>
+									{/if}
+									<span class="premium-country-code">{c.server_country_code.toUpperCase()}</span>
+									{#if premiumPickBusy === c.server_country_code}
+										<span class="premium-country-spinner">…</span>
+									{/if}
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+				{#if linkError}
+					<p class="link-error">{linkError}</p>
+				{/if}
+				{#if linkPreview}
+					<AmneziaConfEditor bind:value={linkPreview} variant="preview" readonly />
+				{/if}
+			</div>
 		{/if}
 	</div>
 
 	<p class="form-hint">
-		Поддерживаются WireGuard и AmneziaWG конфигурации с параметрами Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5, а также vpn:// ссылки AmneziaVPN.
+		Поддерживаются WireGuard и AmneziaWG конфигурации с параметрами Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5; вкладка vpn:// распознаёт клиентский конфиг в ссылке или ключ Premium (запрос списка стран через прокси cp.amnezia.org).
 	</p>
 </div>
 </PageContainer>
+
+{#if premiumReissueConfirm}
+	<ConfirmModal
+		open={true}
+		title="Новый файл конфигурации"
+		message={`Сгенерировать новый файл конфигурации — «${premiumReissueConfirm.label}»?`}
+		secondary="Ранее созданный файл перестанет действовать. Подключиться с его помощью будет невозможно. Сгенерированные файлы конфигурации также учитываются в лимите устройств."
+		confirmLabel="Сгенерировать"
+		cancelLabel="Отмена"
+		variant="danger"
+		busy={premiumConfirmBusy}
+		onClose={() => {
+			if (!premiumConfirmBusy) premiumReissueConfirm = null;
+		}}
+		onConfirm={confirmPremiumReissue}
+	/>
+{/if}
 
 <style>
 	.back-link {
@@ -514,9 +766,16 @@ AllowedIPs = 0.0.0.0/0"
 		color: var(--color-text-muted);
 	}
 
-	.link-input {
+	.vpn-import-stack {
+		display: flex;
+		flex-direction: column;
+		gap: 0;
+	}
+
+	.vpn-paste-input {
 		min-height: 100px;
-		border-radius: 0 0 8px 8px;
+		border-radius: 8px;
+		margin-bottom: 0;
 	}
 
 	.link-error {
@@ -524,15 +783,6 @@ AllowedIPs = 0.0.0.0/0"
 		color: var(--color-error);
 		margin: 8px 0 0;
 		padding: 0 2px;
-	}
-
-	.link-preview {
-		min-height: 200px;
-		margin-top: 12px;
-		border: 1px solid var(--color-border);
-		border-radius: 8px;
-		opacity: 0.85;
-		cursor: default;
 	}
 
 	.form-hint {
@@ -590,6 +840,115 @@ AllowedIPs = 0.0.0.0/0"
 	.backend-desc {
 		font-size: 12px;
 		color: var(--color-text-muted);
+	}
+
+	.premium-cp-note {
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-text-muted);
+		margin: 10px 0 0;
+		padding: 8px 12px;
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+	}
+
+	.premium-cp-note a {
+		color: var(--color-accent);
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+
+	.premium-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		padding: 12px 0;
+	}
+
+	.premium-countries-label {
+		margin-top: 8px;
+	}
+
+	.premium-country-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		max-height: 280px;
+		overflow-y: auto;
+		border: 1px solid var(--color-border);
+		border-radius: 8px;
+		background: var(--color-bg-secondary);
+	}
+
+	.premium-country-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		width: 100%;
+		padding: 10px 14px;
+		border: none;
+		border-bottom: 1px solid var(--color-border);
+		background: transparent;
+		cursor: pointer;
+		text-align: left;
+		font-size: 14px;
+		color: var(--color-text-primary);
+		transition: background 0.12s;
+	}
+
+	.premium-country-row--issued {
+		background: var(--color-warning-tint);
+		box-shadow: inset 3px 0 0 var(--color-warning);
+	}
+
+	.premium-country-row--issued:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--color-warning) 20%, var(--color-bg-tertiary));
+	}
+
+	.premium-country-issued-badge {
+		flex-shrink: 0;
+		font-size: 11px;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.02em;
+		color: var(--color-warning);
+		padding: 2px 8px;
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+		border: 1px solid var(--color-warning-border);
+	}
+
+	.premium-country-list li:last-child .premium-country-row {
+		border-bottom: none;
+	}
+
+	.premium-country-row:hover:not(:disabled) {
+		background: var(--color-bg-tertiary);
+	}
+
+	.premium-country-row:disabled {
+		opacity: 0.65;
+		cursor: wait;
+	}
+
+	.premium-country-name {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.premium-country-code {
+		font-family: monospace;
+		font-size: 12px;
+		color: var(--color-text-muted);
+		flex-shrink: 0;
+	}
+
+	.premium-country-spinner {
+		font-size: 13px;
+		color: var(--color-accent);
+		flex-shrink: 0;
 	}
 
 	@media (max-width: 500px) {

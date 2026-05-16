@@ -1,5 +1,73 @@
 import pako from 'pako';
 
+export type VpnLinkFlavor = 'regular' | 'premium' | 'unknown';
+
+/**
+ * Распаковывает vpn:// в JSON-объект без извлечения .conf (для классификации Premium vs клиентская ссылка).
+ */
+export function decodeVpnLinkPayload(input: string): Record<string, unknown> | null {
+	try {
+		const trimmed = input.trim();
+		if (!trimmed.startsWith('vpn://')) {
+			return null;
+		}
+		const encoded = trimmed.slice('vpn://'.length);
+		if (!encoded) {
+			return null;
+		}
+		const bytes = base64UrlDecode(encoded);
+		const json = decompress(bytes);
+		const data = JSON.parse(json) as Record<string, unknown>;
+		return typeof data === 'object' && data !== null ? data : null;
+	} catch {
+		return null;
+	}
+}
+
+function looksLikePremiumVpnPayload(data: Record<string, unknown>): boolean {
+	if (data.api_config !== undefined && typeof data.api_config === 'object' && data.api_config !== null) {
+		return true;
+	}
+	if (data.auth_data !== undefined && typeof data.auth_data === 'object' && data.auth_data !== null) {
+		return true;
+	}
+	if (typeof data.api_endpoint === 'string' && typeof data.api_key === 'string') {
+		return true;
+	}
+	const st = data.service_type;
+	if (st === 'amnezia-premium') {
+		return true;
+	}
+	const apiCfg = data.api_config as Record<string, unknown> | undefined;
+	if (apiCfg && apiCfg.service_type === 'amnezia-premium') {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Обычная клиентская vpn:// (containers + last_config) vs ключ Premium / API (api_config, auth_data, …).
+ */
+export function classifyVpnLink(input: string): VpnLinkFlavor {
+	const trimmed = input.trim();
+	if (!trimmed.startsWith('vpn://')) {
+		return 'unknown';
+	}
+	try {
+		decodeVpnLink(trimmed);
+		return 'regular';
+	} catch {
+		const payload = decodeVpnLinkPayload(trimmed);
+		if (!payload) {
+			return 'unknown';
+		}
+		if (looksLikePremiumVpnPayload(payload)) {
+			return 'premium';
+		}
+		return 'unknown';
+	}
+}
+
 export interface VpnLinkResult {
 	config: string;
 	name: string;

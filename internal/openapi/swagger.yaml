@@ -1142,6 +1142,128 @@ definitions:
         example: true
         type: boolean
     type: object
+  api.AmneziaPremiumLoginRequest:
+    properties:
+      remember:
+        description: Passed through to cp.amnezia.org (cookie/session TTL there). AWG Manager UI always sends true; optional for API clients.
+        example: true
+        type: boolean
+      vpnKey:
+        example: vpn://MOCK
+        type: string
+    required:
+    - vpnKey
+    type: object
+  api.AmneziaPremiumSidData:
+    properties:
+      sid:
+        example: prism-mock-amnezia-premium-sid
+        type: string
+    type: object
+  api.AmneziaPremiumLoginResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AmneziaPremiumSidData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.AmneziaPremiumAccountInfoRequest:
+    properties:
+      sid:
+        example: prism-mock-amnezia-premium-sid
+        type: string
+    required:
+    - sid
+    type: object
+  api.AmneziaPremiumCountryRow:
+    properties:
+      server_country_code:
+        example: ru
+        type: string
+      server_country_name:
+        example: Russia (Prism mock)
+        type: string
+    type: object
+  api.AmneziaPremiumIssuedConfigRow:
+    properties:
+      installation_uuid:
+        type: string
+      last_downloaded:
+        type: string
+      os_version:
+        type: string
+      server_country_code:
+        example: nl
+        type: string
+      server_country_name:
+        example: Netherlands (Prism mock issued)
+        type: string
+      source_type:
+        type: string
+      worker_last_updated:
+        type: string
+    type: object
+  api.AmneziaPremiumAccountInfoData:
+    properties:
+      available_countries:
+        items:
+          $ref: '#/definitions/api.AmneziaPremiumCountryRow'
+        type: array
+      http_status:
+        example: 200
+        type: integer
+      issued_configs:
+        items:
+          $ref: '#/definitions/api.AmneziaPremiumIssuedConfigRow'
+        type: array
+      subscription_status:
+        example: active
+        type: string
+    type: object
+  api.AmneziaPremiumAccountInfoResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AmneziaPremiumAccountInfoData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.AmneziaPremiumDownloadRequest:
+    properties:
+      countryCode:
+        example: ru
+        type: string
+      sid:
+        example: prism-mock-amnezia-premium-sid
+        type: string
+    required:
+    - sid
+    - countryCode
+    type: object
+  api.AmneziaPremiumDownloadData:
+    properties:
+      config:
+        example: |
+          # Prism mock — Amnezia Premium
+          [Interface]
+          PrivateKey = YNaK+9G1J6K1G3K1G3K1G3K1G3K1G3K1G3K1G2E=
+          Address = 10.77.0.2/32
+
+          [Peer]
+          PublicKey = RT7K+9G1J6K1G3K1G3K1G3K1G3K1G3K1G3K1G2E=
+          Endpoint = prism-mock.example:51820
+          AllowedIPs = 0.0.0.0/0
+        type: string
+    type: object
+  api.AmneziaPremiumDownloadResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AmneziaPremiumDownloadData'
+      success:
+        example: true
+        type: boolean
+    type: object
   api.LogsData:
     properties:
       bucket:
@@ -5536,6 +5658,109 @@ paths:
       security:
       - CookieAuth: []
       summary: Import tunnel config
+      tags:
+      - import
+  /amnezia-premium/login:
+    post:
+      consumes:
+      - application/json
+      description: Proxies cp.amnezia.org login (vpnKey → session sid). Prism mock returns a stub sid when developing against OpenAPI without the Go backend.
+      parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumLoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumLoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "422":
+          description: CP rejected key (real backend only)
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Amnezia Premium CP login (proxy)
+      tags:
+      - import
+  /amnezia-premium/account-info:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumAccountInfoRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumAccountInfoResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Amnezia Premium CP account-info (proxy)
+      tags:
+      - import
+  /amnezia-premium/download-config:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumDownloadRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumDownloadResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Amnezia Premium CP download-config (proxy)
       tags:
       - import
   /logs:

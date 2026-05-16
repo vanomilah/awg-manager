@@ -1011,12 +1011,14 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 		detectedVersion, detectedFeatures := o.detectVersionAndFeaturesCached(ctx)
 		s.Features = detectedFeatures
 		if o.inst != nil {
-			s.Version = o.inst.CurrentVersion(ctx)
-			// Some builds print a slightly different version banner that
-			// CurrentVersion may fail to parse. Fall back to runtime detect
-			// so status always exposes a usable semantic version.
+			// Prefer the version from detectVersionAndFeaturesCached: it already
+			// ran `sing-box version` (or served the 5m cache). Installer
+			// CurrentVersion runs the same subprocess again — on slow MIPS/UPX
+			// binaries that can exceed 6s per call, doubling latency for every
+			// /api/singbox/status poll (~12s back-to-back).
+			s.Version = detectedVersion
 			if s.Version == "" {
-				s.Version = detectedVersion
+				s.Version = o.inst.CurrentVersion(ctx)
 			}
 		} else {
 			s.Version = detectedVersion

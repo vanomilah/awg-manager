@@ -787,6 +787,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Import (protected + boot guarded)
 	mux.HandleFunc("/api/import/conf", guarded(importHandler.ImportConf))
 
+	amneziaCPHandler := api.NewAmneziaCPHandler(appLog)
+	mux.HandleFunc("/api/amnezia-premium/login", guarded(amneziaCPHandler.Login))
+	mux.HandleFunc("/api/amnezia-premium/account-info", guarded(amneziaCPHandler.AccountInfo))
+	mux.HandleFunc("/api/amnezia-premium/download-config", guarded(amneziaCPHandler.DownloadConfig))
+
 	// External tunnels (protected + boot guarded)
 	mux.HandleFunc("/api/external-tunnels", guarded(externalHandler.List))
 	mux.HandleFunc("/api/external-tunnels/adopt", guarded(externalHandler.Adopt))
