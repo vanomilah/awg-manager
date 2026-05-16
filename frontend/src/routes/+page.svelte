@@ -2349,7 +2349,7 @@
 	.awg-rate-button {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
+		justify-content: flex-start;
 		gap: 0.75rem;
 		width: 100%;
 		padding: 0;
@@ -2378,8 +2378,8 @@
 		gap: 0.1875rem;
 		font-size: 0.6875rem;
 		color: var(--color-text-secondary);
-		margin-left: auto;
-		text-align: right;
+		text-align: left;
+		min-width: 0;
 	}
 
 	.awg-list-cell-mono {
