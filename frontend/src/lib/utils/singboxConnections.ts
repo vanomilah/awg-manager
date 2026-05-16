@@ -19,56 +19,6 @@ export function chainOutboundLabel(chains: string[]): string {
 	return OUTBOUND_LABELS[first] ?? first;
 }
 
-/**
- * isPublicIP returns true when ip is OUTSIDE every range that a LAN
- * client could legitimately source from (RFC1918 + loopback +
- * link-local + IPv6 ULA / link-local / loopback).
- *
- * Motivation: on Keenetic + Mediatek hardware, UDP flows from
- * policy-bound LAN devices reach sing-box AFTER kernel MASQUERADE
- * has rewritten the source to the router's WAN IP — kernel fast-path
- * applies the conntrack NAT mapping before sing-box's TPROXY socket
- * can read the original IP header. The result is a "client" bucket
- * keyed by a public IP that's actually the router itself. We can't
- * detect "router's WAN IP" without an extra round-trip API, but ANY
- * non-private source IP appearing as a "client" is — for a LAN-side
- * tproxy use case — necessarily post-NAT traffic. TCP via REDIRECT
- * preserves the source through conntrack-aware reverse, so this only
- * fires in practice for UDP (QUIC).
- *
- * False positives: a LAN device on CG-NAT (100.64.0.0/10) would be
- * misclassified. That range is normally on the ISP side, not the
- * home LAN — accepting the mislabel.
- */
-export function isPublicIP(ip: string): boolean {
-	if (!ip) return false;
-
-	// IPv6
-	if (ip.includes(':')) {
-		const norm = ip.toLowerCase();
-		if (norm === '::1' || norm === '::') return false;
-		// Link-local fe80::/10 — the first 10 bits are 1111111010, so
-		// the first hex block is fe80-febf. Match the common forms.
-		if (/^fe[89ab][0-9a-f]:/i.test(norm)) return false;
-		// ULA fc00::/7 — first 7 bits 1111110, first hex block fc__ or fd__.
-		if (/^f[cd][0-9a-f]{2}:/i.test(norm)) return false;
-		return true;
-	}
-
-	// IPv4
-	const parts = ip.split('.').map(Number);
-	if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) {
-		return false;
-	}
-	const [a, b] = parts;
-	if (a === 10) return false;
-	if (a === 172 && b >= 16 && b <= 31) return false;
-	if (a === 192 && b === 168) return false;
-	if (a === 127) return false;
-	if (a === 169 && b === 254) return false;
-	return true;
-}
-
 export function parseSnapshot(
 	raw: ClashConnectionsRaw,
 	clientsByIP: Map<string, string>,
@@ -76,10 +26,7 @@ export function parseSnapshot(
 	const rawConns = raw.connections ?? [];
 	const connections: Connection[] = rawConns.map((c) => {
 		const ip = c.metadata.sourceIP.toLowerCase();
-		let clientName = clientsByIP.get(ip);
-		if (!clientName && isPublicIP(ip)) {
-			clientName = c.metadata.network === 'udp' ? 'UDP (post-NAT)' : 'TCP (post-NAT)';
-		}
+		const clientName = clientsByIP.get(ip);
 		return {
 			...c,
 			clientName,

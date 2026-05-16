@@ -4,7 +4,6 @@ import {
 	parseSnapshot,
 	matchFilters,
 	aggregateBy,
-	isPublicIP,
 } from './singboxConnections';
 import type {
 	ClashConnectionsRaw,
@@ -210,148 +209,48 @@ describe('aggregateBy', () => {
 	});
 });
 
-describe('isPublicIP', () => {
-	it('classifies RFC1918 IPv4 as private', () => {
-		expect(isPublicIP('10.10.10.50')).toBe(false);
-		expect(isPublicIP('10.0.0.1')).toBe(false);
-		expect(isPublicIP('172.16.0.1')).toBe(false);
-		expect(isPublicIP('172.31.255.255')).toBe(false);
-		expect(isPublicIP('192.168.1.1')).toBe(false);
-	});
 
-	it('respects 172.16/12 boundaries (15 and 32 are PUBLIC)', () => {
-		expect(isPublicIP('172.15.0.1')).toBe(true);
-		expect(isPublicIP('172.32.0.1')).toBe(true);
-	});
-
-	it('classifies loopback + link-local IPv4 as private', () => {
-		expect(isPublicIP('127.0.0.1')).toBe(false);
-		expect(isPublicIP('127.255.255.254')).toBe(false);
-		expect(isPublicIP('169.254.1.1')).toBe(false);
-	});
-
-	it('classifies real public IPv4 as public', () => {
-		expect(isPublicIP('178.205.128.207')).toBe(true); // router WAN from production
-		expect(isPublicIP('157.240.0.63')).toBe(true); // Instagram
-		expect(isPublicIP('8.8.8.8')).toBe(true);
-		expect(isPublicIP('1.1.1.1')).toBe(true);
-		expect(isPublicIP('100.64.0.1')).toBe(true); // CG-NAT — treated as public by design
-	});
-
-	it('classifies IPv6 loopback + link-local + ULA as private', () => {
-		expect(isPublicIP('::1')).toBe(false);
-		expect(isPublicIP('::')).toBe(false);
-		expect(isPublicIP('fe80::1')).toBe(false);
-		expect(isPublicIP('fe80::abcd:1234:5678:9abc')).toBe(false);
-		expect(isPublicIP('FE80::1')).toBe(false); // case-insensitive
-		expect(isPublicIP('fc00::1')).toBe(false);
-		expect(isPublicIP('fd12:3456:789a::1')).toBe(false);
-	});
-
-	it('classifies global IPv6 as public', () => {
-		expect(isPublicIP('2001:db8::1')).toBe(true);
-		expect(isPublicIP('2606:4700::1111')).toBe(true);
-	});
-
-	it('returns false for malformed input', () => {
-		expect(isPublicIP('')).toBe(false);
-		expect(isPublicIP('not-an-ip')).toBe(false);
-		expect(isPublicIP('256.0.0.1')).toBe(false);
-		expect(isPublicIP('1.2.3')).toBe(false);
-		expect(isPublicIP('1.2.3.4.5')).toBe(false);
-	});
-});
-
-describe('parseSnapshot — post-NAT relabel', () => {
-	function makeRaw(network: 'tcp' | 'udp', sourceIP: string): ClashConnectionsRaw {
+describe('parseSnapshot — public source without client mapping', () => {
+	function makeRaw(network: 'tcp' | 'udp', sourceIP: string) {
 		return {
-			downloadTotal: 0,
-			uploadTotal: 0,
 			connections: [
 				{
-					id: 'a',
+					id: 'c1',
 					metadata: {
 						network,
-						type: 'TProxy',
 						sourceIP,
-						sourcePort: '43424',
-						destinationIP: '157.240.0.63',
+						sourcePort: '1234',
+						destinationIP: '8.8.8.8',
 						destinationPort: '443',
-						host: 'instagram.com',
+						host: '',
+						processPath: '',
+						type: '',
+						sniffHost: '',
 					},
+					chains: ['proxy'],
+					rule: '',
+					rulePayload: '',
 					upload: 0,
 					download: 0,
-					start: '2026-05-12T10:00:00Z',
-					chains: ['awg-sys-Wireguard0'],
-					rule: 'rule_set=geosite-instagram',
-					rulePayload: '',
+					start: '',
 				},
 			],
-		};
+		} as unknown as ClashConnectionsRaw;
 	}
 
-	// Production regression: motorola's UDP flows reach sing-box with
-	// the router's WAN IP as source because Mediatek FASTNAT applies
-	// MASQUERADE before the kernel hands the packet to the TPROXY
-	// socket. Without the relabel, ten such flows appear as a single
-	// raw-IP bucket the user mistakes for "another client".
-	it('UDP + public source → "UDP (post-NAT)"', () => {
-		const snap = parseSnapshot(makeRaw('udp', '178.205.128.207'), new Map());
-		expect(snap.connections[0].clientName).toBe('UDP (post-NAT)');
-	});
-
-	it('TCP + public source → "TCP (post-NAT)" (rare edge case)', () => {
-		const snap = parseSnapshot(makeRaw('tcp', '178.205.128.207'), new Map());
-		expect(snap.connections[0].clientName).toBe('TCP (post-NAT)');
-	});
-
-	it('private source with no clientsByIP match → undefined (raw IP shown in UI)', () => {
-		const snap = parseSnapshot(makeRaw('udp', '10.10.10.50'), new Map());
+	it('UDP + unknown source → clientName undefined (no post-NAT label)', () => {
+		const snap = parseSnapshot(makeRaw('udp', '203.0.113.50'), new Map());
 		expect(snap.connections[0].clientName).toBeUndefined();
 	});
 
-	it('explicit clientsByIP wins over post-NAT relabel for private source', () => {
-		const snap = parseSnapshot(
-			makeRaw('tcp', '10.10.10.50'),
-			new Map([['10.10.10.50', 'motorola-razr-40-ultra']]),
-		);
-		expect(snap.connections[0].clientName).toBe('motorola-razr-40-ultra');
+	it('explicit clientsByIP wins for known source', () => {
+		const clients = new Map([['10.10.10.50', 'iPhone']]);
+		const snap = parseSnapshot(makeRaw('udp', '10.10.10.50'), clients);
+		expect(snap.connections[0].clientName).toBe('iPhone');
 	});
 
-	// Practical scenario: 10 UDP flows from various Instagram CDN IPs
-	// all show up as the router's WAN — after relabel they bucket
-	// into a single "UDP (post-NAT)" entry instead of crowding the
-	// "By Client" panel with one raw-IP entry per flow.
-	it('multiple public-source UDP flows collapse into one bucket', () => {
-		const raw: ClashConnectionsRaw = {
-			downloadTotal: 0,
-			uploadTotal: 0,
-			connections: [1, 2, 3, 4, 5].map((i) => ({
-				id: `c${i}`,
-				metadata: {
-					network: 'udp' as const,
-					type: 'TProxy',
-					sourceIP: '178.205.128.207',
-					sourcePort: `${40000 + i}`,
-					destinationIP: '157.240.0.63',
-					destinationPort: '443',
-					host: 'instagram.com',
-				},
-				upload: 0,
-				download: 1000,
-				start: '2026-05-12T10:00:00Z',
-				chains: ['awg-sys-Wireguard0'],
-				rule: 'rule_set=geosite-instagram',
-				rulePayload: '',
-			})),
-		};
-		const snap = parseSnapshot(raw, new Map());
-		const buckets = aggregateBy(
-			snap.connections,
-			(c) => c.clientName || c.metadata.sourceIP,
-		);
-		expect(buckets).toHaveLength(1);
-		expect(buckets[0].key).toBe('UDP (post-NAT)');
-		expect(buckets[0].count).toBe(5);
+	it('unknown private source → clientName undefined', () => {
+		const snap = parseSnapshot(makeRaw('tcp', '10.10.10.50'), new Map());
+		expect(snap.connections[0].clientName).toBeUndefined();
 	});
 });
