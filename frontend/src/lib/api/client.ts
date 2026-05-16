@@ -920,7 +920,12 @@ class ApiClient {
 		es.addEventListener('phase', handleEvent);
 		es.addEventListener('test', handleEvent);
 		es.addEventListener('done', handleEvent);
-		es.addEventListener('error', (e) => {
+		es.addEventListener('error', (e: Event) => {
+			// Named SSE event `error` carries JSON in MessageEvent.data; connection faults do not.
+			if (e instanceof MessageEvent && typeof e.data === 'string' && e.data.length > 0) {
+				handleEvent(e);
+				return;
+			}
 			if (es.readyState === EventSource.CLOSED) return;
 			onError(e);
 		});

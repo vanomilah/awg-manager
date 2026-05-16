@@ -129,13 +129,16 @@
 		activeTunnelId = '';
 		diagnosticsStore.start(visibleTunnels);
 		expandedMap = {};
-		dnsCheckTrigger++;
 		cleanup();
 		eventSource = api.streamDiagnostics(
 			includeRestart,
 			makeEventHandler(false),
 			() => diagnosticsStore.fail('Соединение потеряно'),
 		);
+		// Let the SSE connection register first so DNS/NDMS work does not race the same browser slot.
+		queueMicrotask(() => {
+			dnsCheckTrigger++;
+		});
 	}
 
 	function startSingle(tunnelId: string) {

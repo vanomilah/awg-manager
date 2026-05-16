@@ -107,7 +107,7 @@
 	const isSingbox = $derived(!isGlobal && !kind?.startsWith('awg') && kind !== 'wg');
 	const plannedTests = $derived(getPlannedTests(isGlobal, isSingbox));
 	const showPlanned = $derived(expanded && !body && tests.length === 0);
-	const runBtnLabel = $derived(groupRunning ? '⟳ Идёт' : 'Проверить');
+	const runBtnLabel = $derived(groupRunning ? 'Идёт' : 'Проверить');
 </script>
 
 <section class="group" class:highlight class:expanded>
@@ -135,6 +135,7 @@
 				size="sm"
 				onclick={(e) => { e.stopPropagation(); onRun?.(); }}
 				disabled={anyRunning}
+				loading={groupRunning}
 			>
 				{runBtnLabel}
 			</Button>

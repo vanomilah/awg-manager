@@ -186,9 +186,16 @@
     border-color: var(--color-accent);
   }
 
+  /* Keep the ring circular in tight flex rows (e.g. diagnostics group headers). */
+  .btn:has(.spinner) {
+    flex-shrink: 0;
+    min-width: max-content;
+  }
+
   .spinner {
     width: 12px;
     height: 12px;
+    flex-shrink: 0;
     border: 2px solid currentColor;
     border-top-color: transparent;
     border-radius: 50%;
