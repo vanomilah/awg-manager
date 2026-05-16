@@ -192,8 +192,14 @@ func (c *RouterConfig) EnsureSystemRules() {
 		if r.Action == "sniff" && !r.hasAnyMatcher() {
 			hasSniff = true
 		}
-		if r.Action == "hijack-dns" && r.Protocol == "dns" {
-			hasHijack = true
+		// Detect both the legacy (`protocol:dns`) and current
+		// (`logical(or){protocol:dns, port:53}`) system hijack-dns
+		// forms so re-running EnsureSystemRules doesn't stack
+		// duplicates on configs migrated from older versions.
+		if r.Action == "hijack-dns" {
+			if r.Protocol == "dns" || (r.Type == "logical" && r.Mode == "or") {
+				hasHijack = true
+			}
 		}
 	}
 	prepend := make([]Rule, 0, 2)
@@ -201,7 +207,20 @@ func (c *RouterConfig) EnsureSystemRules() {
 		prepend = append(prepend, Rule{Action: "sniff"})
 	}
 	if !hasHijack {
-		prepend = append(prepend, Rule{Protocol: "dns", Action: "hijack-dns"})
+		// Logical-or rule catches BOTH sniffed DNS (`protocol:dns`)
+		// and any TCP/UDP traffic to port 53 (`port:53`). The latter
+		// matters when sniffing missed the protocol (truncated buffer,
+		// non-standard DNS payload) — port-based match guarantees
+		// hijack still fires. SKeen ships the same form.
+		prepend = append(prepend, Rule{
+			Type: "logical",
+			Mode: "or",
+			Rules: []Rule{
+				{Protocol: "dns"},
+				{Port: []int{53}},
+			},
+			Action: "hijack-dns",
+		})
 	}
 	if len(prepend) > 0 {
 		c.Route.Rules = append(prepend, c.Route.Rules...)
@@ -320,7 +339,7 @@ func stripLegacyAWGDirect(in []Outbound) []Outbound {
 
 func (r Rule) hasAnyMatcher() bool {
 	return len(r.DomainSuffix) > 0 || len(r.IPCIDR) > 0 || len(r.SourceIPCIDR) > 0 ||
-		len(r.Port) > 0 || len(r.RuleSet) > 0 || r.Protocol != ""
+		len(r.Port) > 0 || len(r.RuleSet) > 0 || r.Protocol != "" || len(r.Rules) > 0
 }
 
 func validateRule(r Rule) error {

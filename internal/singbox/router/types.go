@@ -27,13 +27,23 @@ type Issue struct {
 }
 
 type Rule struct {
+	// Type+Mode+Rules express a sing-box logical rule (`type:"logical"`,
+	// `mode:"or"|"and"`) when set. System hijack-dns uses this form to
+	// match either `protocol:dns` (sniffed) or `port:53` (direct) so a
+	// LAN client setting an explicit DNS server reaches sing-box's hijack
+	// path even when sniffing missed the protocol. Nested entries inside
+	// `Rules` have no Action (the parent owns it); Action is omitempty
+	// so nested marshaling stays clean.
+	Type         string   `json:"type,omitempty"`
+	Mode         string   `json:"mode,omitempty"`
+	Rules        []Rule   `json:"rules,omitempty"`
 	DomainSuffix []string `json:"domain_suffix,omitempty"`
 	IPCIDR       []string `json:"ip_cidr,omitempty"`
 	SourceIPCIDR []string `json:"source_ip_cidr,omitempty"`
 	Port         []int    `json:"port,omitempty"`
 	RuleSet      []string `json:"rule_set,omitempty"`
 	Protocol     string   `json:"protocol,omitempty"`
-	Action       string   `json:"action"`
+	Action       string   `json:"action,omitempty"`
 	Outbound     string   `json:"outbound,omitempty"`
 }
 

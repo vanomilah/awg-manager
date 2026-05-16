@@ -175,10 +175,27 @@ func TestEnsureSystemRules(t *testing.T) {
 	if cfg.Route.Rules[0].Action != "sniff" {
 		t.Errorf("first rule should be sniff, got %+v", cfg.Route.Rules[0])
 	}
-	if cfg.Route.Rules[1].Action != "hijack-dns" {
-		t.Errorf("second rule should be hijack-dns, got %+v", cfg.Route.Rules[1])
+
+	hijack := cfg.Route.Rules[1]
+	if hijack.Action != "hijack-dns" {
+		t.Errorf("second rule should be hijack-dns, got %+v", hijack)
+	}
+	// System hijack-dns must be logical-or(protocol:dns, port:53) so it
+	// catches direct DNS to the router LAN IP that sniffing missed.
+	if hijack.Type != "logical" || hijack.Mode != "or" {
+		t.Errorf("hijack rule must be logical-or, got type=%q mode=%q", hijack.Type, hijack.Mode)
+	}
+	if len(hijack.Rules) != 2 {
+		t.Fatalf("hijack rule should have 2 nested rules, got %d", len(hijack.Rules))
+	}
+	if hijack.Rules[0].Protocol != "dns" {
+		t.Errorf("nested[0] should be protocol:dns, got %+v", hijack.Rules[0])
+	}
+	if len(hijack.Rules[1].Port) != 1 || hijack.Rules[1].Port[0] != 53 {
+		t.Errorf("nested[1] should be port:53, got %+v", hijack.Rules[1])
 	}
 
+	// Idempotency: re-running should NOT add duplicates of either form.
 	cfg.EnsureSystemRules()
 	var sniffCount, hijackCount int
 	for _, r := range cfg.Route.Rules {
@@ -191,6 +208,28 @@ func TestEnsureSystemRules(t *testing.T) {
 	}
 	if sniffCount != 1 || hijackCount != 1 {
 		t.Errorf("system rules duplicated: sniff=%d hijack=%d", sniffCount, hijackCount)
+	}
+}
+
+func TestEnsureSystemRules_LegacyHijackRecognized(t *testing.T) {
+	// Configs migrated from pre-v2.10.3 carry the legacy form
+	// `{protocol:"dns", action:"hijack-dns"}`. EnsureSystemRules must
+	// recognize it as system hijack and NOT prepend a duplicate
+	// logical-or rule on every reload.
+	cfg := NewEmptyConfig()
+	cfg.Route.Rules = []Rule{
+		{Action: "sniff"},
+		{Protocol: "dns", Action: "hijack-dns"},
+	}
+	cfg.EnsureSystemRules()
+	var hijackCount int
+	for _, r := range cfg.Route.Rules {
+		if r.Action == "hijack-dns" {
+			hijackCount++
+		}
+	}
+	if hijackCount != 1 {
+		t.Errorf("legacy hijack rule should not be duplicated, got %d hijack rules", hijackCount)
 	}
 }
 
