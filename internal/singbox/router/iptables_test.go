@@ -86,23 +86,71 @@ func TestKernelModuleName(t *testing.T) {
 func TestBuildRestoreInput_PolicyMark_EmitsBothJumps(t *testing.T) {
 	spec := RestoreInputSpec{PolicyMark: "0xffffaaa"}
 	out := buildRestoreInput(spec)
-	// UDP via mangle TPROXY.
-	wantMangle := "-I PREROUTING 1 -p udp -m connmark --mark 0xffffaaa -m conntrack --ctdir ORIGINAL -j " + ChainName
+	// `-A PREROUTING` (append, not -I 1): we want our jump AFTER NDMS
+	// _NDM_* chains so the policy connmark is set before we evaluate.
+	// `-g` (goto, not -j): bypass ACCEPTs terminate mangle table cleanly
+	// instead of unwinding back to PREROUTING and re-entering NDMS rules.
+	// No connmark/ctdir filters on the jump itself — those moved into
+	// the chain body.
+	wantMangle := "-A PREROUTING -p udp -m conntrack ! --ctstate INVALID -g " + ChainName
 	if !strings.Contains(out, wantMangle) {
 		t.Errorf("missing mangle PREROUTING jump\nwant: %s\ngot:\n%s", wantMangle, out)
 	}
-	// TCP via nat REDIRECT.
-	wantNat := "-I PREROUTING 1 -p tcp -m connmark --mark 0xffffaaa -m conntrack --ctdir ORIGINAL -j " + RedirectChain
+	wantNat := "-A PREROUTING -p tcp -m conntrack ! --ctstate INVALID -g " + RedirectChain
 	if !strings.Contains(out, wantNat) {
 		t.Errorf("missing nat PREROUTING jump\nwant: %s\ngot:\n%s", wantNat, out)
+	}
+	// Legacy `-I PREROUTING 1 -j` syntax must not appear — it caused the
+	// post-NAT-source bug fixed on 2026-05-16.
+	if strings.Contains(out, "-I PREROUTING 1") {
+		t.Errorf("legacy -I PREROUTING 1 syntax must not appear:\n%s", out)
+	}
+	if strings.Contains(out, "-j "+ChainName) || strings.Contains(out, "-j "+RedirectChain) {
+		t.Errorf("PREROUTING entries must use -g, not -j:\n%s", out)
 	}
 }
 
 func TestBuildRestoreInput_EmptyMark_NoPrerouting(t *testing.T) {
 	spec := RestoreInputSpec{PolicyMark: ""}
 	out := buildRestoreInput(spec)
-	if strings.Contains(out, "-I PREROUTING") {
-		t.Errorf("expected no PREROUTING jump for empty mark, got:\n%s", out)
+	if strings.Contains(out, "-A PREROUTING") {
+		t.Errorf("expected no PREROUTING entry for empty mark, got:\n%s", out)
+	}
+}
+
+func TestBuildRestoreInput_PolicyFilterInsideChain(t *testing.T) {
+	spec := RestoreInputSpec{PolicyMark: "0xffffaaa"}
+	out := buildRestoreInput(spec)
+
+	// Policy filter MUST be the first ACCEPT inside each chain — emits
+	// only when PolicyMark is set, exits the table for non-policy traffic.
+	wantMangleFilter := "-A AWGM-TPROXY -m connmark ! --mark 0xffffaaa -j ACCEPT"
+	if !strings.Contains(out, wantMangleFilter) {
+		t.Errorf("missing in-chain policy filter\nwant: %s\ngot:\n%s", wantMangleFilter, out)
+	}
+	wantNatFilter := "-A AWGM-REDIRECT -m connmark ! --mark 0xffffaaa -j ACCEPT"
+	if !strings.Contains(out, wantNatFilter) {
+		t.Errorf("missing in-chain policy filter\nwant: %s\ngot:\n%s", wantNatFilter, out)
+	}
+
+	// Reply-direction filter follows the policy filter — NDMS's connmark
+	// applies to both directions of the conntrack entry, so returns from
+	// the internet would also match the policy filter above; we ACCEPT
+	// them out so they don't re-enter TPROXY.
+	wantMangleReply := "-A AWGM-TPROXY -m conntrack --ctdir REPLY -j ACCEPT"
+	if !strings.Contains(out, wantMangleReply) {
+		t.Errorf("missing in-chain reply filter\nwant: %s\ngot:\n%s", wantMangleReply, out)
+	}
+	wantNatReply := "-A AWGM-REDIRECT -m conntrack --ctdir REPLY -j ACCEPT"
+	if !strings.Contains(out, wantNatReply) {
+		t.Errorf("missing in-chain reply filter\nwant: %s\ngot:\n%s", wantNatReply, out)
+	}
+
+	// Filters MUST precede the catch-all TPROXY/REDIRECT.
+	filterIdx := strings.Index(out, wantMangleFilter)
+	tproxyIdx := strings.Index(out, "-A AWGM-TPROXY -p udp -j TPROXY")
+	if filterIdx < 0 || tproxyIdx < 0 || filterIdx > tproxyIdx {
+		t.Errorf("policy filter must precede catch-all TPROXY: filter=%d tproxy=%d", filterIdx, tproxyIdx)
 	}
 }
 
@@ -113,16 +161,16 @@ func TestBuildRestoreInput_TablesAndRulesPresent(t *testing.T) {
 		// mangle table
 		"*mangle",
 		":AWGM-TPROXY - [0:0]",
-		"-A AWGM-TPROXY -d 127.0.0.0/8 -j RETURN",
-		"-A AWGM-TPROXY -d 192.168.0.0/16 -j RETURN",
-		"-A AWGM-TPROXY -m mark --mark 0xff -j RETURN",
+		"-A AWGM-TPROXY -d 127.0.0.0/8 -j ACCEPT",
+		"-A AWGM-TPROXY -d 192.168.0.0/16 -j ACCEPT",
+		"-A AWGM-TPROXY -m mark --mark 0xff -j ACCEPT",
 		"-A AWGM-TPROXY -p udp -j TPROXY --on-port 51271 --on-ip 127.0.0.1 --tproxy-mark 0x1",
 		// nat table
 		"*nat",
 		":AWGM-REDIRECT - [0:0]",
-		"-A AWGM-REDIRECT -d 127.0.0.0/8 -j RETURN",
-		"-A AWGM-REDIRECT -d 192.168.0.0/16 -j RETURN",
-		"-A AWGM-REDIRECT -p tcp --dport 79 -j RETURN",
+		"-A AWGM-REDIRECT -d 127.0.0.0/8 -j ACCEPT",
+		"-A AWGM-REDIRECT -d 192.168.0.0/16 -j ACCEPT",
+		"-A AWGM-REDIRECT -p tcp --dport 79 -j ACCEPT",
 		"-A AWGM-REDIRECT -p tcp -j REDIRECT --to-ports 51272",
 		// both tables commit
 		"COMMIT",
@@ -135,6 +183,12 @@ func TestBuildRestoreInput_TablesAndRulesPresent(t *testing.T) {
 	// TCP TPROXY MUST NOT appear in mangle (we moved TCP to nat REDIRECT).
 	if strings.Contains(input, "-A AWGM-TPROXY -p tcp -j TPROXY") {
 		t.Errorf("legacy TCP TPROXY rule must not be present:\n%s", input)
+	}
+	// Legacy `-j RETURN` bypass must not appear — under -g semantics it
+	// would unwind back to PREROUTING and let bypass'd packets re-enter
+	// NDMS rules. ACCEPT terminates the table cleanly.
+	if strings.Contains(input, "-j RETURN") {
+		t.Errorf("legacy -j RETURN bypass must not be present:\n%s", input)
 	}
 }
 
@@ -226,6 +280,41 @@ func TestWriteNetfilterHookContainsPidofGuard(t *testing.T) {
 	}
 }
 
+func TestWriteNetfilterHookHasScrub(t *testing.T) {
+	tmp := t.TempDir()
+	orig := netfilterHookPath
+	netfilterHookPath = filepath.Join(tmp, "50-awgm-tproxy.sh")
+	t.Cleanup(func() { netfilterHookPath = orig })
+
+	if err := writeNetfilterHook(); err != nil {
+		t.Fatalf("writeNetfilterHook: %v", err)
+	}
+	data, _ := os.ReadFile(netfilterHookPath)
+	body := string(data)
+
+	// Scrub block: NDMS reloads can flush one table but not the other.
+	// Without scrubbing existing PREROUTING jumps before iptables-restore,
+	// --noflush would append a duplicate `-A PREROUTING ... -g AWGM-*`
+	// on top of the surviving one. `-[jg]` covers both legacy and current
+	// jump styles for safe upgrade.
+	wants := []string{
+		"-[jg] AWGM-TPROXY",
+		"-[jg] AWGM-REDIRECT",
+		"-D PREROUTING",
+	}
+	for _, w := range wants {
+		if !strings.Contains(body, w) {
+			t.Errorf("hook missing scrub fragment %q:\n%s", w, body)
+		}
+	}
+	// Scrub must come BEFORE the restore.
+	scrubIdx := strings.Index(body, "-D PREROUTING")
+	restoreIdx := strings.Index(body, "iptables-restore --noflush")
+	if scrubIdx < 0 || restoreIdx < 0 || scrubIdx > restoreIdx {
+		t.Errorf("scrub must precede restore: scrub=%d restore=%d", scrubIdx, restoreIdx)
+	}
+}
+
 func TestRemoveNetfilterRulesFile(t *testing.T) {
 	tmp := t.TempDir()
 	orig := netfilterRulesPath
@@ -269,8 +358,8 @@ func TestRefreshNetfilterHookIfPresent(t *testing.T) {
 func TestInstall_IdempotentOnFileExists(t *testing.T) {
 	// After the runIP fix (Task 1 of wizard cleanup), stderr from `ip` is
 	// appended to err.Error() via sysexec.FormatError. The substring guards
-	// in Install() (lines 269, 275) catch "File exists" and silently swallow
-	// the error so a re-Install on already-installed routes/rules is a no-op.
+	// in Install() catch "File exists" and silently swallow the error so a
+	// re-Install on already-installed routes/rules is a no-op.
 	rec := newFakeExec()
 	it := &IPTables{
 		restoreNoflush: rec.restoreNoflush,
@@ -299,12 +388,12 @@ func TestBuildRestoreInput_ExpandedBypassCIDRs(t *testing.T) {
 	// - 0.0.0.0/8 "this network" (RFC 1122) — never routable
 	// - 192.0.0.0/24 IETF Protocol Assignments — includes NAT64 well-known
 	expected := []string{
-		"-A AWGM-TPROXY -d 100.64.0.0/10 -j RETURN",
-		"-A AWGM-TPROXY -d 0.0.0.0/8 -j RETURN",
-		"-A AWGM-TPROXY -d 192.0.0.0/24 -j RETURN",
-		"-A AWGM-REDIRECT -d 100.64.0.0/10 -j RETURN",
-		"-A AWGM-REDIRECT -d 0.0.0.0/8 -j RETURN",
-		"-A AWGM-REDIRECT -d 192.0.0.0/24 -j RETURN",
+		"-A AWGM-TPROXY -d 100.64.0.0/10 -j ACCEPT",
+		"-A AWGM-TPROXY -d 0.0.0.0/8 -j ACCEPT",
+		"-A AWGM-TPROXY -d 192.0.0.0/24 -j ACCEPT",
+		"-A AWGM-REDIRECT -d 100.64.0.0/10 -j ACCEPT",
+		"-A AWGM-REDIRECT -d 0.0.0.0/8 -j ACCEPT",
+		"-A AWGM-REDIRECT -d 192.0.0.0/24 -j ACCEPT",
 	}
 	for _, line := range expected {
 		if !strings.Contains(input, line) {
@@ -325,7 +414,7 @@ func TestBuildRestoreInput_DNSInterceptUDP(t *testing.T) {
 	// CRITICAL ORDERING: DNS rule MUST precede the 192.168.0.0/16 bypass.
 	// Otherwise DNS-to-router-LAN-IP gets bypassed before the DNS rule fires.
 	dnsIdx := strings.Index(input, wantDNS)
-	bypassIdx := strings.Index(input, "-A AWGM-TPROXY -d 192.168.0.0/16 -j RETURN")
+	bypassIdx := strings.Index(input, "-A AWGM-TPROXY -d 192.168.0.0/16 -j ACCEPT")
 	if dnsIdx < 0 || bypassIdx < 0 {
 		t.Fatalf("DNS or bypass rule not found")
 	}
@@ -345,7 +434,7 @@ func TestBuildRestoreInput_DNSInterceptTCP(t *testing.T) {
 
 	// Ordering: DNS rule MUST precede the 192.168/16 bypass in AWGM-REDIRECT.
 	dnsIdx := strings.Index(input, wantDNS)
-	bypassIdx := strings.Index(input, "-A AWGM-REDIRECT -d 192.168.0.0/16 -j RETURN")
+	bypassIdx := strings.Index(input, "-A AWGM-REDIRECT -d 192.168.0.0/16 -j ACCEPT")
 	if dnsIdx < 0 || bypassIdx < 0 {
 		t.Fatalf("DNS or bypass rule not found")
 	}
@@ -365,10 +454,10 @@ func TestBuildRestoreInput_WANIPsRendered(t *testing.T) {
 
 	// WAN-IP rules MUST appear in BOTH chains.
 	expected := []string{
-		"-A AWGM-TPROXY -d 203.0.113.207/32 -j RETURN",
-		"-A AWGM-TPROXY -d 10.8.1.3/32 -j RETURN",
-		"-A AWGM-REDIRECT -d 203.0.113.207/32 -j RETURN",
-		"-A AWGM-REDIRECT -d 10.8.1.3/32 -j RETURN",
+		"-A AWGM-TPROXY -d 203.0.113.207/32 -j ACCEPT",
+		"-A AWGM-TPROXY -d 10.8.1.3/32 -j ACCEPT",
+		"-A AWGM-REDIRECT -d 203.0.113.207/32 -j ACCEPT",
+		"-A AWGM-REDIRECT -d 10.8.1.3/32 -j ACCEPT",
 	}
 	for _, line := range expected {
 		if !strings.Contains(input, line) {
@@ -383,9 +472,8 @@ func TestBuildRestoreInput_EmptyWANIPs_NoExclusions(t *testing.T) {
 
 	// No /32 host-routes should appear other than 255.255.255.255/32.
 	for _, line := range strings.Split(input, "\n") {
-		if strings.Contains(line, "/32 -j RETURN") && !strings.Contains(line, "255.255.255.255") {
+		if strings.Contains(line, "/32 -j ACCEPT") && !strings.Contains(line, "255.255.255.255") {
 			t.Errorf("unexpected /32 exclusion when WANIPs empty: %s", line)
 		}
 	}
 }
-

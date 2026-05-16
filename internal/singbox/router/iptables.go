@@ -159,35 +159,53 @@ var bypassCIDRs = []string{
 func buildRestoreInput(spec RestoreInputSpec) string {
 	var b strings.Builder
 
-	// ---- *mangle table: UDP only via TPROXY ----
+	// ---- *mangle table: UDP via TPROXY ----
+	//
+	// PREROUTING entry uses `-A` (append) so it runs AFTER the NDMS
+	// _NDM_*_PREROUTING_* chains. The previous `-I PREROUTING 1` placed
+	// us first, before _NDM_DNSRT_PREROUTING_MANGLE (which matches
+	// `mark match 0x0`) had a chance to handle no-mark-yet UDP — the
+	// no-mark path triggered MASQUERADE through FORWARD/POSTROUTING,
+	// conntrack recorded has_nat=true, and from then on every packet of
+	// the flow reached sing-box's tproxy-in with WAN IP source.
+	// Empirically confirmed 2026-05-16 against SKeen's working setup,
+	// which uses the same append pattern.
+	//
+	// Policy/direction filters live INSIDE the chain (SKeen-style),
+	// because the jump itself is now unconditional. Bypass exemptions
+	// use `-j ACCEPT` (not RETURN): with `-g` on the entry, RETURN would
+	// unwind back to PREROUTING and let the bypass'd packet hit further
+	// NDMS rules; ACCEPT terminates the mangle table cleanly.
 	b.WriteString("*mangle\n")
 	fmt.Fprintf(&b, ":%s - [0:0]\n", ChainName)
 
-	// DNS-перехват MUST precede the dst-based bypass: LAN clients
-	// configured with DNS=router-LAN-IP (e.g. 192.168.1.1) would
-	// otherwise hit the 192.168.0.0/16 RETURN below before this rule
-	// gets a chance to fire, leaking DNS into NDMS-resolver.
+	if spec.PolicyMark != "" {
+		// Exit early when packet doesn't belong to our access policy.
+		fmt.Fprintf(&b, "-A %s -m connmark ! --mark %s -j ACCEPT\n", ChainName, spec.PolicyMark)
+	}
+	// Reply direction: NDMS's connmark applies to BOTH directions of the
+	// conntrack entry, so return packets from the internet would also
+	// match the policy mark above. ACCEPT them out before TPROXY.
+	fmt.Fprintf(&b, "-A %s -m conntrack --ctdir REPLY -j ACCEPT\n", ChainName)
+
+	// DNS intercept MUST precede the dst-based ACCEPTs below: LAN clients
+	// configured with DNS=router-LAN-IP (192.168.1.1 etc.) would otherwise
+	// hit the 192.168.0.0/16 ACCEPT first, leaking DNS into NDMS-resolver.
 	fmt.Fprintf(&b, "-A %s -p udp --dport 53 -j TPROXY --on-port %d --on-ip 127.0.0.1 --tproxy-mark 0x%x\n",
 		ChainName, TPROXYPort, Fwmark)
 
 	for _, cidr := range bypassCIDRs {
-		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", ChainName, cidr)
+		fmt.Fprintf(&b, "-A %s -d %s -j ACCEPT\n", ChainName, cidr)
 	}
 	for _, ip := range spec.WANIPs {
-		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", ChainName, ip)
+		fmt.Fprintf(&b, "-A %s -d %s -j ACCEPT\n", ChainName, ip)
 	}
-	fmt.Fprintf(&b, "-A %s -m mark --mark 0xff -j RETURN\n", ChainName)
+	fmt.Fprintf(&b, "-A %s -m mark --mark 0xff -j ACCEPT\n", ChainName)
 	fmt.Fprintf(&b, "-A %s -p udp -j TPROXY --on-port %d --on-ip 127.0.0.1 --tproxy-mark 0x%x\n",
 		ChainName, TPROXYPort, Fwmark)
 
 	if spec.PolicyMark != "" {
-		// `--ctdir ORIGINAL` restricts the jump to packets in the
-		// original direction of the conntrack flow — i.e. outbound
-		// from the LAN client to the internet. Without this filter,
-		// NDMS's connmark applies to BOTH directions of the conntrack
-		// entry, so reply packets coming back from the internet would
-		// also be redirected into sing-box, breaking the return path.
-		fmt.Fprintf(&b, "-I PREROUTING 1 -p udp -m connmark --mark %s -m conntrack --ctdir ORIGINAL -j %s\n", spec.PolicyMark, ChainName)
+		fmt.Fprintf(&b, "-A PREROUTING -p udp -m conntrack ! --ctstate INVALID -g %s\n", ChainName)
 	}
 	b.WriteString("COMMIT\n")
 
@@ -197,25 +215,30 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	// flows therefore route to sing-box's ACCEPT()ed socket without
 	// re-evaluating our PREROUTING jump, sidestepping the
 	// transparent-socket-lookup failure that breaks pure-TPROXY TCP
-	// on this kernel.
+	// on this kernel. Same `-A` + `-g` + filters-inside pattern as mangle.
 	b.WriteString("*nat\n")
 	fmt.Fprintf(&b, ":%s - [0:0]\n", RedirectChain)
+
+	if spec.PolicyMark != "" {
+		fmt.Fprintf(&b, "-A %s -m connmark ! --mark %s -j ACCEPT\n", RedirectChain, spec.PolicyMark)
+	}
+	fmt.Fprintf(&b, "-A %s -m conntrack --ctdir REPLY -j ACCEPT\n", RedirectChain)
 
 	// DNS-перехват on TCP — same ordering rationale as mangle chain.
 	fmt.Fprintf(&b, "-A %s -p tcp --dport 53 -j REDIRECT --to-ports %d\n", RedirectChain, RedirectPort)
 
 	for _, cidr := range bypassCIDRs {
-		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", RedirectChain, cidr)
+		fmt.Fprintf(&b, "-A %s -d %s -j ACCEPT\n", RedirectChain, cidr)
 	}
 	for _, ip := range spec.WANIPs {
-		fmt.Fprintf(&b, "-A %s -d %s -j RETURN\n", RedirectChain, ip)
+		fmt.Fprintf(&b, "-A %s -d %s -j ACCEPT\n", RedirectChain, ip)
 	}
 	// Bypass router admin port so we don't redirect our own UI traffic.
-	fmt.Fprintf(&b, "-A %s -p tcp --dport 79 -j RETURN\n", RedirectChain)
+	fmt.Fprintf(&b, "-A %s -p tcp --dport 79 -j ACCEPT\n", RedirectChain)
 	fmt.Fprintf(&b, "-A %s -p tcp -j REDIRECT --to-ports %d\n", RedirectChain, RedirectPort)
 
 	if spec.PolicyMark != "" {
-		fmt.Fprintf(&b, "-I PREROUTING 1 -p tcp -m connmark --mark %s -m conntrack --ctdir ORIGINAL -j %s\n", spec.PolicyMark, RedirectChain)
+		fmt.Fprintf(&b, "-A PREROUTING -p tcp -m conntrack ! --ctstate INVALID -g %s\n", RedirectChain)
 	}
 	b.WriteString("COMMIT\n")
 	return b.String()
@@ -316,6 +339,11 @@ func writeNetfilterHook() error {
 	if err := os.MkdirAll(filepath.Dir(netfilterHookPath), 0755); err != nil {
 		return err
 	}
+	// Scrub block before restore: when NDMS reloads only one table (e.g.
+	// nat) but leaves mangle intact, restoring --noflush would append a
+	// SECOND PREROUTING jump to AWGM-TPROXY on top of the surviving one.
+	// `-[jg]` regex covers both legacy `-j` and current `-g` syntax so
+	// the upgrade path doesn't leave duplicates around.
 	script := fmt.Sprintf(`#!/bin/sh
 [ "$type" = "ip6tables" ] && exit 0
 case "$table" in mangle|nat) ;; *) exit 0 ;; esac
@@ -325,6 +353,14 @@ mangle_ok=0; nat_ok=0
 /opt/sbin/iptables -w -t mangle -nL %[2]s >/dev/null 2>&1 && mangle_ok=1
 /opt/sbin/iptables -w -t nat    -nL %[6]s >/dev/null 2>&1 && nat_ok=1
 if [ "$mangle_ok" -eq 0 ] || [ "$nat_ok" -eq 0 ]; then
+  /opt/sbin/iptables -w -t mangle -S PREROUTING 2>/dev/null \
+    | grep -E -- '-[jg] %[2]s($| )' \
+    | sed 's/-A PREROUTING/-D PREROUTING/' \
+    | while IFS= read -r line; do /opt/sbin/iptables -w -t mangle $line 2>/dev/null; done
+  /opt/sbin/iptables -w -t nat -S PREROUTING 2>/dev/null \
+    | grep -E -- '-[jg] %[6]s($| )' \
+    | sed 's/-A PREROUTING/-D PREROUTING/' \
+    | while IFS= read -r line; do /opt/sbin/iptables -w -t nat $line 2>/dev/null; done
   /opt/sbin/iptables-restore --noflush < %[1]q
   /opt/sbin/ip rule add fwmark 0x%[3]x table %[4]d priority %[5]d 2>/dev/null || true
   /opt/sbin/ip route add local 0.0.0.0/0 dev lo table %[4]d 2>/dev/null || true
@@ -356,19 +392,6 @@ func (it *IPTables) Uninstall(ctx context.Context) error {
 	if it.cleanupHook != nil {
 		it.cleanupHook()
 	}
-	const maxUninstallPasses = 32
-	// Drain mangle PREROUTING jumps to AWGM-TPROXY (UDP TPROXY).
-	for i := 0; i < maxUninstallPasses; i++ {
-		if err := it.runIPTables(ctx, "-t", "mangle", "-D", "PREROUTING", "-j", ChainName); err != nil {
-			break
-		}
-	}
-	// Drain nat PREROUTING jumps to AWGM-REDIRECT (TCP REDIRECT).
-	for i := 0; i < maxUninstallPasses; i++ {
-		if err := it.runIPTables(ctx, "-t", "nat", "-D", "PREROUTING", "-j", RedirectChain); err != nil {
-			break
-		}
-	}
 	it.removeSourceHooks(ctx)
 	_ = it.runIPTables(ctx, "-t", "mangle", "-F", ChainName)
 	_ = it.runIPTables(ctx, "-t", "mangle", "-X", ChainName)
@@ -397,8 +420,13 @@ func (it *IPTables) removeSourceHooksFromTable(ctx context.Context, table, chain
 	if err != nil || result == nil {
 		return
 	}
+	// Match both `-j chain` (old jump syntax pre-fastnat-fix) and
+	// `-g chain` (current goto syntax) so upgrading installs scrub
+	// stale jumps from previous versions before we re-append the new one.
+	jumpJ := "-j " + chain
+	gotoG := "-g " + chain
 	for _, line := range strings.Split(result.Stdout, "\n") {
-		if !strings.Contains(line, "-j "+chain) {
+		if !strings.Contains(line, jumpJ) && !strings.Contains(line, gotoG) {
 			continue
 		}
 		line = strings.TrimSpace(line)
