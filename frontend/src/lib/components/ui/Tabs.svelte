@@ -42,6 +42,7 @@
     let measureEl: HTMLDivElement | undefined = $state();
     let visibleCount = $state(Infinity);
     let dropdownOpen = $state(false);
+    let cachedContainerWidth = 0;
 
     // Gates the outbound URL writer until the inbound effect has had a chance
     // to apply (or rule out) the value from the URL. Conditional tabs whose
@@ -108,13 +109,15 @@
     let overflowTabs = $derived(tabs.slice(visibleCount));
     let hasOverflowActive = $derived(overflowTabs.some(t => t.id === active));
 
-    function recalc() {
-        if (!containerEl || !measureEl) return;
+    // containerWidth is passed in from ResizeObserver entries (free — no forced
+    // layout) and cached so the tabs-change effect can reuse the last known
+    // width without reading offsetWidth again.
+    function recalc(containerWidth = cachedContainerWidth) {
+        if (!measureEl || containerWidth === 0) return;
         const children = Array.from(measureEl.children) as HTMLElement[];
         if (children.length === 0) return;
 
         // Available width minus space for the "+N" chip (≈60px)
-        const containerWidth = containerEl.offsetWidth;
         const chipWidth = 60;
         let usedWidth = 0;
         let tabsFit = 0;
@@ -125,7 +128,9 @@
         // include separator widths in the running total when we cross them.
         let pendingSeparator = 0;
         for (const child of children) {
-            const w = child.offsetWidth;
+            // getBoundingClientRect() returns fractional pixels and, inside a
+            // ResizeObserver callback, does not force an additional layout.
+            const w = child.getBoundingClientRect().width;
             if (child.tagName === 'SPAN') {
                 // separator — accumulate; only "spent" once we accept the
                 // following tab.
@@ -148,14 +153,20 @@
     }
 
     $effect(() => {
-        // Re-run when tabs change
+        // Re-run when tabs change; reuse cached container width so we don't
+        // force a redundant layout read here.
         void tabs.length;
         recalc();
     });
 
     $effect(() => {
         if (!containerEl) return;
-        const ro = new ResizeObserver(() => recalc());
+        const ro = new ResizeObserver((entries) => {
+            // contentRect.width comes free from the ResizeObserver — the
+            // browser already computed layout, no forced reflow.
+            cachedContainerWidth = entries[0].contentRect.width;
+            recalc(cachedContainerWidth);
+        });
         ro.observe(containerEl);
         return () => ro.disconnect();
     });
