@@ -31,6 +31,18 @@ const (
 	RoutingTable  = 100
 	ChainName     = "AWGM-TPROXY"
 	RedirectChain = "AWGM-REDIRECT"
+	// DNSOffloadChain DNATs non-policy UDP/TCP DNS aimed at a router-local
+	// IP to 127.0.0.1:53 so the kernel socket lookup falls through to
+	// NDMS's ndnproxy (bound on 0.0.0.0:53) instead of hitting sing-box's
+	// transparent listener on the LAN IP. sing-box's hijack-dns route
+	// action creates such a listener as a side effect — it catches any
+	// packet whose dst matches a router-owned IP, but silently drops what
+	// arrives without TPROXY ancillary data, leaving non-policy clients
+	// without DNS. Two filters keep policy traffic untouched: dst must be
+	// `addrtype LOCAL` (so external DNS like 8.8.8.8 isn't rewritten) and
+	// connmark must not match the policy mark (so in-policy DNS continues
+	// through AWGM-TPROXY → sing-box).
+	DNSOffloadChain = "AWGM-DNS-OFFLOAD"
 	// IPRulePriority is the fixed `ip rule` priority for our fwmark rule.
 	// Above NDMS policy rules (~100-200) and below system main/default
 	// (32766/32767). Hard-coded so Install is fully idempotent and so
@@ -240,6 +252,25 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	if spec.PolicyMark != "" {
 		fmt.Fprintf(&b, "-A PREROUTING -p tcp -m conntrack ! --ctstate INVALID -g %s\n", RedirectChain)
 	}
+
+	// ---- AWGM-DNS-OFFLOAD chain (still inside *nat) ----
+	// See DNSOffloadChain const docs for why this chain exists. Inserted
+	// at PREROUTING position 1 so it fires before NDMS DNS chains; that
+	// way any sing-box transparent listener on a router LAN-IP:53 stops
+	// catching non-policy DNS, which previously landed in sing-box and
+	// got silently dropped (no IP_RECVORIGDSTADDR ancillary data). The
+	// `addrtype --dst-type LOCAL` matcher targets only router-owned IPs
+	// — external DNS (8.8.8.8 etc.) is untouched and continues through
+	// normal WAN MASQUERADE.
+	fmt.Fprintf(&b, ":%s - [0:0]\n", DNSOffloadChain)
+	if spec.PolicyMark != "" {
+		for _, proto := range []string{"udp", "tcp"} {
+			fmt.Fprintf(&b, "-A %s -i br+ -p %s --dport 53 -m addrtype --dst-type LOCAL -m connmark ! --mark %s -j DNAT --to-destination 127.0.0.1:53\n",
+				DNSOffloadChain, proto, spec.PolicyMark)
+		}
+		fmt.Fprintf(&b, "-I PREROUTING 1 -j %s\n", DNSOffloadChain)
+	}
+
 	b.WriteString("COMMIT\n")
 	return b.String()
 }
@@ -358,15 +389,15 @@ if [ "$mangle_ok" -eq 0 ] || [ "$nat_ok" -eq 0 ]; then
     | sed 's/-A PREROUTING/-D PREROUTING/' \
     | while IFS= read -r line; do /opt/sbin/iptables -w -t mangle $line 2>/dev/null; done
   /opt/sbin/iptables -w -t nat -S PREROUTING 2>/dev/null \
-    | grep -E -- '-[jg] %[6]s($| )' \
-    | sed 's/-A PREROUTING/-D PREROUTING/' \
+    | grep -E -- '-[jg] (%[6]s|%[7]s)($| )' \
+    | sed 's/-A PREROUTING/-D PREROUTING/; s/-I PREROUTING [0-9][0-9]*/-D PREROUTING/' \
     | while IFS= read -r line; do /opt/sbin/iptables -w -t nat $line 2>/dev/null; done
   /opt/sbin/iptables-restore --noflush < %[1]q
   /opt/sbin/ip rule add fwmark 0x%[3]x table %[4]d priority %[5]d 2>/dev/null || true
   /opt/sbin/ip route add local 0.0.0.0/0 dev lo table %[4]d 2>/dev/null || true
   logger -t awgm-tproxy "netfilter.d: restored AWGM chains after NDMS reload"
 fi
-`, netfilterRulesPath, ChainName, Fwmark, RoutingTable, IPRulePriority, RedirectChain)
+`, netfilterRulesPath, ChainName, Fwmark, RoutingTable, IPRulePriority, RedirectChain, DNSOffloadChain)
 	return os.WriteFile(netfilterHookPath, []byte(script), 0755)
 }
 
@@ -397,6 +428,8 @@ func (it *IPTables) Uninstall(ctx context.Context) error {
 	_ = it.runIPTables(ctx, "-t", "mangle", "-X", ChainName)
 	_ = it.runIPTables(ctx, "-t", "nat", "-F", RedirectChain)
 	_ = it.runIPTables(ctx, "-t", "nat", "-X", RedirectChain)
+	_ = it.runIPTables(ctx, "-t", "nat", "-F", DNSOffloadChain)
+	_ = it.runIPTables(ctx, "-t", "nat", "-X", DNSOffloadChain)
 	// Drain ALL fwmark rules — historically Install accumulated
 	// duplicates at priorities 0-N (auto-assigned), so a single `del`
 	// would leave the rest. Loop until ENOENT, capped defensively.
@@ -413,6 +446,7 @@ func (it *IPTables) Uninstall(ctx context.Context) error {
 func (it *IPTables) removeSourceHooks(ctx context.Context) {
 	it.removeSourceHooksFromTable(ctx, "mangle", ChainName)
 	it.removeSourceHooksFromTable(ctx, "nat", RedirectChain)
+	it.removeSourceHooksFromTable(ctx, "nat", DNSOffloadChain)
 }
 
 func (it *IPTables) removeSourceHooksFromTable(ctx context.Context, table, chain string) {

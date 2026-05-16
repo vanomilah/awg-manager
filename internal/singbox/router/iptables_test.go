@@ -100,21 +100,76 @@ func TestBuildRestoreInput_PolicyMark_EmitsBothJumps(t *testing.T) {
 	if !strings.Contains(out, wantNat) {
 		t.Errorf("missing nat PREROUTING jump\nwant: %s\ngot:\n%s", wantNat, out)
 	}
-	// Legacy `-I PREROUTING 1 -j` syntax must not appear — it caused the
-	// post-NAT-source bug fixed on 2026-05-16.
-	if strings.Contains(out, "-I PREROUTING 1") {
-		t.Errorf("legacy -I PREROUTING 1 syntax must not appear:\n%s", out)
+	// Legacy `-I PREROUTING 1 -j AWGM-TPROXY/AWGM-REDIRECT` syntax must
+	// not appear — it caused the post-NAT-source bug fixed on 2026-05-16.
+	// (AWGM-DNS-OFFLOAD does legitimately use `-I PREROUTING 1` to fire
+	// before NDMS DNAT chains — see DNSOffloadChain const docs.)
+	for _, bad := range []string{
+		"-I PREROUTING 1 -p udp -m connmark --mark",
+		"-I PREROUTING 1 -p tcp -m connmark --mark",
+		"-I PREROUTING 1 -j " + ChainName,
+		"-I PREROUTING 1 -j " + RedirectChain,
+	} {
+		if strings.Contains(out, bad) {
+			t.Errorf("legacy %q syntax must not appear:\n%s", bad, out)
+		}
 	}
 	if strings.Contains(out, "-j "+ChainName) || strings.Contains(out, "-j "+RedirectChain) {
-		t.Errorf("PREROUTING entries must use -g, not -j:\n%s", out)
+		t.Errorf("PREROUTING entries to TPROXY/REDIRECT must use -g, not -j:\n%s", out)
 	}
 }
 
 func TestBuildRestoreInput_EmptyMark_NoPrerouting(t *testing.T) {
 	spec := RestoreInputSpec{PolicyMark: ""}
 	out := buildRestoreInput(spec)
-	if strings.Contains(out, "-A PREROUTING") {
+	if strings.Contains(out, "-A PREROUTING") || strings.Contains(out, "-I PREROUTING") {
 		t.Errorf("expected no PREROUTING entry for empty mark, got:\n%s", out)
+	}
+}
+
+func TestBuildRestoreInput_DNSOffloadChain(t *testing.T) {
+	spec := RestoreInputSpec{PolicyMark: "0xffffaaa"}
+	out := buildRestoreInput(spec)
+
+	// AWGM-DNS-OFFLOAD: DNATs non-policy UDP/TCP DNS aimed at a router
+	// LOCAL IP to 127.0.0.1:53. Two filters protect policy traffic:
+	//   1. dst must be addrtype LOCAL (excludes external DNS like 8.8.8.8)
+	//   2. connmark must NOT match the policy mark (excludes in-policy)
+	// Jump goes to PREROUTING position 1 so it fires before NDMS DNAT
+	// chains, beating any DNS rewrite NDMS might be doing.
+	wantChain := ":AWGM-DNS-OFFLOAD - [0:0]"
+	if !strings.Contains(out, wantChain) {
+		t.Errorf("missing AWGM-DNS-OFFLOAD chain declaration\nin:\n%s", out)
+	}
+	for _, proto := range []string{"udp", "tcp"} {
+		wantRule := "-A AWGM-DNS-OFFLOAD -i br+ -p " + proto +
+			" --dport 53 -m addrtype --dst-type LOCAL -m connmark ! --mark 0xffffaaa" +
+			" -j DNAT --to-destination 127.0.0.1:53"
+		if !strings.Contains(out, wantRule) {
+			t.Errorf("missing %s DNAT rule\nwant: %s\nin:\n%s", proto, wantRule, out)
+		}
+	}
+	wantJump := "-I PREROUTING 1 -j AWGM-DNS-OFFLOAD"
+	if !strings.Contains(out, wantJump) {
+		t.Errorf("missing PREROUTING jump to AWGM-DNS-OFFLOAD\nin:\n%s", out)
+	}
+}
+
+func TestBuildRestoreInput_DNSOffload_EmptyMark_OnlyChainHeader(t *testing.T) {
+	spec := RestoreInputSpec{PolicyMark: ""}
+	out := buildRestoreInput(spec)
+
+	// With empty policy mark we still emit the chain header so a
+	// subsequent re-Install with a mark recreates rules cleanly, but
+	// no DNAT rules and no PREROUTING jump.
+	if !strings.Contains(out, ":AWGM-DNS-OFFLOAD - [0:0]") {
+		t.Errorf("expected chain header even when policy mark empty:\n%s", out)
+	}
+	if strings.Contains(out, "AWGM-DNS-OFFLOAD -i br+") {
+		t.Errorf("expected no DNAT rules when policy mark empty:\n%s", out)
+	}
+	if strings.Contains(out, "-I PREROUTING 1 -j AWGM-DNS-OFFLOAD") {
+		t.Errorf("expected no PREROUTING jump when policy mark empty:\n%s", out)
 	}
 }
 
@@ -172,6 +227,11 @@ func TestBuildRestoreInput_TablesAndRulesPresent(t *testing.T) {
 		"-A AWGM-REDIRECT -d 192.168.0.0/16 -j ACCEPT",
 		"-A AWGM-REDIRECT -p tcp --dport 79 -j ACCEPT",
 		"-A AWGM-REDIRECT -p tcp -j REDIRECT --to-ports 51272",
+		// AWGM-DNS-OFFLOAD chain
+		":AWGM-DNS-OFFLOAD - [0:0]",
+		"-A AWGM-DNS-OFFLOAD -i br+ -p udp --dport 53 -m addrtype --dst-type LOCAL -m connmark ! --mark 0xffffaaa -j DNAT --to-destination 127.0.0.1:53",
+		"-A AWGM-DNS-OFFLOAD -i br+ -p tcp --dport 53 -m addrtype --dst-type LOCAL -m connmark ! --mark 0xffffaaa -j DNAT --to-destination 127.0.0.1:53",
+		"-I PREROUTING 1 -j AWGM-DNS-OFFLOAD",
 		// both tables commit
 		"COMMIT",
 	}
@@ -299,7 +359,7 @@ func TestWriteNetfilterHookHasScrub(t *testing.T) {
 	// jump styles for safe upgrade.
 	wants := []string{
 		"-[jg] AWGM-TPROXY",
-		"-[jg] AWGM-REDIRECT",
+		"AWGM-REDIRECT|AWGM-DNS-OFFLOAD",
 		"-D PREROUTING",
 	}
 	for _, w := range wants {
