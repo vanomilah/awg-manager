@@ -355,8 +355,7 @@
 							/>
 						</div>
 						<div class="wan-hint">
-							В sing-box передаётся kernel-имя (например, <code>ppp0</code>)
-							— оно стабильно при пересоздании интерфейсов в NDMS.
+							В sing-box передаётся kernel-имя (например, <code>ppp0</code>).
 						</div>
 					{/if}
 				</div>
