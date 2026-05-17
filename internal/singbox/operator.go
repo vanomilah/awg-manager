@@ -1039,7 +1039,7 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 	}
 	s.CurrentVersion = s.Version
 	s.RequiredVersion = o.RequiredVersion()
-	s.UpdateAvailable = s.CurrentVersion != "" && s.CurrentVersion != s.RequiredVersion
+	s.UpdateAvailable = s.CurrentVersion != "" && s.RequiredVersion != "" && s.CurrentVersion != s.RequiredVersion
 	return s
 }
 
@@ -1070,6 +1070,14 @@ func (o *Operator) detectVersionAndFeaturesCached(ctx context.Context) (string, 
 	o.versionProbeFeatures = append([]string(nil), f...)
 	o.versionProbeAt = now
 	return v, append([]string(nil), f...)
+}
+
+func (o *Operator) invalidateVersionProbeCache() {
+	o.versionProbeMu.Lock()
+	defer o.versionProbeMu.Unlock()
+	o.versionProbeValue = ""
+	o.versionProbeFeatures = nil
+	o.versionProbeAt = time.Time{}
 }
 
 // parseSingboxVersionOutput parses the multi-line text produced by
@@ -1643,6 +1651,7 @@ func (o *Operator) Install(ctx context.Context) error {
 		report("error", 0, 0, err.Error())
 		return fmt.Errorf("activate sing-box: %w", err)
 	}
+	o.invalidateVersionProbeCache()
 	report("done", 0, 0, "")
 	return nil
 }
@@ -1696,6 +1705,7 @@ func (o *Operator) Update(ctx context.Context) error {
 		}
 		return fmt.Errorf("activate: %w", err)
 	}
+	o.invalidateVersionProbeCache()
 	if wasRunning {
 		report("start", 0, 0, "")
 		if err := o.startAndWait(ctx); err != nil {

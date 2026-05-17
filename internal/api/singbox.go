@@ -182,14 +182,15 @@ func (h *SingboxHandler) Install(w http.ResponseWriter, r *http.Request) {
 
 // Update handles POST /api/singbox/update.
 // Replaces the installed managed sing-box binary with the version this
-// awg-manager build is pinned to. No-op when versions match.
+// awg-manager build is pinned to. No-op when versions match. Returns the fresh
+// status so the client can clear its update prompt without a separate refetch.
 //
 //	@Summary		Update managed sing-box binary
 //	@Description	Replaces the currently-installed managed sing-box with the version this awg-manager build is pinned to. No-op when versions match.
 //	@Tags			singbox
 //	@Produce		json
 //	@Security		CookieAuth
-//	@Success		200	{object}	OkResponse
+//	@Success		200	{object}	SingboxStatusResponse
 //	@Failure		405	{object}	APIErrorEnvelope
 //	@Failure		500	{object}	APIErrorEnvelope
 //	@Router			/singbox/update [post]
@@ -202,8 +203,10 @@ func (h *SingboxHandler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, err.Error())
 		return
 	}
+	s := h.op.GetStatus(r.Context())
 	publishInvalidated(h.bus, ResourceSingboxStatus, "updated")
-	response.Success(w, map[string]bool{"updated": true})
+	publishInvalidated(h.bus, ResourceSysInfo, "singbox-updated")
+	response.Success(w, s)
 }
 
 // Control handles POST /api/singbox/control.
