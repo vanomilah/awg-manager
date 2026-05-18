@@ -6,12 +6,14 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
-// TestMergeInterfaceWhitelist_PreservesAWGParams ensures that when the
-// edit-form sends only Address/MTU/DNS, the AWG obfuscation parameters
-// present in the existing tunnel are NOT silently overwritten with
-// zeros (Bug H). Add new fields to the whitelist when the frontend
-// starts editing them.
-func TestMergeInterfaceWhitelist_PreservesAWGParams(t *testing.T) {
+// TestMergeInterfaceWhitelist_AppliesAWGParamsFromRequest covers issue #131:
+// the full edit form sends new AWG obfuscation parameters (Jc, Jmin, S1-S4,
+// H1-H4, I1-I5, Qlen) and the user expects them to land in storage. Earlier
+// the whitelist always preserved AWG params from existing, silently
+// discarding every UI edit; the regression manifested as "save" being a
+// no-op for an Amnezia-Premium tunnel where the user wanted to clear or
+// regenerate the I1 signature packet.
+func TestMergeInterfaceWhitelist_AppliesAWGParamsFromRequest(t *testing.T) {
 	existing := &storage.AWGTunnel{
 		Interface: storage.AWGInterface{
 			Address:    "10.0.0.1",
@@ -29,24 +31,64 @@ func TestMergeInterfaceWhitelist_PreservesAWGParams(t *testing.T) {
 	}
 	req := &storage.AWGTunnel{
 		Interface: storage.AWGInterface{
-			Address: "10.0.0.2", // changed
-			MTU:     1280,        // changed
-			DNS:     "8.8.8.8",   // changed
-			// PrivateKey, Qlen, AWG params NOT sent — must preserve
+			Address: "10.0.0.1",
+			MTU:     1420,
+			DNS:     "1.1.1.1",
+			AWGObfuscation: storage.AWGObfuscation{
+				Qlen: 2000,
+				Jc:   7, Jmin: 60, Jmax: 1100,
+				S1: 110, S2: 210, S3: 310, S4: 410,
+				H1: "new-h1", H2: "new-h2", H3: "new-h3", H4: "new-h4",
+				I1: "new-i1", I2: "new-i2", I3: "new-i3", I4: "new-i4", I5: "new-i5",
+			},
 		},
 	}
 	mergeInterfaceWhitelist(req, existing)
 
-	if req.Interface.Qlen != 1000 || req.Interface.Jc != 5 ||
-		req.Interface.S1 != 100 || req.Interface.H1 != "h1val" ||
-		req.Interface.I1 != "i1val" {
-		t.Fatalf("AWG params lost: %+v", req.Interface)
+	if req.Interface.Qlen != 2000 || req.Interface.Jc != 7 || req.Interface.Jmin != 60 ||
+		req.Interface.Jmax != 1100 || req.Interface.S1 != 110 || req.Interface.S2 != 210 ||
+		req.Interface.S3 != 310 || req.Interface.S4 != 410 {
+		t.Fatalf("numeric AWG params not applied from req: %+v", req.Interface)
 	}
+	if req.Interface.H1 != "new-h1" || req.Interface.H2 != "new-h2" ||
+		req.Interface.H3 != "new-h3" || req.Interface.H4 != "new-h4" {
+		t.Fatalf("H1-H4 not applied from req: %+v", req.Interface)
+	}
+	if req.Interface.I1 != "new-i1" || req.Interface.I2 != "new-i2" ||
+		req.Interface.I3 != "new-i3" || req.Interface.I4 != "new-i4" || req.Interface.I5 != "new-i5" {
+		t.Fatalf("I1-I5 not applied from req: %+v", req.Interface)
+	}
+	// PrivateKey still preserves on empty (separate whitelist rule).
 	if req.Interface.PrivateKey != "secret" {
 		t.Fatalf("PrivateKey lost: got %q", req.Interface.PrivateKey)
 	}
-	if req.Interface.Address != "10.0.0.2" || req.Interface.MTU != 1280 || req.Interface.DNS != "8.8.8.8" {
-		t.Fatalf("whitelist fields not applied: %+v", req.Interface)
+}
+
+// TestMergeInterfaceWhitelist_ClearsAWGParamsFromRequest covers the
+// "просто удалить i1" case from issue #131: the user explicitly empties
+// signature packet fields in the edit form. The frontend sends i1=""
+// (omitted via i1: undefined in buildUpdatePayload); the backend must
+// honour that and persist the cleared value, not silently restore the
+// previous one from existing.
+func TestMergeInterfaceWhitelist_ClearsAWGParamsFromRequest(t *testing.T) {
+	existing := &storage.AWGTunnel{
+		Interface: storage.AWGInterface{
+			Address: "10.0.0.1", MTU: 1420,
+			AWGObfuscation: storage.AWGObfuscation{
+				I1: "<r 2><b 0x8580...>", I2: "old-i2", I3: "old-i3",
+			},
+		},
+	}
+	req := &storage.AWGTunnel{
+		Interface: storage.AWGInterface{
+			Address: "10.0.0.1", MTU: 1420,
+			// All I1-I5 omitted — JSON unmarshal leaves them empty.
+		},
+	}
+	mergeInterfaceWhitelist(req, existing)
+
+	if req.Interface.I1 != "" || req.Interface.I2 != "" || req.Interface.I3 != "" {
+		t.Fatalf("I1-I3 should be cleared, got %+v", req.Interface)
 	}
 }
 

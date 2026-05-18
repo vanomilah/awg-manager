@@ -1367,16 +1367,17 @@ func (h *TunnelsHandler) ReplaceConf(w http.ResponseWriter, r *http.Request) {
 }
 
 // mergeInterfaceWhitelist applies the edit-form whitelist on top of
-// existing.Interface. Only Address, MTU, DNS, and PrivateKey (when sent)
-// are taken from req; AmneziaWG obfuscation parameters, Qlen, and
-// signature packets always preserve from existing — protects against
-// silent loss when the frontend submits a form that omits those fields.
+// existing.Interface. Address, MTU, DNS, and the AmneziaWG obfuscation
+// block (Qlen, Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5) are taken from req;
+// PrivateKey is taken from req only when non-empty so a save without a
+// fresh key keeps the existing one.
 //
-// When req.Interface.Address is empty the entire Interface is treated
-// as missing (routing-page partial update) and fully preserved.
-//
-// To extend the whitelist (e.g. when a new field becomes editable),
-// add the assignment here and update TestUpdate_PreservesAWGParams.
+// Partial-update safety net: when req.Interface.Address is empty the
+// entire Interface is treated as missing (routing-page calls that only
+// touch ispInterface) and fully preserved from existing. Callers that
+// send Address MUST send the rest of the interface body too, otherwise
+// the empty fields will overwrite existing values — the frontend's
+// buildUpdatePayload spreads ...tunnel.interface for that reason.
 func mergeInterfaceWhitelist(req *storage.AWGTunnel, existing *storage.AWGTunnel) {
 	if req.Interface.Address == "" {
 		req.Interface = existing.Interface
@@ -1389,6 +1390,9 @@ func mergeInterfaceWhitelist(req *storage.AWGTunnel, existing *storage.AWGTunnel
 	if req.Interface.PrivateKey != "" {
 		preserved.PrivateKey = req.Interface.PrivateKey
 	}
+	// AWG obfuscation block (issue #131): editable in the full edit form,
+	// so req is the source of truth — including explicit clears (i1 -> "").
+	preserved.AWGObfuscation = req.Interface.AWGObfuscation
 	req.Interface = preserved
 }
 
