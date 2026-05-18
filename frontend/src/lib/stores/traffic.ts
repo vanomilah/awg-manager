@@ -204,6 +204,21 @@ export function getTrafficRates(tunnelId: string): { rx: number[]; tx: number[] 
 	};
 }
 
+/** Aligned RX/TX slices for inline sparklines (list rows, compact headers). */
+export function getTrafficSparklineSeries(
+	tunnelId: string,
+	maxPoints = 28,
+): { rx: number[]; tx: number[] } {
+	const { rx, tx } = getTrafficRates(tunnelId);
+	const n = Math.min(rx.length, tx.length);
+	if (n === 0) return { rx: [], tx: [] };
+	const start = n - Math.min(maxPoints, n);
+	return {
+		rx: rx.slice(start, n),
+		tx: tx.slice(start, n),
+	};
+}
+
 /** Clear history for a tunnel (e.g. on delete). */
 export function clearTraffic(tunnelId: string): void {
 	history.delete(tunnelId);

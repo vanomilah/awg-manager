@@ -76,15 +76,15 @@
 
 	const traffic = $derived($singboxTraffic.get(member.tag));
 
-	const trafficSparkData = $derived.by(() => {
+	const trafficSparkSeries = $derived.by(() => {
 		const n = Math.min(rxRates.length, txRates.length);
-		if (n === 0) return [];
+		if (n === 0) return { rx: [] as number[], tx: [] as number[] };
 		const take = Math.min(36, n);
-		const out: number[] = [];
-		for (let i = n - take; i < n; i++) {
-			out.push(Math.max(0, rxRates[i] ?? 0) + Math.max(0, txRates[i] ?? 0));
-		}
-		return out;
+		const start = n - take;
+		return {
+			rx: rxRates.slice(start, n),
+			tx: txRates.slice(start, n),
+		};
 	});
 
 	let rxRates = $state<number[]>([]);
@@ -147,14 +147,14 @@
 		<div class="c c-traffic-mini" data-label="Трафик">
 			<div class="traffic-row-list">
 				<TrafficSparkline
-					data={trafficSparkData}
+					rxData={trafficSparkSeries.rx}
+					txData={trafficSparkSeries.tx}
 					width={84}
 					height={22}
-					color={active ? 'var(--color-accent)' : 'var(--color-border-hover)'}
 				/>
 				<div class="traffic-mini-col mono">
-					<span>↓ {formatBytes(traffic?.download ?? 0)}</span>
-					<span>↑ {formatBytes(traffic?.upload ?? 0)}</span>
+					<span class="traffic-rate rx">↓ {formatBytes(traffic?.download ?? 0)}</span>
+					<span class="traffic-rate tx">↑ {formatBytes(traffic?.upload ?? 0)}</span>
 				</div>
 			</div>
 		</div>
@@ -536,7 +536,6 @@
 		gap: 0.08rem;
 		font-size: 0.68rem;
 		line-height: 1.15;
-		color: var(--color-text-muted);
 		flex-shrink: 0;
 	}
 </style>

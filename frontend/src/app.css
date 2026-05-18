@@ -1319,3 +1319,11 @@ label {
 	text-overflow: ellipsis;
 	margin-top: 2px;
 }
+
+/* Traffic rate labels — same rx/tx colors as TrafficChart sparklines */
+.traffic-rate.rx {
+	color: var(--accent, #60a5fa);
+}
+.traffic-rate.tx {
+	color: var(--success, #4ade80);
+}

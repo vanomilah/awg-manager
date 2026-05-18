@@ -26,7 +26,7 @@
 	} from '$lib/components/ui';
 	import { singboxDelayHistory, singboxStatus, singboxTraffic, singboxTunnels } from '$lib/stores/singbox';
 	import { SingboxInstallBanner, SingboxTunnelCard } from '$lib/components/singbox';
-	import { feedTraffic, getTrafficRates, subscribeTraffic } from '$lib/stores/traffic';
+	import { feedTraffic, getTrafficRates, getTrafficSparklineSeries, subscribeTraffic } from '$lib/stores/traffic';
 	import { usageLevel } from '$lib/stores/settings';
 	import { isSectionVisible } from '$lib/types/usageLevel';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
@@ -915,12 +915,9 @@
 		};
 	}
 
-	function sparklineData(id: string): number[] {
+	function sparklineSeries(id: string): { rx: number[]; tx: number[] } {
 		void trafficTick;
-		const rates = getTrafficRates(id);
-		const rx = rates.rx.slice(-28);
-		const tx = rates.tx.slice(-28);
-		return rx.map((value, index) => value + (tx[index] ?? 0));
+		return getTrafficSparklineSeries(id, 28);
 	}
 
 	let awgSummaryTotal = $derived(awgList.length + visibleSystemList.length + externalList.length);
@@ -1257,7 +1254,7 @@
 					{@const connectivity = awgConnectivityMap.get(tunnel.id)}
 					{@const isEndpointShown = endpointVisible('managed', tunnel.id)}
 					{@const rate = latestRate(tunnel.id)}
-					{@const spark = sparklineData(tunnel.id)}
+					{@const spark = sparklineSeries(tunnel.id)}
 					{@const isActive = isManagedTunnelOn(tunnel)}
 					{@const checkDisabled = (tunnel.connectivityCheck?.method ?? 'http') === 'disabled'}
 					{@const connState = !isActive ? 'idle'
@@ -1367,12 +1364,12 @@
 									title="Открыть детали туннеля"
 								>
 									<TrafficSparkline
-										data={spark}
-										color={isManagedTunnelOn(tunnel) ? 'var(--color-accent)' : 'var(--color-border-hover)'}
+										rxData={spark.rx}
+										txData={spark.tx}
 									/>
 									<div class="awg-list-rate-text awg-list-mono">
-										<div>↓ {formatBitRate(rate.rx)}</div>
-										<div>↑ {formatBitRate(rate.tx)}</div>
+										<div class="traffic-rate rx">↓ {formatBitRate(rate.rx)}</div>
+										<div class="traffic-rate tx">↑ {formatBitRate(rate.tx)}</div>
 									</div>
 								</button>
 							</div>
@@ -1420,7 +1417,7 @@
 						{#each visibleSystemList as tunnel (tunnel.id)}
 							{@const isEndpointShown = endpointVisible('system', tunnel.id)}
 							{@const rate = latestRate(tunnel.id)}
-							{@const spark = sparklineData(tunnel.id)}
+							{@const spark = sparklineSeries(tunnel.id)}
 							<div class="awg-list-row">
 								<div class="awg-list-cell awg-list-cell-toggle" data-label="Тип">
 									<span class="awg-row-placeholder">SYS</span>
@@ -1494,12 +1491,12 @@
 										title="Открыть детали туннеля"
 									>
 										<TrafficSparkline
-											data={spark}
-											color={tunnel.status === 'up' ? 'var(--color-accent)' : 'var(--color-border-hover)'}
+											rxData={spark.rx}
+											txData={spark.tx}
 										/>
 										<div class="awg-list-rate-text awg-list-mono">
-											<div>↓ {formatBitRate(rate.rx)}</div>
-											<div>↑ {formatBitRate(rate.tx)}</div>
+											<div class="traffic-rate rx">↓ {formatBitRate(rate.rx)}</div>
+											<div class="traffic-rate tx">↑ {formatBitRate(rate.tx)}</div>
 										</div>
 									</button>
 								</div>
@@ -1598,10 +1595,10 @@
 									<div class="awg-list-sub">WG интерфейс</div>
 								</div>
 								<div class="awg-list-cell awg-list-cell-rate" data-label="Throughput">
-									<TrafficSparkline data={[]} color="var(--color-border-hover)" />
+									<TrafficSparkline rxData={[]} txData={[]} />
 									<div class="awg-list-rate-text awg-list-mono">
-										<div>↓ {formatBytes(tunnel.rxBytes)}</div>
-										<div>↑ {formatBytes(tunnel.txBytes)}</div>
+										<div class="traffic-rate rx">↓ {formatBytes(tunnel.rxBytes)}</div>
+										<div class="traffic-rate tx">↑ {formatBytes(tunnel.txBytes)}</div>
 									</div>
 								</div>
 								<div class="awg-list-cell awg-list-cell-mono" data-label="Handshake">
@@ -2484,7 +2481,6 @@
 		flex-direction: column;
 		gap: 0.1875rem;
 		font-size: 0.6875rem;
-		color: var(--color-text-secondary);
 		text-align: left;
 		min-width: 0;
 	}

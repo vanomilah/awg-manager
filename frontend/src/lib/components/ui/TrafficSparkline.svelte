@@ -1,37 +1,74 @@
 <script lang="ts">
 	interface Props {
-		data: number[];
+		/** Single combined series (legacy). Prefer rxData + txData for dual-line mode. */
+		data?: number[];
+		rxData?: number[];
+		txData?: number[];
 		width?: number;
 		height?: number;
+		/** Stroke for single-line mode */
 		color?: string;
+		rxColor?: string;
+		txColor?: string;
 	}
 
 	let {
 		data = [],
+		rxData,
+		txData,
 		width = 92,
 		height = 28,
 		color = 'var(--color-accent)',
+		rxColor = 'var(--accent, #60a5fa)',
+		txColor = 'var(--success, #4ade80)',
 	}: Props = $props();
 
 	const padding = 2;
 
-	const points = $derived.by(() => {
-		if (data.length === 0) return '';
+	const dualMode = $derived(rxData !== undefined && txData !== undefined);
 
-		const maxValue = Math.max(...data, 1);
+	function buildPoints(series: number[], maxValue: number): string {
+		if (series.length === 0) return '';
+
+		const max = Math.max(maxValue, 1);
 		const innerWidth = Math.max(width - padding * 2, 1);
 		const innerHeight = Math.max(height - padding * 2, 1);
 
-		return data
+		return series
 			.map((value, index) => {
 				const x =
-					data.length === 1
+					series.length === 1
 						? width / 2
-						: padding + (innerWidth * index) / (data.length - 1);
-				const y = padding + innerHeight * (1 - value / maxValue);
+						: padding + (innerWidth * index) / (series.length - 1);
+				const y = padding + innerHeight * (1 - value / max);
 				return `${x},${y}`;
 			})
 			.join(' ');
+	}
+
+	const dualPaths = $derived.by(() => {
+		const rx = rxData ?? [];
+		const tx = txData ?? [];
+		const n = Math.min(rx.length, tx.length);
+		if (n === 0) return { rxPts: '', txPts: '' };
+
+		let max = 1;
+		for (let i = 0; i < n; i++) {
+			const rv = rx[i] ?? 0;
+			const tv = tx[i] ?? 0;
+			if (rv > max) max = rv;
+			if (tv > max) max = tv;
+		}
+
+		return {
+			rxPts: buildPoints(rx.slice(-n), max),
+			txPts: buildPoints(tx.slice(-n), max),
+		};
+	});
+
+	const singlePoints = $derived.by(() => {
+		if (data.length === 0) return '';
+		return buildPoints(data, Math.max(...data, 1));
 	});
 </script>
 
@@ -43,8 +80,37 @@
 		y2={height - padding}
 		class="baseline"
 	/>
-	{#if points}
-		<polyline points={points} fill="none" stroke={color} stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+	{#if dualMode}
+		{#if dualPaths.rxPts}
+			<polyline
+				points={dualPaths.rxPts}
+				fill="none"
+				stroke={rxColor}
+				stroke-width="1.5"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			/>
+		{/if}
+		{#if dualPaths.txPts}
+			<polyline
+				points={dualPaths.txPts}
+				fill="none"
+				stroke={txColor}
+				stroke-width="1.35"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+				opacity="0.95"
+			/>
+		{/if}
+	{:else if singlePoints}
+		<polyline
+			points={singlePoints}
+			fill="none"
+			stroke={color}
+			stroke-width="1.75"
+			stroke-linecap="round"
+			stroke-linejoin="round"
+		/>
 	{/if}
 </svg>
 
