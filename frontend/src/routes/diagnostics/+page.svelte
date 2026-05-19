@@ -12,14 +12,16 @@
 	import ConnectionsTab from './ConnectionsTab.svelte';
 	import ChecksTab from './ChecksTab.svelte';
 	import AwgConfigAnalyzerTab from './AwgConfigAnalyzerTab.svelte';
+	import AboutDeviceTab from './AboutDeviceTab.svelte';
 
-	type ActiveTab = 'logs' | 'connections' | 'checks' | 'awgConfig';
+	type ActiveTab = 'logs' | 'connections' | 'checks' | 'about' | 'awgConfig';
 
 	function initialDiagnosticsTab(): ActiveTab {
 		const tab = $page.url.searchParams.get('tab');
 
 		if (tab === 'connections') return 'connections';
 		if (tab === 'checks') return 'checks';
+		if (tab === 'about') return 'about';
 		if (tab === 'awgConfig') return 'awgConfig';
 
 		// legacy aliases, чтобы первый render тоже сразу попадал в checks
@@ -44,6 +46,7 @@
 			{ id: 'logs', label: 'Журнал' },
 			{ id: 'connections', label: 'Соединения' },
 			{ id: 'checks', label: 'Проверки' },
+			{ id: 'about', label: 'Окружение' },
 		];
 		if ($usageLevel === 'expert') {
 			base.push({ id: 'awgConfig', label: 'Конфиг AWG' });
@@ -147,6 +150,7 @@
 	const pageTitle = $derived(
 		activeTab === 'connections' ? 'Соединения · Диагностика' :
 		activeTab === 'checks' ? 'Проверки · Диагностика' :
+		activeTab === 'about' ? 'Окружение · Диагностика' :
 		activeTab === 'awgConfig' ? 'Конфиг AWG · Диагностика' :
 		'Журнал · Диагностика',
 	);
@@ -173,6 +177,8 @@
 		<ConnectionsTab />
 	{:else if activeTab === 'checks'}
 		<ChecksTab {tunnels} />
+	{:else if activeTab === 'about'}
+		<AboutDeviceTab />
 	{:else if activeTab === 'awgConfig'}
 		<AwgConfigAnalyzerTab />
 	{/if}

@@ -987,6 +987,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	if s.dnsCheckService != nil {
 		dnsCheckHandler := api.NewDnsCheckHandler(s.dnsCheckService)
 		mux.HandleFunc("/api/dns-check/start", guarded(dnsCheckHandler.Start))
+		mux.HandleFunc("/api/dns-check/client", guarded(dnsCheckHandler.Client))
 		mux.HandleFunc("/api/dns-check/probe", dnsCheckHandler.Probe) // NO auth — cross-origin
 	}
 

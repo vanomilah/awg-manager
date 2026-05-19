@@ -18,6 +18,9 @@
 //   row matches diagnostics UI (same as a real router).
 // - Amnezia Premium CP: POST /amnezia-premium/login | account-info | download-config
 //   (paths without /api — Vite rewrite). Stub session + two countries + .conf text.
+// - Diagnostics «Окружение: GET /dns-check/client (Test-Phone @ 192.168.1.42,
+//   policy Kids), /system/hydraroute-status, plus existing /routing/*, /tunnels/all,
+//   /proxy/*, /singbox/subscriptions.
 // Default upstream: http://127.0.0.1:8080 (Prism). Listen: 8081.
 
 import http from 'node:http';
@@ -1282,7 +1285,7 @@ let mockDNSRules = [
 	},
 ];
 const mockPolicyDevices = [
-	{ mac: 'aa:aa:aa:aa:aa:01', ip: '192.168.1.42', name: 'Test-Phone',    hostname: 'phone',  active: true, link: 'WiFi', policy: '' },
+	{ mac: 'aa:aa:aa:aa:aa:01', ip: '192.168.1.42', name: 'Test-Phone',    hostname: 'phone',  active: true, link: 'WiFi', policy: 'Kids' },
 	{ mac: 'aa:aa:aa:aa:aa:02', ip: '192.168.1.43', name: 'Test-Laptop',   hostname: 'laptop', active: true, link: 'WiFi', policy: '' },
 	{ mac: 'aa:aa:aa:aa:aa:03', ip: '192.168.1.44', name: 'BoundElsewhere', hostname: 'other', active: true, link: 'WiFi', policy: 'OtherPolicy' },
 	{ mac: 'aa:aa:aa:aa:aa:04', ip: '192.168.1.45', name: 'Family-TV',     hostname: 'tv',     active: true, link: 'LAN',  policy: '' },
@@ -1325,7 +1328,36 @@ const mockAccessPolicies = [
 		interfaces: [{ name: 'Direct', label: 'Direct', order: 0 }],
 		deviceCount: 6,
 	},
+	{
+		name: 'OtherPolicy',
+		description: 'Прочие устройства',
+		standalone: false,
+		interfaces: [{ name: 'Direct', label: 'Direct', order: 0 }],
+		deviceCount: 1,
+	},
 ];
+
+/** Диагностика → «Окружение»: LAN-клиент и политика (GET /dns-check/client). */
+const mockDnsCheckClientPayload = {
+	clientIP: '192.168.1.42',
+	hostname: 'Test-Phone',
+	checks: [
+		{
+			id: 'client_policy',
+			status: 'ok',
+			title: 'Политика доступа клиента',
+			message: 'Клиент использует политику: Kids',
+		},
+	],
+};
+
+/** HydraRoute Neo в блоке AWGM (GET /system/hydraroute-status). */
+const mockHydraRouteStatus = {
+	installed: true,
+	running: true,
+	version: '2.4.1',
+};
+
 const mockRoutingDnsRoutes = [
 	{
 		id: 'dns-work-vpn',
@@ -2571,6 +2603,11 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'GET' && path === '/system/hydraroute-status') {
+		send(res, 200, { success: true, data: mockHydraRouteStatus });
+		return;
+	}
+
 	// === Device Proxy mock overrides ===
 	if (req.method === 'GET' && path === '/proxy/instances') {
 		send(res, 200, { success: true, data: mockProxyInstances });
@@ -2694,6 +2731,16 @@ const server = http.createServer(async (req, res) => {
 
 	if (req.method === 'GET' && path === '/singbox/router/presets/list') {
 		send(res, 200, { success: true, data: mockSingboxPresets });
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/dns-check/client') {
+		send(res, 200, { success: true, data: mockDnsCheckClientPayload });
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/dns-check/start') {
+		send(res, 200, { success: true, data: mockDnsCheckClientPayload });
 		return;
 	}
 

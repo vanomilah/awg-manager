@@ -1247,6 +1247,11 @@ class ApiClient {
 		return this.request('/dns-check/start', { method: 'POST' });
 	}
 
+	/** Client IP, hostname, and policy only — no full DNS diagnostic suite. */
+	async getDnsCheckClient(): Promise<DnsCheckStartResponse> {
+		return this.request('/dns-check/client');
+	}
+
 	// #endregion
 
 	// ─────────────────────────────────────────────

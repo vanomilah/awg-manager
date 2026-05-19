@@ -10,5 +10,6 @@ export { default as ChecksToolbar } from './ChecksToolbar.svelte';
 export { default as ChecksGroup } from './ChecksGroup.svelte';
 export { default as ChecksAdvancedPopover } from './ChecksAdvancedPopover.svelte';
 export { default as ClientDnsCheck } from './ClientDnsCheck.svelte';
+export { default as AboutInfoSection } from './AboutInfoSection.svelte';
 export { contextMenu, openContextMenu, closeContextMenu } from './log-row-context-menu';
 export type { ContextMenuState } from './log-row-context-menu';

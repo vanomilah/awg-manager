@@ -138,6 +138,17 @@ func (s *Service) Start(ctx context.Context, clientIP string) (*StartResponse, e
 	}, nil
 }
 
+// ClientContext returns the caller's LAN identity and access-policy assignment
+// without running the full DNS diagnostic suite (tunnel/routes/encryption checks).
+func (s *Service) ClientContext(ctx context.Context, clientIP string) (*StartResponse, error) {
+	hostname := s.resolveHostname(ctx, clientIP)
+	return &StartResponse{
+		ClientIP: clientIP,
+		Hostname: hostname,
+		Checks:   []CheckResult{s.checkPolicy(ctx, clientIP)},
+	}, nil
+}
+
 // checkTunnel checks that at least one tunnel is running.
 func (s *Service) checkTunnel(ctx context.Context) CheckResult {
 	names := s.tunnels.RunningTunnelNames(ctx)

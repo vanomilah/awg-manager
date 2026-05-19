@@ -65,6 +65,30 @@ func (h *DnsCheckHandler) Start(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, result)
 }
 
+// Client returns client IP, hostname, and access-policy assignment only (fast path).
+//
+//	@Summary		Client context for diagnostics
+//	@Tags			dns-check
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Success		200	{object}	DnsCheckStartResponseEnvelope
+//	@Failure		400	{object}	APIErrorEnvelope
+//	@Failure		500	{object}	APIErrorEnvelope
+//	@Router			/dns-check/client [get]
+func (h *DnsCheckHandler) Client(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.MethodNotAllowed(w)
+		return
+	}
+	clientIP := extractClientIP(r)
+	result, err := h.svc.ClientContext(r.Context(), clientIP)
+	if err != nil {
+		response.Error(w, err.Error(), "DNSCHECK_CLIENT_ERROR")
+		return
+	}
+	response.Success(w, result)
+}
+
 // Probe — cross-origin endpoint hit by the client's DNS probe fetch.
 // If the client's DNS resolves awgm-dnscheck.test to the router, this
 // endpoint is reachable and responds with 200. NO auth required.
