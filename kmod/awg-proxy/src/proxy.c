@@ -87,6 +87,18 @@ static int create_remote_socket(struct socket **sock, __be32 ip, __be16 port,
 	if (ret)
 		return ret;
 
+	/* Disable Path-MTU-Discovery / Don't-Fragment bit on outbound packets
+	 * — mirrors amneziawg-linux-kernel-module's `skb->ignore_df = 1`
+	 * (src/socket.c). Standard UDP sockets set DF=1 by default, which makes
+	 * some middleboxes drop AWG handshakes (especially with DNS-shaped CPS
+	 * payloads, where DF=1 looks like DNS-amplification probes). Reference
+	 * sends with DF=0 and works against the same servers we fail on. */
+	{
+		int pmtu = IP_PMTUDISC_DONT;
+		(void)kernel_setsockopt(*sock, IPPROTO_IP, IP_MTU_DISCOVER,
+					(char *)&pmtu, sizeof(pmtu));
+	}
+
 	/* Bind to specific WAN interface if requested */
 	if (bind_iface && bind_iface[0]) {
 		ret = kernel_setsockopt(*sock, SOL_SOCKET, SO_BINDTODEVICE,
