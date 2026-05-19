@@ -5,3 +5,4 @@ export { default as DnsRouteDomainEditor } from './DnsRouteDomainEditor.svelte';
 export { default as DnsRoutePresetModal } from './DnsRoutePresetModal.svelte';
 export { default as ServiceIcon } from './ServiceIcon.svelte';
 export { default as IconPickerModal } from './IconPickerModal.svelte';
+export { default as NdmsPolicyHintBanner } from './NdmsPolicyHintBanner.svelte';

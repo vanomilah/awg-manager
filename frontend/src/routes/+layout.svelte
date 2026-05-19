@@ -283,6 +283,11 @@
 		}
 	});
 
+	// Sync usage level to <html> for layout gutter tokens (basic = tighter sides).
+	$effect(() => {
+		document.documentElement.setAttribute('data-usage-level', $usageLevel);
+	});
+
 	// Route guard: redirect away from sections hidden at the current usage level.
 	let lastWarnedPath = $state<string | null>(null);
 
@@ -446,6 +451,14 @@
 		width: 100%;
 		display: flex;
 		flex-direction: column;
+	}
+
+	/* v2.8.2: колонка контента 960px, боковые поля 1rem (только базовый режим). */
+	:global(html[data-usage-level='basic']) .main {
+		max-width: 960px;
+		margin-left: auto;
+		margin-right: auto;
+		padding: 0 1rem;
 	}
 
 	.offline-screen {

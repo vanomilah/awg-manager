@@ -4,7 +4,14 @@
     import type { DnsRoute, RoutingTunnel } from '$lib/types';
     import type { ServicePreset } from '$lib/data/presets';
     import { ConfirmModal, StoreStatusBadge, Button, Dropdown, type DropdownOption } from '$lib/components/ui';
-    import { DnsRouteCard, DnsRouteEditModal, DnsRouteImportModal, DnsRoutePresetModal, IconPickerModal } from '$lib/components/dnsroutes';
+    import {
+        DnsRouteCard,
+        DnsRouteEditModal,
+        DnsRouteImportModal,
+        DnsRoutePresetModal,
+        IconPickerModal,
+        NdmsPolicyHintBanner,
+    } from '$lib/components/dnsroutes';
     import { exportRoutes, downloadJson } from '$lib/utils/dns-export';
     import { notifications } from '$lib/stores/notifications';
     import { dnsRoutesStore } from '$lib/stores/routing';
@@ -305,6 +312,7 @@
         <p>Для DNS-маршрутизации требуется прошивка OS5 или <a href="https://github.com/Ground-Zerro/HydraRoute" target="_blank" rel="noopener">HydraRoute Neo</a></p>
     </div>
 {:else}
+<NdmsPolicyHintBanner {isOS5} />
 <div class="section-header">
     {#if !dnsSelectionMode}
         <span class="section-summary">

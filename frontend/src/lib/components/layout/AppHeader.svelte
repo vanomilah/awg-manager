@@ -364,7 +364,7 @@
 	.header-inner {
 		max-width: 1120px;
 		margin: 0 auto;
-		padding: 0 1.25rem;
+		padding: 0 var(--header-gutter-x);
 		height: 56px;
 		display: grid;
 		grid-template-columns: auto 1fr auto;
@@ -599,7 +599,7 @@
 		}
 
 		.mobile-nav-link {
-			padding: 0.75rem 1.25rem;
+			padding: 0.75rem var(--header-gutter-x);
 			color: var(--color-text-secondary);
 			font-size: 0.9375rem;
 			text-decoration: none;

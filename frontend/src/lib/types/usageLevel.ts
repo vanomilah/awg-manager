@@ -46,9 +46,9 @@ const SECTION_MIN_LEVEL: Record<Section, UsageLevel> = {
 };
 
 const ROUTING_SUBTAB_MIN_LEVEL: Record<RoutingSubTab, UsageLevel> = {
-	accessPolicies: 'basic',
+	accessPolicies: 'advanced',
 	clientRoutes: 'basic',
-	dnsRoutes: 'advanced',
+	dnsRoutes: 'basic',
 	ipRoutes: 'advanced',
 	hrNeo: 'expert',
 	singboxRouter: 'expert',
