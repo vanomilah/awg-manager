@@ -78,7 +78,11 @@ type Status struct {
 	CurrentVersion string `json:"currentVersion,omitempty"`
 	// RequiredVersion is the version this awg-manager build is pinned to.
 	RequiredVersion string `json:"requiredVersion"`
-	// UpdateAvailable is true when CurrentVersion != "" and differs from RequiredVersion.
+	// CurrentSHA256 is the checksum of the binary on disk.
+	CurrentSHA256 string `json:"currentSha256,omitempty"`
+	// RequiredSHA256 is the checksum this awg-manager build is pinned to.
+	RequiredSHA256 string `json:"requiredSha256,omitempty"`
+	// UpdateAvailable is true when version or SHA256 differs from the pinned binary.
 	UpdateAvailable bool `json:"updateAvailable"`
 }
 

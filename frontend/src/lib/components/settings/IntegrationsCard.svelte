@@ -13,8 +13,11 @@
 		hydraStatusLoading?: boolean;
 		hydraProbeNote?: string | null;
 		singboxInstalling: boolean;
+		singboxUpdating?: boolean;
 		singboxInstallError: string | null;
+		singboxUpdateError?: string | null;
 		oninstallSingbox: () => void;
+		onupdateSingbox?: () => void;
 		showSingbox?: boolean;
 		showHydra?: boolean;
 	}
@@ -26,14 +29,18 @@
 		hydraStatusLoading = false,
 		hydraProbeNote = null,
 		singboxInstalling,
+		singboxUpdating = false,
 		singboxInstallError,
+		singboxUpdateError = null,
 		oninstallSingbox,
+		onupdateSingbox,
 		showSingbox = true,
 		showHydra = true,
 	}: Props = $props();
 
 	const singboxInstalled = $derived(singboxStatus?.installed ?? false);
 	const singboxRunning = $derived(singboxStatus?.running ?? false);
+	const singboxNeedsUpdate = $derived(singboxStatus?.updateAvailable ?? false);
 	const hydraInstalled = $derived(hydraStatus?.installed ?? false);
 	const hydraRunning = $derived(hydraStatus?.running ?? false);
 	const singboxFatalLines = $derived.by(() => {
@@ -81,6 +88,7 @@
 		if (!p || p.phase !== 'download' || p.total <= 0) return null;
 		return Math.min(100, Math.round((p.downloaded / p.total) * 100));
 	});
+	const errorModalTitle = $derived(singboxUpdateError ? 'Не удалось обновить sing-box' : 'Не удалось установить sing-box');
 
 	let errorModalOpen = $state(false);
 
@@ -89,14 +97,15 @@
 	}
 
 	async function copyError() {
-		if (singboxInstallError) {
-			await copyToClipboard(singboxInstallError);
+		const err = singboxInstallError ?? singboxUpdateError;
+		if (err) {
+			await copyToClipboard(err);
 		}
 	}
 
 	// Auto-close modal when the upstream error is cleared (e.g. successful retry).
 	$effect(() => {
-		if (singboxInstallError === null) {
+		if (singboxInstallError === null && singboxUpdateError === null) {
 			errorModalOpen = false;
 		}
 	});
@@ -129,8 +138,21 @@
 								v{singboxStatus.version ?? singboxStatus.currentVersion ?? '?'}
 								{#if singboxRunning && singboxStatus.pid}· pid {singboxStatus.pid}{:else if !singboxRunning}· остановлен{/if}
 							</span>
+							{#if singboxNeedsUpdate}
+								<span class="setting-description warning">
+									Требуется обновление: {singboxStatus.currentVersion ?? '—'} → {singboxStatus.requiredVersion}
+								</span>
+							{/if}
 							{#if singboxFatalLines}
 								<span class="setting-description warning" title={singboxFatalLines}>{singboxFatalLines}</span>
+							{/if}
+							{#if singboxUpdateError}
+								<span class="install-error-row">
+									<span class="install-error-label">Не удалось обновить</span>
+									<Button variant="ghost" size="sm" onclick={showErrorDetails}>
+										Подробнее
+									</Button>
+								</span>
 							{/if}
 						{:else}
 							<span class="setting-description">
@@ -157,6 +179,10 @@
 							></div>
 						</div>
 					</div>
+				{:else if singboxInstalled && singboxNeedsUpdate && onupdateSingbox}
+					<Button variant="primary" size="sm" onclick={onupdateSingbox} loading={singboxUpdating}>
+						{singboxUpdating ? 'Обновление...' : 'Обновить'}
+					</Button>
 				{:else if singboxInstalled}
 					<Button variant="secondary" size="sm" href="/?tab=singbox">Открыть</Button>
 				{:else if singboxStatusLoading}
@@ -219,11 +245,11 @@
 
 <Modal
 	open={errorModalOpen}
-	title="Не удалось установить sing-box"
+	title={errorModalTitle}
 	size="lg"
 	onclose={() => (errorModalOpen = false)}
 >
-	<pre class="error-pre">{singboxInstallError ?? ''}</pre>
+	<pre class="error-pre">{singboxInstallError ?? singboxUpdateError ?? ''}</pre>
 	{#snippet actions()}
 		<Button variant="ghost" size="sm" onclick={copyError}>Скопировать</Button>
 		<Button variant="primary" size="sm" onclick={() => (errorModalOpen = false)}>

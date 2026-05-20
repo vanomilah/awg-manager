@@ -76,6 +76,38 @@ func TestProcessStartUsesConfigDir(t *testing.T) {
 	}
 }
 
+func TestSingboxRuntimeEnvDefaults(t *testing.T) {
+	env := singboxRuntimeEnv([]string{"PATH=/bin"})
+
+	if got := envValue(env, "GOMEMLIMIT"); got != defaultSingboxGOMEMLimit {
+		t.Fatalf("GOMEMLIMIT = %q, want %q", got, defaultSingboxGOMEMLimit)
+	}
+	if got := envValue(env, "GOGC"); got != defaultSingboxGOGC {
+		t.Fatalf("GOGC = %q, want %q", got, defaultSingboxGOGC)
+	}
+}
+
+func TestSingboxRuntimeEnvPreservesOverrides(t *testing.T) {
+	env := singboxRuntimeEnv([]string{"GOMEMLIMIT=64MiB", "GOGC=40"})
+
+	if got := envValue(env, "GOMEMLIMIT"); got != "64MiB" {
+		t.Fatalf("GOMEMLIMIT = %q, want override", got)
+	}
+	if got := envValue(env, "GOGC"); got != "40" {
+		t.Fatalf("GOGC = %q, want override", got)
+	}
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return strings.TrimPrefix(item, prefix)
+		}
+	}
+	return ""
+}
+
 func TestProcessStartReportsImmediateExit(t *testing.T) {
 	dir := t.TempDir()
 	p := &Process{

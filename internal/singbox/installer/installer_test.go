@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -155,6 +156,50 @@ func TestInstaller_BinaryPathAndRequiredVersion(t *testing.T) {
 	}
 	if got := inst.RequiredVersion(); got != "1.2.3" {
 		t.Errorf("RequiredVersion() = %q, want 1.2.3", got)
+	}
+	if got := inst.RequiredSHA256(); got != "s" {
+		t.Errorf("RequiredSHA256() = %q, want s", got)
+	}
+}
+
+func TestInstaller_CurrentSHA256(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sing-box")
+	body := []byte("same-version rebuilt binary")
+	sum := sha256.Sum256(body)
+	want := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(target, body, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := New(target, "test-arch", BinarySpec{Version: "1.2.3", SHA256: want}, nil)
+	got, err := inst.CurrentSHA256()
+	if err != nil {
+		t.Fatalf("CurrentSHA256() err: %v", err)
+	}
+	if got != want {
+		t.Errorf("CurrentSHA256() = %q, want %q", got, want)
+	}
+}
+
+func TestInstaller_MatchesRequired_RequiresVersionAndSHA(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sing-box")
+	body := []byte("#!/bin/sh\necho 'sing-box version 1.2.3'\n")
+	sum := sha256.Sum256(body)
+	hexSum := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(target, body, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := New(target, "test-arch", BinarySpec{Version: "1.2.3", SHA256: hexSum}, nil)
+	if !inst.MatchesRequired(context.Background()) {
+		t.Fatal("MatchesRequired() = false, want true for same version and SHA")
+	}
+
+	rebuilt := New(target, "test-arch", BinarySpec{Version: "1.2.3", SHA256: strings.Repeat("0", 64)}, nil)
+	if rebuilt.MatchesRequired(context.Background()) {
+		t.Fatal("MatchesRequired() = true, want false for same version but different SHA")
 	}
 }
 

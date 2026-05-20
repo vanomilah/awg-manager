@@ -1,6 +1,9 @@
 package singbox
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/singbox/installer"
 )
 
 // Sentinel error used by preflight tests to assert validator delegation.
@@ -100,6 +104,37 @@ func TestOperator_ConfigPaths(t *testing.T) {
 	}
 	if op.tunnelsFile() != filepath.Join(dir, "config.d", "10-tunnels.json") {
 		t.Errorf("tunnelsFile: %s", op.tunnelsFile())
+	}
+}
+
+func TestOperator_GetStatus_UpdateAvailableWhenSameVersionSHADiffers(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "sing-box")
+	body := []byte("#!/bin/sh\necho 'sing-box version 1.2.3'\n")
+	sum := sha256.Sum256(body)
+	currentSHA := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(binary, body, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	op := NewOperator(OperatorDeps{Dir: dir, Binary: binary})
+	op.SetInstaller(installer.New(binary, "test-arch", installer.BinarySpec{
+		Version: "1.2.3",
+		SHA256:  strings.Repeat("f", 64),
+	}, nil))
+
+	status := op.GetStatus(context.Background())
+	if !status.UpdateAvailable {
+		t.Fatal("UpdateAvailable = false, want true for same version with different SHA")
+	}
+	if status.CurrentVersion != "1.2.3" || status.RequiredVersion != "1.2.3" {
+		t.Fatalf("version pair = %q/%q, want 1.2.3/1.2.3", status.CurrentVersion, status.RequiredVersion)
+	}
+	if status.CurrentSHA256 != currentSHA {
+		t.Errorf("CurrentSHA256 = %q, want %q", status.CurrentSHA256, currentSHA)
+	}
+	if status.RequiredSHA256 != strings.Repeat("f", 64) {
+		t.Errorf("RequiredSHA256 = %q", status.RequiredSHA256)
 	}
 }
 
@@ -1031,4 +1066,3 @@ func TestPreflightConfigDir_FallsThroughToValidator(t *testing.T) {
 		t.Errorf("validator error must propagate verbatim, got: %s", err)
 	}
 }
-

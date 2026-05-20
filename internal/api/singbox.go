@@ -28,6 +28,8 @@ type SingboxStatusData struct {
 	Features        []string `json:"features,omitempty" example:"with_quic"`
 	CurrentVersion  string   `json:"currentVersion,omitempty" example:"1.13.11"`
 	RequiredVersion string   `json:"requiredVersion" example:"1.13.11"`
+	CurrentSHA256   string   `json:"currentSha256,omitempty" example:"76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934"`
+	RequiredSHA256  string   `json:"requiredSha256,omitempty" example:"76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934"`
 	UpdateAvailable bool     `json:"updateAvailable" example:"false"`
 }
 
@@ -182,14 +184,15 @@ func (h *SingboxHandler) Install(w http.ResponseWriter, r *http.Request) {
 
 // Update handles POST /api/singbox/update.
 // Replaces the installed managed sing-box binary with the version this
-// awg-manager build is pinned to. No-op when versions match.
+// awg-manager build is pinned to. No-op when versions match. Returns the fresh
+// status so the client can clear its update prompt without a separate refetch.
 //
 //	@Summary		Update managed sing-box binary
 //	@Description	Replaces the currently-installed managed sing-box with the version this awg-manager build is pinned to. No-op when versions match.
 //	@Tags			singbox
 //	@Produce		json
 //	@Security		CookieAuth
-//	@Success		200	{object}	OkResponse
+//	@Success		200	{object}	SingboxStatusResponse
 //	@Failure		405	{object}	APIErrorEnvelope
 //	@Failure		500	{object}	APIErrorEnvelope
 //	@Router			/singbox/update [post]
@@ -202,8 +205,10 @@ func (h *SingboxHandler) Update(w http.ResponseWriter, r *http.Request) {
 		response.InternalError(w, err.Error())
 		return
 	}
+	s := h.op.GetStatus(r.Context())
 	publishInvalidated(h.bus, ResourceSingboxStatus, "updated")
-	response.Success(w, map[string]bool{"updated": true})
+	publishInvalidated(h.bus, ResourceSysInfo, "singbox-updated")
+	response.Success(w, s)
 }
 
 // Control handles POST /api/singbox/control.

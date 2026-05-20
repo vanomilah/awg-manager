@@ -70,6 +70,36 @@ func (i *Installer) BinaryPath() string { return i.binaryPath }
 // RequiredVersion is the version this awg-manager build is pinned to.
 func (i *Installer) RequiredVersion() string { return i.spec.Version }
 
+// RequiredSHA256 is the checksum this awg-manager build is pinned to.
+func (i *Installer) RequiredSHA256() string { return i.spec.SHA256 }
+
+// CurrentSHA256 returns the checksum of the installed managed binary.
+func (i *Installer) CurrentSHA256() (string, error) {
+	f, err := os.Open(i.binaryPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// MatchesRequired reports whether the installed binary matches both the
+// pinned version and pinned bytes. The SHA256 check is intentional: custom
+// sing-box rebuilds can keep the same upstream version while fixing target-
+// specific binary contents.
+func (i *Installer) MatchesRequired(ctx context.Context) bool {
+	if i.CurrentVersion(ctx) != i.RequiredVersion() {
+		return false
+	}
+	currentSHA, err := i.CurrentSHA256()
+	return err == nil && strings.EqualFold(currentSHA, i.RequiredSHA256())
+}
+
 // Download fetches the binary to <binaryPath>.tmp and verifies SHA256.
 // On verification failure or HTTP error the tmp file is removed so the
 // caller does not activate corrupted contents. Returns the tmp path on

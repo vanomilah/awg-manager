@@ -77,6 +77,9 @@ func NewProcess(binary, configPath, pidPath string) *Process {
 const (
 	startupGracePeriod = 500 * time.Millisecond
 	stderrBufferSize   = 16 * 1024
+
+	defaultSingboxGOMEMLimit = "128MiB"
+	defaultSingboxGOGC       = "75"
 )
 
 // Start launches sing-box with `sing-box run -c <configPath>` and records PID.
@@ -107,6 +110,7 @@ func (p *Process) startLocked() error {
 	if err != nil {
 		return err
 	}
+	cmd.Env = singboxRuntimeEnv(os.Environ())
 	pr, pw := io.Pipe()
 	cmd.Stderr = pw
 
@@ -188,6 +192,23 @@ func (p *Process) startLocked() error {
 		}()
 		return nil
 	}
+}
+
+func singboxRuntimeEnv(base []string) []string {
+	env := append([]string(nil), base...)
+	env = appendEnvDefault(env, "GOMEMLIMIT", defaultSingboxGOMEMLimit)
+	env = appendEnvDefault(env, "GOGC", defaultSingboxGOGC)
+	return env
+}
+
+func appendEnvDefault(env []string, key, value string) []string {
+	prefix := key + "="
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			return env
+		}
+	}
+	return append(env, prefix+value)
 }
 
 // Binary returns the path to the sing-box executable used by this

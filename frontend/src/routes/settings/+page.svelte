@@ -51,6 +51,8 @@
 	let hydraBusy = $state(false);
 	let singboxInstalling = $state(false);
 	let singboxInstallError = $state<string | null>(null);
+	let singboxUpdating = $state(false);
+	let singboxUpdateError = $state<string | null>(null);
 	let singboxBusy = $state(false);
 	let hydraProbeNoteTimer: ReturnType<typeof setTimeout> | null = null;
 	let systemInfoRefreshing = $state(false);
@@ -127,6 +129,20 @@
 			singboxInstallError = e instanceof Error ? e.message : String(e);
 		} finally {
 			singboxInstalling = false;
+		}
+	}
+
+	async function updateSingbox() {
+		singboxUpdating = true;
+		singboxUpdateError = null;
+		try {
+			const fresh = await api.singboxUpdate();
+			singboxStatus.applyMutationResponse(fresh);
+			notifications.success("Sing-box обновлён");
+		} catch (e) {
+			singboxUpdateError = e instanceof Error ? e.message : String(e);
+		} finally {
+			singboxUpdating = false;
 		}
 	}
 
@@ -445,8 +461,11 @@ onMount(() => {
 					{hydraStatusLoading}
 					{hydraProbeNote}
 					{singboxInstalling}
+					{singboxUpdating}
 					{singboxInstallError}
+					{singboxUpdateError}
 					oninstallSingbox={installSingbox}
+					onupdateSingbox={updateSingbox}
 					showSingbox={showSingboxIntegration}
 					showHydra={showHydraIntegration}
 				/>

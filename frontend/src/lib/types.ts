@@ -1116,7 +1116,11 @@ export interface SingboxStatus {
 	currentVersion?: string;
 	/** Minimum required sing-box version for full functionality. */
 	requiredVersion: string;
-	/** True when installedVersion is below requiredVersion. */
+	/** SHA256 of the currently installed sing-box binary. Missing when not installed. */
+	currentSha256?: string;
+	/** SHA256 of the sing-box binary pinned to this awg-manager build. */
+	requiredSha256?: string;
+	/** True when the installed sing-box version or SHA256 differs from the pinned binary. */
 	updateAvailable: boolean;
 }
 

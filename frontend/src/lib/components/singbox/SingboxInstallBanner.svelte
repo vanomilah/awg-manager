@@ -44,22 +44,26 @@
 	const STORAGE_KEY = 'awgm:singbox-banner-dismissed';
 
 	// Signature changes when install/proxyComponent/features state
-	// changes, so a dismiss on one issue auto-resets once that issue is
-	// resolved or replaced by a new one.
+	// changes. Include version + required SHA in the update prompt so a
+	// same-version binary rebuild asks again if an older prompt was
+	// dismissed.
 	let signature = $derived.by(() => {
 		const s = $singboxStatus.data;
 		if (!s) return '';
 		if (!s.installed) return 'not-installed';
 		if (!s.proxyComponent) return 'no-proxy-component';
+		if (s.updateAvailable) {
+			return `update-available:${s.currentVersion ?? 'unknown'}:${s.requiredVersion ?? 'unknown'}:${s.requiredSha256 ?? 'unknown'}`;
+		}
 		// NaiveProxy requires the with_naive_outbound build tag. When
 		// the installed binary lacks it, naive outbounds silently fail
 		// at runtime — warn explicitly so the user swaps the build.
 		if (s.features && s.features.length > 0 && !s.features.includes('with_naive_outbound')) {
 			return 'no-naive';
 		}
-		if (s.updateAvailable) return 'update-available';
 		return '';
 	});
+	const issue = $derived(signature.split(':', 1)[0]);
 
 	$effect(() => {
 		if (typeof window === 'undefined') return;
@@ -101,7 +105,7 @@
 	}
 </script>
 
-{#if visible && signature === 'not-installed'}
+{#if visible && issue === 'not-installed'}
 	<div class="banner banner-stack">
 		<div class="banner-row">
 			<div class="text">
@@ -131,7 +135,7 @@
 			<div class="error">{error}</div>
 		{/if}
 	</div>
-{:else if visible && signature === 'no-proxy-component'}
+{:else if visible && issue === 'no-proxy-component'}
 	<div class="banner banner-error">
 		<div class="text">
 			<strong>NDMS-компонент «proxy» не установлен</strong>
@@ -144,7 +148,7 @@
 		</div>
 		<IconButton ariaLabel="Скрыть" onclick={dismiss}>&times;</IconButton>
 	</div>
-{:else if visible && signature === 'no-naive'}
+{:else if visible && issue === 'no-naive'}
 	<div class="banner">
 		<div class="text">
 			<strong>Sing-box собран без поддержки NaiveProxy</strong>
@@ -156,14 +160,24 @@
 		</div>
 		<IconButton ariaLabel="Скрыть" onclick={dismiss}>&times;</IconButton>
 	</div>
-{:else if visible && signature === 'update-available'}
+{:else if visible && issue === 'update-available'}
 	<div class="banner banner-stack">
 		<div class="banner-row">
 			<div class="text">
-				<strong>Доступна новая версия sing-box</strong>
+				<strong>
+					{#if $singboxStatus.data?.currentVersion === $singboxStatus.data?.requiredVersion}
+						Доступно обновление sing-box
+					{:else}
+						Доступна новая версия sing-box
+					{/if}
+				</strong>
 				<span>
-					Текущая <code>{$singboxStatus.data?.currentVersion ?? '—'}</code> →
-					<code>{$singboxStatus.data?.requiredVersion}</code>
+					{#if $singboxStatus.data?.currentVersion === $singboxStatus.data?.requiredVersion}
+						Версия <code>{$singboxStatus.data?.requiredVersion}</code>, обновилась контрольная сумма сборки
+					{:else}
+						Текущая <code>{$singboxStatus.data?.currentVersion ?? '—'}</code> →
+						<code>{$singboxStatus.data?.requiredVersion}</code>
+					{/if}
 				</span>
 			</div>
 			{#if !progress}
