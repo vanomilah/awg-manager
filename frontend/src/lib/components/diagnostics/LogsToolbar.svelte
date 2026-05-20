@@ -353,16 +353,37 @@
 
     <span class="actions">
       <button type="button" class="chip" onclick={onTogglePause}>
+        <svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">
+          {#if paused}
+            <polygon points="8 5 19 12 8 19 8 5"></polygon>
+          {:else}
+            <line x1="10" y1="5" x2="10" y2="19"></line>
+            <line x1="14" y1="5" x2="14" y2="19"></line>
+          {/if}
+        </svg>
         {paused ? 'Продолжить' : 'Пауза'}
       </button>
       <button type="button" class="chip" onclick={onCopy} disabled={visibleEntries === 0}>
-        Copy
+        <svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        Копировать
       </button>
       <button type="button" class="chip" onclick={onDownload} disabled={totalEntries === 0 || downloading}>
-        {downloading ? 'Downloading…' : 'Download'}
+        <svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        {downloading ? 'Скачивание…' : 'Скачать'}
       </button>
       <button type="button" class="chip chip-danger" onclick={handleClear} disabled={totalEntries === 0 || clearing}>
-        {clearing ? 'Clearing…' : 'Clear'}
+        <svg class="chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false">
+          <polyline points="3 6 5 6 21 6"></polyline>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        </svg>
+        {clearing ? 'Очистка…' : 'Очистить'}
       </button>
     </span>
   </div>
@@ -528,6 +549,18 @@
     gap: 0.25rem;
     margin-left: auto;
     flex-wrap: wrap;
+  }
+
+  .actions .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .chip-icon {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
   }
 
   @media (max-width: 640px) {

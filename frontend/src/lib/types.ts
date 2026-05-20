@@ -553,6 +553,9 @@ export interface SystemInfo {
 	isAarch64: boolean;
 	activeBackend: string;
 	routerIP: string;
+	routerTime?: string;
+	routerTimezone?: string;
+	routerTimezoneOffsetMinutes?: number;
 	bootInProgress: boolean;
 	/** >0 when started with -slow-request-ms (init script); drives Profiling log filter chip */
 	slowRequestThresholdMs?: number;

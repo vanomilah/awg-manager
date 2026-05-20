@@ -2937,6 +2937,9 @@ definitions:
     type: object
   api.SingboxStatusData:
     properties:
+      currentSha256:
+        example: 76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934
+        type: string
       currentVersion:
         example: 1.13.11
         type: string
@@ -2955,6 +2958,9 @@ definitions:
       proxyComponent:
         example: true
         type: boolean
+      requiredSha256:
+        example: 76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934
+        type: string
       requiredVersion:
         example: 1.13.11
         type: string
@@ -3377,6 +3383,15 @@ definitions:
       routerIP:
         example: 192.168.1.1
         type: string
+      routerTime:
+        example: "2026-05-20T14:32:10+03:00"
+        type: string
+      routerTimezone:
+        example: MSK
+        type: string
+      routerTimezoneOffsetMinutes:
+        example: 180
+        type: integer
       singbox:
         $ref: '#/definitions/api.SystemInfoSingbox'
       slowRequestThresholdMs:
@@ -9592,7 +9607,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.OkResponse'
+            $ref: '#/definitions/api.SingboxStatusResponse'
         "405":
           description: Method Not Allowed
           schema:

@@ -8,6 +8,7 @@
   import { usageLevel, settings } from '$lib/stores/settings';
   import { systemInfo } from '$lib/stores/system';
   import { copyToClipboard } from '$lib/utils/clipboard';
+  import { formatDateTimeWithOffset } from '$lib/utils/format';
   import LogRow from './LogRow.svelte';
   import LogsToolbar, { ALL_LEVELS } from './LogsToolbar.svelte';
   import LogsContextMenu from './LogsContextMenu.svelte';
@@ -81,6 +82,7 @@
   let initialFetchDone = $state(false);
   let prevLen = $state(0);
   let pageOffset = $state(0);
+  let manualFrozenLogs = $state<LogEntry[] | null>(null);
 
   /** Subgroup `profiling` is expert-only and only when -slow-request-ms > 0 at daemon start. */
   $effect(() => {
@@ -242,6 +244,7 @@
       resumeAndScroll();
     } else {
       manualPause = true;
+      manualFrozenLogs = filteredLogs.slice();
       paused = true;
     }
   }
@@ -250,10 +253,16 @@
     manualPause = false;
     paused = false;
     bufferCount = 0;
+    manualFrozenLogs = null;
     scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   async function applyFilter(f: LogsFilter) {
+    // Filter changes should be predictable: drop manual pause snapshot and return to live mode.
+    manualPause = false;
+    paused = false;
+    bufferCount = 0;
+    manualFrozenLogs = null;
     filter = f;
     saveFilter(f);
     // Group changed → refresh subgroup catalog; subgroup change keeps catalog.
@@ -266,6 +275,7 @@
     manualPause = false;
     paused = false;
     bufferCount = 0;
+    manualFrozenLogs = null;
     bucket = b;
     saveBucket(b);
     // Reset filters on bucket switch — group sets are disjoint per bucket.
@@ -275,7 +285,7 @@
     await refreshSubgroups();
   }
 
-  const displayLogs = $derived.by(() => {
+  const filteredLogs = $derived.by(() => {
     let arr: LogEntry[] = $activeStore;
     if (filter.levels.length > 0 && filter.levels.length < ALL_LEVELS.length) {
       const set = new Set(filter.levels);
@@ -300,6 +310,11 @@
     return arr;
   });
 
+  const displayLogs = $derived.by(() => {
+    if (manualPause && manualFrozenLogs) return manualFrozenLogs;
+    return filteredLogs;
+  });
+
   function handleClickScope(group: string, subgroup: string) {
     if (bucket === 'singbox') {
       // For sing-box the "scope" click maps the subgroup into the group selector.
@@ -316,9 +331,19 @@
     saveFilter(filter);
   }
 
-  function formatLine(log: LogEntry): string {
+  function formatLine(log: LogEntry, routerOffset: number): string {
     const scope = log.subgroup ? `${log.group}/${log.subgroup}` : log.group;
-    return `[${log.timestamp}] [${log.level.toUpperCase()}] [${scope}] ${log.action} ${log.target}: ${log.message}`;
+    const t = formatDateTimeWithOffset(log.timestamp, routerOffset);
+    return `[${t}] [${log.level.toUpperCase()}] [${scope}] ${log.action} ${log.target}: ${log.message}`;
+  }
+
+  function getRouterOffsetOrWarn(): number | null {
+    const routerOffset = $systemInfo.data?.routerTimezoneOffsetMinutes;
+    if (routerOffset === undefined || routerOffset === null || !Number.isFinite(routerOffset)) {
+      notifications.warning('Время роутера ещё не загружено, попробуйте через несколько секунд');
+      return null;
+    }
+    return routerOffset;
   }
 
   async function copyText(text: string, successMsg: string) {
@@ -330,12 +355,16 @@
   }
 
   async function handleCopy() {
-    const text = displayLogs.map(formatLine).join('\n');
+    const routerOffset = getRouterOffsetOrWarn();
+    if (routerOffset === null) return;
+    const text = displayLogs.map((log) => formatLine(log, routerOffset)).join('\n');
     await copyText(text, 'Скопировано в буфер обмена');
   }
 
-  function handleCopyLine(text: string) {
-    copyText(text, 'Строка скопирована');
+  function handleCopyLine(log: LogEntry) {
+    const routerOffset = getRouterOffsetOrWarn();
+    if (routerOffset === null) return;
+    copyText(formatLine(log, routerOffset), 'Строка скопирована');
   }
 
   function handleCopyMessage(text: string) {
@@ -343,6 +372,8 @@
   }
 
   async function handleDownload() {
+    const routerOffset = getRouterOffsetOrWarn();
+    if (routerOffset === null) return;
     downloading = true;
     try {
       const resp = await api.getLogs({
@@ -351,7 +382,7 @@
         subgroup: bucket === 'singbox' ? (filter.group || undefined) : (filter.subgroup || undefined),
         limit: $totalStore || 10000,
       });
-      const text = resp.logs.map(formatLine).join('\n');
+      const text = resp.logs.map((log) => formatLine(log, routerOffset)).join('\n');
       const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const date = new Date().toISOString().slice(0, 10);

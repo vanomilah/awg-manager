@@ -84,6 +84,36 @@ export function formatDate(timestamp: string): string {
 }
 
 /**
+ * Format timestamp using explicit UTC offset minutes (router timezone),
+ * independent from browser locale timezone.
+ * Output: YYYY-MM-DD HH:mm:ss
+ */
+export function formatDateTimeWithOffset(timestamp: string, offsetMinutes?: number): string {
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return timestamp;
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const formatOffset = (mins: number): string => {
+        const sign = mins >= 0 ? '+' : '-';
+        const abs = Math.abs(mins);
+        const hours = Math.floor(abs / 60);
+        const minutes = abs % 60;
+        return `${sign}${pad(hours)}:${pad(minutes)}`;
+    };
+
+    // Fallback for missing offset: use UTC-formatted value (not browser local timezone).
+    if (offsetMinutes === undefined || offsetMinutes === null || !Number.isFinite(offsetMinutes)) {
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}+00:00`;
+    }
+
+    const shiftedMs = d.getTime() + offsetMinutes * 60_000;
+    const shifted = new Date(shiftedMs);
+
+    // Use UTC getters after applying offset shift to avoid browser timezone effects.
+    return `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}:${pad(shifted.getUTCSeconds())}${formatOffset(offsetMinutes)}`;
+}
+
+/**
  * Format relative time in Russian (e.g., "2 минуты назад")
  */
 export function formatRelativeTime(timestamp: string | Date): string {

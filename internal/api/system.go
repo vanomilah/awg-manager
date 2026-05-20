@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,33 +42,36 @@ type SystemInfoSingbox struct {
 
 // SystemInfoData is the payload returned by GET /system/info.
 type SystemInfoData struct {
-	Version                string                        `json:"version" example:"2.5.0"`
-	GoVersion              string                        `json:"goVersion" example:"go1.23.0"`
-	GoArch                 string                        `json:"goArch" example:"arm64"`
-	GoOS                   string                        `json:"goOS" example:"linux"`
-	KeeneticOS             string                        `json:"keeneticOS" example:"ndms"`
-	IsOS5                  bool                          `json:"isOS5" example:"true"`
-	FirmwareVersion        string                        `json:"firmwareVersion" example:"4.2.1"`
-	SupportsExtendedASC    bool                          `json:"supportsExtendedASC" example:"true"`
-	SupportsHRanges        bool                          `json:"supportsHRanges" example:"true"`
-	SupportsPingCheck      bool                          `json:"supportsPingCheck" example:"true"`
-	TotalMemoryMB          int                           `json:"totalMemoryMB" example:"512"`
-	IsLowMemory            bool                          `json:"isLowMemory" example:"false"`
-	GcMemLimit             string                        `json:"gcMemLimit" example:"128MiB"`
-	Gogc                   string                        `json:"gogc" example:"25"`
-	DisableMemorySaving    bool                          `json:"disableMemorySaving" example:"false"`
-	KernelModuleExists     bool                          `json:"kernelModuleExists" example:"true"`
-	KernelModuleLoaded     bool                          `json:"kernelModuleLoaded" example:"false"`
-	KernelModuleModel      string                        `json:"kernelModuleModel" example:"MT7981"`
-	KernelModuleVersion    string                        `json:"kernelModuleVersion" example:""`
-	IsAarch64              bool                          `json:"isAarch64" example:"true"`
-	ActiveBackend          string                        `json:"activeBackend" example:"nativewg"`
-	RouterIP               string                        `json:"routerIP" example:"192.168.1.1"`
-	BootInProgress         bool                          `json:"bootInProgress" example:"false"`
-	SlowRequestThresholdMs int                           `json:"slowRequestThresholdMs" example:"0"`
-	BackendAvailability    SystemInfoBackendAvailability `json:"backendAvailability"`
-	Singbox                SystemInfoSingbox             `json:"singbox"`
-	RouterDetails          *RouterDetails                `json:"routerDetails,omitempty"`
+	Version                     string                        `json:"version" example:"2.5.0"`
+	GoVersion                   string                        `json:"goVersion" example:"go1.23.0"`
+	GoArch                      string                        `json:"goArch" example:"arm64"`
+	GoOS                        string                        `json:"goOS" example:"linux"`
+	KeeneticOS                  string                        `json:"keeneticOS" example:"ndms"`
+	IsOS5                       bool                          `json:"isOS5" example:"true"`
+	FirmwareVersion             string                        `json:"firmwareVersion" example:"4.2.1"`
+	SupportsExtendedASC         bool                          `json:"supportsExtendedASC" example:"true"`
+	SupportsHRanges             bool                          `json:"supportsHRanges" example:"true"`
+	SupportsPingCheck           bool                          `json:"supportsPingCheck" example:"true"`
+	TotalMemoryMB               int                           `json:"totalMemoryMB" example:"512"`
+	IsLowMemory                 bool                          `json:"isLowMemory" example:"false"`
+	GcMemLimit                  string                        `json:"gcMemLimit" example:"128MiB"`
+	Gogc                        string                        `json:"gogc" example:"25"`
+	DisableMemorySaving         bool                          `json:"disableMemorySaving" example:"false"`
+	KernelModuleExists          bool                          `json:"kernelModuleExists" example:"true"`
+	KernelModuleLoaded          bool                          `json:"kernelModuleLoaded" example:"false"`
+	KernelModuleModel           string                        `json:"kernelModuleModel" example:"MT7981"`
+	KernelModuleVersion         string                        `json:"kernelModuleVersion" example:""`
+	IsAarch64                   bool                          `json:"isAarch64" example:"true"`
+	ActiveBackend               string                        `json:"activeBackend" example:"nativewg"`
+	RouterIP                    string                        `json:"routerIP" example:"192.168.1.1"`
+	RouterTime                  string                        `json:"routerTime" example:"2026-05-20T14:32:10+03:00"`
+	RouterTimezone              string                        `json:"routerTimezone" example:"MSK"`
+	RouterTimezoneOffsetMinutes int                           `json:"routerTimezoneOffsetMinutes" example:"180"`
+	BootInProgress              bool                          `json:"bootInProgress" example:"false"`
+	SlowRequestThresholdMs      int                           `json:"slowRequestThresholdMs" example:"0"`
+	BackendAvailability         SystemInfoBackendAvailability `json:"backendAvailability"`
+	Singbox                     SystemInfoSingbox             `json:"singbox"`
+	RouterDetails               *RouterDetails                `json:"routerDetails,omitempty"`
 }
 
 // RouterDetails contains extended router metadata derived from NDMS/RCI and local procfs.
@@ -452,32 +457,36 @@ func (h *SystemHandler) BuildSystemInfo() map[string]interface{} {
 func (h *SystemHandler) buildSystemInfo(disableMemorySaving bool, gcMemLimit, gogc string, kernelModuleExists, kernelModuleLoaded bool, kernelModuleModel, kernelModuleVersion string, isAarch64 bool, activeBackendType, routerIP string) map[string]interface{} {
 	singboxInstalled, singboxVersion := h.getSingboxInfoFast()
 	routerDetails := h.getRouterDetailsCached()
+	now, zoneName, zoneOffsetMinutes := routerClockNow()
 
 	return map[string]interface{}{
-		"version":                h.version,
-		"goVersion":              runtime.Version(),
-		"goArch":                 runtime.GOARCH,
-		"goOS":                   runtime.GOOS,
-		"keeneticOS":             string(osdetect.Get()),
-		"isOS5":                  osdetect.Is5(),
-		"firmwareVersion":        osdetect.ReleaseString(),
-		"supportsExtendedASC":    osdetect.AtLeast(5, 1),
-		"supportsHRanges":        ndmsinfo.SupportsHRanges(),
-		"supportsPingCheck":      ndmsinfo.HasPingCheckComponent(),
-		"totalMemoryMB":          osdetect.GetTotalMemoryMB(),
-		"isLowMemory":            osdetect.IsLowMemoryDevice(),
-		"gcMemLimit":             gcMemLimit,
-		"gogc":                   gogc,
-		"disableMemorySaving":    disableMemorySaving,
-		"kernelModuleExists":     kernelModuleExists,
-		"kernelModuleLoaded":     kernelModuleLoaded,
-		"kernelModuleModel":      kernelModuleModel,
-		"kernelModuleVersion":    kernelModuleVersion,
-		"isAarch64":              isAarch64,
-		"activeBackend":          activeBackendType,
-		"routerIP":               routerIP,
-		"bootInProgress":         h.bootStatusFn != nil && h.bootStatusFn(),
-		"slowRequestThresholdMs": h.slowRequestThresholdMs,
+		"version":                     h.version,
+		"goVersion":                   runtime.Version(),
+		"goArch":                      runtime.GOARCH,
+		"goOS":                        runtime.GOOS,
+		"keeneticOS":                  string(osdetect.Get()),
+		"isOS5":                       osdetect.Is5(),
+		"firmwareVersion":             osdetect.ReleaseString(),
+		"supportsExtendedASC":         osdetect.AtLeast(5, 1),
+		"supportsHRanges":             ndmsinfo.SupportsHRanges(),
+		"supportsPingCheck":           ndmsinfo.HasPingCheckComponent(),
+		"totalMemoryMB":               osdetect.GetTotalMemoryMB(),
+		"isLowMemory":                 osdetect.IsLowMemoryDevice(),
+		"gcMemLimit":                  gcMemLimit,
+		"gogc":                        gogc,
+		"disableMemorySaving":         disableMemorySaving,
+		"kernelModuleExists":          kernelModuleExists,
+		"kernelModuleLoaded":          kernelModuleLoaded,
+		"kernelModuleModel":           kernelModuleModel,
+		"kernelModuleVersion":         kernelModuleVersion,
+		"isAarch64":                   isAarch64,
+		"activeBackend":               activeBackendType,
+		"routerIP":                    routerIP,
+		"routerTime":                  now.Format(time.RFC3339),
+		"routerTimezone":              zoneName,
+		"routerTimezoneOffsetMinutes": zoneOffsetMinutes,
+		"bootInProgress":              h.bootStatusFn != nil && h.bootStatusFn(),
+		"slowRequestThresholdMs":      h.slowRequestThresholdMs,
 		"backendAvailability": map[string]bool{
 			"nativewg": nativewgAvailable(),
 			// Kernel backend works on any OS where amneziawg.ko is loaded.
@@ -490,6 +499,109 @@ func (h *SystemHandler) buildSystemInfo(disableMemorySaving bool, gcMemLimit, go
 		},
 		"routerDetails": routerDetails,
 	}
+}
+
+// routerClockNow reads router TZ from Keenetic-style files (/etc/TZ or /var/TZ)
+// and returns local router time independent from Go process timezone setup.
+// Falls back to Go runtime zone when TZ files are unavailable/unparseable.
+func routerClockNow() (time.Time, string, int) {
+	if tz, ok := readRouterTZ(); ok {
+		if zoneName, offsetMinutes, ok := parsePOSIXTZ(tz); ok {
+			loc := time.FixedZone(zoneName, offsetMinutes*60)
+			now := time.Now().In(loc)
+			return now, zoneName, offsetMinutes
+		}
+	}
+
+	now := time.Now()
+	zoneName, zoneOffsetSeconds := now.Zone()
+	return now, zoneName, zoneOffsetSeconds / 60
+}
+
+func readRouterTZ() (string, bool) {
+	for _, p := range []string{"/etc/TZ", "/var/TZ"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		s := strings.TrimSpace(string(b))
+		if s == "" {
+			continue
+		}
+		return s, true
+	}
+	return "", false
+}
+
+// parsePOSIXTZ parses a minimal POSIX TZ prefix (e.g. MSK-3, UTC0, EST5EDT).
+// POSIX sign is inverted vs UTC offset:
+//
+//	MSK-3 -> UTC+3, EST5 -> UTC-5.
+func parsePOSIXTZ(s string) (zoneName string, offsetMinutes int, ok bool) {
+	raw := strings.TrimSpace(s)
+	if raw == "" {
+		return "", 0, false
+	}
+
+	i := 0
+	for i < len(raw) {
+		c := raw[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			i++
+			continue
+		}
+		break
+	}
+	if i == 0 {
+		return "", 0, false
+	}
+	zoneName = raw[:i]
+
+	if i >= len(raw) {
+		return "", 0, false
+	}
+
+	j := i
+	sign := 1
+	if raw[j] == '+' {
+		sign = 1
+		j++
+	} else if raw[j] == '-' {
+		sign = -1
+		j++
+	}
+	startHours := j
+	for j < len(raw) && raw[j] >= '0' && raw[j] <= '9' {
+		j++
+	}
+	if startHours == j {
+		return "", 0, false
+	}
+
+	hours, err := strconv.Atoi(raw[startHours:j])
+	if err != nil {
+		return "", 0, false
+	}
+	minutes := 0
+	if j < len(raw) && raw[j] == ':' {
+		j++
+		startMin := j
+		for j < len(raw) && raw[j] >= '0' && raw[j] <= '9' {
+			j++
+		}
+		if startMin == j {
+			return "", 0, false
+		}
+		minutes, err = strconv.Atoi(raw[startMin:j])
+		if err != nil || minutes < 0 || minutes > 59 {
+			return "", 0, false
+		}
+	}
+
+	// POSIX TZ value is "hours west of UTC", so invert sign for UTC offset.
+	totalPOSIXMinutes := sign * (hours*60 + minutes)
+	offsetMinutes = -totalPOSIXMinutes
+	return zoneName, offsetMinutes, true
 }
 
 // getRouterDetailsCached returns cached router details, refreshing in the

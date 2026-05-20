@@ -14,7 +14,7 @@
     onToggleExpand?: () => void;
     onClickScope?: (group: string, subgroup: string) => void;
     onClickLevel?: (level: string) => void;
-    onCopyLine?: (text: string) => void;
+    onCopyLine?: (log: LogEntry) => void;
     onCopyMessage?: (text: string) => void;
   }
 
@@ -47,10 +47,6 @@
     debug: 'DEBUG',
   };
 
-  const formattedLine = $derived(
-    `[${formatTime(log.timestamp)}] [${(levelLabel[log.level] ?? log.level).toUpperCase()}] [${log.group}${log.subgroup ? '/' + log.subgroup : ''}] ${log.action} ${log.target}: ${cleanMessage}`,
-  );
-
   function handleClickScope(e: MouseEvent) {
     e.stopPropagation();
     onClickScope?.(log.group, log.subgroup);
@@ -63,7 +59,7 @@
 
   function handleContextMenu(e: MouseEvent) {
     openContextMenu(e, log, {
-      onCopyLine: () => onCopyLine?.(formattedLine),
+      onCopyLine: () => onCopyLine?.(log),
       onCopyMessage: () => onCopyMessage?.(cleanMessage),
       onFilterScope: () => onClickScope?.(log.group, log.subgroup),
       onFilterLevel: () => onClickLevel?.(log.level),
