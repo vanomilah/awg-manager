@@ -5,7 +5,11 @@
 	import type { GeoFileEntry, SingboxRouterRuleSet } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 	import { HrNeoGeoTagPicker } from '$lib/components/hrneo';
-	import { parseInlineRuleList } from '$lib/utils/singboxInlineRules';
+	import {
+		analyzeInlineRuleListLossy,
+		parseInlineRuleList,
+		stringifyInlineRuleList,
+	} from '$lib/utils/singboxInlineRules';
 	import { expandGeoLinesInInput } from '$lib/utils/singboxInlineGeoExpand';
 
 	interface Props {
@@ -134,40 +138,26 @@ keyword:youtube`;
 
 	// ── form state ──────────────────────────────────────────────
 	// For inline rule sets: 'list' = smart-line-by-line, 'json' = raw JSON array
-	// svelte-ignore state_referenced_locally
-	let inlineMode: 'list' | 'json' = $state(ruleSet?.rules?.length ? 'json' : 'list');
+	let inlineMode: 'list' | 'json' = $state('list');
 
 	let rulesList = $state(DEFAULT_RULES_LIST);
 
-	// svelte-ignore state_referenced_locally
-	let type: 'remote' | 'local' | 'inline' = $state(ruleSet?.type ?? 'remote');
-	// svelte-ignore state_referenced_locally
-	let format: 'binary' | 'source' = $state(ruleSet?.format ?? 'binary');
-	// svelte-ignore state_referenced_locally
-	let tag = $state(ruleSet?.tag ?? '');
-	// svelte-ignore state_referenced_locally
-	let url = $state(ruleSet?.url ?? '');
-	// svelte-ignore state_referenced_locally
-	let updateInterval = $state(ruleSet?.update_interval ?? '24h');
-	// svelte-ignore state_referenced_locally
-	let downloadDetour = $state(ruleSet?.download_detour ?? '');
-	// svelte-ignore state_referenced_locally
-	let path = $state(ruleSet?.path ?? '');
-	// svelte-ignore state_referenced_locally
-	let rulesJson = $state(
-		ruleSet?.rules?.length
-			? JSON.stringify(ruleSet.rules, null, 2)
-			: `[
-  {
-    "domain_suffix": [
-      ".example.com"
-    ]
-  }
-]`,
-	);
+	let type: 'remote' | 'local' | 'inline' = $state('remote');
+	let format: 'binary' | 'source' = $state('binary');
+	let tag = $state('');
+	let url = $state('');
+	let updateInterval = $state('24h');
+	let downloadDetour = $state('');
+	let path = $state('');
+	let rulesJson = $state('');
 
 	let busy = $state(false);
 	let error = $state('');
+
+	const inlineLossyAnalysis = $derived.by(() => {
+		if (!ruleSet || ruleSet.type !== 'inline') return { lossy: false, issues: [] as string[] };
+		return analyzeInlineRuleListLossy(ruleSet.rules);
+	});
 
 	// Default rulesJson template for new rule sets (must match $state initializer above)
 	const DEFAULT_RULES_JSON = `[
@@ -190,31 +180,57 @@ keyword:youtube`;
 	let initialRulesList = $state('');
 	let initialRulesJson = $state('');
 
-	// Initialize snapshot when modal opens
+	const formResetKey = $derived(`${isEditing ? 'edit' : 'create'}:${ruleSet?.tag ?? ''}`);
+
 	$effect(() => {
-		if (ruleSet) {
-			initialType = ruleSet.type;
-			initialFormat = ruleSet.format ?? 'binary';
-			initialTag = ruleSet.tag;
-			initialUrl = ruleSet.url ?? '';
-			initialUpdateInterval = ruleSet.update_interval ?? '24h';
-			initialDownloadDetour = ruleSet.download_detour ?? '';
-			initialPath = ruleSet.path ?? '';
-			initialRulesJson = ruleSet.rules?.length ? JSON.stringify(ruleSet.rules, null, 2) : '';
-			initialInlineMode = 'json';
-			initialRulesList = DEFAULT_RULES_LIST;
-		} else {
-			initialType = 'remote';
-			initialFormat = 'binary';
-			initialTag = '';
-			initialUrl = '';
-			initialUpdateInterval = '24h';
-			initialDownloadDetour = '';
-			initialPath = '';
-			initialRulesJson = DEFAULT_RULES_JSON;
-			initialInlineMode = 'list';
-			initialRulesList = DEFAULT_RULES_LIST;
-		}
+		void formResetKey;
+
+		const nextType: 'remote' | 'local' | 'inline' = ruleSet?.type ?? 'remote';
+		const nextFormat: 'binary' | 'source' = ruleSet?.format ?? 'binary';
+		const nextTag = ruleSet?.tag ?? '';
+		const nextUrl = ruleSet?.url ?? '';
+		const nextUpdateInterval = ruleSet?.update_interval ?? '24h';
+		const nextDownloadDetour = ruleSet?.download_detour ?? '';
+		const nextPath = ruleSet?.path ?? '';
+		const nextRulesJson = ruleSet?.rules?.length
+			? JSON.stringify(ruleSet.rules, null, 2)
+			: DEFAULT_RULES_JSON;
+		const nextLossyAnalysis =
+			ruleSet?.type === 'inline'
+				? analyzeInlineRuleListLossy(ruleSet.rules)
+				: { lossy: false, issues: [] as string[] };
+		const nextInlineMode: 'list' | 'json' =
+			ruleSet?.type === 'inline' && ruleSet?.rules?.length && nextLossyAnalysis.lossy
+				? 'json'
+				: 'list';
+		const nextRulesList = nextType === 'inline'
+			? (ruleSet?.rules?.length ? stringifyInlineRuleList(ruleSet.rules) : '')
+			: DEFAULT_RULES_LIST;
+
+		type = nextType;
+		format = nextFormat;
+		tag = nextTag;
+		url = nextUrl;
+		updateInterval = nextUpdateInterval;
+		downloadDetour = nextDownloadDetour;
+		path = nextPath;
+		rulesJson = nextRulesJson;
+		inlineMode = nextInlineMode;
+		rulesList = nextRulesList;
+
+		initialType = nextType;
+		initialFormat = nextFormat;
+		initialTag = nextTag;
+		initialUrl = nextUrl;
+		initialUpdateInterval = nextUpdateInterval;
+		initialDownloadDetour = nextDownloadDetour;
+		initialPath = nextPath;
+		initialRulesJson = nextRulesJson;
+		initialInlineMode = nextInlineMode;
+		initialRulesList = nextRulesList;
+
+		error = '';
+		busy = false;
 	});
 
 	const isDirty = $derived.by(() => {
@@ -255,6 +271,11 @@ keyword:youtube`;
 
 			let parsedRules: Record<string, unknown>[] | undefined;
 			if (type === 'inline') {
+				if (isEditing && inlineMode === 'list' && inlineLossyAnalysis.lossy) {
+					error = 'Этот JSON содержит поля, которые режим Список не может сохранить без потерь. Редактируйте в JSON.';
+					busy = false;
+					return;
+				}
 				if (inlineMode === 'json') {
 					try {
 						const parsed = JSON.parse(rulesJson);
@@ -414,6 +435,17 @@ keyword:youtube`;
 							onscroll={syncRulesListLineNumbersScroll}
 						></textarea>
 					</div>
+				{#if isEditing && inlineLossyAnalysis.lossy}
+					<div class="parse-messages parse-messages-warning">
+						<div class="parse-messages-title">Потеря данных в режиме “Список”</div>
+						<ul>
+							<li>Этот JSON содержит поля, которые режим Список не может сохранить без потерь. Редактируйте в JSON.</li>
+							{#each inlineLossyAnalysis.issues as issue}
+								<li>{issue}</li>
+							{/each}
+						</ul>
+					</div>
+				{/if}
 				<details class="inline-help">
 					<summary>Подсказка по формату списка</summary>
 

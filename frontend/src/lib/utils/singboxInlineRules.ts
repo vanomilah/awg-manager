@@ -4,6 +4,152 @@ export interface InlineRuleParseResult {
 	errors: string[];
 }
 
+export interface InlineLossyAnalysis {
+	lossy: boolean;
+	issues: string[];
+}
+
+function asStringArray(v: unknown): string[] {
+	if (!Array.isArray(v)) return [];
+	return v.filter((x): x is string => typeof x === 'string');
+}
+
+function asNumberArray(v: unknown): number[] {
+	if (!Array.isArray(v)) return [];
+	return v.filter((x): x is number => typeof x === 'number');
+}
+
+export function stringifyInlineRuleList(rules: Record<string, unknown>[] | undefined): string {
+	if (!Array.isArray(rules) || rules.length === 0) return '';
+	const lines: string[] = [];
+
+	for (const r of rules) {
+		const domains = asStringArray(r['domain']);
+		for (const d of domains) lines.push(`domain:${d}`);
+
+		const suffixes = asStringArray(r['domain_suffix']);
+		for (const s of suffixes) lines.push(`domain_suffix:${s}`);
+
+		const keywords = asStringArray(r['domain_keyword']);
+		for (const k of keywords) lines.push(`keyword:${k}`);
+
+		const regexes = asStringArray(r['domain_regex']);
+		for (const rx of regexes) lines.push(`regex:${rx}`);
+
+		const ipCidrs = asStringArray(r['ip_cidr']);
+		for (const ip of ipCidrs) {
+			lines.push(ip.includes('/') ? `cidr:${ip}` : `ip:${ip}`);
+		}
+
+		const srcIpCidrs = asStringArray(r['source_ip_cidr']);
+		for (const ip of srcIpCidrs) lines.push(`src_ip:${ip}`);
+
+		const ports = asNumberArray(r['port']);
+		if (ports.length > 0) lines.push(`port:${ports.join(',')}`);
+
+		const processNames = asStringArray(r['process_name']);
+		for (const p of processNames) lines.push(`process:${p}`);
+
+		const processPaths = asStringArray(r['process_path']);
+		for (const p of processPaths) lines.push(`process_path:${p}`);
+
+		const packageNames = asStringArray(r['package_name']);
+		for (const p of packageNames) lines.push(`package:${p}`);
+
+		const networks = asStringArray(r['network']);
+		for (const n of networks) lines.push(`network:${n}`);
+	}
+
+	return lines.join('\n');
+}
+
+const SUPPORTED_INLINE_KEYS = new Set([
+	'domain',
+	'domain_suffix',
+	'domain_keyword',
+	'domain_regex',
+	'ip_cidr',
+	'source_ip_cidr',
+	'port',
+	'process_name',
+	'process_path',
+	'package_name',
+	'network',
+]);
+
+const KEY_BUCKET: Record<string, string> = {
+	domain: 'domain',
+	domain_suffix: 'domain',
+	domain_keyword: 'domain',
+	domain_regex: 'domain',
+	ip_cidr: 'ip_cidr',
+	source_ip_cidr: 'source_ip_cidr',
+	port: 'port',
+	process_name: 'process_name',
+	process_path: 'process_path',
+	package_name: 'package_name',
+	network: 'network',
+};
+
+export function analyzeInlineRuleListLossy(rules: Record<string, unknown>[] | undefined): InlineLossyAnalysis {
+	if (!Array.isArray(rules) || rules.length === 0) return { lossy: false, issues: [] };
+
+	const issues = new Set<string>();
+
+	for (const rule of rules) {
+		const supportedKeysInRule: string[] = [];
+
+		for (const [key, value] of Object.entries(rule)) {
+			if (!SUPPORTED_INLINE_KEYS.has(key)) {
+				issues.add(`unsupported key: ${key}`);
+				continue;
+			}
+			supportedKeysInRule.push(key);
+
+			if (key === 'port') {
+				if (!Array.isArray(value) || value.some((v) => typeof v !== 'number')) {
+					issues.add(`invalid type for key: ${key}`);
+				}
+				continue;
+			}
+
+			if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
+				issues.add(`invalid type for key: ${key}`);
+			}
+		}
+
+		const buckets = new Set<string>();
+		for (const key of supportedKeysInRule) {
+			const bucket = KEY_BUCKET[key];
+			if (bucket) buckets.add(bucket);
+		}
+		if (buckets.size > 1) {
+			issues.add(
+				`mixed supported keys in one rule are not round-trip safe: ${supportedKeysInRule.join(', ')}`,
+			);
+		}
+
+		// Current list parser expands `domain:` to domain + domain_suffix.
+		// For safe round-trip each exact domain must already have matching
+		// ".domain" suffix in the same rule object.
+		if (Array.isArray(rule.domain) && rule.domain.length > 0) {
+			const suffixes = new Set(
+				Array.isArray(rule.domain_suffix)
+					? rule.domain_suffix.filter((v): v is string => typeof v === 'string')
+					: [],
+			);
+			for (const d of rule.domain) {
+				if (typeof d !== 'string') continue;
+				if (!suffixes.has(`.${d}`)) {
+					issues.add(`domain exact-only rule may widen in list mode: ${d}`);
+				}
+			}
+		}
+	}
+
+	return { lossy: issues.size > 0, issues: [...issues] };
+}
+
 type LogEntry = { line: number; msg: string };
 
 function mkLogger(lineNum: number, w: LogEntry[], e: LogEntry[]) {
