@@ -68,8 +68,8 @@
 	.bar {
 		display: flex; justify-content: space-between; align-items: center;
 		padding: 8px 12px; margin-bottom: 8px;
-		background: var(--surface-1, #1f2425);
-		border: 1px solid var(--border-1, #2c3134);
+		background: var(--bg-secondary, #16161e);
+		border: 1px solid var(--border, #3b4261);
 		border-radius: 6px;
 		font-size: 13px;
 	}

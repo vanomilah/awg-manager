@@ -3421,6 +3421,26 @@ function makeMockSnapshot() {
 			rulePayload: hosts[i % hosts.length],
 		};
 	});
+	// Keep one stable public-IP source entry so search/filter demos
+	// can produce a visible subset and show bulk actions in mock mode.
+	conns[0] = {
+		id: `mock-public-${Date.now()}`,
+		metadata: {
+			network: 'udp',
+			type: 'Tun',
+			sourceIP: '95.64.154.50',
+			sourcePort: '500',
+			destinationIP: '95.64.154.50',
+			destinationPort: '500',
+			host: '',
+		},
+		upload: 2310,
+		download: 0,
+		start: new Date(Date.now() - 27 * 1000).toISOString(),
+		chains: ['DIRECT'],
+		rule: 'final',
+		rulePayload: '',
+	};
 	return {
 		downloadTotal: conns.reduce((s, c) => s + c.download, 0),
 		uploadTotal: conns.reduce((s, c) => s + c.upload, 0),
