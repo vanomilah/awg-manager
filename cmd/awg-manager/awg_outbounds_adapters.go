@@ -223,6 +223,13 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 	out := make([]monitoring.SingboxTunnelInfo, 0, len(tunnels))
 	seen := make(map[string]bool, len(tunnels))
 	subLabelByActiveTag := make(map[string]string)
+	subMemberByTag := make(map[string]subscription.MemberInfo)
+	type tunnelMeta struct {
+		protocol  string
+		security  string
+		transport string
+	}
+	metaByTag := make(map[string]tunnelMeta, len(tunnels))
 	for _, t := range tunnels {
 		// Keep config-backed sing-box rows probeable by interface.
 		// Runtime-only subscription member tags are appended separately below.
@@ -230,10 +237,18 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 			continue
 		}
 		seen[t.Tag] = true
+		metaByTag[t.Tag] = tunnelMeta{
+			protocol:  strings.TrimSpace(t.Protocol),
+			security:  strings.TrimSpace(t.Security),
+			transport: strings.TrimSpace(t.Transport),
+		}
 		out = append(out, monitoring.SingboxTunnelInfo{
 			Tag:           t.Tag,
 			Name:          t.Tag, // sing-box TunnelInfo doesn't carry a separate Name field
 			InterfaceName: t.KernelInterface,
+			Protocol:      strings.TrimSpace(t.Protocol),
+			Security:      strings.TrimSpace(t.Security),
+			Transport:     strings.TrimSpace(t.Transport),
 		})
 	}
 	if a.sub != nil {
@@ -265,6 +280,7 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 				if tag == "" {
 					continue
 				}
+				subMemberByTag[tag] = member
 				if _, exists := subLabelByActiveTag[tag]; !exists {
 					subLabelByActiveTag[tag] = label
 				}
@@ -285,11 +301,45 @@ func (a *monitoringSingboxTunnelAdapter) List(ctx context.Context) ([]monitoring
 			if label := subLabelByActiveTag[tag]; label != "" {
 				name = label
 			}
+			member := subMemberByTag[tag]
 			out = append(out, monitoring.SingboxTunnelInfo{
 				Tag:           tag,
 				Name:          name,
 				InterfaceName: "",
+				Subscription:  true,
+				Protocol:      strings.TrimSpace(member.Protocol),
+				Security:      strings.TrimSpace(member.Security),
+				Transport:     strings.TrimSpace(member.Transport),
 			})
+		}
+	}
+	if a.sub != nil {
+		for i := range out {
+			if _, ok := subLabelByActiveTag[out[i].Tag]; !ok {
+				continue
+			}
+			out[i].Subscription = true
+			if member, ok := subMemberByTag[out[i].Tag]; ok {
+				if out[i].Protocol == "" {
+					out[i].Protocol = strings.TrimSpace(member.Protocol)
+				}
+				if out[i].Security == "" {
+					out[i].Security = strings.TrimSpace(member.Security)
+				}
+				if out[i].Transport == "" {
+					out[i].Transport = strings.TrimSpace(member.Transport)
+				}
+			} else if meta, ok := metaByTag[out[i].Tag]; ok {
+				if out[i].Protocol == "" {
+					out[i].Protocol = meta.protocol
+				}
+				if out[i].Security == "" {
+					out[i].Security = meta.security
+				}
+				if out[i].Transport == "" {
+					out[i].Transport = meta.transport
+				}
+			}
 		}
 	}
 	return out, nil

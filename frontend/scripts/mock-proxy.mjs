@@ -792,6 +792,9 @@ function buildConnectivityMatrixEvent() {
 			selfTarget: '',
 			selfMethod: 'http',
 			source: 'awg',
+			backend: t.backend,
+			awgVersion: t.awgVersion,
+			defaultRoute: !!t.defaultRoute,
 		});
 	}
 
@@ -801,6 +804,50 @@ function buildConnectivityMatrixEvent() {
 		cells,
 		updatedAt: nowIso,
 	};
+}
+
+function buildAwgTunnelMetaMap() {
+	const byId = new Map();
+	const byName = new Map();
+	const byIface = new Map();
+	for (const t of MOCK_AWG_TUNNELS) {
+		if (t.id) byId.set(String(t.id).toLowerCase(), t);
+		if (t.name) byName.set(String(t.name).toLowerCase(), t);
+		if (t.interfaceName) byIface.set(String(t.interfaceName).toLowerCase(), t);
+	}
+	return { byId, byName, byIface };
+}
+
+function enrichMonitoringMatrixAwgTunnels(tunnels) {
+	if (!Array.isArray(tunnels) || tunnels.length === 0) return;
+	const meta = buildAwgTunnelMetaMap();
+	let anyMatched = false;
+	for (let i = 0; i < tunnels.length; i++) {
+		const row = tunnels[i];
+		if (!row || typeof row !== 'object') continue;
+		const idKey = row.id ? String(row.id).toLowerCase() : '';
+		const nameKey = row.name ? String(row.name).toLowerCase() : '';
+		const ifaceKey = row.ifaceName ? String(row.ifaceName).toLowerCase() : '';
+		const match =
+			(idKey && meta.byId.get(idKey)) ||
+			(nameKey && meta.byName.get(nameKey)) ||
+			(ifaceKey && meta.byIface.get(ifaceKey));
+		if (!match) continue;
+		anyMatched = true;
+		row.source = 'awg';
+		row.backend = match.backend;
+		row.awgVersion = match.awgVersion;
+		row.defaultRoute = !!match.defaultRoute;
+		row.ifaceName = row.ifaceName || match.interfaceName || '';
+	}
+	// Prism mock often returns a single generic tunnel row; force a representative AWG row.
+	if (!anyMatched && tunnels[0] && typeof tunnels[0] === 'object') {
+		const first = tunnels[0];
+		first.source = 'awg';
+		first.backend = 'nativewg';
+		first.awgVersion = 'awg2.0';
+		first.defaultRoute = true;
+	}
 }
 
 const TRAFFIC_PERIOD_MS = {
@@ -2376,6 +2423,7 @@ const server = http.createServer(async (req, res) => {
 		fetchJSON('/monitoring/matrix').then(({ status, body }) => {
 			if (body && typeof body === 'object' && body.data) {
 				const data = body.data;
+				enrichMonitoringMatrixAwgTunnels(data.tunnels);
 				// On force=1 jitter the synthetic delay so the user sees the badge change.
 				const veespDelay = forced ? 40 + Math.floor(Math.random() * 240) : 78;
 				data.tunnels = [
@@ -2391,6 +2439,10 @@ const server = http.createServer(async (req, res) => {
 						singboxTag: 'veesp',
 						clashDelay: veespDelay,
 						urltestGroup: 'auto',
+						subscription: true,
+						protocol: 'vless',
+						security: 'reality',
+						transport: 'tcp',
 					},
 					{
 						id: 'prague',
@@ -2401,6 +2453,9 @@ const server = http.createServer(async (req, res) => {
 						selfMethod: 'disabled',
 						source: 'singbox',
 						singboxTag: 'prague',
+						protocol: 'vless',
+						security: 'tls',
+						transport: 'grpc',
 						// no urltest data — UI should NOT show the badge
 					},
 				];

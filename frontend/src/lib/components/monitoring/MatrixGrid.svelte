@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { MonitoringSnapshot, MonitoringTarget, MonitoringTunnel, MonitoringCell } from '$lib/types';
+	import type { BadgeVariant } from '$lib/components/ui/Badge.svelte';
 	import MatrixCell from './MatrixCell.svelte';
-	import { Badge, LatencySparkline } from '$lib/components/ui';
+	import { Badge, LatencySparkline, VersionBadge } from '$lib/components/ui';
 	import { latencyTier } from '$lib/utils/latencyTier';
 	import { latencyHistory } from '$lib/stores/singboxProxies';
 
@@ -81,6 +82,50 @@
 			? 'Вернуть туннель в матрицу мониторинга'
 			: 'Исключить туннель из матрицы мониторинга';
 	}
+
+	type TunnelBadge = {
+		label: string;
+		variant: BadgeVariant;
+		mono?: boolean;
+	};
+
+	function normalizeProtoLabel(proto: string): string {
+		switch (proto.toLowerCase()) {
+			case 'vless':
+				return 'VLESS';
+			case 'hysteria2':
+				return 'HY2';
+			case 'shadowsocks':
+				return 'SS';
+			case 'trojan':
+				return 'Trojan';
+			case 'naive':
+				return 'Naive';
+			default:
+				return proto.toUpperCase();
+		}
+	}
+
+	function tunnelTypeBadges(t: MonitoringTunnel): TunnelBadge[] {
+		const out: TunnelBadge[] = [];
+		if (t.source === 'singbox') {
+			if (t.subscription) out.push({ label: 'подписка', variant: 'warning' });
+			if (t.protocol) out.push({ label: normalizeProtoLabel(t.protocol), variant: 'accent', mono: true });
+			if (t.security?.toLowerCase() === 'reality') out.push({ label: 'Reality', variant: 'warning' });
+			else if (t.security?.toLowerCase() === 'tls') out.push({ label: 'TLS', variant: 'info' });
+			if (t.transport) out.push({ label: t.transport.toUpperCase(), variant: 'muted', mono: true });
+			if (out.length === 0) out.push({ label: 'SINGBOX', variant: 'muted', mono: true });
+		}
+		return out;
+	}
+
+	function resolvedAwgBackend(t: MonitoringTunnel): 'kernel' | 'nativewg' | '' {
+		if (t.source !== 'awg') return '';
+		if (t.backend === 'nativewg' || t.backend === 'kernel') return t.backend;
+		if (t.ifaceName?.startsWith('nwg')) return 'nativewg';
+		if (t.ifaceName?.startsWith('opkgtun') || t.ifaceName?.startsWith('awg')) return 'kernel';
+		return '';
+	}
 </script>
 
 {#if sortedTunnels.length === 0}
@@ -92,6 +137,9 @@
 				<tr>
 					<th class="th-target">Target</th>
 					{#each sortedTunnels as t (t.id)}
+						{@const typeBadges = tunnelTypeBadges(t)}
+						{@const awgBackendValue = resolvedAwgBackend(t)}
+						{@const showTypeRow = typeBadges.length > 0 || (t.source === 'awg' && (!!awgBackendValue || !!t.awgVersion))}
 						<th class="th-tunnel">
 							<div class="tunnel-head">
 								<div class="tunnel-title-row">
@@ -108,6 +156,9 @@
 											{t.name}
 											<span class="settings-icon" aria-hidden="true">›</span>
 										</a>
+										{#if t.source === 'awg' && t.defaultRoute}
+											<Badge variant="accent" size="sm">default</Badge>
+										{/if}
 									{/if}
 								</div>
 
@@ -135,6 +186,22 @@
 									{/if}
 								</div>
 							</div>
+							{#if showTypeRow}
+								<div class="tunnel-type-row">
+									{#if t.source === 'awg'}
+										{#if awgBackendValue}
+											<VersionBadge kind="backend" value={awgBackendValue} />
+										{/if}
+										{#if t.awgVersion}
+											<VersionBadge kind="awg" value={t.awgVersion} />
+										{/if}
+									{:else}
+										{#each typeBadges as b, idx (`${t.id}-type-${idx}-${b.label}`)}
+											<Badge variant={b.variant} size="sm" mono={b.mono ?? false}>{b.label}</Badge>
+										{/each}
+									{/if}
+								</div>
+							{/if}
 							{#if t.source === 'singbox' && t.clashDelay && t.clashDelay > 0}
 								<div class="tunnel-badge-row">
 									<Badge
@@ -275,6 +342,15 @@
 		margin-top: 6px;
 	}
 
+	.tunnel-type-row {
+		display: flex;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+		width: 100%;
+		margin-top: 4px;
+	}
+
 	@media (max-width: 768px) {
 		.th-tunnel {
 			padding: 0.5rem 0.5rem 0.625rem;
@@ -333,6 +409,18 @@
 			width: 100%;
 			min-width: 0;
 			margin-top: 6px;
+			text-align: center;
+		}
+
+		.th-tunnel > .tunnel-type-row {
+			display: flex;
+			justify-content: center;
+			align-items: center;
+			flex-wrap: wrap;
+			gap: 0.25rem;
+			width: 100%;
+			min-width: 0;
+			margin-top: 4px;
 			text-align: center;
 		}
 	}

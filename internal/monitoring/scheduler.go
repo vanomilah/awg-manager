@@ -11,6 +11,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/traffic"
+	tunnelconfig "github.com/hoaxisr/awg-manager/internal/tunnel/config"
 )
 
 // Cell is a single (target × tunnel) measurement in the matrix snapshot.
@@ -66,6 +67,10 @@ type SingboxTunnelInfo struct {
 	Tag           string // sing-box outbound tag, e.g. "veesp"
 	Name          string // human-readable name (often equals Tag)
 	InterfaceName string // kernel iface, e.g. "t2s0"
+	Subscription  bool
+	Protocol      string
+	Security      string
+	Transport     string
 }
 
 // CompositeOutboundLister exposes the router's composite outbound
@@ -401,6 +406,8 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 			pingTarget := ""
 			selfTarget := ""
 			selfMethod := "http" // sane default — matches connectivity-check fallback
+			awgVersion := ""
+			defaultRoute := false
 			if s.deps.TunnelStore != nil {
 				if stored, err := s.deps.TunnelStore.Get(rt.ID); err == nil && stored != nil {
 					if stored.Name != "" {
@@ -417,6 +424,8 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 							selfTarget = stored.ConnectivityCheck.PingTarget
 						}
 					}
+					awgVersion = tunnelconfig.ClassifyAWGVersion(&stored.Interface)
+					defaultRoute = stored.DefaultRoute
 					// NativeWG tunnels claim a Keenetic-native NDMS name
 					// "Wireguard{NWGIndex}" — flag it so the system-tunnel
 					// pass below skips the duplicate row.
@@ -441,6 +450,10 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 				PingcheckTarget: pingTarget,
 				SelfTarget:      selfTarget,
 				SelfMethod:      selfMethod,
+				Source:          "awg",
+				Backend:         rt.BackendType,
+				AWGVersion:      awgVersion,
+				DefaultRoute:    defaultRoute,
 			})
 		}
 	}
@@ -466,6 +479,8 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 					Name:            name,
 					IfaceName:       st.InterfaceName,
 					PingcheckTarget: "",
+					Source:          "system",
+					Backend:         "system",
 				})
 			}
 		}
@@ -503,8 +518,12 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 					// tunnels don't have a per-tunnel restart pingcheck;
 					// matrix row uses BaseTargets only, augmented later
 					// with Clash data.
-					Source:     "singbox",
-					SingboxTag: sbt.Tag,
+					Source:       "singbox",
+					SingboxTag:   sbt.Tag,
+					Subscription: sbt.Subscription,
+					Protocol:     sbt.Protocol,
+					Security:     sbt.Security,
+					Transport:    sbt.Transport,
 				})
 				seenID[sbt.Tag] = true
 				if sbt.InterfaceName != "" {

@@ -34,6 +34,20 @@ type Tunnel struct {
 	// Source identifies which lister produced this tunnel: "awg",
 	// "system", "singbox". Drives row visual hints in the matrix UI.
 	Source string `json:"source,omitempty"`
+	// Backend is the AWG backend kind for managed tunnels: "kernel" or
+	// "nativewg". Empty for non-AWG rows.
+	Backend string `json:"backend,omitempty"`
+	// AWGVersion is derived from the managed tunnel interface obfuscation
+	// params: "awg2.0" | "awg1.5" | "awg1.0" | "wg". Empty for non-AWG rows.
+	AWGVersion string `json:"awgVersion,omitempty"`
+	// DefaultRoute marks managed AWG tunnels configured as default route.
+	DefaultRoute bool `json:"defaultRoute,omitempty"`
+	// Subscription marks sing-box rows sourced from subscription members.
+	Subscription bool `json:"subscription,omitempty"`
+	// Sing-box protocol/security/transport hints used by monitoring badges.
+	Protocol  string `json:"protocol,omitempty"`
+	Security  string `json:"security,omitempty"`
+	Transport string `json:"transport,omitempty"`
 	// SingboxTag is the sing-box outbound tag (e.g. "veesp") for
 	// Source=="singbox" tunnels; empty otherwise. Lets the frontend
 	// reach into the per-member latency history map keyed by tag.

@@ -1167,6 +1167,18 @@ export interface MonitoringTunnel {
 	selfMethod: string;
 	/** "awg" | "system" | "singbox" — drives row visual hints. */
 	source?: 'awg' | 'system' | 'singbox';
+	/** AWG backend kind (for source==='awg'): "kernel" | "nativewg". */
+	backend?: 'kernel' | 'nativewg' | 'system' | string;
+	/** AWG protocol/version kind (for source==='awg'). */
+	awgVersion?: 'wg' | 'awg1.0' | 'awg1.5' | 'awg2.0' | string;
+	/** Managed AWG tunnel has "default route" enabled. */
+	defaultRoute?: boolean;
+	/** Sing-box row came from subscription member list. */
+	subscription?: boolean;
+	/** Optional sing-box metadata for badge rendering. */
+	protocol?: string;
+	security?: string;
+	transport?: string;
 	/** Sing-box outbound tag; empty unless source==='singbox'. */
 	singboxTag?: string;
 	/** Last Clash urltest delay in ms; 0 = no urltest data. */
