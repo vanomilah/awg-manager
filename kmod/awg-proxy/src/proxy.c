@@ -729,6 +729,8 @@ out_cleanup:
 		awg_cookie_aead_destroy(p->cookie_aead);
 		p->cookie_aead = NULL;
 	}
+	memzero_explicit(p->cookie_decryption_key,
+			 sizeof(p->cookie_decryption_key));
 	p->active = false;
 	awg_config_free(&p->cfg);
 out_free:
@@ -773,6 +775,8 @@ static void proxy_stop(struct awg_proxy *p)
 		awg_cookie_aead_destroy(p->cookie_aead);
 		p->cookie_aead = NULL;
 	}
+	memzero_explicit(p->cookie_decryption_key,
+			 sizeof(p->cookie_decryption_key));
 
 	awg_config_free(&p->cfg);
 }
