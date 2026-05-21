@@ -34,6 +34,11 @@ static int parse_hex(const char *hex, u8 *out, int maxlen)
 	return i;
 }
 
+static int hrange_overlaps(const hrange_t *a, const hrange_t *b)
+{
+	return a->min <= b->max && b->min <= a->max;
+}
+
 /*
  * Parse config line format:
  *   IP:PORT H1=min-max H2=min-max H3=min-max H4=min-max
@@ -202,6 +207,15 @@ int awg_config_parse(const char *config_line, awg_config_t *cfg)
 	if (cfg->h1.min > cfg->h1.max || cfg->h2.min > cfg->h2.max ||
 	    cfg->h3.min > cfg->h3.max || cfg->h4.min > cfg->h4.max) {
 		pr_warn("awg_proxy: H range min > max\n");
+		goto out_invalid;
+	}
+	if (hrange_overlaps(&cfg->h1, &cfg->h2) ||
+	    hrange_overlaps(&cfg->h1, &cfg->h3) ||
+	    hrange_overlaps(&cfg->h1, &cfg->h4) ||
+	    hrange_overlaps(&cfg->h2, &cfg->h3) ||
+	    hrange_overlaps(&cfg->h2, &cfg->h4) ||
+	    hrange_overlaps(&cfg->h3, &cfg->h4)) {
+		pr_warn("awg_proxy: H ranges must not overlap\n");
 		goto out_invalid;
 	}
 
