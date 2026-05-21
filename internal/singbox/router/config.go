@@ -212,7 +212,7 @@ func (c *RouterConfig) MoveRule(from, to int) error {
 	return nil
 }
 
-func (c *RouterConfig) EnsureSystemRules() {
+func (c *RouterConfig) EnsureSystemRules(snifferEnabled bool) {
 	if c.Route.Final == "" {
 		c.Route.Final = "direct"
 	}
@@ -250,10 +250,33 @@ func (c *RouterConfig) EnsureSystemRules() {
 		}
 	}
 
+	if !snifferEnabled && hasSniff {
+		filtered := c.Route.Rules[:0]
+		for _, r := range c.Route.Rules {
+			if r.Action == "sniff" && !r.hasAnyMatcher() {
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+		c.Route.Rules = filtered
+		hasSniff = false
+		if hijackIdx >= 0 {
+			hijackIdx = -1
+			for i, r := range c.Route.Rules {
+				if r.Action == "hijack-dns" {
+					if r.Protocol == "dns" || (r.Type == "logical" && r.Mode == "or") {
+						hijackIdx = i
+						break
+					}
+				}
+			}
+		}
+	}
+
 	// Phase 1: prepend sniff + hijack-dns to front if missing.
 	// Predictable order inside the prepend block is [sniff, hijack-dns].
 	prepend := make([]Rule, 0, 2)
-	if !hasSniff {
+	if snifferEnabled && !hasSniff {
 		prepend = append(prepend, Rule{Action: "sniff"})
 	}
 	if !hasHijack {

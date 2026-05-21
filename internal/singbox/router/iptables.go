@@ -27,11 +27,11 @@ const (
 	// conntrack tracks the DNAT for established flows, ACKs are
 	// auto-translated, and sing-box's accept()ed socket handles them
 	// like any normal TCP connection. SKeen ships the same split.
-	RedirectPort     = 51272
-	Fwmark           = 0x1
-	RoutingTable     = 100
-	ChainName        = "AWGM-TPROXY"
-	RedirectChain    = "AWGM-REDIRECT"
+	RedirectPort  = 51272
+	Fwmark        = 0x1
+	RoutingTable  = 100
+	ChainName     = "AWGM-TPROXY"
+	RedirectChain = "AWGM-REDIRECT"
 	// DNSRescueTag identifies our short-circuit REDIRECT rules in nat
 	// PREROUTING that bypass NDMS's _NDM_DNS_FLT_REDIR catch-all
 	// (which would unconditionally REDIRECT DNS to :53, where
@@ -197,6 +197,12 @@ type RestoreInputSpec struct {
 	// never reach Install with empty mark, but iptables doesn't panic).
 	PolicyMark string
 
+	// MatchAll installs PREROUTING jumps without an NDMS policy-mark
+	// filter. This is the "all devices" mode. Keep it separate from an
+	// empty PolicyMark so legacy defensive behavior (empty mark = no
+	// PREROUTING jumps) stays intact.
+	MatchAll bool
+
 	// WANIPs is a list of router-owned IP addresses (in "X.X.X.X/32" form)
 	// that must NOT be TPROXY'd: traffic from LAN to the router's own
 	// public-WAN or tunnel-endpoint IPs would otherwise loop back into
@@ -296,7 +302,9 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	// set_prerouting_rules: policy connmark filter ON THE JUMP, no `-p`
 	// matcher (SKeen jumps unconditionally; per-proto matching happens
 	// inside the chain).
-	if spec.PolicyMark != "" {
+	if spec.MatchAll {
+		fmt.Fprintf(&b, "-A PREROUTING -m conntrack ! --ctstate INVALID -j %s\n", ChainName)
+	} else if spec.PolicyMark != "" {
 		fmt.Fprintf(&b, "-A PREROUTING -m connmark --mark %s -m conntrack ! --ctstate INVALID -j %s\n",
 			spec.PolicyMark, ChainName)
 	}
@@ -329,7 +337,9 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	// add_redirect_rules: catch-all REDIRECT for TCP.
 	fmt.Fprintf(&b, "-A %s -p tcp -j REDIRECT --to-ports %d\n", RedirectChain, RedirectPort)
 
-	if spec.PolicyMark != "" {
+	if spec.MatchAll {
+		fmt.Fprintf(&b, "-A PREROUTING -m conntrack ! --ctstate INVALID -j %s\n", RedirectChain)
+	} else if spec.PolicyMark != "" {
 		fmt.Fprintf(&b, "-A PREROUTING -m connmark --mark %s -m conntrack ! --ctstate INVALID -j %s\n",
 			spec.PolicyMark, RedirectChain)
 	}
@@ -357,11 +367,13 @@ func buildRestoreInput(spec RestoreInputSpec) string {
 	// All rules use -I PREROUTING 1 so they land in front of the NDMS
 	// jumps; their relative order amongst themselves doesn't matter
 	// (per-bridge, per-protocol independent matches).
-	for _, bm := range spec.LANBridges {
-		fmt.Fprintf(&b, "-I PREROUTING 1 -i %s -m mark --mark 0x0 -m pkttype --pkt-type unicast -p udp --dport 53 -m comment --comment %q -j REDIRECT --to-ports %d\n",
-			bm.Bridge, DNSRescueTag, bm.Port)
-		fmt.Fprintf(&b, "-I PREROUTING 1 -i %s -m mark --mark 0x0 -m pkttype --pkt-type unicast -p tcp --dport 53 -m comment --comment %q -j REDIRECT --to-ports %d\n",
-			bm.Bridge, DNSRescueTag, bm.Port)
+	if !spec.MatchAll {
+		for _, bm := range spec.LANBridges {
+			fmt.Fprintf(&b, "-I PREROUTING 1 -i %s -m mark --mark 0x0 -m pkttype --pkt-type unicast -p udp --dport 53 -m comment --comment %q -j REDIRECT --to-ports %d\n",
+				bm.Bridge, DNSRescueTag, bm.Port)
+			fmt.Fprintf(&b, "-I PREROUTING 1 -i %s -m mark --mark 0x0 -m pkttype --pkt-type unicast -p tcp --dport 53 -m comment --comment %q -j REDIRECT --to-ports %d\n",
+				bm.Bridge, DNSRescueTag, bm.Port)
+		}
 	}
 
 	b.WriteString("COMMIT\n")

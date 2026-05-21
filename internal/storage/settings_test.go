@@ -39,6 +39,12 @@ func TestSettingsStore_LoadDefault(t *testing.T) {
 	if settings.PingCheck.Defaults.FailThreshold != 3 {
 		t.Errorf("PingCheck.Defaults.FailThreshold = %d, want 3", settings.PingCheck.Defaults.FailThreshold)
 	}
+	if settings.SingboxRouter.DeviceMode != "policy" {
+		t.Errorf("SingboxRouter.DeviceMode = %q, want policy", settings.SingboxRouter.DeviceMode)
+	}
+	if !settings.SingboxRouter.SnifferEnabled {
+		t.Error("SingboxRouter.SnifferEnabled = false, want true")
+	}
 }
 
 func TestSettingsStore_MigrateFromV1(t *testing.T) {
@@ -74,6 +80,12 @@ func TestSettingsStore_MigrateFromV1(t *testing.T) {
 	}
 	if settings.PingCheck.Defaults.Method != "http" {
 		t.Errorf("PingCheck.Defaults.Method = %s, want http", settings.PingCheck.Defaults.Method)
+	}
+	if settings.SingboxRouter.DeviceMode != "policy" {
+		t.Errorf("SingboxRouter.DeviceMode = %q, want policy", settings.SingboxRouter.DeviceMode)
+	}
+	if !settings.SingboxRouter.SnifferEnabled {
+		t.Error("SingboxRouter.SnifferEnabled = false, want true")
 	}
 }
 

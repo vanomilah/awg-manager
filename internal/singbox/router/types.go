@@ -14,6 +14,8 @@ type Status struct {
 	PolicyName             string  `json:"policyName"`
 	PolicyMark             string  `json:"policyMark,omitempty"`
 	PolicyExists           bool    `json:"policyExists"`
+	DeviceMode             string  `json:"deviceMode"`
+	SnifferEnabled         bool    `json:"snifferEnabled"`
 	DeviceCount            int     `json:"deviceCount"`
 	RuleCount              int     `json:"ruleCount"`
 	RuleSetCount           int     `json:"ruleSetCount"`
@@ -134,15 +136,15 @@ type CompositeOutboundView struct {
 }
 
 type Inbound struct {
-	Type         string `json:"type"`
-	Tag          string `json:"tag"`
-	Listen       string `json:"listen"`
-	ListenPort   int    `json:"listen_port"`
-	Network      string `json:"network,omitempty"`
-	UDPTimeout   string `json:"udp_timeout,omitempty"`
-	UDPFragment  bool   `json:"udp_fragment,omitempty"`
-	TCPFastOpen  bool   `json:"tcp_fast_open,omitempty"`
-	RoutingMark  int    `json:"routing_mark,omitempty"`
+	Type        string `json:"type"`
+	Tag         string `json:"tag"`
+	Listen      string `json:"listen"`
+	ListenPort  int    `json:"listen_port"`
+	Network     string `json:"network,omitempty"`
+	UDPTimeout  string `json:"udp_timeout,omitempty"`
+	UDPFragment bool   `json:"udp_fragment,omitempty"`
+	TCPFastOpen bool   `json:"tcp_fast_open,omitempty"`
+	RoutingMark int    `json:"routing_mark,omitempty"`
 }
 
 type Route struct {

@@ -181,7 +181,7 @@ func TestRuleMove(t *testing.T) {
 
 func TestEnsureSystemRules(t *testing.T) {
 	cfg := NewEmptyConfig()
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 	if len(cfg.Route.Rules) < 3 {
 		t.Fatalf("expected >=3 rules, got %d", len(cfg.Route.Rules))
 	}
@@ -217,7 +217,7 @@ func TestEnsureSystemRules(t *testing.T) {
 	}
 
 	// Idempotency: re-running should NOT add duplicates of any system rule.
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 	var sniffCount, hijackCount, privateCount int
 	for _, r := range cfg.Route.Rules {
 		if r.Action == "sniff" && !r.hasAnyMatcher() {
@@ -233,6 +233,36 @@ func TestEnsureSystemRules(t *testing.T) {
 	if sniffCount != 1 || hijackCount != 1 || privateCount != 1 {
 		t.Errorf("system rules duplicated: sniff=%d hijack=%d private=%d",
 			sniffCount, hijackCount, privateCount)
+	}
+}
+
+func TestEnsureSystemRules_SnifferDisabled(t *testing.T) {
+	cfg := NewEmptyConfig()
+	cfg.Route.Rules = []Rule{
+		{Action: "sniff"},
+		{DomainSuffix: []string{"example.com"}, Action: "sniff"},
+	}
+	cfg.EnsureSystemRules(false)
+
+	for _, r := range cfg.Route.Rules {
+		if r.Action == "sniff" && !r.hasAnyMatcher() {
+			t.Fatalf("system sniff rule must be removed when sniffer is disabled: %+v", cfg.Route.Rules)
+		}
+	}
+	var userSniff, hijackCount int
+	for _, r := range cfg.Route.Rules {
+		if r.Action == "sniff" && len(r.DomainSuffix) == 1 && r.DomainSuffix[0] == "example.com" {
+			userSniff++
+		}
+		if r.Action == "hijack-dns" {
+			hijackCount++
+		}
+	}
+	if userSniff != 1 {
+		t.Fatalf("user-authored sniff rule should be preserved, got %d in %+v", userSniff, cfg.Route.Rules)
+	}
+	if hijackCount != 1 {
+		t.Fatalf("hijack-dns should remain enabled, got %d in %+v", hijackCount, cfg.Route.Rules)
 	}
 }
 
@@ -256,7 +286,7 @@ func TestEnsureSystemRules_PrivateBypassMustComeAfterHijack(t *testing.T) {
 			Action: "hijack-dns",
 		},
 	}
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 
 	hijackPos, privatePos := -1, -1
 	for i, r := range cfg.Route.Rules {
@@ -293,7 +323,7 @@ func TestEnsureSystemRules_PreservesCustomPrivateBypass(t *testing.T) {
 	cfg.Route.Rules = []Rule{
 		{IPIsPrivate: &truePtr, Outbound: "lan-direct"},
 	}
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 
 	var privateCount int
 	var firstPrivateOutbound string
@@ -342,7 +372,7 @@ func TestEnsureSystemRules_LegacyHijackRecognized(t *testing.T) {
 		{Action: "sniff"},
 		{Protocol: "dns", Action: "hijack-dns"},
 	}
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 	var hijackCount int
 	for _, r := range cfg.Route.Rules {
 		if r.Action == "hijack-dns" {
@@ -503,6 +533,40 @@ func TestValidateSingboxRouterSettings(t *testing.T) {
 			}
 			if !c.wantError && err != nil {
 				t.Errorf("expected no error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeSingboxRouterSettings_DeviceMode(t *testing.T) {
+	cases := []struct {
+		name      string
+		mode      string
+		want      string
+		wantError bool
+	}{
+		{"empty defaults to policy", "", "policy", false},
+		{"policy accepted", "policy", "policy", false},
+		{"all accepted", "all", "all", false},
+		{"invalid rejected", "everything", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := NormalizeSingboxRouterSettings(storage.SingboxRouterSettings{
+				DeviceMode:    c.mode,
+				WANAutoDetect: true,
+			})
+			if c.wantError {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NormalizeSingboxRouterSettings: %v", err)
+			}
+			if got.DeviceMode != c.want {
+				t.Fatalf("DeviceMode = %q, want %q", got.DeviceMode, c.want)
 			}
 		})
 	}

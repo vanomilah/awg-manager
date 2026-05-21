@@ -2878,9 +2878,18 @@ definitions:
       enabled:
         example: true
         type: boolean
+      deviceMode:
+        enum:
+        - policy
+        - all
+        example: policy
+        type: string
       policyName:
         example: awgm-router
         type: string
+      snifferEnabled:
+        example: true
+        type: boolean
       refreshDailyTime:
         example: "03:00"
         type: string
@@ -2904,6 +2913,12 @@ definitions:
       deviceCount:
         example: 3
         type: integer
+      deviceMode:
+        enum:
+        - policy
+        - all
+        example: policy
+        type: string
       enabled:
         example: true
         type: boolean
@@ -2938,6 +2953,9 @@ definitions:
       policyName:
         example: awgm-router
         type: string
+      snifferEnabled:
+        example: true
+        type: boolean
       ruleCount:
         example: 12
         type: integer

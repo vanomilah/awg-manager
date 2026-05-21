@@ -95,16 +95,17 @@
 		}
 	}
 
+	const deviceMode = $derived(settings?.deviceMode ?? 'policy');
 	const canEnable = $derived(
 		!!status?.netfilterAvailable &&
 			!!status?.tproxyTargetAvailable &&
-			!!settings?.policyName,
+			(deviceMode === 'all' || !!settings?.policyName),
 	);
 
 	const enableTooltip = $derived.by(() => {
 		if (!status?.netfilterAvailable) return 'Netfilter недоступен';
 		if (!status?.tproxyTargetAvailable) return 'TPROXY target недоступен';
-		if (!settings?.policyName) return 'Сначала выберите или создайте политику';
+		if (deviceMode === 'policy' && !settings?.policyName) return 'Сначала выберите или создайте политику';
 		return '';
 	});
 
@@ -112,7 +113,7 @@
 	// (manual deletion, NDMS reset, etc.). Distinct from "never configured":
 	// here we have a stale name that needs an explicit recovery action.
 	const policyMissing = $derived(
-		!!settings?.policyName && status?.policyExists === false,
+		deviceMode === 'policy' && !!settings?.policyName && status?.policyExists === false,
 	);
 
 	const policyOptions = $derived<DropdownOption[]>(
@@ -196,7 +197,7 @@
 			</div>
 		{/if}
 
-		{#if settings}
+		{#if settings && deviceMode === 'policy'}
 			<div class="policy-block">
 				<div class="control-label">NDMS Access Policy</div>
 				<div class="policy-row">

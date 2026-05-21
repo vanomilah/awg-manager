@@ -99,7 +99,8 @@
 	const routerNetfilterReady = $derived(routerStatus?.netfilterAvailable ?? false);
 	const routerNetfilterName = $derived(routerStatus?.netfilterComponentName ?? 'Компонент netfilter');
 	const routerEnabled = $derived(routerStatus?.enabled ?? false);
-	const routerPolicyOK = $derived(routerStatus?.policyExists ?? false);
+	const routerDeviceMode = $derived(routerStatus?.deviceMode ?? 'policy');
+	const routerPolicyOK = $derived(routerDeviceMode === 'all' || (routerStatus?.policyExists ?? false));
 	const routerIssuesCount = $derived((routerStatus?.issues ?? []).length);
 
 	type HeaderState = 'loading' | 'ready' | 'warn' | 'error';

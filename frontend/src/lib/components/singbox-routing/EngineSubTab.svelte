@@ -218,6 +218,40 @@
 		}
 	}
 
+	async function setDeviceMode(mode: 'policy' | 'all'): Promise<void> {
+		if (!settings || mode === (settings.deviceMode ?? 'policy')) return;
+		busy = true;
+		try {
+			await api.singboxRouterPutSettings({
+				...settings,
+				deviceMode: mode,
+				snifferEnabled: settings.snifferEnabled ?? true,
+			});
+			await refresh();
+		} catch (e) {
+			notifications.error((e as Error).message);
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function setSnifferEnabled(next: boolean): Promise<void> {
+		if (!settings) return;
+		busy = true;
+		try {
+			await api.singboxRouterPutSettings({
+				...settings,
+				deviceMode: settings.deviceMode ?? 'policy',
+				snifferEnabled: next,
+			});
+			await refresh();
+		} catch (e) {
+			notifications.error((e as Error).message);
+		} finally {
+			busy = false;
+		}
+	}
+
 	function openCreateModal(): void {
 		createDescription = 'awgm-router';
 		createModalOpen = true;
@@ -258,16 +292,18 @@
 		}
 	}
 
+	const deviceMode = $derived(settings?.deviceMode ?? 'policy');
+	const snifferEnabled = $derived(settings?.snifferEnabled ?? true);
 	const canEnable = $derived(
 		!!status?.netfilterAvailable &&
 			!!status?.tproxyTargetAvailable &&
-			!!settings?.policyName,
+			(deviceMode === 'all' || !!settings?.policyName),
 	);
 
 	const enableTooltip = $derived.by(() => {
 		if (!status?.netfilterAvailable) return 'Netfilter недоступен';
 		if (!status?.tproxyTargetAvailable) return 'TPROXY target недоступен';
-		if (!settings?.policyName) return 'Сначала выберите или создайте политику';
+		if (deviceMode === 'policy' && !settings?.policyName) return 'Сначала выберите или создайте политику';
 		return '';
 	});
 
@@ -275,7 +311,7 @@
 	// (manual deletion, NDMS reset, etc.). Distinct from "never configured":
 	// here we have a stale name that needs an explicit recovery action.
 	const policyMissing = $derived(
-		!!settings?.policyName && status?.policyExists === false,
+		deviceMode === 'policy' && !!settings?.policyName && status?.policyExists === false,
 	);
 
 	const policyOptions = $derived<DropdownOption[]>(
@@ -370,47 +406,95 @@
 			{/if}
 
 			{#if settings}
-				<div class="policy-block">
-					<div class="control-label">NDMS Access Policy</div>
-					<div class="policy-row">
-						<div class="policy-dropdown">
-							<Dropdown
-								value={settings.policyName}
-								options={policyOptions}
-								placeholder="— выберите политику —"
-								disabled={busy || creatingPolicy}
-								onchange={(v) => selectPolicy(v)}
-								fullWidth
-							/>
-						</div>
-						<Button
-							variant="ghost"
-							size="md"
-							onclick={openCreateModal}
-							disabled={creatingPolicy || busy}
+				<div class="device-mode-block">
+					<div class="control-label">Устройства</div>
+					<div class="mode-switch" role="group" aria-label="Режим устройств">
+						<button
+							type="button"
+							class:active={deviceMode === 'policy'}
+							onclick={() => setDeviceMode('policy')}
+							disabled={busy}
 						>
-							+ Создать новую
-						</Button>
+							Только policy
+						</button>
+						<button
+							type="button"
+							class:active={deviceMode === 'all'}
+							onclick={() => setDeviceMode('all')}
+							disabled={busy}
+						>
+							Все устройства
+						</button>
 					</div>
+					<div class="setting-description">
+						{deviceMode === 'all'
+							? 'PREROUTING правила применяются без NDMS policy mark.'
+							: 'Трафик попадает в sing-box только от устройств выбранной NDMS policy.'}
+					</div>
+				</div>
 
-					{#if status.policyMark}
-						<div class="mark-info">
-							Текущий mark: <code>{status.policyMark}</code>
-						</div>
-					{/if}
-
-					{#if settings.policyName}
-						<div class="policy-link-row">
-							<span class="setting-description">
-								Привязка устройств к политике
-								<strong>«{settings.policyName}»</strong>
-								настраивается на отдельной странице.
-							</span>
-							<Button variant="ghost" size="sm" href="/routing?tab=policy">
-								Управление устройствами →
+				{#if deviceMode === 'policy'}
+					<div class="policy-block">
+						<div class="control-label">NDMS Access Policy</div>
+						<div class="policy-row">
+							<div class="policy-dropdown">
+								<Dropdown
+									value={settings.policyName}
+									options={policyOptions}
+									placeholder="— выберите политику —"
+									disabled={busy || creatingPolicy}
+									onchange={(v) => selectPolicy(v)}
+									fullWidth
+								/>
+							</div>
+							<Button
+								variant="ghost"
+								size="md"
+								onclick={openCreateModal}
+								disabled={creatingPolicy || busy}
+							>
+								+ Создать новую
 							</Button>
 						</div>
-					{/if}
+
+						{#if status.policyMark}
+							<div class="mark-info">
+								Текущий mark: <code>{status.policyMark}</code>
+							</div>
+						{/if}
+
+						{#if settings.policyName}
+							<div class="policy-link-row">
+								<span class="setting-description">
+									Привязка устройств к политике
+									<strong>«{settings.policyName}»</strong>
+									настраивается на отдельной странице.
+								</span>
+								<Button variant="ghost" size="sm" href="/routing?tab=policy">
+									Управление устройствами →
+								</Button>
+							</div>
+						{/if}
+					</div>
+				{/if}
+
+				<div class="sniffer-block">
+					<div class="sniffer-row">
+						<Toggle
+							checked={snifferEnabled}
+							onchange={(v) => setSnifferEnabled(v)}
+							disabled={busy}
+							size="sm"
+						/>
+						<div>
+							<div class="sniffer-title">Sniffer sing-box</div>
+							<div class="setting-description">
+								{snifferEnabled
+									? 'Добавляется системное правило sniff для определения протокола и домена.'
+									: 'Системное sniff-правило не добавляется; DNS hijack остаётся включён.'}
+							</div>
+						</div>
+					</div>
 				</div>
 
 				<div class="wan-block">
@@ -669,10 +753,55 @@
 		font-size: 0.85rem;
 		color: var(--color-text-secondary);
 	}
+	.device-mode-block,
+	.sniffer-block,
 	.wan-block {
 		margin-top: 1rem;
 		padding-top: 1rem;
 		border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+	}
+	.device-mode-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.mode-switch {
+		display: inline-flex;
+		width: fit-content;
+		padding: 3px;
+		gap: 2px;
+		border: 1px solid var(--color-border, rgba(255, 255, 255, 0.08));
+		border-radius: var(--radius-sm);
+		background: var(--color-bg-secondary);
+	}
+	.mode-switch button {
+		border: 0;
+		border-radius: 4px;
+		background: transparent;
+		color: var(--color-text-secondary);
+		padding: 0.4rem 0.65rem;
+		font-size: 0.82rem;
+		cursor: pointer;
+	}
+	.mode-switch button.active {
+		background: var(--color-bg-tertiary);
+		color: var(--color-text-primary);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent, #6ea8ff) 32%, transparent);
+	}
+	.mode-switch button:disabled {
+		cursor: not-allowed;
+		opacity: 0.65;
+	}
+	.sniffer-row {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.65rem;
+	}
+	.sniffer-title {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--color-text-primary);
+		margin-bottom: 0.2rem;
 	}
 	.wan-row {
 		display: flex;

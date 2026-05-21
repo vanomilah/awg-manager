@@ -94,7 +94,7 @@ func TestNewEmptyConfig_FinalIsDirect(t *testing.T) {
 func TestEnsureSystemRules_EnforcesFinal(t *testing.T) {
 	cfg := NewEmptyConfig()
 	cfg.Route.Final = ""
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 	if cfg.Route.Final != "direct" {
 		t.Errorf("EnsureSystemRules should set Final='direct' when empty, got %q", cfg.Route.Final)
 	}
@@ -103,7 +103,7 @@ func TestEnsureSystemRules_EnforcesFinal(t *testing.T) {
 func TestEnsureSystemRules_PreservesCustomFinal(t *testing.T) {
 	cfg := NewEmptyConfig()
 	cfg.Route.Final = "my-vpn"
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(true)
 	if cfg.Route.Final != "my-vpn" {
 		t.Errorf("EnsureSystemRules should preserve non-empty Final, got %q", cfg.Route.Final)
 	}

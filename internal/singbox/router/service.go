@@ -541,13 +541,20 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	sr := settings.SingboxRouter
-	if sr.PolicyName == "" {
-		return ErrPolicyNotConfigured
+	sr, err := NormalizeSingboxRouterSettings(settings.SingboxRouter)
+	if err != nil {
+		return fmt.Errorf("router settings: %w", err)
 	}
-	mark, err := s.deps.Policies.GetPolicyMark(ctx, sr.PolicyName)
-	if err != nil || mark == "" {
-		return fmt.Errorf("policy %q: %w", sr.PolicyName, ErrPolicyMissing)
+	policyMode := sr.DeviceMode == "" || sr.DeviceMode == "policy"
+	mark := ""
+	if policyMode {
+		if sr.PolicyName == "" {
+			return ErrPolicyNotConfigured
+		}
+		mark, err = s.deps.Policies.GetPolicyMark(ctx, sr.PolicyName)
+		if err != nil || mark == "" {
+			return fmt.Errorf("policy %q: %w", sr.PolicyName, ErrPolicyMissing)
+		}
 	}
 
 	if err := s.prepareNetfilter(ctx); err != nil {
@@ -562,7 +569,7 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 	}
 	cfg.Inbounds = ensureTProxyInbound(cfg.Inbounds)
 	cfg.Outbounds = stripLegacyAWGDirect(cfg.Outbounds)
-	cfg.EnsureSystemRules()
+	cfg.EnsureSystemRules(sr.SnifferEnabled)
 	// Settings was already loaded above; revalidate here in case the
 	// store is corrupted or hand-edited around a schema migration. We
 	// fail Enable rather than apply a half-broken config — the user
@@ -625,14 +632,18 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 	// default DNS up to the sing-box mark would route it via Policy1's
 	// (permit-less) table and DNS would never resolve. Empty result =
 	// no qualifying bridges = skip the DNS-NOPOLICY logic entirely.
-	lanBridges, _ := DiscoverLANBridges(ctx, mark)
-	if len(lanBridges) == 0 {
-		s.deps.Log.Warnf("router: no NDMS hotspot LAN bridges discovered; DNS fallback for no-policy devices skipped")
+	var lanBridges []LANBridgeDNSRedir
+	if policyMode {
+		lanBridges, _ = DiscoverLANBridges(ctx, mark)
+		if len(lanBridges) == 0 {
+			s.deps.Log.Warnf("router: no NDMS hotspot LAN bridges discovered; DNS fallback for no-policy devices skipped")
+		}
 	}
 
 	bypassUDP, bypassTCP, _ := resolveBypassPorts(sr.BypassPresets, sr.BypassExtraPorts)
 	if err := s.deps.IPTables.Install(ctx, RestoreInputSpec{
 		PolicyMark:     mark,
+		MatchAll:       !policyMode,
 		WANIPs:         wanIPs,
 		LANBridges:     lanBridges,
 		BypassUDPPorts: bypassUDP,
@@ -808,7 +819,7 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 	settings, _ := s.deps.Settings.Load()
 	sr := storage.SingboxRouterSettings{}
 	if settings != nil {
-		sr = settings.SingboxRouter
+		sr, _ = NormalizeSingboxRouterSettings(settings.SingboxRouter)
 	}
 	cfg, _ := s.loadRouterConfig()
 	if cfg == nil {
@@ -843,6 +854,8 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 		PolicyName:             sr.PolicyName,
 		PolicyMark:             policyMark,
 		PolicyExists:           policyExists,
+		DeviceMode:             sr.DeviceMode,
+		SnifferEnabled:         sr.SnifferEnabled,
 		DeviceCount:            deviceCount,
 		RuleCount:              len(cfg.Route.Rules),
 		RuleSetCount:           len(cfg.Route.RuleSet),
@@ -910,7 +923,10 @@ func (s *ServiceImpl) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	sr := settings.SingboxRouter
+	sr, err := NormalizeSingboxRouterSettings(settings.SingboxRouter)
+	if err != nil {
+		return err
+	}
 	installedComplete := s.deps.IPTables.IsInstalled(ctx)
 	installedAny := s.deps.IPTables.HasAnyInstalled(ctx)
 	switch {
@@ -928,10 +944,18 @@ func (s *ServiceImpl) Reconcile(ctx context.Context) error {
 // detect mark or WAN-IP changes and re-Install. Extracted from Reconcile
 // to keep the decision tree testable without stubbing IsInstalled.
 func (s *ServiceImpl) reconcileInstalled(ctx context.Context, sr storage.SingboxRouterSettings) error {
-	mark, err := s.deps.Policies.GetPolicyMark(ctx, sr.PolicyName)
-	if err != nil || mark == "" {
-		// Policy gone upstream — fail-safe disable, no auto-recovery.
-		return s.Disable(ctx)
+	sr, err := NormalizeSingboxRouterSettings(sr)
+	if err != nil {
+		return err
+	}
+	policyMode := sr.DeviceMode == "" || sr.DeviceMode == "policy"
+	mark := ""
+	if policyMode {
+		mark, err = s.deps.Policies.GetPolicyMark(ctx, sr.PolicyName)
+		if err != nil || mark == "" {
+			// Policy gone upstream — fail-safe disable, no auto-recovery.
+			return s.Disable(ctx)
+		}
 	}
 	wanIPs, err := s.deps.WANIPCollector.Collect(ctx)
 	if err != nil {
@@ -940,7 +964,10 @@ func (s *ServiceImpl) reconcileInstalled(ctx context.Context, sr storage.Singbox
 
 	markChanged := mark != s.currentMark
 	wanIPsChanged := !slices.Equal(s.currentWANIPs, wanIPs)
-	lanBridges, _ := DiscoverLANBridges(ctx, mark)
+	var lanBridges []LANBridgeDNSRedir
+	if policyMode {
+		lanBridges, _ = DiscoverLANBridges(ctx, mark)
+	}
 	lanBridgesChanged := !equalLANBridges(s.currentLANBridges, lanBridges)
 	bypassPresetsChanged := !slices.Equal(s.currentBypassPresets, sr.BypassPresets)
 	bypassExtraChanged := s.currentBypassExtraPorts != sr.BypassExtraPorts
@@ -967,6 +994,7 @@ func (s *ServiceImpl) reconcileInstalled(ctx context.Context, sr storage.Singbox
 		s.mu.Lock()
 		if err := s.deps.IPTables.Install(ctx, RestoreInputSpec{
 			PolicyMark:     mark,
+			MatchAll:       !policyMode,
 			WANIPs:         wanIPs,
 			LANBridges:     lanBridges,
 			BypassUDPPorts: bypassUDP,
@@ -1192,18 +1220,19 @@ func (s *ServiceImpl) GetSettings(ctx context.Context) (storage.SingboxRouterSet
 	if err != nil {
 		return storage.SingboxRouterSettings{}, err
 	}
-	return settings.SingboxRouter, nil
+	return NormalizeSingboxRouterSettings(settings.SingboxRouter)
 }
 
 func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRouterSettings) error {
-	if err := ValidateSingboxRouterSettings(sr); err != nil {
+	normalized, err := NormalizeSingboxRouterSettings(sr)
+	if err != nil {
 		return err
 	}
 	settings, err := s.deps.Settings.Load()
 	if err != nil {
 		return err
 	}
-	settings.SingboxRouter = sr
+	settings.SingboxRouter = normalized
 	if err := s.deps.Settings.Save(settings); err != nil {
 		return err
 	}
@@ -1220,22 +1249,35 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 // path (Enable → EnsureRouteWAN) so an invalid state cannot reach
 // sing-box config either through the API or through a hand-edited
 // settings.json.
-func ValidateSingboxRouterSettings(sr storage.SingboxRouterSettings) error {
+func NormalizeSingboxRouterSettings(sr storage.SingboxRouterSettings) (storage.SingboxRouterSettings, error) {
+	if sr.DeviceMode == "" {
+		sr.DeviceMode = "policy"
+	}
+	switch sr.DeviceMode {
+	case "policy", "all":
+	default:
+		return sr, fmt.Errorf("deviceMode must be %q or %q, got %q", "policy", "all", sr.DeviceMode)
+	}
 	if sr.WANAutoDetect && sr.WANInterface != "" {
-		return fmt.Errorf("wanAutoDetect=true requires wanInterface to be empty (got %q)", sr.WANInterface)
+		return sr, fmt.Errorf("wanAutoDetect=true requires wanInterface to be empty (got %q)", sr.WANInterface)
 	}
 	if !sr.WANAutoDetect && sr.WANInterface == "" {
-		return fmt.Errorf("wanAutoDetect=false requires wanInterface to be set to a kernel interface name")
+		return sr, fmt.Errorf("wanAutoDetect=false requires wanInterface to be set to a kernel interface name")
 	}
 	for _, name := range sr.BypassPresets {
 		if _, ok := knownPresets[name]; !ok {
-			return fmt.Errorf("unknown bypass preset %q", name)
+			return sr, fmt.Errorf("unknown bypass preset %q", name)
 		}
 	}
 	if _, _, err := parseExtraPorts(sr.BypassExtraPorts); err != nil {
-		return fmt.Errorf("bypassExtraPorts: %w", err)
+		return sr, fmt.Errorf("bypassExtraPorts: %w", err)
 	}
-	return nil
+	return sr, nil
+}
+
+func ValidateSingboxRouterSettings(sr storage.SingboxRouterSettings) error {
+	_, err := NormalizeSingboxRouterSettings(sr)
+	return err
 }
 
 func (s *ServiceImpl) ListWANInterfaces(ctx context.Context) ([]WANInterfaceInfo, error) {

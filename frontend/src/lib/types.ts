@@ -1226,6 +1226,8 @@ export interface MonitoringSample {
 export interface SingboxRouterSettings {
 	enabled: boolean;
 	policyName: string;
+	deviceMode?: 'policy' | 'all';
+	snifferEnabled: boolean;
 	refreshMode?: 'interval' | 'daily';
 	refreshIntervalHours?: number;
 	refreshDailyTime?: string;
@@ -1268,6 +1270,8 @@ export interface SingboxRouterStatus {
 	policyName: string;
 	policyMark?: string;
 	policyExists: boolean;
+	deviceMode: 'policy' | 'all';
+	snifferEnabled: boolean;
 	deviceCount: number;
 	ruleCount: number;
 	ruleSetCount: number;

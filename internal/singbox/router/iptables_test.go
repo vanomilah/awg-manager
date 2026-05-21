@@ -189,6 +189,22 @@ func TestBuildRestoreInput_PolicyMark_JumpHasFilter(t *testing.T) {
 	}
 }
 
+func TestBuildRestoreInput_AllDevicesMode_UnconditionalPrerouting(t *testing.T) {
+	spec := RestoreInputSpec{MatchAll: true}
+	out := buildRestoreInput(spec)
+	wantMangle := "-A PREROUTING -m conntrack ! --ctstate INVALID -j " + ChainName
+	if !strings.Contains(out, wantMangle) {
+		t.Errorf("missing unconditional mangle PREROUTING jump\nwant: %s\ngot:\n%s", wantMangle, out)
+	}
+	wantNat := "-A PREROUTING -m conntrack ! --ctstate INVALID -j " + RedirectChain
+	if !strings.Contains(out, wantNat) {
+		t.Errorf("missing unconditional nat PREROUTING jump\nwant: %s\ngot:\n%s", wantNat, out)
+	}
+	if strings.Contains(out, "-m connmark --mark") {
+		t.Errorf("all-devices mode must not include policy connmark filter:\n%s", out)
+	}
+}
+
 func TestBuildRestoreInput_EmptyMark_NoPrerouting(t *testing.T) {
 	spec := RestoreInputSpec{PolicyMark: ""}
 	out := buildRestoreInput(spec)

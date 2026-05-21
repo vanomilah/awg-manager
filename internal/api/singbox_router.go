@@ -36,6 +36,8 @@ type SingboxRouterStatusData struct {
 	PolicyName             string                  `json:"policyName" example:"awgm-router"`
 	PolicyMark             string                  `json:"policyMark,omitempty" example:"0xffffaaa"`
 	PolicyExists           bool                    `json:"policyExists" example:"true"`
+	DeviceMode             string                  `json:"deviceMode" example:"policy" enums:"policy,all"`
+	SnifferEnabled         bool                    `json:"snifferEnabled" example:"true"`
 	DeviceCount            int                     `json:"deviceCount" example:"3"`
 	RuleCount              int                     `json:"ruleCount" example:"12"`
 	RuleSetCount           int                     `json:"ruleSetCount" example:"4"`
@@ -55,6 +57,8 @@ type SingboxRouterStatusResponse struct {
 type SingboxRouterSettingsData struct {
 	Enabled         bool   `json:"enabled" example:"true"`
 	PolicyName      string `json:"policyName" example:"awgm-router"`
+	DeviceMode      string `json:"deviceMode,omitempty" example:"policy" enums:"policy,all"`
+	SnifferEnabled  bool   `json:"snifferEnabled" example:"true"`
 	RefreshMode     string `json:"refreshMode,omitempty" example:"interval"`
 	RefreshInterval int    `json:"refreshIntervalHours,omitempty" example:"24"`
 	RefreshDaily    string `json:"refreshDailyTime,omitempty" example:"03:00"`
@@ -101,15 +105,15 @@ type SingboxRouterRulesListResponse struct {
 
 // SingboxRouterRuleSetDTO mirrors router.RuleSet.
 type SingboxRouterRuleSetDTO struct {
-	Tag            string           `json:"tag" example:"geosite-cn"`
-	Type           string           `json:"type" example:"remote"`
-	Format         string           `json:"format,omitempty" example:"binary"`
-	URL            string           `json:"url,omitempty" example:"https://cdn.example.com/geosite-cn.srs"`
-	UpdateInterval string           `json:"update_interval,omitempty" example:"24h"`
-	DownloadDetour string           `json:"download_detour,omitempty" example:"direct"`
-	Path           string           `json:"path,omitempty" example:"/opt/etc/singbox/rulesets/geosite-cn.srs"`
-	Rules          []map[string]any `json:"rules,omitempty"`
-	MaterializedSRS bool            `json:"materialized_srs,omitempty" example:"true"`
+	Tag             string           `json:"tag" example:"geosite-cn"`
+	Type            string           `json:"type" example:"remote"`
+	Format          string           `json:"format,omitempty" example:"binary"`
+	URL             string           `json:"url,omitempty" example:"https://cdn.example.com/geosite-cn.srs"`
+	UpdateInterval  string           `json:"update_interval,omitempty" example:"24h"`
+	DownloadDetour  string           `json:"download_detour,omitempty" example:"direct"`
+	Path            string           `json:"path,omitempty" example:"/opt/etc/singbox/rulesets/geosite-cn.srs"`
+	Rules           []map[string]any `json:"rules,omitempty"`
+	MaterializedSRS bool             `json:"materialized_srs,omitempty" example:"true"`
 }
 
 // SingboxRouterRuleSetUpdateRequest is the body for POST /singbox/router/rulesets/update.

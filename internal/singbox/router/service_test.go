@@ -21,6 +21,7 @@ import (
 type fakeAccessPolicyProvider struct {
 	mark          string
 	markErr       error
+	markCalls     int
 	devices       []PolicyDevice
 	policies      []PolicyInfo
 	createReturn  PolicyInfo
@@ -30,6 +31,7 @@ type fakeAccessPolicyProvider struct {
 }
 
 func (f *fakeAccessPolicyProvider) GetPolicyMark(_ context.Context, _ string) (string, error) {
+	f.markCalls++
 	return f.mark, f.markErr
 }
 func (f *fakeAccessPolicyProvider) AssignDevice(_ context.Context, _, _ string) error {
@@ -77,6 +79,9 @@ func newStubIPTables(restoreRecorder func(context.Context, string) error) *IPTab
 // saves the given SingboxRouterSettings into it.
 func newTestSettingsStore(t *testing.T, sr storage.SingboxRouterSettings) *storage.SettingsStore {
 	t.Helper()
+	if !sr.WANAutoDetect && sr.WANInterface == "" {
+		sr.WANAutoDetect = true
+	}
 	dir := t.TempDir()
 	store := storage.NewSettingsStore(dir)
 	all, err := store.Load()
@@ -188,6 +193,36 @@ func TestEnable_PolicyMissing_MessageContainsPolicyName(t *testing.T) {
 	}
 }
 
+func TestEnable_AllDevicesMode_DoesNotRequirePolicyMark(t *testing.T) {
+	var restoreInput string
+	settingsStore := newTestSettingsStore(t, storage.SingboxRouterSettings{
+		DeviceMode:     "all",
+		SnifferEnabled: true,
+		WANAutoDetect:  true,
+	})
+	policies := &fakeAccessPolicyProvider{markErr: query.ErrPolicyMarkNotFound}
+	singbox := newTestSingbox(t)
+	singbox.isRunningFn = func() (bool, int) { return true, 1234 }
+	svc := newTestService(t, Deps{
+		Log:                logger.New(),
+		Settings:           settingsStore,
+		Policies:           policies,
+		IPTables:           newStubIPTables(func(_ context.Context, input string) error { restoreInput = input; return nil }),
+		Singbox:            singbox,
+		WANIPCollector:     &fakeWANIPCollector{},
+		NetfilterPreflight: func(context.Context) error { return nil },
+	})
+	if err := svc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable all-devices mode: %v", err)
+	}
+	if policies.markCalls != 0 {
+		t.Fatalf("all-devices mode must not query policy mark, got %d calls", policies.markCalls)
+	}
+	if !strings.Contains(restoreInput, "-A PREROUTING -m conntrack ! --ctstate INVALID -j "+ChainName) {
+		t.Fatalf("expected unconditional mangle PREROUTING jump, got:\n%s", restoreInput)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Reconcile tests
 // ---------------------------------------------------------------------------
@@ -215,8 +250,9 @@ func TestReconcile_PolicyMarkChanged_Reinstalls(t *testing.T) {
 		currentWANIPs: []string{"203.0.113.207/32"}, // same as collector — only mark differs
 	}
 	if err := svc.reconcileInstalled(context.Background(), storage.SingboxRouterSettings{
-		Enabled:    true,
-		PolicyName: "Policy0",
+		Enabled:       true,
+		PolicyName:    "Policy0",
+		WANAutoDetect: true,
 	}); err != nil {
 		t.Fatalf("reconcileInstalled: %v", err)
 	}
@@ -286,8 +322,9 @@ func TestReconcile_WANIPsChanged_Reinstalls(t *testing.T) {
 		currentWANIPs: []string{"198.51.100.1/32"}, // different
 	}
 	if err := svc.reconcileInstalled(context.Background(), storage.SingboxRouterSettings{
-		Enabled:    true,
-		PolicyName: "Policy0",
+		Enabled:       true,
+		PolicyName:    "Policy0",
+		WANAutoDetect: true,
 	}); err != nil {
 		t.Fatalf("reconcileInstalled err: %v", err)
 	}
@@ -324,13 +361,89 @@ func TestReconcile_WANIPsSame_NoOp(t *testing.T) {
 		netfilterStateKnown: true,
 	}
 	if err := svc.reconcileInstalled(context.Background(), storage.SingboxRouterSettings{
-		Enabled:    true,
-		PolicyName: "Policy0",
+		Enabled:       true,
+		PolicyName:    "Policy0",
+		WANAutoDetect: true,
 	}); err != nil {
 		t.Fatalf("reconcileInstalled err: %v", err)
 	}
 	if restoreCalls != 0 {
 		t.Errorf("expected no restore (no-op), got %d Install calls", restoreCalls)
+	}
+}
+
+func TestReconcile_DeviceModeChanged_ReinstallsImmediately(t *testing.T) {
+	tests := []struct {
+		name             string
+		currentMark      string
+		nextSettings     storage.SingboxRouterSettings
+		wantPolicyLookup bool
+		wantMatchAll     bool
+		wantConnmark     bool
+	}{
+		{
+			name:        "policy to all",
+			currentMark: "0xffffaaa",
+			nextSettings: storage.SingboxRouterSettings{
+				Enabled:       true,
+				DeviceMode:    "all",
+				WANAutoDetect: true,
+			},
+			wantMatchAll: true,
+		},
+		{
+			name:        "all to policy",
+			currentMark: "",
+			nextSettings: storage.SingboxRouterSettings{
+				Enabled:       true,
+				DeviceMode:    "policy",
+				PolicyName:    "Policy0",
+				WANAutoDetect: true,
+			},
+			wantPolicyLookup: true,
+			wantConnmark:     true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var restoreInput string
+			restoreCalls := 0
+			policies := &fakeAccessPolicyProvider{mark: "0xffffaaa"}
+			svc := &ServiceImpl{
+				deps: Deps{
+					Log:                logger.New(),
+					Policies:           policies,
+					IPTables:           newStubIPTables(func(_ context.Context, input string) error { restoreInput = input; restoreCalls++; return nil }),
+					WANIPCollector:     &fakeWANIPCollector{},
+					Singbox:            newTestSingbox(t),
+					NetfilterPreflight: func(context.Context) error { return nil },
+				},
+				currentMark:         tc.currentMark,
+				netfilterStateKnown: true,
+			}
+
+			if err := svc.reconcileInstalled(context.Background(), tc.nextSettings); err != nil {
+				t.Fatalf("reconcileInstalled: %v", err)
+			}
+			if restoreCalls != 1 {
+				t.Fatalf("expected one immediate iptables reinstall, got %d", restoreCalls)
+			}
+			if tc.wantPolicyLookup && policies.markCalls == 0 {
+				t.Fatal("expected policy mark lookup")
+			}
+			if !tc.wantPolicyLookup && policies.markCalls != 0 {
+				t.Fatalf("did not expect policy mark lookup, got %d calls", policies.markCalls)
+			}
+			matchAllJump := "-A PREROUTING -m conntrack ! --ctstate INVALID -j " + ChainName
+			if got := strings.Contains(restoreInput, matchAllJump); got != tc.wantMatchAll {
+				t.Fatalf("match-all jump presence = %v, want %v\n%s", got, tc.wantMatchAll, restoreInput)
+			}
+			connmarkJump := "-A PREROUTING -m connmark --mark 0xffffaaa -m conntrack ! --ctstate INVALID -j " + ChainName
+			if got := strings.Contains(restoreInput, connmarkJump); got != tc.wantConnmark {
+				t.Fatalf("connmark jump presence = %v, want %v\n%s", got, tc.wantConnmark, restoreInput)
+			}
+		})
 	}
 }
 
@@ -423,8 +536,9 @@ func TestReconcile_StateUnknown_ForcesInitialReinstall(t *testing.T) {
 	}
 
 	err := svc.reconcileInstalled(context.Background(), storage.SingboxRouterSettings{
-		Enabled:    true,
-		PolicyName: "Policy0",
+		Enabled:       true,
+		PolicyName:    "Policy0",
+		WANAutoDetect: true,
 	})
 	if err != nil {
 		t.Fatalf("reconcileInstalled: %v", err)
@@ -872,6 +986,7 @@ func TestReconcile_BypassPresetsChanged_Reinstalls(t *testing.T) {
 	if err := svc.reconcileInstalled(context.Background(), storage.SingboxRouterSettings{
 		Enabled:       true,
 		PolicyName:    "Policy0",
+		WANAutoDetect: true,
 		BypassPresets: []string{"l2tp"}, // changed
 	}); err != nil {
 		t.Fatalf("reconcileInstalled err: %v", err)
@@ -903,13 +1018,14 @@ func TestReconcile_BypassPresetsSame_NoOp(t *testing.T) {
 		},
 		currentMark:             "0xffffaaa",
 		currentWANIPs:           []string{"203.0.113.207/32"},
-		currentBypassPresets:    []string{"l2tp"},      // same
-		currentBypassExtraPorts: "51820 UDP",           // same
+		currentBypassPresets:    []string{"l2tp"}, // same
+		currentBypassExtraPorts: "51820 UDP",      // same
 		netfilterStateKnown:     true,
 	}
 	if err := svc.reconcileInstalled(context.Background(), storage.SingboxRouterSettings{
 		Enabled:          true,
 		PolicyName:       "Policy0",
+		WANAutoDetect:    true,
 		BypassPresets:    []string{"l2tp"},
 		BypassExtraPorts: "51820 UDP",
 	}); err != nil {

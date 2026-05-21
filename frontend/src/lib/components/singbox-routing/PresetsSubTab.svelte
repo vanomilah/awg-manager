@@ -23,17 +23,14 @@
 	const dnsServers = $derived($dnsServersStore);
 	const status = $derived($statusStore);
 
-	const preflight = $derived<PreflightStatus>(
-		!status
-			? 'loading'
-			: !status.policyName
-				? 'no-policy'
-				: !status.policyExists
-					? 'no-policy-in-ndms'
-					: status.deviceCount === 0
-						? 'no-devices'
-						: 'ok',
-	);
+	const preflight = $derived.by<PreflightStatus>(() => {
+		if (!status) return 'loading';
+		if ((status.deviceMode ?? 'policy') === 'all') return 'ok';
+		if (!status.policyName) return 'no-policy';
+		if (!status.policyExists) return 'no-policy-in-ndms';
+		if (status.deviceCount === 0) return 'no-devices';
+		return 'ok';
+	});
 
 	let selectedIds = $state<Set<string>>(new Set());
 	let modalPresets = $state<SingboxRouterPreset[] | null>(null);

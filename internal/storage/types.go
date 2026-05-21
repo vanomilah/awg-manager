@@ -33,8 +33,14 @@ type Settings struct {
 }
 
 type SingboxRouterSettings struct {
-	Enabled         bool   `json:"enabled"`
-	PolicyName      string `json:"policyName"`
+	Enabled    bool   `json:"enabled"`
+	PolicyName string `json:"policyName"`
+	// DeviceMode controls which LAN devices are routed through sing-box.
+	// "policy" (default) keeps the historical NDMS access-policy mark
+	// filter. "all" installs unmarked PREROUTING jumps so every LAN
+	// device that reaches the router netfilter path is filtered.
+	DeviceMode      string `json:"deviceMode,omitempty"`
+	SnifferEnabled  bool   `json:"snifferEnabled"`
 	RefreshMode     string `json:"refreshMode,omitempty"`
 	RefreshInterval int    `json:"refreshIntervalHours,omitempty"`
 	RefreshDaily    string `json:"refreshDailyTime,omitempty"`

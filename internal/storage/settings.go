@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CurrentSchemaVersion = 18
+	CurrentSchemaVersion = 19
 	DefaultPort          = 2222
 	DefaultInterface     = "br0"
 )
@@ -114,6 +114,9 @@ func (s *SettingsStore) Load() (*Settings, error) {
 		if settings.SchemaVersion < 18 {
 			s.migrateToV18(&settings)
 		}
+		if settings.SchemaVersion < 19 {
+			s.migrateToV19(&settings)
+		}
 	}
 
 	// Self-heal duplicated managed servers — see dedupManagedServers comment.
@@ -163,6 +166,8 @@ func (s *SettingsStore) defaultSettings() *Settings {
 		},
 		SingboxRouter: SingboxRouterSettings{
 			Enabled:         false,
+			DeviceMode:      "policy",
+			SnifferEnabled:  true,
 			RefreshMode:     "interval",
 			RefreshInterval: 24,
 			WANAutoDetect:   true, // sing-box auto_detect_interface by default
@@ -329,6 +334,15 @@ func (s *SettingsStore) migrateToV18(settings *Settings) {
 	settings.SingboxRouter.WANAutoDetect = true
 	settings.SingboxRouter.WANInterface = ""
 	settings.SchemaVersion = 18
+}
+
+// migrateToV19 introduces singbox-router device scope and the sniffer
+// toggle. Preserve historical behavior for existing installs:
+// policy-marked devices only, with sing-box sniffing enabled.
+func (s *SettingsStore) migrateToV19(settings *Settings) {
+	settings.SingboxRouter.DeviceMode = "policy"
+	settings.SingboxRouter.SnifferEnabled = true
+	settings.SchemaVersion = 19
 }
 
 // dedupManagedServers returns servers with duplicate InterfaceName entries
