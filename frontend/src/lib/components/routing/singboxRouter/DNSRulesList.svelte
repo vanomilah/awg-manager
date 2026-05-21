@@ -3,6 +3,7 @@
 	import { notifications } from '$lib/stores/notifications';
 	import type { SingboxRouterDNSRule, SingboxRouterDNSServer, SingboxRouterRuleSet } from '$lib/types';
 	import DNSRuleEditModal from './DNSRuleEditModal.svelte';
+	import { Button } from '$lib/components/ui';
 	import ConfirmModal from '$lib/components/ui/ConfirmModal.svelte';
 
 	interface Props {
@@ -65,9 +66,14 @@
 
 <div class="header">
 	<div class="hint">{rules.length} правил · first-match-wins</div>
-	<button class="btn btn-primary" onclick={() => { addMode = true; editIndex = null; }} disabled={servers.length === 0}>
+	<Button
+		variant="primary"
+		size="sm"
+		onclick={() => { addMode = true; editIndex = null; }}
+		disabled={servers.length === 0}
+	>
 		+ Добавить правило
-	</button>
+	</Button>
 </div>
 
 {#if servers.length === 0}

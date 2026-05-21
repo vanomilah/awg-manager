@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Dropdown, type DropdownOption } from '$lib/components/ui';
+	import { Button, Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type {
 		SingboxRouterDNSServer,
 		SingboxRouterDNSType,
@@ -253,12 +253,14 @@
 		{/if}
 
 		{#if error}<div class="error">{error}</div>{/if}
-
-		<div class="actions">
-			<button class="btn btn-secondary" onclick={onClose} type="button">Отмена</button>
-			<button class="btn btn-primary" onclick={save} disabled={busy} type="button">Сохранить</button>
-		</div>
 	</div>
+
+	{#snippet actions()}
+		<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
+		<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
+			Сохранить
+		</Button>
+	{/snippet}
 </Modal>
 
 <style>
@@ -369,10 +371,5 @@
 	.error {
 		color: var(--danger, #dc2626);
 		font-size: 0.85rem;
-	}
-	.actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 0.5rem;
 	}
 </style>

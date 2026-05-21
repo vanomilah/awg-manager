@@ -733,15 +733,14 @@ geosite:xai`;
 	</div>
 
 	{#snippet actions()}
-		<Button variant="danger" size="md" onclick={onClose}>
-			Отмена
-		</Button>
+		<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
 		<Button
-			variant="success"
+			variant="primary"
 			size="md"
 			onclick={save}
 			disabled={busy || inlineModeBusy}
 			loading={busy || inlineModeBusy}
+			type="button"
 		>
 			Сохранить
 		</Button>

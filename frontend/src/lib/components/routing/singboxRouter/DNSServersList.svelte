@@ -4,6 +4,7 @@
 	import type { SingboxRouterDNSServer } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 	import DNSServerEditModal from './DNSServerEditModal.svelte';
+	import { Button } from '$lib/components/ui';
 	import ConfirmModal from '$lib/components/ui/ConfirmModal.svelte';
 
 	interface Props {
@@ -77,7 +78,7 @@
 
 <div class="header">
 	<div class="hint">{servers.length} DNS серверов</div>
-	<button class="btn btn-primary" onclick={() => { addMode = true; editTag = null; }}>+ Добавить сервер</button>
+	<Button variant="primary" size="sm" onclick={() => { addMode = true; editTag = null; }}>+ Добавить сервер</Button>
 </div>
 
 {#if servers.length === 0}
