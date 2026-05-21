@@ -124,6 +124,7 @@
 </script>
 
 {#if editingPolicyData}
+    <div class="policy-tab policy-tab--edit">
         <PolicyEditView
             policy={editingPolicyData}
             devices={policyDevices}
@@ -133,7 +134,9 @@
             ondeviceassigned={handleDeviceAssigned}
             ondeviceunassigned={handleDeviceUnassigned}
         />
+    </div>
 {:else}
+    <div class="policy-tab policy-tab--list">
     <div class="section-header">
         {#if !policySelectionMode}
             <span class="section-summary">{policyCount} политик</span>
@@ -180,14 +183,16 @@
             </div>
         {/if}
     {:else}
-        <PolicyTable
-            policies={accessPolicies}
-            onedit={(name) => { editingPolicy = name; editingPolicyData = accessPolicies.find(p => p.name === name) ?? null; }}
-            ondelete={(name) => policyDeleteName = name}
-            selectable={policySelectionMode}
-            selectedNames={policySelected}
-            onselect={togglePolicySelect}
-        />
+        <div class="policy-list-scroll">
+            <PolicyTable
+                policies={accessPolicies}
+                onedit={(name) => { editingPolicy = name; editingPolicyData = accessPolicies.find(p => p.name === name) ?? null; }}
+                ondelete={(name) => policyDeleteName = name}
+                selectable={policySelectionMode}
+                selectedNames={policySelected}
+                onselect={togglePolicySelect}
+            />
+        </div>
     {/if}
 
     <PolicyCreateModal
@@ -218,4 +223,37 @@
             onClose={() => policyBulkDeleteConfirm = false}
         />
     {/if}
+    </div>
 {/if}
+
+<style>
+    /* Высота под viewport: скролл внутри панелей, не у всей страницы */
+    .policy-tab {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .policy-tab--edit,
+    .policy-tab--list {
+        height: calc(100dvh - 12.5rem);
+        min-height: 280px;
+        max-height: calc(100dvh - 12.5rem);
+    }
+
+    .policy-list-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 2px;
+    }
+
+    @media (max-width: 768px) {
+        .policy-tab--edit,
+        .policy-tab--list {
+            height: calc(100dvh - 11rem);
+            max-height: calc(100dvh - 11rem);
+        }
+    }
+</style>

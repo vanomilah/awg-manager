@@ -82,6 +82,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 8px;
+		flex: 1;
+		min-height: 0;
+		overflow: hidden;
 	}
 
 	.section-title {
@@ -108,7 +111,8 @@
 	}
 
 	.device-scroll {
-		max-height: 500px;
+		flex: 1;
+		min-height: 0;
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;

@@ -1,11 +1,15 @@
 <script lang="ts">
 	import type { DnsRoute, DnsRouteTarget, DnsRouteSubscription, RoutingTunnel } from '$lib/types';
-	import { Modal, Button, Dropdown, type DropdownOption } from '$lib/components/ui';
+	import { Modal, Button, Dropdown } from '$lib/components/ui';
 	import { formatRelativeTime } from '$lib/utils/format';
 	import DnsRouteDomainEditor from './DnsRouteDomainEditor.svelte';
 	import ServiceIcon from './ServiceIcon.svelte';
 	import IconPickerModal from './IconPickerModal.svelte';
 	import { formatIconUrlHint } from '$lib/utils/custom-icon';
+	import {
+		buildRoutingTunnelDropdownOptions,
+		findRoutingTunnelLabel,
+	} from '$lib/utils/routingTunnelOptions';
 
 	interface Props {
 		open: boolean;
@@ -233,10 +237,19 @@
 	}
 
 	function tunnelName(tunnelId: string): string {
-		const t = tunnels.find((t) => t.id === tunnelId);
-		if (!t) return tunnelId;
-		return t.name + (t.type === 'system' ? ' (системный)' : '');
+		return findRoutingTunnelLabel(tunnels, tunnelId);
 	}
+
+	const hrInterfaceTunnelOpts = $derived(
+		buildRoutingTunnelDropdownOptions(tunnels, {
+			filter: (t) =>
+				(t.type === 'managed' && t.available) || t.type === 'system' || t.type === 'wan',
+		}),
+	);
+
+	const addRouteTunnelOpts = $derived(
+		buildRoutingTunnelDropdownOptions(availableTunnels),
+	);
 
 	function handleFallbackChange(value: string) {
 		if (routes.length === 0) return;
@@ -403,16 +416,11 @@
 
 	<!-- HR Interface mode: single selector -->
 	{#if isInterfaceMode}
-		{@const interfaceOpts: DropdownOption[] = [
-			...tunnels.filter(t => t.type === 'managed' && t.available).map(t => ({ value: t.id, label: t.name })),
-			...tunnels.filter(t => t.type === 'system').map(t => ({ value: t.id, label: t.name })),
-			...tunnels.filter(t => t.type === 'wan').map(t => ({ value: t.id, label: t.name })),
-		]}
 		<div class="form-group">
 			<Dropdown
 				label="Целевой интерфейс"
 				bind:value={hrInterfaceId}
-				options={interfaceOpts}
+				options={hrInterfaceTunnelOpts}
 				hint="Трафик направляется напрямую на интерфейс (DirectRoute)"
 				fullWidth
 			/>
@@ -445,15 +453,11 @@
 				</div>
 			{/if}
 			{#if availableTunnels.length > 0}
-				{@const addOpts: DropdownOption[] = availableTunnels.map((t) => ({
-					value: t.id,
-					label: t.name + (t.type === 'system' ? ' (системный)' : ''),
-				}))}
 				<div class="route-add">
 					<div class="route-add-select">
 						<Dropdown
 							value={newRouteTunnelId || availableTunnels[0]?.id || ''}
-							options={addOpts}
+							options={addRouteTunnelOpts}
 							onchange={(v) => (newRouteTunnelId = v)}
 							fullWidth
 						/>

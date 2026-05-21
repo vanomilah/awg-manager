@@ -1,6 +1,10 @@
 <script lang="ts">
-    import { Modal, Button, Dropdown, type DropdownOption } from '$lib/components/ui';
+    import { Modal, Button, Dropdown } from '$lib/components/ui';
     import { parseImportFile, type PortableDnsRoute } from '$lib/utils/dns-export';
+    import {
+        buildRoutingTunnelDropdownOptions,
+        findRoutingTunnelLabel,
+    } from '$lib/utils/routingTunnelOptions';
     import type { RoutingTunnel } from '$lib/types';
 
     interface Props {
@@ -46,9 +50,11 @@
 
     let selectedCount = $derived(selectedFlags.filter(Boolean).length);
     let existingLower = $derived(existingNames.map(n => n.toLowerCase()));
-    let userTunnels = $derived(tunnels.filter(t => t.type === 'managed' && t.available));
-    let systemTunnels = $derived(tunnels.filter(t => t.type === 'system' && t.available));
     let noTunnels = $derived(tunnels.filter(t => t.available).length === 0);
+
+    const tunnelOpts = $derived(
+        buildRoutingTunnelDropdownOptions(tunnels, { requireSelectable: true, includeWan: false }),
+    );
 
     function isDuplicate(name: string): boolean {
         return existingLower.includes(name.toLowerCase());
@@ -59,7 +65,7 @@
     }
 
     function tunnelName(tunnelId: string): string {
-        return tunnels.find(t => t.id === tunnelId)?.name ?? tunnelId;
+        return findRoutingTunnelLabel(tunnels, tunnelId);
     }
 
     async function processFile(file: File) {
@@ -144,10 +150,6 @@
         </div>
     {:else}
         <!-- Default tunnel selector -->
-        {@const tunnelOpts: DropdownOption[] = [
-            ...userTunnels.map((t) => ({ value: t.id, label: t.name, group: 'Пользовательские' })),
-            ...systemTunnels.map((t) => ({ value: t.id, label: t.name, group: 'Системные' })),
-        ]}
         <div class="tunnel-default-bar">
             <span class="tunnel-default-label">Туннель для всех:</span>
             <div class="tunnel-select">

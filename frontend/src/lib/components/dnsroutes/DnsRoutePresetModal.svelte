@@ -1,7 +1,8 @@
 <script lang="ts">
-    import { Modal, Button, Dropdown, type DropdownOption } from '$lib/components/ui';
+    import { Modal, Button, Dropdown } from '$lib/components/ui';
     import { ServiceIcon } from '$lib/components/dnsroutes';
     import { SERVICE_PRESETS, type ServicePreset } from '$lib/data/presets';
+    import { buildRoutingTunnelDropdownOptions } from '$lib/utils/routingTunnelOptions';
     import type { RoutingTunnel } from '$lib/types';
 
     interface Props {
@@ -32,10 +33,11 @@
 
     let showBackendSelector = $derived(isOS5 && hydrarouteInstalled);
 
-    let userTunnels = $derived(tunnels.filter(t => t.type === 'managed' && t.available));
-    let systemTunnels = $derived(tunnels.filter(t => t.type === 'system' && t.available));
-    let wanTunnels = $derived(tunnels.filter(t => t.type === 'wan' && t.available));
     let noTunnels = $derived(tunnels.filter(t => t.available).length === 0);
+
+    const tunnelOpts = $derived(
+        buildRoutingTunnelDropdownOptions(tunnels, { requireSelectable: true }),
+    );
     let existingLower = $derived(existingNames.map(n => n.toLowerCase()));
 
     $effect(() => {
@@ -139,11 +141,6 @@
     {/if}
 
     <!-- Backend + Tunnel selector -->
-    {@const tunnelOpts: DropdownOption[] = [
-        ...userTunnels.map((t) => ({ value: t.id, label: t.name, group: 'Пользовательские' })),
-        ...systemTunnels.map((t) => ({ value: t.id, label: t.name, group: 'Системные' })),
-        ...wanTunnels.map((t) => ({ value: t.id, label: t.name, group: 'WAN' })),
-    ]}
     <div class="tunnel-bar">
         {#if showBackendSelector}
             <span class="tunnel-label">Движок:</span>

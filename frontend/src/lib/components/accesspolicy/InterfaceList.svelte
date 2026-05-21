@@ -3,28 +3,47 @@
 	import { ConfirmModal } from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
+	import {
+		filterPolicyGlobalInterfaces,
+		groupPolicyGlobalInterfaces,
+		policyInterfaceDisplayLabel,
+	} from '$lib/utils/routingTunnelOptions';
 
 	interface Props {
 		interfaces: AccessPolicyInterface[];
 		availableInterfaces: PolicyGlobalInterface[];
+		/** scroll: toggle + capped scroll. panel: toggle + full list без скролла (HR Neo, политики доступа). */
+		addPickerVariant?: 'scroll' | 'panel';
 		onpermit: (iface: string, order: number) => void;
 		ondeny: (iface: string) => void;
 		onreorder: (iface: string, newOrder: number) => void;
 		onupdate: () => void;
 	}
 
-	let { interfaces: rawInterfaces, availableInterfaces, onpermit, ondeny, onreorder, onupdate }: Props = $props();
+	let {
+		interfaces: rawInterfaces,
+		availableInterfaces,
+		addPickerVariant = 'scroll',
+		onpermit,
+		ondeny,
+		onreorder,
+		onupdate,
+	}: Props = $props();
+
+	const isPanelPicker = $derived(addPickerVariant === 'panel');
 
 	let interfaces = $derived(rawInterfaces ?? []);
 	let showAdd = $state(false);
 
 	let sorted = $derived([...interfaces].sort((a, b) => a.order - b.order));
 
+	let catalog = $derived(filterPolicyGlobalInterfaces(availableInterfaces));
+
 	let unassigned = $derived(
-		(availableInterfaces ?? []).filter(
-			(gi) => !interfaces.some((i) => i.name === gi.name)
-		)
+		catalog.filter((gi) => !interfaces.some((i) => i.name === gi.name)),
 	);
+
+	let unassignedGroups = $derived(groupPolicyGlobalInterfaces(unassigned));
 
 	function handleAdd(iface: string) {
 		onpermit(iface, interfaces.length);
@@ -32,12 +51,12 @@
 	}
 
 	function getLabel(name: string): string {
-		const gi = (availableInterfaces ?? []).find(g => g.name === name);
-		return gi?.label || name;
+		const gi = catalog.find((g) => g.name === name);
+		return gi ? policyInterfaceDisplayLabel(gi) : name;
 	}
 
 	function isUp(name: string): boolean {
-		return (availableInterfaces ?? []).find(gi => gi.name === name)?.up ?? false;
+		return catalog.find((gi) => gi.name === name)?.up ?? false;
 	}
 
 	let toggling = $state('');
@@ -77,7 +96,7 @@
 	}
 </script>
 
-<div class="iface-section">
+<div class="iface-section" class:iface-section--panel={isPanelPicker}>
 	<div class="section-header">
 		<h4>Интерфейсы (приоритет)</h4>
 		{#if unassigned.length > 0}
@@ -88,14 +107,17 @@
 	</div>
 
 	{#if showAdd}
-		<div class="add-dropdown">
-			{#each unassigned as gi}
-				<button class="dropdown-item" onclick={() => handleAdd(gi.name)}>
-					<span class="iface-name">{gi.label || gi.name}</span>
-					{#if !gi.up}
-						<span class="iface-down">down</span>
-					{/if}
-				</button>
+		<div class="add-dropdown" class:add-dropdown--panel={isPanelPicker}>
+			{#each unassignedGroups as { group, items }}
+				<div class="group-label" role="presentation">{group}</div>
+				{#each items as gi (gi.name)}
+					<button class="dropdown-item in-group" onclick={() => handleAdd(gi.name)}>
+						<span class="iface-name">{policyInterfaceDisplayLabel(gi)}</span>
+						{#if !gi.up}
+							<span class="iface-down">down</span>
+						{/if}
+					</button>
+				{/each}
 			{/each}
 		</div>
 	{/if}
@@ -222,8 +244,60 @@
 		display: flex;
 		flex-direction: column;
 		border: 1px solid var(--border);
-		border-radius: 6px;
+		border-radius: 8px;
 		overflow: hidden;
+		max-height: 280px;
+		overflow-y: auto;
+	}
+
+	.add-dropdown--panel {
+		max-height: none;
+		overflow: visible;
+		overflow-y: visible;
+		margin-bottom: 4px;
+	}
+
+	.add-dropdown--panel .dropdown-item:first-of-type,
+	.add-dropdown--panel .group-label:first-child + .dropdown-item {
+		border-top: none;
+	}
+
+	.add-dropdown--panel .group-label:first-child {
+		border-radius: 7px 7px 0 0;
+	}
+
+	.add-dropdown--panel .dropdown-item:last-child {
+		border-radius: 0 0 7px 7px;
+	}
+
+	.iface-section--panel {
+		gap: 10px;
+	}
+
+	.iface-section--panel .iface-list {
+		gap: 6px;
+	}
+
+	.group-label {
+		padding: 0.35rem 0.75rem 0.2rem;
+		font-size: 0.65rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted, var(--color-text-muted));
+		background: var(--bg-primary, var(--color-bg-primary));
+		position: sticky;
+		top: 0;
+		z-index: 1;
+	}
+
+	.add-dropdown--panel .group-label {
+		padding: 0.45rem 0.875rem 0.3rem;
+		position: static;
+	}
+
+	.add-dropdown--panel .dropdown-item {
+		padding: 10px 14px;
 	}
 
 	.dropdown-item {
@@ -243,7 +317,8 @@
 		background: var(--bg-hover);
 	}
 
-	.dropdown-item + .dropdown-item {
+	.dropdown-item.in-group + .dropdown-item.in-group,
+	.group-label + .dropdown-item {
 		border-top: 1px solid var(--border);
 	}
 
@@ -262,6 +337,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+	}
+
+	.iface-section--panel .iface-row {
+		padding: 8px 12px;
+		gap: 10px;
 	}
 
 	.iface-row {

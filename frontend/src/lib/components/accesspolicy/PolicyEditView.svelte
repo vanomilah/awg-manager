@@ -155,6 +155,7 @@
 		<InterfaceList
 			interfaces={localInterfaces}
 			availableInterfaces={globalInterfaces}
+			addPickerVariant="panel"
 			onpermit={handlePermit}
 			ondeny={handleDeny}
 			onreorder={handleReorder}
@@ -217,12 +218,16 @@
 	.edit-layout {
 		display: grid;
 		grid-template-columns: 1.3fr 1fr;
+		flex: 1;
 		min-height: 0;
+		height: 100%;
+		overflow: hidden;
 	}
 
 	@media (max-width: 768px) {
 		.edit-layout {
 			grid-template-columns: 1fr;
+			grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
 		}
 
 		.left-panel {
@@ -237,9 +242,15 @@
 		gap: 16px;
 		padding: 16px;
 		border-right: 1px solid var(--border);
+		min-height: 0;
+		overflow-y: auto;
 	}
 
 	.right-panel {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
 		padding: 16px;
 		background: var(--bg-primary);
 	}

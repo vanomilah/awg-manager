@@ -13,6 +13,7 @@
         NdmsPolicyHintBanner,
     } from '$lib/components/dnsroutes';
     import { exportRoutes, downloadJson } from '$lib/utils/dns-export';
+    import { buildRoutingTunnelDropdownOptions } from '$lib/utils/routingTunnelOptions';
     import { notifications } from '$lib/stores/notifications';
     import { dnsRoutesStore } from '$lib/stores/routing';
     import RoutingTabBodySkeleton from './RoutingTabBodySkeleton.svelte';
@@ -369,10 +370,10 @@
                     <button class="bulk-btn bulk-btn-export" disabled={dnsSelected.size === 0 || dnsBulkLoading} onclick={downloadDnsExport}>Экспорт</button>
                 </div>
             {:else}
-                {@const dnsBulkTunnelOpts: DropdownOption[] = [
-                    ...routingTunnels.filter(t => t.type === 'managed' && t.available).map((t) => ({ value: t.id, label: t.name })),
-                    ...routingTunnels.filter(t => t.type === 'system' && t.available).map((t) => ({ value: t.id, label: t.name })),
-                ]}
+                {@const dnsBulkTunnelOpts = buildRoutingTunnelDropdownOptions(routingTunnels, {
+                    requireSelectable: true,
+                    includeWan: false,
+                })}
                 <div class="bulk-tunnel-bar">
                     <span class="bulk-tunnel-label">Туннель:</span>
                     <div class="bulk-tunnel-select">

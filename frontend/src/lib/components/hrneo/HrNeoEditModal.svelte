@@ -10,6 +10,7 @@
 	import { ServiceIcon } from '$lib/components/dnsroutes';
 	import { InterfaceList } from '$lib/components/accesspolicy';
 	import HrNeoGeoTagPicker from './HrNeoGeoTagPicker.svelte';
+	import { buildRoutingTunnelDropdownOptions } from '$lib/utils/routingTunnelOptions';
 
 	interface AccessPolicy {
 		name: string;
@@ -270,6 +271,8 @@
 
 	let newPolicyNameValidationError = $derived(hrPolicyNameError(newPolicyName));
 
+	const interfaceTunnelOpts = $derived(buildRoutingTunnelDropdownOptions(tunnels));
+
 	let canSave = $derived.by(() => {
 		if (!name.trim()) return false;
 		const d = splitLines(domainsText);
@@ -421,11 +424,7 @@
 		</div>
 
 		{#if mode === 'interface'}
-			{@const tunnelOpts: DropdownOption[] = tunnels.map((t) => ({
-				value: t.id,
-				label: t.name + (t.iface ? ` · ${t.iface}` : ''),
-			}))}
-			<Dropdown bind:value={tunnelId} options={tunnelOpts} fullWidth />
+			<Dropdown bind:value={tunnelId} options={interfaceTunnelOpts} fullWidth />
 		{:else}
 			<div class="radio-block">
 				<label class="radio-option" class:active={policyChoice === 'existing'}>
