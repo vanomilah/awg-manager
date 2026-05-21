@@ -76,12 +76,28 @@ struct awg_proxy {
 	 * MAC1 recompute), while the local vanilla-WG client decrypts with
 	 * AAD = MAC1_old (the MAC1 it originally generated).
 	 */
-	u8 cookie_decryption_key[32];
+	u8 cookie_aead_key[32];
 	u8 last_mac1_old[16];
 	u8 last_mac1_new[16];
 	bool have_last_mac1;
 	spinlock_t mac1_lock;
 	struct crypto_aead *cookie_aead;
+
+	/*
+	 * Stashed decrypted cookie from the most recent cookie_reply, used to
+	 * recompute MAC2 on subsequent handshakes. Without this, the server
+	 * keeps responding with cookie_replies under load: client computes
+	 * MAC2 over [01...||MAC1_old], server validates over [H1...||MAC1_new],
+	 * mismatch -> VALID_MAC_BUT_NO_COOKIE -> another cookie_reply.
+	 *
+	 * Lifetime: COOKIE_TTL_NS (~120s, matches official AWG
+	 * COOKIE_SECRET_MAX_AGE). On proxy restart we lose this and self-heal
+	 * via one extra cookie_reply roundtrip.
+	 */
+	u8 latest_cookie[16];
+	u64 latest_cookie_birthdate_ns;
+	bool latest_cookie_valid;
+	spinlock_t cookie_lock;
 } __aligned(8);
 
 /*

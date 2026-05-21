@@ -21,6 +21,7 @@
 #include <linux/socket.h>
 #include <linux/random.h>
 #include <linux/delay.h>
+#include <linux/ktime.h>
 #include <net/sock.h>
 
 #include "proxy.h"
@@ -29,8 +30,22 @@
 #include "cookie.h"
 #include "blake2s.h"
 
+/*
+ * Cookie TTL. Matches official AWG COOKIE_SECRET_MAX_AGE (120s). Past this
+ * the client also expires its cookie and falls back to MAC2=zeros, so the
+ * proxy and client desync gracefully (one extra cookie_reply roundtrip).
+ */
+#define AWG_COOKIE_TTL_NS (120ULL * NSEC_PER_SEC)
+
 static struct awg_proxy proxies[AWG_MAX_TUNNELS];
 static DEFINE_MUTEX(proxy_mutex);
+
+static inline bool cookie_expired(u64 birthdate_ns)
+{
+	u64 now = ktime_get_coarse_boottime_ns();
+
+	return now < birthdate_ns || now - birthdate_ns > AWG_COOKIE_TTL_NS;
+}
 
 /* ---- socket helpers ---- */
 
@@ -394,6 +409,36 @@ static int c2s_thread_fn(void *data)
 			}
 		}
 
+		/*
+		 * Recompute MAC2 if the client already had a cookie. Server
+		 * validates MAC2 over the bytes it receives (cookie.c:142-143
+		 * in amneziawg-linux-kernel-module), so the client's MAC2
+		 * computed over [01...||MAC1_old] is stale after we rewrote
+		 * msg_type and recomputed MAC1. Without this, the server stays
+		 * stuck on VALID_MAC_BUT_NO_COOKIE under load and keeps
+		 * responding with cookie_replies — handshakes loop.
+		 */
+		if (msgType == WG_HANDSHAKE_INIT ||
+		    msgType == WG_HANDSHAKE_RESPONSE) {
+			int s_prefix = (msgType == WG_HANDSHAKE_INIT) ?
+				proxy->cfg.s1 : proxy->cfg.s2;
+			u8 cookie_copy[16];
+			bool have_cookie = false;
+
+			spin_lock(&proxy->cookie_lock);
+			if (proxy->latest_cookie_valid &&
+			    !cookie_expired(proxy->latest_cookie_birthdate_ns)) {
+				memcpy(cookie_copy, proxy->latest_cookie, 16);
+				have_cookie = true;
+			}
+			spin_unlock(&proxy->cookie_lock);
+
+			if (have_cookie && out_len >= s_prefix + n)
+				recompute_mac2_if_present(out + s_prefix, n,
+							  msgType, cookie_copy);
+			memzero_explicit(cookie_copy, sizeof(cookie_copy));
+		}
+
 		/* Send CPS + junk before handshake init if needed */
 		if (sendJunk) {
 			/*
@@ -529,15 +574,43 @@ static int s2c_thread_fn(void *data)
 			memcpy(cookie_buf, out + 32, 32);
 			ret = awg_xchacha20p1305_decrypt(
 				proxy->cookie_aead,
-				proxy->cookie_decryption_key,
+				proxy->cookie_aead_key,
 				out + 8, mac1_new, 16, cookie_buf, 32);
 			if (!ret) {
+				/*
+				 * Stash the decrypted 16-byte cookie for future
+				 * MAC2 recompute on outbound handshakes. The
+				 * vanilla-WG client will receive the same
+				 * cookie after we re-encrypt below, so MAC2
+				 * keys on both ends stay in sync until TTL.
+				 */
+				spin_lock(&proxy->cookie_lock);
+				memcpy(proxy->latest_cookie, cookie_buf, 16);
+				proxy->latest_cookie_birthdate_ns =
+					ktime_get_coarse_boottime_ns();
+				proxy->latest_cookie_valid = true;
+				spin_unlock(&proxy->cookie_lock);
+
+				/*
+				 * Same (key, nonce) reused with a different AAD
+				 * to satisfy the vanilla-WG client. Plaintext is
+				 * the same cookie, so ciphertext is identical
+				 * (ChaCha20 is deterministic) and only Poly1305
+				 * tag changes. No new leak — proxy is in the
+				 * same trust domain as the local client.
+				 */
 				ret = awg_xchacha20p1305_encrypt(
 					proxy->cookie_aead,
-					proxy->cookie_decryption_key,
+					proxy->cookie_aead_key,
 					out + 8, mac1_old, 16, cookie_buf, 16);
 				if (!ret)
 					memcpy(out + 32, cookie_buf, 32);
+				else
+					pr_warn_ratelimited("awg_proxy: cookie_reply re-encrypt failed: %d\n",
+							    ret);
+			} else {
+				pr_warn_ratelimited("awg_proxy: cookie_reply decrypt failed: %d (forwarded as-is)\n",
+						    ret);
 			}
 		}
 		if (!out)
@@ -624,13 +697,15 @@ int awg_proxy_add(const char *config_line)
 	memset(tmp.cps, 0, sizeof(tmp.cps)); /* prevent double-free */
 	spin_lock_init(&p->client_lock);
 	spin_lock_init(&p->mac1_lock);
+	spin_lock_init(&p->cookie_lock);
 	p->cps_counter = 0;
 	p->have_last_mac1 = false;
+	p->latest_cookie_valid = false;
 	p->cookie_aead = NULL;
 	p->headroom = compute_headroom(&p->cfg);
 
 	if (p->cfg.has_server_pub) {
-		compute_cookie_key(p->cfg.server_pub, p->cookie_decryption_key);
+		compute_cookie_key(p->cfg.server_pub, p->cookie_aead_key);
 		ret = awg_cookie_aead_create(&p->cookie_aead);
 		if (ret) {
 			pr_warn("awg_proxy: cookie AEAD setup failed: %d\n",
@@ -729,8 +804,10 @@ out_cleanup:
 		awg_cookie_aead_destroy(p->cookie_aead);
 		p->cookie_aead = NULL;
 	}
-	memzero_explicit(p->cookie_decryption_key,
-			 sizeof(p->cookie_decryption_key));
+	memzero_explicit(p->cookie_aead_key,
+			 sizeof(p->cookie_aead_key));
+	memzero_explicit(p->latest_cookie, sizeof(p->latest_cookie));
+	p->latest_cookie_valid = false;
 	p->active = false;
 	awg_config_free(&p->cfg);
 out_free:
@@ -775,8 +852,10 @@ static void proxy_stop(struct awg_proxy *p)
 		awg_cookie_aead_destroy(p->cookie_aead);
 		p->cookie_aead = NULL;
 	}
-	memzero_explicit(p->cookie_decryption_key,
-			 sizeof(p->cookie_decryption_key));
+	memzero_explicit(p->cookie_aead_key,
+			 sizeof(p->cookie_aead_key));
+	memzero_explicit(p->latest_cookie, sizeof(p->latest_cookie));
+	p->latest_cookie_valid = false;
 
 	awg_config_free(&p->cfg);
 }
