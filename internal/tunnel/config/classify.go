@@ -18,8 +18,8 @@ func ClassifyAWGVersion(iface *storage.AWGInterface) string {
 	if isRange(iface.H1) || isRange(iface.H2) || isRange(iface.H3) || isRange(iface.H4) {
 		return "awg2.0"
 	}
-	// AWG 1.5: has signature packet I1
-	if iface.I1 != "" {
+	// AWG 1.5: has any signature packet slot I1-I5
+	if hasAnySignaturePacket(iface) {
 		return "awg1.5"
 	}
 	// AWG 1.0: all four H-values set
@@ -37,4 +37,12 @@ func IsAWGObfuscated(iface *storage.AWGInterface) bool {
 
 func isRange(s string) bool {
 	return s != "" && rangePattern.MatchString(s)
+}
+
+func hasAnySignaturePacket(iface *storage.AWGInterface) bool {
+	if iface == nil {
+		return false
+	}
+	return iface.I1 != "" || iface.I2 != "" || iface.I3 != "" ||
+		iface.I4 != "" || iface.I5 != ""
 }

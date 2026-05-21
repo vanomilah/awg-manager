@@ -19,6 +19,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <sys/types.h>
 #ifdef __APPLE__
 #include <libkern/OSByteOrder.h>
 #define htole32(x) OSSwapHostToLittleInt32(x)
@@ -54,6 +56,46 @@ static inline void *kmalloc(size_t n, int gfp) { (void)gfp; return malloc(n); }
 static inline void *kzalloc(size_t n, int gfp) { (void)gfp; return calloc(1, n); }
 static inline void  kfree(void *p) { free(p); }
 #define GFP_KERNEL 0
+
+static inline int kstrtoint(const char *s, unsigned int base, int *res)
+{
+	char *end = NULL;
+	long v;
+
+	if (!s || !*s)
+		return -EINVAL;
+	errno = 0;
+	v = strtol(s, &end, base);
+	if (errno || !end || *end)
+		return -EINVAL;
+	*res = (int)v;
+	return 0;
+}
+
+static inline ssize_t strscpy(char *dst, const char *src, size_t size)
+{
+	size_t len;
+
+	if (!size)
+		return -E2BIG;
+	len = strlen(src);
+	if (len >= size)
+		len = size - 1;
+	memcpy(dst, src, len);
+	dst[len] = '\0';
+	return (ssize_t)len;
+}
+
+static inline int hex_to_bin(char ch)
+{
+	if (ch >= '0' && ch <= '9')
+		return ch - '0';
+	if (ch >= 'a' && ch <= 'f')
+		return ch - 'a' + 10;
+	if (ch >= 'A' && ch <= 'F')
+		return ch - 'A' + 10;
+	return -1;
+}
 
 /* ---- Random + time stubs (deterministic for tests) ---- */
 void shim_set_random_seed(uint32_t seed);

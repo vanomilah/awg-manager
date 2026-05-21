@@ -26,6 +26,8 @@
 #include "proxy.h"
 #include "transform.h"
 #include "cps.h"
+#include "cookie.h"
+#include "blake2s.h"
 
 static struct awg_proxy proxies[AWG_MAX_TUNNELS];
 static DEFINE_MUTEX(proxy_mutex);
@@ -309,6 +311,8 @@ static int c2s_thread_fn(void *data)
 		int n, out_len, sendJunk;
 		u32 msgType;
 		u64 rand_val;
+		u8 captured_mac1_old[16];
+		bool mac1_capture_pending = false;
 
 		/* Receive from listen socket (WG sends here) */
 		payload = raw_buf + headroom;
@@ -346,6 +350,18 @@ static int c2s_thread_fn(void *data)
 			spin_unlock(&proxy->client_lock);
 		}
 
+		if (proxy->cookie_aead) {
+			if (payload[0] == WG_HANDSHAKE_INIT &&
+			    n == WG_INIT_SIZE) {
+				memcpy(captured_mac1_old, payload + 116, 16);
+				mac1_capture_pending = true;
+			} else if (payload[0] == WG_HANDSHAKE_RESPONSE &&
+				   n == WG_RESP_SIZE) {
+				memcpy(captured_mac1_old, payload + 60, 16);
+				mac1_capture_pending = true;
+			}
+		}
+
 		/* Get random value for H range selection */
 		get_random_bytes(&rand_val, sizeof(rand_val));
 
@@ -353,6 +369,30 @@ static int c2s_thread_fn(void *data)
 		out = transform_outbound(raw_buf, headroom, n,
 					 &proxy->cfg, rand_val,
 					 &out_len, &sendJunk, &msgType);
+
+		if (mac1_capture_pending && proxy->cookie_aead) {
+			int s_prefix = -1;
+			int mac1_off = -1;
+
+			if (msgType == WG_HANDSHAKE_INIT) {
+				s_prefix = proxy->cfg.s1;
+				mac1_off = 116;
+			} else if (msgType == WG_HANDSHAKE_RESPONSE) {
+				s_prefix = proxy->cfg.s2;
+				mac1_off = 60;
+			}
+
+			if (s_prefix >= 0 && mac1_off >= 0 &&
+			    out_len >= s_prefix + mac1_off + 16) {
+				spin_lock(&proxy->mac1_lock);
+				memcpy(proxy->last_mac1_old,
+				       captured_mac1_old, 16);
+				memcpy(proxy->last_mac1_new,
+				       out + s_prefix + mac1_off, 16);
+				WRITE_ONCE(proxy->have_last_mac1, true);
+				spin_unlock(&proxy->mac1_lock);
+			}
+		}
 
 		/* Send CPS + junk before handshake init if needed */
 		if (sendJunk) {
@@ -473,6 +513,33 @@ static int s2c_thread_fn(void *data)
 
 		/* Transform inbound AWG -> WG */
 		out = transform_inbound(buf, n, &proxy->cfg, &out_len);
+		if (out && out_len == WG_COOKIE_SIZE &&
+		    out[0] == WG_COOKIE_REPLY &&
+		    proxy->cookie_aead &&
+		    READ_ONCE(proxy->have_last_mac1)) {
+			u8 mac1_old[16], mac1_new[16];
+			u8 cookie_buf[32];
+			int ret;
+
+			spin_lock(&proxy->mac1_lock);
+			memcpy(mac1_old, proxy->last_mac1_old, 16);
+			memcpy(mac1_new, proxy->last_mac1_new, 16);
+			spin_unlock(&proxy->mac1_lock);
+
+			memcpy(cookie_buf, out + 32, 32);
+			ret = awg_xchacha20p1305_decrypt(
+				proxy->cookie_aead,
+				proxy->cookie_decryption_key,
+				out + 8, mac1_new, 16, cookie_buf, 32);
+			if (!ret) {
+				ret = awg_xchacha20p1305_encrypt(
+					proxy->cookie_aead,
+					proxy->cookie_decryption_key,
+					out + 8, mac1_old, 16, cookie_buf, 16);
+				if (!ret)
+					memcpy(out + 32, cookie_buf, 32);
+			}
+		}
 		if (!out)
 			continue; /* junk/CPS — drop silently */
 
@@ -556,8 +623,22 @@ int awg_proxy_add(const char *config_line)
 	memcpy(&p->cfg, &tmp, sizeof(tmp));
 	memset(tmp.cps, 0, sizeof(tmp.cps)); /* prevent double-free */
 	spin_lock_init(&p->client_lock);
+	spin_lock_init(&p->mac1_lock);
 	p->cps_counter = 0;
+	p->have_last_mac1 = false;
+	p->cookie_aead = NULL;
 	p->headroom = compute_headroom(&p->cfg);
+
+	if (p->cfg.has_server_pub) {
+		compute_cookie_key(p->cfg.server_pub, p->cookie_decryption_key);
+		ret = awg_cookie_aead_create(&p->cookie_aead);
+		if (ret) {
+			pr_warn("awg_proxy: cookie AEAD setup failed: %d\n",
+				ret);
+			p->cookie_aead = NULL;
+			ret = 0;
+		}
+	}
 	atomic64_set(&p->rx_bytes, 0);
 	atomic64_set(&p->tx_bytes, 0);
 	atomic_set(&p->rx_packets, 0);
@@ -644,6 +725,12 @@ out_cleanup:
 		sock_release(p->remote_sock);
 		p->remote_sock = NULL;
 	}
+	if (p->cookie_aead) {
+		awg_cookie_aead_destroy(p->cookie_aead);
+		p->cookie_aead = NULL;
+	}
+	memzero_explicit(p->cookie_decryption_key,
+			 sizeof(p->cookie_decryption_key));
 	p->active = false;
 	awg_config_free(&p->cfg);
 out_free:
@@ -684,6 +771,12 @@ static void proxy_stop(struct awg_proxy *p)
 		sock_release(p->remote_sock);
 		p->remote_sock = NULL;
 	}
+	if (p->cookie_aead) {
+		awg_cookie_aead_destroy(p->cookie_aead);
+		p->cookie_aead = NULL;
+	}
+	memzero_explicit(p->cookie_decryption_key,
+			 sizeof(p->cookie_decryption_key));
 
 	awg_config_free(&p->cfg);
 }

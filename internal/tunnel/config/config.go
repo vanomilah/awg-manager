@@ -47,8 +47,8 @@ func writeAWGParams(b *strings.Builder, iface *storage.AWGInterface) {
 	b.WriteString(fmt.Sprintf("H2 = %s\n", iface.H2))
 	b.WriteString(fmt.Sprintf("H3 = %s\n", iface.H3))
 	b.WriteString(fmt.Sprintf("H4 = %s\n", iface.H4))
-	// Extended params (S3, S4, I1-I5) — only if any extended param is set
-	if iface.S3 > 0 || iface.S4 > 0 || iface.I1 != "" {
+	// Extended params (S3, S4, I1-I5) - only if any extended param is set
+	if iface.S3 > 0 || iface.S4 > 0 || hasAnySignaturePacket(iface) {
 		b.WriteString(fmt.Sprintf("S3 = %d\n", iface.S3))
 		b.WriteString(fmt.Sprintf("S4 = %d\n", iface.S4))
 		if iface.I1 != "" {

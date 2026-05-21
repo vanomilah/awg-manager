@@ -28,6 +28,8 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("hoaxisr");
 MODULE_DESCRIPTION("AWG Proxy - Kernel UDP proxy for WG<->AWG transformation");
 MODULE_VERSION(AWG_PROXY_VERSION);
+/* cookie_reply AEAD translation needs rfc7539(chacha20,poly1305). */
+MODULE_SOFTDEP("pre: chacha20poly1305");
 
 /* ────────────────────────── Procfs ───────────────────────────────── */
 

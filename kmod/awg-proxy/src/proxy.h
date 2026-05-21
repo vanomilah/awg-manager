@@ -69,6 +69,19 @@ struct awg_proxy {
 
 	/* Active flag */
 	bool active;
+
+	/*
+	 * Cookie-reply AAD translation state. The AWG server encrypts
+	 * cookie_reply with AAD = MAC1_new (after our header substitution and
+	 * MAC1 recompute), while the local vanilla-WG client decrypts with
+	 * AAD = MAC1_old (the MAC1 it originally generated).
+	 */
+	u8 cookie_decryption_key[32];
+	u8 last_mac1_old[16];
+	u8 last_mac1_new[16];
+	bool have_last_mac1;
+	spinlock_t mac1_lock;
+	struct crypto_aead *cookie_aead;
 } __aligned(8);
 
 /*

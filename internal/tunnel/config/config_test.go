@@ -553,6 +553,39 @@ func TestGenerate_WithSignaturePackets(t *testing.T) {
 	assertContains(t, result, "I5 = 2233")
 }
 
+func TestGenerate_WithSignaturePacketsWithoutI1(t *testing.T) {
+	tunnel := &storage.AWGTunnel{
+		Interface: storage.AWGInterface{
+			PrivateKey: "privkey=",
+			AWGObfuscation: storage.AWGObfuscation{
+				Jc:   4,
+				Jmin: 50,
+				Jmax: 1000,
+				S1:   56,
+				S2:   78,
+				H1:   "111",
+				H2:   "222",
+				H3:   "333",
+				H4:   "444",
+				I2:   "CCDD",
+				I5:   "2233",
+			},
+		},
+		Peer: storage.AWGPeer{
+			PublicKey:           "pubkey=",
+			Endpoint:            "server:51820",
+			AllowedIPs:          []string{"0.0.0.0/0"},
+			PersistentKeepalive: 25,
+		},
+	}
+
+	result := Generate(tunnel)
+
+	assertNotContains(t, result, "I1 =")
+	assertContains(t, result, "I2 = CCDD")
+	assertContains(t, result, "I5 = 2233")
+}
+
 func TestGenerate_PresharedKey(t *testing.T) {
 	tunnel := &storage.AWGTunnel{
 		Interface: storage.AWGInterface{
@@ -853,6 +886,15 @@ func TestClassifyAWGVersion_AWG10_PartialH_IsWG(t *testing.T) {
 func TestClassifyAWGVersion_AWG15(t *testing.T) {
 	iface := &storage.AWGInterface{
 		AWGObfuscation: storage.AWGObfuscation{H1: "111", H2: "222", H3: "333", H4: "444", I1: "AABB"},
+	}
+	if v := ClassifyAWGVersion(iface); v != "awg1.5" {
+		t.Errorf("ClassifyAWGVersion = %q, want %q", v, "awg1.5")
+	}
+}
+
+func TestClassifyAWGVersion_AWG15_AnySignaturePacket(t *testing.T) {
+	iface := &storage.AWGInterface{
+		AWGObfuscation: storage.AWGObfuscation{I3: "AABB"},
 	}
 	if v := ClassifyAWGVersion(iface); v != "awg1.5" {
 		t.Errorf("ClassifyAWGVersion = %q, want %q", v, "awg1.5")
