@@ -15,6 +15,7 @@ import (
 // subsequent reads see fresh data.
 func (s *Service) rciPost(ctx context.Context, payload interface{}) error {
 	if _, err := s.transport.Post(ctx, payload); err != nil {
+		s.sysLog().Warn("managed rci post failed", "error", err)
 		return err
 	}
 	if s.saveCoord != nil {
@@ -108,9 +109,9 @@ type updateServerChanges struct {
 	portSet bool
 	port    int
 
-	addressChanged                  bool
-	oldAddress, oldMask             string
-	newAddress, newMask             string
+	addressChanged      bool
+	oldAddress, oldMask string
+	newAddress, newMask string
 }
 
 // rciUpdateServer applies multiple managed-server property changes in a
@@ -220,6 +221,24 @@ func (s *Service) rciSetNAT(ctx context.Context, ifaceName string, enabled bool)
 	})
 }
 
+// rciSetPrivateKey installs an explicit WireGuard private key on the
+// interface via RCI. Verified against NDMS 4.x: POST returns "set private
+// key." status and the next /show/interface/<name>.wireguard.public-key
+// reflects the public key derived from the supplied private key. Used
+// during Restore to install the backup's keypair so previously-distributed
+// client .conf files keep working.
+func (s *Service) rciSetPrivateKey(ctx context.Context, ifaceName, privateKey string) error {
+	return s.rciPost(ctx, map[string]interface{}{
+		"interface": map[string]interface{}{
+			ifaceName: map[string]interface{}{
+				"wireguard": map[string]interface{}{
+					"private-key": privateKey,
+				},
+			},
+		},
+	})
+}
+
 // rciSetHotspotPolicy applies an ip hotspot policy to the interface.
 // policy is "permit", "deny", or an IP Policy profile name. For "none"
 // use rciClearHotspotPolicy.
@@ -279,11 +298,11 @@ func (s *Service) rciInterfaceDown(ctx context.Context, ifaceName string) error 
 }
 
 // rciAddPeer adds a peer with all parameters in a single RCI call.
-func (s *Service) rciAddPeer(ctx context.Context, ifaceName, pubKey, psk, comment, peerIP string) error {
+func (s *Service) rciAddPeer(ctx context.Context, ifaceName, pubKey, psk, comment, peerIP string, enabled bool) error {
 	peer := map[string]interface{}{
 		"key":           pubKey,
 		"preshared-key": psk,
-		"connect":       true,
+		"connect":       enabled,
 		"allow-ips": []map[string]interface{}{
 			{"address": peerIP, "mask": "255.255.255.255"},
 			{"address": "0.0.0.0", "mask": "0.0.0.0"},

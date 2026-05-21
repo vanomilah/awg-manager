@@ -80,6 +80,9 @@ type Service struct {
 	settings  *storage.SettingsStore
 	log       *slog.Logger
 	appLog    *logging.ScopedLogger
+	// wgRun is the wg-tools execution seam. Production uses realWgRunner;
+	// tests inject a stub to avoid forking real binaries.
+	wgRun wgRunner
 }
 
 // New creates a new managed server service.
@@ -100,6 +103,7 @@ func New(
 		settings:  settings,
 		log:       log,
 		appLog:    logging.NewScopedLogger(appLogger, logging.GroupServer, logging.SubManaged),
+		wgRun:     realWgRunner,
 	}
 }
 
@@ -112,4 +116,15 @@ func (s *Service) InvalidateCache(id string) {
 		return
 	}
 	s.queries.WGServers.Invalidate(id)
+}
+
+// resolveKernelName maps an NDMS interface name (e.g. "Wireguard0") to its
+// kernel-side device name (e.g. "nwg0") via the interface store cache.
+// Returns "" if the queries layer is unavailable or the name cannot be
+// resolved — callers treat empty as "skip the wg-tools call".
+func (s *Service) resolveKernelName(ctx context.Context, ndmsName string) string {
+	if s.queries == nil || s.queries.Interfaces == nil {
+		return ""
+	}
+	return s.queries.Interfaces.ResolveSystemName(ctx, ndmsName)
 }

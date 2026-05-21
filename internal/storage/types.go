@@ -68,6 +68,13 @@ type ManagedServer struct {
 	DNS           string `json:"dns,omitempty"`      // custom DNS for client configs; empty = "1.1.1.1, 8.8.8.8"
 	MTU           int    `json:"mtu,omitempty"`      // custom MTU for client configs; 0 = 1376
 	NATEnabled    bool   `json:"natEnabled,omitempty"`
+	// PrivateKey is the server's WireGuard private key. Populated by
+	// Service.Create immediately after NDMS auto-generates the keypair,
+	// or by Service.MigratePrivateKeys on first boot after upgrade for
+	// pre-existing servers. Empty value means migration has not yet run
+	// or the kernel device is unreachable; Export and drift-Restore skip
+	// such entries with a clear outcome message.
+	PrivateKey string `json:"privateKey,omitempty"`
 	// Policy is the ip hotspot policy applied to this server's interface.
 	// "none" = no policy (default-permit), "permit"/"deny" = literal RCI
 	// values, anything else = IP Policy profile name (e.g. "Policy0").

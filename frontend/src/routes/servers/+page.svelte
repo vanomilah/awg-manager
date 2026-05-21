@@ -14,6 +14,8 @@
 		ManagedServerCard,
 		CreateManagedServerModal,
 		ServerRail,
+		ManagedServerBackupToolbar,
+		ManagedServerDriftBanner,
 		type RailItem,
 	} from '$lib/components/servers';
 	import { dedupBy } from '$lib/utils/dedupBy';
@@ -140,9 +142,12 @@
 <PageContainer width="full">
 	<PageHeader title="Серверы">
 		{#snippet actions()}
+			<ManagedServerBackupToolbar />
 			<StoreStatusBadge store={servers} />
 		{/snippet}
 	</PageHeader>
+
+	<ManagedServerDriftBanner />
 
 	{#if loading}
 		<div class="flex justify-center py-8">

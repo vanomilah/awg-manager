@@ -50,7 +50,23 @@ func (g *stateAwareGetter) Get(ctx context.Context, path string, out any) error 
 	return json.Unmarshal(b, out)
 }
 
+// GetRaw handles /show/interface/system-name?name=<ndmsName> by mapping
+// NDMS Wireguard<N> names to their kernel equivalents (nwg<N>). Other
+// paths return an error so unexpected callers surface immediately.
 func (g *stateAwareGetter) GetRaw(ctx context.Context, path string) ([]byte, error) {
+	const prefix = "/show/interface/system-name?name="
+	if strings.HasPrefix(path, prefix) {
+		ndmsName := strings.TrimPrefix(path, prefix)
+		// Map "WireguardN" → "nwgN".
+		if strings.HasPrefix(ndmsName, "Wireguard") {
+			suffix := strings.TrimPrefix(ndmsName, "Wireguard")
+			kernelName := "nwg" + suffix
+			// Return as a bare JSON string, matching NDMS response format.
+			b, _ := json.Marshal(kernelName)
+			return b, nil
+		}
+		return []byte(`""`), nil
+	}
 	return nil, errors.New("stateAwareGetter: GetRaw not faked: " + path)
 }
 
@@ -239,5 +255,50 @@ func TestService_CreateRejectsConflicts(t *testing.T) {
 				t.Fatalf("expected success, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestService_Create_CapturesPrivateKey exercises the happy path introduced in
+// Task 4: after rciSetNAT, Create resolves the kernel interface name and reads
+// the private key via wg-tools. The test injects a stub runner that returns a
+// known key and verifies both the returned server value and the persisted
+// storage entry carry that key.
+//
+// The stateAwareGetter.GetRaw implementation handles
+// /show/interface/system-name?name=WireguardN → "nwgN" so that
+// InterfaceStore.ResolveSystemName falls through to the fetchSystemName
+// fallback (the cached SystemName from the list response is "Wireguard0"
+// which equals the NDMS id, so it is treated as garbage and the resolver
+// probe is triggered).
+func TestService_Create_CapturesPrivateKey(t *testing.T) {
+	const wantKey = "TEST_PRIVATE_KEY_BASE64="
+
+	svc, store := newCreateTestService(t)
+
+	// Stub wg-tools: return a known key regardless of the interface name.
+	svc.wgRun = func(_ context.Context, _ string, _ ...string) (string, error) {
+		return wantKey + "\n", nil
+	}
+
+	server, err := svc.Create(context.Background(), CreateServerRequest{
+		Address:    "10.20.30.1",
+		Mask:       "255.255.255.0",
+		ListenPort: 51920,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if server.PrivateKey != wantKey {
+		t.Errorf("returned PrivateKey: got %q, want %q", server.PrivateKey, wantKey)
+	}
+
+	// Also verify the key reached persistent storage.
+	saved, ok := store.GetManagedServerByID(server.InterfaceName)
+	if !ok {
+		t.Fatalf("server %q not found in storage after Create", server.InterfaceName)
+	}
+	if saved.PrivateKey != wantKey {
+		t.Errorf("storage PrivateKey: got %q, want %q", saved.PrivateKey, wantKey)
 	}
 }

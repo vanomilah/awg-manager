@@ -52,6 +52,22 @@ func (s *Service) Create(ctx context.Context, req CreateServerRequest) (*storage
 		return nil, fmt.Errorf("enable NAT: %w", err)
 	}
 
+	// Read the auto-generated private key from the kernel so it can be
+	// persisted alongside the rest of the server config. Best-effort: a
+	// failure here (wg-tools missing, kernel-name unresolvable) does not
+	// prevent the server from being created — MigratePrivateKeys retries
+	// at next boot. Outside an unusual misconfiguration the call succeeds
+	// on every Keenetic router with wireguard-tools installed.
+	var privateKey string
+	if kernelName := s.resolveKernelName(ctx, ifaceName); kernelName != "" {
+		if pk, err := readKernelPrivateKeyWith(ctx, kernelName, s.wgRun); err == nil {
+			privateKey = pk
+		} else {
+			s.log.Warn("create: read private key failed (will retry on next boot)",
+				"interface", ifaceName, "error", err)
+		}
+	}
+
 	// Save to storage
 	server := storage.ManagedServer{
 		InterfaceName: ifaceName,
@@ -63,6 +79,7 @@ func (s *Service) Create(ctx context.Context, req CreateServerRequest) (*storage
 		DNS:           req.DNS,
 		MTU:           req.MTU,
 		NATEnabled:    true,
+		PrivateKey:    privateKey,
 		Peers:         []storage.ManagedPeer{},
 	}
 	if err := s.settings.AddManagedServer(server); err != nil {
