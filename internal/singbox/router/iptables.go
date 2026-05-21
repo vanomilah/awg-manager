@@ -220,6 +220,8 @@ type RestoreInputSpec struct {
 
 	// BypassTCPPorts lists TCP destination ports that should RETURN from
 	// AWGM-REDIRECT before the catch-all REDIRECT rule.
+	// Note: port 79 (NDMS admin) is always excluded by a hardcoded rule;
+	// including 79 here produces a harmless duplicate RETURN rule.
 	BypassTCPPorts []int
 }
 

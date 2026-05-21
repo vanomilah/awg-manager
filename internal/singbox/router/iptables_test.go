@@ -1018,3 +1018,24 @@ func TestBuildRestoreInput_BypassPortsBeforeCatchAll(t *testing.T) {
 		t.Errorf("bypass rule appears AFTER catch-all TPROXY — must be before it")
 	}
 }
+
+func TestBuildRestoreInput_BypassTCPPortsBeforeCatchAll(t *testing.T) {
+	spec := RestoreInputSpec{
+		PolicyMark:     "0xffffaaa",
+		BypassTCPPorts: []int{445},
+	}
+	out := buildRestoreInput(spec)
+
+	// RETURN for port 445 must appear before the catch-all REDIRECT rule
+	bypassIdx := strings.Index(out, "--dport 445 -j RETURN")
+	catchAllIdx := strings.Index(out, fmt.Sprintf("-A %s -p tcp -j REDIRECT", RedirectChain))
+	if bypassIdx == -1 {
+		t.Fatal("TCP bypass rule not found")
+	}
+	if catchAllIdx == -1 {
+		t.Fatal("TCP catch-all REDIRECT rule not found")
+	}
+	if bypassIdx > catchAllIdx {
+		t.Errorf("TCP bypass rule appears AFTER catch-all REDIRECT — must be before it")
+	}
+}
