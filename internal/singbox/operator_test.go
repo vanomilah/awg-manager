@@ -1066,3 +1066,26 @@ func TestPreflightConfigDir_FallsThroughToValidator(t *testing.T) {
 		t.Errorf("validator error must propagate verbatim, got: %s", err)
 	}
 }
+
+func TestParseProxyIdx_EmptyReturnsSentinel(t *testing.T) {
+	idx, err := parseProxyIdx("")
+	if err != nil {
+		t.Errorf("parseProxyIdx(\"\") err = %v, want nil", err)
+	}
+	if idx != -1 {
+		t.Errorf("parseProxyIdx(\"\") idx = %d, want -1 (sentinel)", idx)
+	}
+}
+
+func TestParseProxyIdx_ValidProxy(t *testing.T) {
+	idx, err := parseProxyIdx("Proxy3")
+	if err != nil || idx != 3 {
+		t.Errorf("parseProxyIdx(Proxy3) = (%d, %v), want (3, nil)", idx, err)
+	}
+}
+
+func TestParseProxyIdx_Malformed(t *testing.T) {
+	if _, err := parseProxyIdx("garbage"); err == nil {
+		t.Error("parseProxyIdx(garbage) should error")
+	}
+}

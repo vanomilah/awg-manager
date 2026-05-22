@@ -1966,13 +1966,18 @@ func (o *Operator) loadOrInitConfig() (*Config, error) {
 }
 
 func parseProxyIdx(name string) (int, error) {
+	if name == "" {
+		// Sentinel: tunnel has no NDMS Proxy (NDMS-proxy disabled mode).
+		// Callers MUST check idx >= 0 before invoking ProxyManager.
+		return -1, nil
+	}
 	var idx int
 	n, err := fmt.Sscanf(name, proxyIfacePrefix+"%d", &idx)
 	if err != nil {
-		return 0, fmt.Errorf("parse %q: %w", name, err)
+		return 0, fmt.Errorf("parse proxy idx %q: %w", name, err)
 	}
 	if n != 1 {
-		return 0, fmt.Errorf("parse %q: expected %s<N>", name, proxyIfacePrefix)
+		return 0, fmt.Errorf("parse proxy idx %q: expected %s<N>", name, proxyIfacePrefix)
 	}
 	return idx, nil
 }
