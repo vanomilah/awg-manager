@@ -25,6 +25,7 @@ type AccessPolicyDTO struct {
 	Standalone  bool                       `json:"standalone" example:"false"`
 	Interfaces  []AccessPolicyInterfaceDTO `json:"interfaces"`
 	DeviceCount int                        `json:"deviceCount" example:"5"`
+	IsStandard  bool                       `json:"isStandard" example:"true"`
 }
 
 // AccessPoliciesListResponse is the envelope for GET /access-policies.

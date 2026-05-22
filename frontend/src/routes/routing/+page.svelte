@@ -66,7 +66,7 @@
     function handleSearchRuleClick(id: string, type: 'dns' | 'ip') {
         if (type === 'dns') {
             // dnsRoutes mixes NDMS and hydraroute backends in one array;
-            // route hydraroute hits to the HR NEO tab so the edit modal
+            // route hydraroute hits to the HR Neo tab so the edit modal
             // actually opens (DnsRoutesTab filters those out).
             const route = dnsRoutes.find(r => r.id === id);
             activeTab = route?.backend === 'hydraroute' ? 'hrneo' : 'dns';
@@ -79,7 +79,7 @@
     }
 
     // NDMS tab is OS5-only (see tabItems gate). On OS4, bounce off `dns`
-    // to HR NEO when hydraroute is installed, otherwise IP.
+    // to HR Neo when hydraroute is installed, otherwise IP.
     $effect(() => {
         if (!$systemInfo.data) return;
         const hr = $hydrarouteStatusStore;
@@ -179,7 +179,7 @@
         ([
             // NDMS dns-proxy with object-group fqdn is OS5-only — gate the
             // tab on isOS5 so OS4 routers don't see an unusable NDMS tab
-            // (hydraroute users on OS4 use the HR NEO tab instead).
+            // (hydraroute users on OS4 use the HR Neo tab instead).
             isOS5 ? { id: 'dns', label: 'NDMS', badge: dnsActiveCount } : null,
             { id: 'ip', label: 'IP-адреса', badge: ipActiveCount },
             { id: 'clientvpn', label: 'VPN для устройств', badge: clientRouteCount },
@@ -187,7 +187,7 @@
             // Visual gap separates the NDMS-stack tabs above from the
             // sing-box / hydraroute stack below.
             singboxInstalled ? { id: 'singbox', label: 'Sing-box Router', badge: singboxRuleCount, separatorBefore: true } : null,
-            hydrarouteInstalled ? { id: 'hrneo', label: 'HR NEO', badge: hrRuleCount, separatorBefore: !singboxInstalled } : null,
+            hydrarouteInstalled ? { id: 'hrneo', label: 'HR Neo', badge: hrRuleCount, separatorBefore: !singboxInstalled } : null,
             (hydrarouteInstalled || singboxInstalled)
                 ? { id: 'geodata', label: 'Гео-данные', badge: geoFileCount, separatorBefore: true }
                 : null,
@@ -209,7 +209,7 @@
     // active на id, которого ещё нет в tabItems — иначе пустой контент.
     // Не сбрасываем NDMS/политики/sing-box до прихода systemInfo: до fetch
     // isOS5=false и вкладки dns|policy ещё нет в списке — иначе F5 с NDMS
-    // уводил на IP. Аналогично HR NEO — ждём hydraroute-status.
+    // уводил на IP. Аналогично HR Neo — ждём hydraroute-status.
     $effect(() => {
         const items = tabItems;
         if (items.length === 0) return;

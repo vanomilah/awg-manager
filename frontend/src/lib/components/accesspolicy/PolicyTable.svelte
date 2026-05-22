@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { AccessPolicy } from '$lib/types';
+	import { isHydraRouteAccessPolicy } from '$lib/utils/accessPolicy';
 
 	interface Props {
 		policies: AccessPolicy[];
@@ -15,13 +16,15 @@
 
 <div class="policy-grid">
 	{#each policies as policy}
-		<div class="policy-card">
+		{@const isHrPolicy = isHydraRouteAccessPolicy(policy)}
+		<div class="policy-card" class:policy-card-hr={isHrPolicy}>
 			{#if selectable}
 				<div class="select-cell">
 					<input
 						type="checkbox"
 						class="select-check"
 						checked={selectedNames?.has(policy.name)}
+						disabled={isHrPolicy}
 						onchange={() => onselect?.(policy.name)}
 					/>
 				</div>
@@ -32,6 +35,9 @@
 				</div>
 				<div class="policy-title-row">
 					<span class="policy-name">{policy.description || policy.name}</span>
+					{#if isHrPolicy}
+						<span class="badge-hr-route">HydraRoute</span>
+					{/if}
 					{#if policy.standalone}
 						<span class="badge-standalone">standalone</span>
 					{/if}
@@ -51,12 +57,14 @@
 						<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
 					</svg>
 				</button>
+				{#if !isHrPolicy}
 				<button class="action-btn danger" title="Удалить" onclick={() => ondelete(policy.name)}>
 					<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<polyline points="3 6 5 6 21 6"/>
 						<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
 					</svg>
 				</button>
+				{/if}
 			</div>
 		</div>
 	{/each}
@@ -122,6 +130,21 @@
 		font-weight: 500;
 		white-space: nowrap;
 		flex-shrink: 0;
+	}
+
+	.badge-hr-route {
+		font-size: 0.625rem;
+		padding: 1px 6px;
+		border-radius: 9999px;
+		background: rgba(245, 158, 11, 0.18);
+		color: var(--warning);
+		font-weight: 600;
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.policy-card-hr {
+		border-color: rgba(245, 158, 11, 0.35);
 	}
 
 	.policy-ifaces {

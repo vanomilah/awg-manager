@@ -5,6 +5,7 @@
     import { PolicyTable, PolicyCreateModal, PolicyEditView } from '$lib/components/accesspolicy';
     import { notifications } from '$lib/stores/notifications';
     import { accessPoliciesStore, policyDevicesStore, policyInterfacesStore, invalidateAllRouting } from '$lib/stores/routing';
+    import { isHydraRouteAccessPolicy } from '$lib/utils/accessPolicy';
 
     interface Props {
         accessPolicies: AccessPolicy[];
@@ -91,6 +92,8 @@
     }
 
     function togglePolicySelect(name: string) {
+        const pol = accessPolicies.find((p) => p.name === name);
+        if (pol && isHydraRouteAccessPolicy(pol)) return;
         const next = new Set(policySelected);
         if (next.has(name)) next.delete(name);
         else next.add(name);
@@ -98,7 +101,9 @@
     }
 
     function policySelectAll() {
-        policySelected = new Set(accessPolicies.map(p => p.name));
+        policySelected = new Set(
+            accessPolicies.filter((p) => !isHydraRouteAccessPolicy(p)).map((p) => p.name),
+        );
     }
 
     function exitPolicySelection() {

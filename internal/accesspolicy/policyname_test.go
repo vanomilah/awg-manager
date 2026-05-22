@@ -15,6 +15,7 @@ func TestIsStandardPolicyName(t *testing.T) {
 		// for non-Policy policies; they share /show/ip/policy storage but
 		// must not be treated as built-in PolicyN.
 		{"germany-vpn", false},
+		{"HydraRoute", false},
 		{"HrNeoUS", false},
 		{"", false},
 		{"Policy", false},     // prefix only, no number

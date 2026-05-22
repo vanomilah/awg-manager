@@ -110,7 +110,7 @@ SCENARIOS.extend([
     ),
     Scenario(
         name="HrNeoEditModal_create",
-        navigate=lambda p: (goto(p, "/routing"), click_tab(p, "HR NEO")),
+        navigate=lambda p: (goto(p, "/routing"), click_tab(p, "HR Neo")),
         trigger=lambda p: p.locator('button:has-text("+ Новое правило")').first.click(timeout=4000),
         input_selector='.modal-card input[type="text"]',
     ),

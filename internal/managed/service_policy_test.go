@@ -152,12 +152,17 @@ func TestSetPolicy_NoopWhenSame(t *testing.T) {
 }
 
 func TestListPolicies_ReturnsStoreContents(t *testing.T) {
-	svc, _, _ := newTestService(t, nil, nil, `{"Policy0":{"description":"NL"},"Policy1":{"description":""}}`)
+	svc, _, _ := newTestService(t, nil, nil, `{"Policy0":{"description":"NL"},"Policy1":{"description":""},"HydraRoute":{"description":""}}`)
 	got, err := svc.ListPolicies(context.Background())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("expected 2 policies, got %d", len(got))
+		t.Fatalf("expected 2 standard policies (HydraRoute excluded), got %d", len(got))
+	}
+	for _, o := range got {
+		if o.ID == "HydraRoute" {
+			t.Fatal("HydraRoute policy must not appear in managed-server dropdown")
+		}
 	}
 }

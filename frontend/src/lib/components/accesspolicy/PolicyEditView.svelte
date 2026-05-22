@@ -5,6 +5,7 @@
 	import { Toggle } from '$lib/components/ui';
 	import { InterfaceList } from '$lib/components/accesspolicy';
 	import { DeviceList } from '$lib/components/accesspolicy';
+	import { isHydraRouteAccessPolicy } from '$lib/utils/accessPolicy';
 
 	interface Props {
 		policy: AccessPolicy;
@@ -17,6 +18,8 @@
 	}
 
 	let { policy, devices, globalInterfaces, onback, onupdate, ondeviceassigned, ondeviceunassigned }: Props = $props();
+
+	let isHrPolicy = $derived(isHydraRouteAccessPolicy(policy));
 
 	let description = $state('');
 	let localInterfaces = $state<import('$lib/types').AccessPolicyInterface[]>([]);
@@ -33,6 +36,7 @@
 	let descriptionValid = $derived(description.trim().length > 0 && description.trim().length <= MAX_LEN && VALID_PATTERN.test(description.trim()));
 
 	async function saveDescription() {
+		if (isHrPolicy) return;
 		if (description.trim() === policy.description) return;
 		if (!descriptionValid) {
 			notifications.error('Описание: только латинские буквы, цифры, дефисы и подчёркивания');
@@ -48,6 +52,7 @@
 	}
 
 	async function toggleStandalone(checked: boolean) {
+		if (isHrPolicy) return;
 		try {
 			await api.setAccessPolicyStandalone(policy.name, checked);
 			await onupdate();
@@ -85,6 +90,7 @@
 	}
 
 	async function assignDevice(mac: string) {
+		if (isHrPolicy) return;
 		try {
 			await api.assignDeviceToPolicy(mac, policy.name);
 			ondeviceassigned(mac, policy.name);
@@ -132,25 +138,27 @@
 			Назад к списку
 		</button>
 
-		<div class="field-group">
-			<label class="field-label">Описание
-				<input
-					type="text"
-					class="field-input"
-					bind:value={description}
-					onblur={saveDescription}
-					maxlength={MAX_LEN}
-				/>
-				<span class="field-hint">Латинские буквы, цифры, дефисы, подчёркивания</span>
-			</label>
-		</div>
+		{#if !isHrPolicy}
+			<div class="field-group">
+				<label class="field-label">Описание
+					<input
+						type="text"
+						class="field-input"
+						bind:value={description}
+						onblur={saveDescription}
+						maxlength={MAX_LEN}
+					/>
+					<span class="field-hint">Латинские буквы, цифры, дефисы, подчёркивания</span>
+				</label>
+			</div>
 
-		<Toggle
-			checked={policy.standalone}
-			onchange={toggleStandalone}
-			label="Standalone"
-			hint="Политика действует самостоятельно, без привязки к глобальным правилам"
-		/>
+			<Toggle
+				checked={policy.standalone}
+				onchange={toggleStandalone}
+				label="Standalone"
+				hint="Политика действует самостоятельно, без привязки к глобальным правилам, статические маршруты из основных настроек не копируются"
+			/>
+		{/if}
 
 		<InterfaceList
 			interfaces={localInterfaces}
@@ -162,6 +170,7 @@
 			onupdate={onupdate}
 		/>
 
+		{#if !isHrPolicy}
 		<div class="assigned-section">
 			<h4 class="section-title">Устройства в политике</h4>
 
@@ -203,14 +212,57 @@
 				{/if}
 			</div>
 		</div>
+		{/if}
 	</div>
 
-	<div class="right-panel">
-		<DeviceList
-			{devices}
-			currentPolicy={policy.name}
-			onassign={assignDevice}
-		/>
+	<div class="right-panel" class:right-panel-hr={isHrPolicy}>
+		{#if isHrPolicy}
+			<div class="hr-side">
+				<div class="hr-policy-banner">
+					<span class="badge-hr-route">HydraRoute</span>
+					<p>
+						Это политика HydraRoute Neo. Добавлять в неё устройства не требуется — маршрутизация
+						HydraRoute распространяется только на политику по умолчанию. Интерфейсы настраиваются
+						тем же способом, что и на вкладке HR Neo.
+					</p>
+				</div>
+				{#if assignedDevices.length > 0}
+					<div class="hr-assigned-section">
+						<h4 class="section-title">Привязанные устройства</h4>
+						<div class="assigned-list">
+							{#each assignedDevices as device}
+								{@const isActive = device.active && device.link === 'up'}
+								<div class="assigned-row">
+									<span class="led" class:led-green={isActive} class:led-gray={!isActive}></span>
+									<div class="device-info">
+										<span class="device-name">{device.name || device.hostname || device.mac}</span>
+										{#if device.ip}
+											<span class="device-ip">{device.ip}</span>
+										{/if}
+									</div>
+									<button
+										class="remove-btn"
+										title="Убрать из политики"
+										onclick={() => unassignDevice(device.mac)}
+									>
+										<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+											<line x1="18" y1="6" x2="6" y2="18"/>
+											<line x1="6" y1="6" x2="18" y2="18"/>
+										</svg>
+									</button>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+			</div>
+		{:else}
+			<DeviceList
+				{devices}
+				currentPolicy={policy.name}
+				onassign={assignDevice}
+			/>
+		{/if}
 	</div>
 </div>
 
@@ -253,6 +305,23 @@
 		overflow: hidden;
 		padding: 16px;
 		background: var(--bg-primary);
+	}
+
+	.right-panel-hr {
+		overflow-y: auto;
+	}
+
+	.hr-side {
+		display: flex;
+		flex-direction: column;
+		gap: 16px;
+		width: 100%;
+	}
+
+	.hr-assigned-section {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
 	}
 
 	.back-btn {
@@ -302,6 +371,35 @@
 
 	.field-input:focus {
 		border-color: var(--accent);
+	}
+
+	.hr-policy-banner {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		width: 100%;
+		padding: 16px;
+		border-radius: 8px;
+		border: 1px solid rgba(245, 158, 11, 0.35);
+		background: rgba(245, 158, 11, 0.08);
+		box-sizing: border-box;
+	}
+
+	.hr-policy-banner p {
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--text-secondary);
+	}
+
+	.badge-hr-route {
+		align-self: flex-start;
+		font-size: 0.625rem;
+		padding: 2px 8px;
+		border-radius: 9999px;
+		background: rgba(245, 158, 11, 0.18);
+		color: var(--warning);
+		font-weight: 600;
 	}
 
 	.assigned-section {

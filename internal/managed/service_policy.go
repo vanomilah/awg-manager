@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hoaxisr/awg-manager/internal/accesspolicy"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
@@ -84,6 +85,9 @@ func (s *Service) ListPolicies(ctx context.Context) ([]PolicyOption, error) {
 	}
 	out := make([]PolicyOption, 0, len(policies))
 	for _, p := range policies {
+		if !accesspolicy.IsStandardPolicyName(p.Name) {
+			continue
+		}
 		out = append(out, PolicyOption{
 			ID:          p.Name,
 			Description: p.Description,

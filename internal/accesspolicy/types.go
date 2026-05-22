@@ -7,6 +7,9 @@ type Policy struct {
 	Standalone  bool             `json:"standalone"`
 	Interfaces  []PermittedIface `json:"interfaces"`
 	DeviceCount int              `json:"deviceCount"`
+	// IsStandard is true for built-in Policy0..PolicyN profiles (AWGM / router UI).
+	// false for custom profiles created by HydraRoute Neo and similar subsystems.
+	IsStandard bool `json:"isStandard"`
 }
 
 // PermittedIface represents an interface in a policy (permitted or denied).

@@ -429,6 +429,8 @@ export interface AccessPolicy {
 	standalone: boolean;
 	interfaces: AccessPolicyInterface[];
 	deviceCount: number;
+	/** true for Policy0..PolicyN; false for HydraRoute Neo and other custom NDMS profiles */
+	isStandard?: boolean;
 }
 
 export interface AccessPolicyInterface {

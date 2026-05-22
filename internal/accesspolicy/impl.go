@@ -102,6 +102,7 @@ func (s *ServiceImpl) List(ctx context.Context) ([]Policy, error) {
 			Standalone:  rc.Standalone,
 			Interfaces:  make([]PermittedIface, 0, len(rc.Interfaces)),
 			DeviceCount: deviceCounts[rc.Name],
+			IsStandard:  IsStandardPolicyName(rc.Name),
 		}
 		for _, pi := range rc.Interfaces {
 			p.Interfaces = append(p.Interfaces, PermittedIface{
@@ -216,10 +217,17 @@ func (s *ServiceImpl) CleanupAll(ctx context.Context) error {
 	return nil
 }
 
+func errHydraRoutePolicy(name string) error {
+	return fmt.Errorf("policy %q is managed by HydraRoute Neo and cannot be modified here", name)
+}
+
 // Delete removes a policy by name.
 func (s *ServiceImpl) Delete(ctx context.Context, name string) error {
 	if !isValidPolicyName(name) {
 		return fmt.Errorf("invalid policy name: %s", name)
+	}
+	if !IsStandardPolicyName(name) {
+		return errHydraRoutePolicy(name)
 	}
 
 	if err := s.policies.DeletePolicy(ctx, name); err != nil {
@@ -241,6 +249,9 @@ func (s *ServiceImpl) SetDescription(ctx context.Context, name, description stri
 	if !isValidPolicyName(name) {
 		return fmt.Errorf("invalid policy name: %s", name)
 	}
+	if !IsStandardPolicyName(name) {
+		return errHydraRoutePolicy(name)
+	}
 	if err := validateDescription(description); err != nil {
 		return err
 	}
@@ -258,6 +269,9 @@ func (s *ServiceImpl) SetDescription(ctx context.Context, name, description stri
 func (s *ServiceImpl) SetStandalone(ctx context.Context, name string, enabled bool) error {
 	if !isValidPolicyName(name) {
 		return fmt.Errorf("invalid policy name: %s", name)
+	}
+	if !IsStandardPolicyName(name) {
+		return errHydraRoutePolicy(name)
 	}
 
 	if err := s.policies.SetStandalone(ctx, name, enabled); err != nil {
@@ -307,6 +321,9 @@ func (s *ServiceImpl) DenyInterface(ctx context.Context, name, iface string) err
 func (s *ServiceImpl) AssignDevice(ctx context.Context, mac, policyName string) error {
 	if !isValidPolicyName(policyName) {
 		return fmt.Errorf("invalid policy name: %s", policyName)
+	}
+	if !IsStandardPolicyName(policyName) {
+		return errHydraRoutePolicy(policyName)
 	}
 
 	if err := s.policies.AssignDevice(ctx, mac, policyName); err != nil {

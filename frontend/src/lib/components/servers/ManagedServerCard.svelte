@@ -15,6 +15,7 @@
 	} from '$lib/components/servers';
 	import { comparePeerFieldsDirected } from '$lib/utils/peerSort';
 	import { peerSort } from '$lib/stores/peerSort';
+	import { isStandardAccessPolicyName } from '$lib/utils/accessPolicy';
 
 	interface Props {
 		server: ManagedServer;
@@ -227,10 +228,12 @@
 		return p;
 	});
 
+	let standardPolicies = $derived(policies.filter((p) => isStandardAccessPolicyName(p.id)));
+
 	let policyOptions = $derived<DropdownOption[]>([
 		{ value: 'none', label: 'Политика по умолчанию' },
 		...(orphanedPolicy ? [{ value: orphanedPolicy, label: `${orphanedPolicy} (отсутствует)` }] : []),
-		...policies.map((p) => ({
+		...standardPolicies.map((p) => ({
 			value: p.id,
 			label: p.description ? `${p.id} — ${p.description}` : p.id,
 		})),

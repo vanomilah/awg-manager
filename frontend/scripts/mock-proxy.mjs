@@ -19,7 +19,7 @@
 // - Amnezia Premium CP: POST /amnezia-premium/login | account-info | download-config
 //   (paths without /api — Vite rewrite). Stub session + two countries + .conf text.
 // - Diagnostics «Окружение: GET /dns-check/client (Test-Phone @ 192.168.1.42,
-//   policy Kids), /system/hydraroute-status, plus existing /routing/*, /tunnels/all,
+//   policy Policy1), /system/hydraroute-status, plus existing /routing/*, /tunnels/all,
 //   /proxy/*, /singbox/subscriptions.
 // Default upstream: http://127.0.0.1:8080 (Prism). Listen: 8081.
 
@@ -1331,66 +1331,54 @@ let mockDNSRules = [
 		server: 'wizard-upstream',
 	},
 ];
+/** Built-in NDMS policy names (Policy0..PolicyN), same rule as backend accesspolicy. */
+function isStandardPolicyName(name) {
+	return /^Policy\d+$/.test(name);
+}
+
 const mockPolicyDevices = [
-	{ mac: 'aa:aa:aa:aa:aa:01', ip: '192.168.1.42', name: 'Test-Phone',    hostname: 'phone',  active: true, link: 'WiFi', policy: 'Kids' },
+	{ mac: 'aa:aa:aa:aa:aa:01', ip: '192.168.1.42', name: 'Test-Phone',    hostname: 'phone',  active: true, link: 'WiFi', policy: 'Policy1' },
 	{ mac: 'aa:aa:aa:aa:aa:02', ip: '192.168.1.43', name: 'Test-Laptop',   hostname: 'laptop', active: true, link: 'WiFi', policy: '' },
-	{ mac: 'aa:aa:aa:aa:aa:03', ip: '192.168.1.44', name: 'BoundElsewhere', hostname: 'other', active: true, link: 'WiFi', policy: 'OtherPolicy' },
-	{ mac: 'aa:aa:aa:aa:aa:04', ip: '192.168.1.45', name: 'Family-TV',     hostname: 'tv',     active: true, link: 'LAN',  policy: '' },
+	{ mac: 'aa:aa:aa:aa:aa:03', ip: '192.168.1.44', name: 'HR-Client',     hostname: 'hr',     active: true, link: 'WiFi', policy: 'HydraRoute' },
+	{ mac: 'aa:aa:aa:aa:aa:04', ip: '192.168.1.45', name: 'Family-TV',     hostname: 'tv',     active: true, link: 'LAN',  policy: 'Policy0' },
 	{ mac: 'aa:aa:aa:aa:aa:05', ip: '192.168.1.46', name: 'PS5',           hostname: 'ps5',    active: true, link: 'LAN',  policy: '' },
-	{ mac: 'aa:aa:aa:aa:aa:06', ip: '192.168.1.47', name: 'Work-Mac',      hostname: 'work',   active: true, link: 'WiFi', policy: '' },
+	{ mac: 'aa:aa:aa:aa:aa:06', ip: '192.168.1.47', name: 'Work-Mac',      hostname: 'work',   active: true, link: 'WiFi', policy: 'HydraRoute' },
 ];
 const mockAccessPolicies = [
 	{
-		name: 'Default policy',
-		description: 'Основная политика для домашних устройств',
+		name: 'Policy0',
+		description: 'home',
+		isStandard: true,
 		standalone: false,
 		interfaces: [{ name: 'My VPN', label: 'My VPN', order: 0 }],
-		deviceCount: 5,
+		deviceCount: 1,
 	},
 	{
-		name: 'Kids',
-		description: 'Детские устройства',
+		name: 'Policy1',
+		description: 'kids',
+		isStandard: true,
 		standalone: false,
 		interfaces: [{ name: 'Direct', label: 'Direct', order: 0 }],
-		deviceCount: 3,
+		deviceCount: 1,
 	},
 	{
-		name: 'Work',
-		description: 'Рабочие ноутбуки',
+		name: 'Policy2',
+		description: 'work',
+		isStandard: true,
 		standalone: false,
 		interfaces: [{ name: 'DE vless-tcp-reality', label: 'DE', order: 0 }],
-		deviceCount: 4,
-	},
-	{
-		name: 'Streaming',
-		description: 'Smart TV и приставки',
-		standalone: false,
-		interfaces: [{ name: 'NL vless-grpc', label: 'NL', order: 0 }],
-		deviceCount: 2,
-	},
-	{
-		name: 'IoT',
-		description: 'Устройства умного дома',
-		standalone: true,
-		interfaces: [{ name: 'Direct', label: 'Direct', order: 0 }],
-		deviceCount: 6,
+		deviceCount: 0,
 	},
 	{
 		name: 'HydraRoute',
-		description: 'Политика для HR Neo (демо)',
+		description: '',
+		isStandard: false,
 		standalone: false,
 		interfaces: [
 			{ name: 'NetcrazeHy2', label: 'NetcrazeHy2', order: 0 },
 			{ name: 'amnezia_for_awg_fornex', label: 'amnezia_for_awg_fornex', order: 1 },
 		],
 		deviceCount: 2,
-	},
-	{
-		name: 'OtherPolicy',
-		description: 'Прочие устройства',
-		standalone: false,
-		interfaces: [{ name: 'Direct', label: 'Direct', order: 0 }],
-		deviceCount: 1,
 	},
 ];
 
@@ -1403,7 +1391,7 @@ const mockDnsCheckClientPayload = {
 			id: 'client_policy',
 			status: 'ok',
 			title: 'Политика доступа клиента',
-			message: 'Клиент использует политику: Kids',
+			message: 'Клиент использует политику: Policy1',
 		},
 	],
 };
@@ -1868,7 +1856,7 @@ function mockManagedServer() {
 		dns: '8.8.8.8',
 		mtu: 1420,
 		natEnabled: true,
-		policy: 'default',
+		policy: 'Policy0',
 		peers: MANAGED_PEERS_FIXTURE.map((p, i) => ({
 			publicKey: mockPubkey(i + 1),
 			privateKey: '',
@@ -2976,6 +2964,14 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'GET' && path === '/managed-servers/policies') {
+		const data = mockAccessPolicies
+			.filter((p) => p.isStandard !== false && isStandardPolicyName(p.name))
+			.map((p) => ({ id: p.name, description: p.description }));
+		send(res, 200, { success: true, data });
+		return;
+	}
+
 	if (req.method === 'GET' && path === '/routing/policy-interfaces') {
 		send(res, 200, { success: true, data: mockPolicyInterfaces });
 		return;
@@ -3064,16 +3060,65 @@ const server = http.createServer(async (req, res) => {
 			try {
 				const payload = JSON.parse(raw || '{}');
 				const mac = payload.mac;
+				const policy = payload.policy ?? '';
+				if (policy && !isStandardPolicyName(policy)) {
+					send(res, 400, {
+						success: false,
+						error: {
+							code: 'INVALID_REQUEST',
+							message: `policy "${policy}" is managed by HydraRoute Neo and cannot be modified here`,
+						},
+					});
+					return;
+				}
 				if (mac) {
 					mockBoundDevices.add(mac);
 					const dev = mockPolicyDevices.find((d) => d.mac === mac);
-					if (dev) dev.policy = payload.policy ?? 'SBRouter';
+					if (dev) dev.policy = policy;
+					const pol = mockAccessPolicies.find((p) => p.name === policy);
+					if (pol) pol.deviceCount = mockPolicyDevices.filter((d) => d.policy === policy).length;
 				}
 				send(res, 200, { success: true, data: {} });
 			} catch (e) {
 				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
 			}
 		});
+		return;
+	}
+
+	if (req.method === 'DELETE' && path === '/access-policies/assign') {
+		const mac = url.searchParams.get('mac');
+		if (mac) {
+			const dev = mockPolicyDevices.find((d) => d.mac === mac);
+			const prev = dev?.policy ?? '';
+			if (dev) dev.policy = '';
+			if (prev) {
+				const pol = mockAccessPolicies.find((p) => p.name === prev);
+				if (pol) pol.deviceCount = mockPolicyDevices.filter((d) => d.policy === prev).length;
+			}
+		}
+		send(res, 200, { success: true, data: {} });
+		return;
+	}
+
+	if (req.method === 'DELETE' && path === '/access-policies/delete') {
+		const name = url.searchParams.get('name') ?? '';
+		if (!isStandardPolicyName(name)) {
+			send(res, 400, {
+				success: false,
+				error: {
+					code: 'INVALID_REQUEST',
+					message: `policy "${name}" is managed by HydraRoute Neo and cannot be modified here`,
+				},
+			});
+			return;
+		}
+		const idx = mockAccessPolicies.findIndex((p) => p.name === name);
+		if (idx >= 0) mockAccessPolicies.splice(idx, 1);
+		for (const dev of mockPolicyDevices) {
+			if (dev.policy === name) dev.policy = '';
+		}
+		send(res, 200, { success: true, data: {} });
 		return;
 	}
 
