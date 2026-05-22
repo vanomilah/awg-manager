@@ -64,8 +64,16 @@ rm -rf build/ipk build/bin
 mkdir -p build/ipk build/bin dist
 
 # Build frontend
-echo "Building frontend..."
-"$SCRIPT_DIR/build-frontend.sh"
+if [[ "${SKIP_FRONTEND_BUILD:-0}" == "1" ]]; then
+    if [[ ! -f "$PROJECT_ROOT/frontend/build/index.html" ]]; then
+        echo "ERROR: SKIP_FRONTEND_BUILD=1 but frontend/build/index.html is missing"
+        exit 1
+    fi
+    echo "Using existing frontend build: frontend/build/"
+else
+    echo "Building frontend..."
+    "$SCRIPT_DIR/build-frontend.sh"
+fi
 
 # Build backend (export VERSION so build-backend.sh uses it)
 echo ""
