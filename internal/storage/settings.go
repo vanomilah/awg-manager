@@ -519,6 +519,32 @@ func (s *SettingsStore) SetSingboxManuallyStopped(v bool) error {
 	return s.saveUnlocked(s.settings)
 }
 
+// SetSingboxCreateNDMSProxy atomically updates the toggle under the
+// store lock. Mirrors SetSingboxManuallyStopped — required because
+// the API handler is the single writer (CLAUDE.md single-writer
+// storage pattern), and concurrent writers on other Settings fields
+// must not silently overwrite this change.
+func (s *SettingsStore) SetSingboxCreateNDMSProxy(v bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.settings == nil {
+		return fmt.Errorf("settings not loaded")
+	}
+	s.settings.CreateNDMSProxyForSingbox = v
+	return s.saveUnlocked(s.settings)
+}
+
+// IsSingboxNDMSProxyEnabled returns the current toggle value, or true
+// on read error (back-compat default — never fail-closed for this
+// flag; we'd rather create a Proxy than silently break NDMS routing).
+func (s *SettingsStore) IsSingboxNDMSProxyEnabled() bool {
+	settings, err := s.Get()
+	if err != nil {
+		return true
+	}
+	return settings.CreateNDMSProxyForSingbox
+}
+
 // MarkServerInterface adds an interface ID to the server interfaces list.
 func (s *SettingsStore) MarkServerInterface(id string) error {
 	s.mu.Lock()

@@ -443,3 +443,30 @@ func TestNormalizeUsageLevel(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsStore_SetSingboxCreateNDMSProxy_PersistsAtomic(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewSettingsStore(tmpDir)
+	if _, err := store.Load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := store.SetSingboxCreateNDMSProxy(false); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	// Re-open from disk to confirm persistence.
+	fresh := NewSettingsStore(tmpDir)
+	s, err := fresh.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if s.CreateNDMSProxyForSingbox {
+		t.Errorf("persisted = %v, want false", s.CreateNDMSProxyForSingbox)
+	}
+	// Toggle back.
+	if err := fresh.SetSingboxCreateNDMSProxy(true); err != nil {
+		t.Fatalf("set back: %v", err)
+	}
+	if !fresh.IsSingboxNDMSProxyEnabled() {
+		t.Errorf("getter sees = false after set true")
+	}
+}
