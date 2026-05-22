@@ -1340,6 +1340,13 @@ class ApiClient {
 		});
 	}
 
+	async singboxToggleNDMSProxy(enabled: boolean): Promise<{ enabled: boolean; migrated: boolean }> {
+		return this.request('/singbox/ndms-proxy', {
+			method: 'POST',
+			body: JSON.stringify({ enabled }),
+		});
+	}
+
 	private isMockDevMode(): boolean {
 		return isMockDevMode();
 	}
