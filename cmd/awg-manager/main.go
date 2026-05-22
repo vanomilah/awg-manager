@@ -335,7 +335,7 @@ func main() {
 	operator := ops.NewOperator(ndmsQueries, ndmsCommands, wgClient, backendImpl, firewallMgr, log)
 
 	// Create NativeWG operator
-	nwgOp := nwg.NewOperator(log, ndmsQueries, ndmsCommands, ndmsTransportClient, loggingService)
+	nwgOp := nwg.NewOperator(ndmsQueries, ndmsCommands, ndmsTransportClient, loggingService)
 
 	// Load awg_proxy.ko if firmware < 5.1 Alpha 4
 	if !ndmsinfo.SupportsWireguardASC() {
@@ -353,7 +353,7 @@ func main() {
 	})
 
 	// Create the main tunnel service
-	tunnelService := service.New(awgStore, nwgOp, operator, stateMgr, log, wanModel, loggingService)
+	tunnelService := service.New(awgStore, nwgOp, operator, stateMgr, wanModel, loggingService)
 
 	// Migrate legacy ISPInterface="none" to "" (auto) for tunnels from older versions.
 	tunnelService.MigrateISPInterfaceNone()
@@ -502,7 +502,7 @@ func main() {
 		loggingService,
 	)
 	// Create orchestrator — single brain for all lifecycle decisions.
-	orch := orchestrator.New(awgStore, operator, nwgOp, stateMgr, wanModel, log, loggingService)
+	orch := orchestrator.New(awgStore, operator, nwgOp, stateMgr, wanModel, loggingService)
 	tunnelService.SetOrchestrator(orch)
 	nwgOp.SetHookNotifier(orch) // operators register expected hooks before InterfaceUp/Down
 	// OS5 kernel operator also uses ExpectHook (via OpkgTun two-layer arch).
@@ -1719,11 +1719,11 @@ func runCleanup(dataDir string) {
 
 	operator := ops.NewOperator(cleanupNDMSQueries, cleanupNDMSCommands, wgClient, backendImpl, firewallMgr, log)
 
-	nwgOp := nwg.NewOperator(log, cleanupNDMSQueries, cleanupNDMSCommands, cleanupNDMSTransport, nil)
-	tunnelService := service.New(awgStore, nwgOp, operator, stateMgr, log, wan.NewModel(), nil)
+	nwgOp := nwg.NewOperator(cleanupNDMSQueries, cleanupNDMSCommands, cleanupNDMSTransport, nil)
+	tunnelService := service.New(awgStore, nwgOp, operator, stateMgr, wan.NewModel(), nil)
 
 	// Wire orchestrator for lifecycle operations (Delete needs it)
-	cleanupOrch := orchestrator.New(awgStore, operator, nwgOp, stateMgr, wan.NewModel(), log, nil)
+	cleanupOrch := orchestrator.New(awgStore, operator, nwgOp, stateMgr, wan.NewModel(), nil)
 	tunnelService.SetOrchestrator(cleanupOrch)
 	nwgOp.SetHookNotifier(cleanupOrch)
 	if os5Op, ok := operator.(interface {
