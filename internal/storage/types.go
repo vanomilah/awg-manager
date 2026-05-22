@@ -32,6 +32,13 @@ type Settings struct {
 	// reconciles only when this is false. Cleared by Control("start")
 	// and Control("restart"); set by Control("stop").
 	SingboxManuallyStopped bool `json:"singboxManuallyStopped,omitempty"`
+	// CreateNDMSProxyForSingbox controls whether NDMS ProxyN/t2sN
+	// interfaces are created per sing-box tunnel. When false, sing-box
+	// works only through its internal router engine (deviceproxy / TUN /
+	// internal inbounds), and NDMS-level routing rules cannot target it.
+	// Default true (back-compat). See docs/superpowers/specs/
+	// 2026-05-22-singbox-ndms-proxy-toggle-design.md.
+	CreateNDMSProxyForSingbox bool `json:"createNDMSProxyForSingbox"`
 }
 
 type SingboxRouterSettings struct {

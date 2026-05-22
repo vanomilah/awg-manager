@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CurrentSchemaVersion = 19
+	CurrentSchemaVersion = 20
 	DefaultPort          = 2222
 	DefaultInterface     = "br0"
 )
@@ -117,6 +117,9 @@ func (s *SettingsStore) Load() (*Settings, error) {
 		if settings.SchemaVersion < 19 {
 			s.migrateToV19(&settings)
 		}
+		if settings.SchemaVersion < 20 {
+			s.migrateToV20(&settings)
+		}
 	}
 
 	// Self-heal duplicated managed servers — see dedupManagedServers comment.
@@ -172,6 +175,7 @@ func (s *SettingsStore) defaultSettings() *Settings {
 			RefreshInterval: 24,
 			WANAutoDetect:   true, // sing-box auto_detect_interface by default
 		},
+		CreateNDMSProxyForSingbox: true,
 	}
 }
 
@@ -343,6 +347,15 @@ func (s *SettingsStore) migrateToV19(settings *Settings) {
 	settings.SingboxRouter.DeviceMode = "policy"
 	settings.SingboxRouter.SnifferEnabled = true
 	settings.SchemaVersion = 19
+}
+
+// migrateToV20 introduces CreateNDMSProxyForSingbox toggle. Existing
+// installs already rely on ProxyN/t2sN being created — set true to
+// preserve behaviour. Fresh installs ship v20 with default true via
+// defaultSettings.
+func (s *SettingsStore) migrateToV20(settings *Settings) {
+	settings.CreateNDMSProxyForSingbox = true
+	settings.SchemaVersion = 20
 }
 
 // dedupManagedServers returns servers with duplicate InterfaceName entries

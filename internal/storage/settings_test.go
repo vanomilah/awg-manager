@@ -392,6 +392,38 @@ func TestLoadUpgradeFromV15SetsAdvanced(t *testing.T) {
 	}
 }
 
+func TestSettings_CreateNDMSProxyForSingbox_DefaultTrue(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewSettingsStore(tmpDir)
+	s, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !s.CreateNDMSProxyForSingbox {
+		t.Errorf("CreateNDMSProxyForSingbox default = %v, want true (back-compat)", s.CreateNDMSProxyForSingbox)
+	}
+}
+
+func TestSettings_MigrateV19toV20_SetsTrueOnExistingInstall(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Write a v19 settings file without the new field.
+	legacy := `{"schemaVersion":19,"authEnabled":false,"usageLevel":"basic"}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+	store := NewSettingsStore(tmpDir)
+	s, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s.SchemaVersion != 20 {
+		t.Errorf("schema = %d, want 20", s.SchemaVersion)
+	}
+	if !s.CreateNDMSProxyForSingbox {
+		t.Errorf("migration should set CreateNDMSProxyForSingbox=true for existing installs (back-compat)")
+	}
+}
+
 func TestNormalizeUsageLevel(t *testing.T) {
 	tests := []struct {
 		in   string

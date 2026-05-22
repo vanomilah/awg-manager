@@ -29,6 +29,7 @@ type SettingsPatch struct {
 	ManagedServer             *ManagedServer         `json:"managedServer,omitempty"`
 	ManagedPolicies           *[]string              `json:"managedPolicies,omitempty"`
 	MonitoringExcludedTunnels *[]string              `json:"monitoringExcludedTunnels,omitempty"`
-	SingboxRouter             *SingboxRouterSettings `json:"singboxRouter,omitempty"`
-	SingboxManuallyStopped    *bool                  `json:"singboxManuallyStopped,omitempty"`
+	SingboxRouter                *SingboxRouterSettings `json:"singboxRouter,omitempty"`
+	SingboxManuallyStopped       *bool                  `json:"singboxManuallyStopped,omitempty"`
+	CreateNDMSProxyForSingbox    *bool                  `json:"createNDMSProxyForSingbox,omitempty"`
 }
