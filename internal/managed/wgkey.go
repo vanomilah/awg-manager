@@ -8,7 +8,12 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/sys/exec"
 )
 
-const wgBin = "/opt/sbin/wg"
+var wgShowBins = []string{
+	awgBin,
+	"/opt/sbin/wg",
+	"/opt/bin/awg",
+	"/opt/bin/wg",
+}
 
 // wgRunner is the indirection seam for tests. Production wires
 // realWgRunner (which calls internal/sys/exec.Run on wgBin); tests pass
@@ -27,9 +32,36 @@ func readKernelPrivateKeyWith(ctx context.Context, kernelName string, run wgRunn
 	if kernelName == "" {
 		return "", fmt.Errorf("readKernelPrivateKey: empty kernel name")
 	}
-	out, err := run(ctx, wgBin, "show", kernelName, "private-key")
-	if err != nil {
-		return "", err
+	var firstNonMissingErr error
+	var sawMissing bool
+	for _, bin := range wgShowBins {
+		out, err := run(ctx, bin, "show", kernelName, "private-key")
+		if err == nil {
+			return strings.TrimSpace(out), nil
+		}
+		if isBinaryMissingError(err) {
+			sawMissing = true
+			continue
+		}
+		if firstNonMissingErr == nil {
+			firstNonMissingErr = err
+		}
+		continue
 	}
-	return strings.TrimSpace(out), nil
+	if firstNonMissingErr != nil {
+		return "", firstNonMissingErr
+	}
+	if sawMissing {
+		return "", fmt.Errorf("wireguard tools not found: tried %s", strings.Join(wgShowBins, ", "))
+	}
+	return "", fmt.Errorf("readKernelPrivateKey: failed for %s", kernelName)
+}
+
+func isBinaryMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such file or directory") ||
+		strings.Contains(msg, "file not found")
 }

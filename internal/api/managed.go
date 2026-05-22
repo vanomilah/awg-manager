@@ -130,6 +130,7 @@ type CreateServerRequestDTO struct {
 	Endpoint    string `json:"endpoint,omitempty" example:"203.0.113.42:51821"`
 	DNS         string `json:"dns,omitempty" example:"8.8.8.8"`
 	MTU         int    `json:"mtu,omitempty" example:"1420"`
+	GenerateASC *bool  `json:"generateAsc,omitempty" example:"true"`
 }
 
 // UpdateServerRequestDTO is the swagger-visible body for PUT /managed-servers/{id}.

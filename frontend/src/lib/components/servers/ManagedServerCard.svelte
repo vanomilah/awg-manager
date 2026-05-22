@@ -265,6 +265,9 @@
 				<span class="meta mono">{server.interfaceName}</span>
 				<span class="meta mono">{server.address}/{maskToPrefix(server.mask)}</span>
 				<span class="meta mono">:{server.listenPort}</span>
+				{#if server.mtu}
+					<span class="meta mono">MTU {server.mtu}</span>
+				{/if}
 				{#if stats && (totalRx > 0 || totalTx > 0)}
 					<span class="meta mono">↓{formatBytes(totalRx)} ↑{formatBytes(totalTx)}</span>
 				{/if}

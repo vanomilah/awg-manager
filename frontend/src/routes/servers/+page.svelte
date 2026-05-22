@@ -107,6 +107,20 @@
 	});
 
 	let hasServers = $derived(railItems.length > 0);
+	let occupiedListenPorts = $derived.by<number[]>(() => {
+		const ports = new Set<number>();
+		for (const m of managedServers) {
+			if (Number.isInteger(m.listenPort) && m.listenPort > 0) {
+				ports.add(m.listenPort);
+			}
+		}
+		for (const s of serverList) {
+			if (Number.isInteger(s.listenPort) && s.listenPort > 0) {
+				ports.add(s.listenPort);
+			}
+		}
+		return [...ports];
+	});
 
 	// Default to empty; the effect below snaps to the first item once the rail loads
 	// and re-snaps if the current activeId disappears (e.g. after a delete).
@@ -237,6 +251,7 @@
 
 	<CreateManagedServerModal
 		bind:open={createManagedOpen}
+		existingListenPorts={occupiedListenPorts}
 		onclose={() => createManagedOpen = false}
 		onCreated={onManagedCreated}
 	/>

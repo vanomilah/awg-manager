@@ -210,6 +210,12 @@ definitions:
         example: true
         type: boolean
     type: object
+  api.ActiveMemberRequest:
+    properties:
+      memberTag:
+        example: sub-demo-001
+        type: string
+    type: object
   api.ActiveNowResponse:
     properties:
       now:
@@ -528,6 +534,9 @@ definitions:
       endpoint:
         example: 203.0.113.42:51821
         type: string
+      generateAsc:
+        example: true
+        type: boolean
       listenPort:
         example: 51821
         type: integer
@@ -537,6 +546,33 @@ definitions:
       mtu:
         example: 1420
         type: integer
+    type: object
+  api.CreateSubscriptionRequest:
+    properties:
+      enabled:
+        example: true
+        type: boolean
+      headers:
+        items:
+          $ref: '#/definitions/api.SubscriptionHeader'
+        type: array
+      inline:
+        example: vless://11111111-2222-3333-4444-555555555555@demo.example.com:443?type=tcp&encryption=none&security=reality&pbk=EXAMPLE_PUBLIC_KEY&fp=chrome&sni=cdn.example.com&sid=abcd1234&spx=%2F&flow=xtls-rprx-vision#Demo-vless-reality
+        type: string
+      label:
+        example: Demo Provider
+        type: string
+      mode:
+        description: '"selector" (default) | "urltest"'
+        type: string
+      refreshHours:
+        example: 24
+        type: integer
+      url:
+        example: https://example.com/subscriptions/demo.txt
+        type: string
+      urlTest:
+        $ref: '#/definitions/api.SubscriptionURLTestDTO'
     type: object
   api.DNSRouteSettingsDTO:
     properties:
@@ -846,8 +882,22 @@ definitions:
         example: true
         type: boolean
     type: object
+  api.GeoExpandData:
+    properties:
+      count:
+        type: integer
+      lines:
+        items:
+          type: string
+        type: array
+      path:
+        type: string
+    type: object
   api.GeoFileEntryDTO:
     properties:
+      external:
+        example: true
+        type: boolean
       path:
         example: /opt/etc/hrneo/geosite.db
         type: string
@@ -877,6 +927,11 @@ definitions:
     type: object
   api.GeoFileUpdatedData:
     properties:
+      error:
+        type: string
+      partial:
+        example: true
+        type: boolean
       updated:
         example: 1
         type: integer
@@ -885,6 +940,20 @@ definitions:
     properties:
       data:
         $ref: '#/definitions/api.GeoFileUpdatedData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.GeoFilesRescannedData:
+    properties:
+      adopted:
+        example: 1
+        type: integer
+    type: object
+  api.GeoFilesRescannedResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.GeoFilesRescannedData'
       success:
         example: true
         type: boolean
@@ -1207,6 +1276,8 @@ definitions:
       address:
         example: 10.10.0.1
         type: string
+      asc:
+        type: object
       description:
         example: My VPN
         type: string
@@ -1862,6 +1933,7 @@ definitions:
   api.RemoveMemberRequest:
     properties:
       memberTag:
+        example: sub-demo-003
         type: string
     type: object
   api.ResolveResponse:
@@ -1905,62 +1977,104 @@ definitions:
   api.RouterDetails:
     properties:
       architecture:
+        example: aarch64
         type: string
       bootSlot:
+        example: "1"
         type: string
       cpuModel:
+        example: MT7981
         type: string
       cpuTempC:
+        example: 79
         type: integer
       featureComponents:
+        example:
+        - HW-NAT
+        - Wi-Fi 5GHz
+        - WPA3
+        - USB
         items:
           type: string
         type: array
       firmwareBuildDate:
+        example: 7 Apr 2026
         type: string
       firmwareRelease:
+        example: 5.0.9 (5.00.C.9.0-1)
         type: string
       firmwareSandbox:
+        example: preview
         type: string
       firmwareTitle:
+        example: CMCC RAX3000M (KN-3812) [Port]
         type: string
       hardwareId:
+        example: KN-3812
         type: string
       loadAverage:
+        example: 1.82, 1.58, 1.58
         type: string
       memoryTotalMB:
+        example: 486
         type: integer
       memoryUsedMB:
+        example: 303
         type: integer
       memoryUsedPercent:
+        example: 62
         type: integer
       meshMembers:
+        example:
+        - RAX3000M (KN-3812) | 5.0.9 | 1921 Мбит/с | 13 дн. 06:22:26
+        - SmartBox Giga (KN-1913) | 5.0.9 | 260 Мбит/с | 13 дн. 06:21:52
         items:
           type: string
         type: array
       model:
+        example: KN-3812
         type: string
       modelDisplay:
+        example: CMCC RAX3000M (KN-3812)
         type: string
       opkgStorage:
+        example: 451 MB / 205 GB
         type: string
       portedBuild:
+        example: true
         type: boolean
       region:
+        example: EA
         type: string
       storageComponents:
+        example:
+        - NTFS
+        - ExFAT
+        - EXT4
+        - SMB
+        - FTP
         items:
           type: string
         type: array
       uptimeHuman:
+        example: 7d 16h 57m
         type: string
       vpnComponents:
+        example:
+        - WireGuard
+        - OpenVPN
+        - IPsec/IKEv2
+        - L2TP
+        - SSTP
+        - ZeroTier
         items:
           type: string
         type: array
       wifi5TempC:
+        example: 68
         type: integer
       wifi24TempC:
+        example: 70
         type: integer
     type: object
   api.RouterInterfaceDTO:
@@ -2122,6 +2236,13 @@ definitions:
         $ref: '#/definitions/api.DNSRouteSettingsDTO'
       logging:
         $ref: '#/definitions/api.LoggingSettingsDTO'
+      monitoringExcludedTunnels:
+        example:
+        - tn-1
+        - sys-2
+        items:
+          type: string
+        type: array
       pingCheck:
         $ref: '#/definitions/api.PingCheckSettingsDTO'
       schemaVersion:
@@ -2801,6 +2922,9 @@ definitions:
       format:
         example: binary
         type: string
+      materialized_srs:
+        example: true
+        type: boolean
       path:
         example: /opt/etc/singbox/rulesets/geosite-cn.srs
         type: string
@@ -2827,12 +2951,6 @@ definitions:
       force:
         example: false
         type: boolean
-      tag:
-        example: geosite-cn
-        type: string
-    type: object
-  api.SingboxRouterRuleSetRefreshRequest:
-    properties:
       tag:
         example: geosite-cn
         type: string
@@ -2875,21 +2993,33 @@ definitions:
     type: object
   api.SingboxRouterSettingsData:
     properties:
-      enabled:
-        example: true
-        type: boolean
+      bypassExtraPorts:
+        description: |-
+          BypassExtraPorts is a user-defined comma-separated list of extra
+          port exclusions in "PORT UDP|TCP" format (e.g. "51820 UDP, 1194 TCP").
+        example: 51820 UDP
+        type: string
+      bypassPresets:
+        description: |-
+          BypassPresets lists active named port-bypass presets.
+          Valid values: "l2tp", "ntp", "netbios-smb".
+        example:
+        - l2tp
+        items:
+          type: string
+        type: array
       deviceMode:
         enum:
         - policy
         - all
         example: policy
         type: string
+      enabled:
+        example: true
+        type: boolean
       policyName:
         example: awgm-router
         type: string
-      snifferEnabled:
-        example: true
-        type: boolean
       refreshDailyTime:
         example: "03:00"
         type: string
@@ -2898,6 +3028,23 @@ definitions:
         type: integer
       refreshMode:
         example: interval
+        type: string
+      snifferEnabled:
+        example: true
+        type: boolean
+      wanAutoDetect:
+        description: |-
+          WANAutoDetect / WANInterface form a two-field discriminator:
+            true  + ""    → sing-box auto_detect_interface
+            false + "ppp0"→ sing-box default_interface=ppp0
+          Other combinations are rejected by the backend validator.
+          Example below shows the PINNED case as it's the more interesting
+          shape to document (auto case has WANInterface omitted via omitempty
+          and wanAutoDetect=true); both examples are intentionally consistent.
+        example: false
+        type: boolean
+      wanInterface:
+        example: ppp0
         type: string
     type: object
   api.SingboxRouterSettingsResponse:
@@ -2953,15 +3100,15 @@ definitions:
       policyName:
         example: awgm-router
         type: string
-      snifferEnabled:
-        example: true
-        type: boolean
       ruleCount:
         example: 12
         type: integer
       ruleSetCount:
         example: 4
         type: integer
+      snifferEnabled:
+        example: true
+        type: boolean
       tproxyTargetAvailable:
         example: true
         type: boolean
@@ -2980,8 +3127,39 @@ definitions:
         example: aa:bb:cc:dd:ee:ff
         type: string
     type: object
+  api.SingboxRouterWANInterfaceDTO:
+    properties:
+      id:
+        example: PPPoE0
+        type: string
+      label:
+        example: Резервный канал
+        type: string
+      name:
+        example: ppp0
+        type: string
+      priority:
+        example: 700000
+        type: integer
+      up:
+        example: true
+        type: boolean
+    type: object
+  api.SingboxRouterWANInterfacesListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/api.SingboxRouterWANInterfaceDTO'
+        type: array
+      success:
+        example: true
+        type: boolean
+    type: object
   api.SingboxStatusData:
     properties:
+      currentSha256:
+        example: 76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934
+        type: string
       currentVersion:
         example: 1.13.11
         type: string
@@ -3000,6 +3178,9 @@ definitions:
       proxyComponent:
         example: true
         type: boolean
+      requiredSha256:
+        example: 76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934
+        type: string
       requiredVersion:
         example: 1.13.11
         type: string
@@ -3204,34 +3385,41 @@ definitions:
   api.SubscriptionDTO:
     properties:
       activeMember:
-        example: sub-abc-aaaa
+        example: sub-demo-001
         type: string
       enabled:
+        example: true
         type: boolean
       headers:
         items:
           $ref: '#/definitions/api.SubscriptionHeader'
         type: array
       id:
-        example: abc123
+        example: sub-demo
         type: string
       inboundTag:
-        example: sub-abc12345-in
+        example: sub-demo-in
         type: string
       isInline:
         example: false
         type: boolean
       label:
-        example: Provider X
+        example: Demo Provider
         type: string
       lastError:
+        example: ""
         type: string
       lastFetched:
+        example: "2026-05-14T21:30:00Z"
         type: string
       listenPort:
-        example: 11080
+        example: 11000
         type: integer
       memberTags:
+        example:
+        - sub-demo-001
+        - sub-demo-002
+        - sub-demo-003
         items:
           type: string
         type: array
@@ -3243,20 +3431,22 @@ definitions:
         example: selector
         type: string
       orphanTags:
+        example:
+        - ""
         items:
           type: string
         type: array
       proxyIndex:
-        example: 3
+        example: 1
         type: integer
       refreshHours:
         example: 24
         type: integer
       selectorTag:
-        example: sub-abc12345
+        example: sub-demo
         type: string
       url:
-        example: https://prov.example/sub/a
+        example: https://example.com/subscriptions/demo.txt
         type: string
       urlTest:
         $ref: '#/definitions/api.SubscriptionURLTestDTO'
@@ -3269,6 +3459,16 @@ definitions:
       value:
         example: Happ/4.6.0
         type: string
+    type: object
+  api.SubscriptionListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/api.SubscriptionDTO'
+        type: array
+      success:
+        example: true
+        type: boolean
     type: object
   api.SubscriptionMemberDTO:
     properties:
@@ -3302,6 +3502,7 @@ definitions:
       data:
         $ref: '#/definitions/api.SubscriptionDTO'
       success:
+        example: true
         type: boolean
     type: object
   api.SubscriptionURLTestDTO:
@@ -3402,8 +3603,20 @@ definitions:
       routerIP:
         example: 192.168.1.1
         type: string
+      routerTime:
+        example: "2026-05-20T14:32:10+03:00"
+        type: string
+      routerTimezone:
+        example: MSK
+        type: string
+      routerTimezoneOffsetMinutes:
+        example: 180
+        type: integer
       singbox:
         $ref: '#/definitions/api.SystemInfoSingbox'
+      slowRequestThresholdMs:
+        example: 0
+        type: integer
       supportsExtendedASC:
         example: true
         type: boolean
@@ -3490,6 +3703,12 @@ definitions:
       success:
         example: true
         type: boolean
+    type: object
+  api.TakeGeoFileControlRequest:
+    properties:
+      path:
+        example: /opt/etc/HydraRoute/geosite_GA.dat
+        type: string
     type: object
   api.TerminalStartData:
     properties:
@@ -3913,6 +4132,28 @@ definitions:
       checkEnabled:
         example: true
         type: boolean
+    type: object
+  api.UpdateSubscriptionRequest:
+    properties:
+      enabled:
+        type: boolean
+      headers:
+        items:
+          $ref: '#/definitions/api.SubscriptionHeader'
+        type: array
+      label:
+        example: Demo Provider Updated
+        type: string
+      mode:
+        example: selector
+        type: string
+      refreshHours:
+        type: integer
+      url:
+        example: https://example.com/subscriptions/demo.txt
+        type: string
+      urlTest:
+        $ref: '#/definitions/api.SubscriptionURLTestDTO'
     type: object
   api.WANIPData:
     properties:
@@ -4385,6 +4626,15 @@ paths:
       summary: Set access policy standalone mode
       tags:
       - access-policy
+  /amnezia-premium/account-info:
+    post:
+      responses: {}
+  /amnezia-premium/download-config:
+    post:
+      responses: {}
+  /amnezia-premium/login:
+    post:
+      responses: {}
   /auth/login:
     post:
       consumes:
@@ -4887,6 +5137,28 @@ paths:
       summary: Diagnostics SSE stream
       tags:
       - diagnostics
+  /dns-check/client:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.DnsCheckStartResponseEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Client context for diagnostics
+      tags:
+      - dns-check
   /dns-check/probe:
     get:
       produces:
@@ -5369,6 +5641,31 @@ paths:
       summary: Update HydraRoute config
       tags:
       - hydraroute
+  /hydraroute/geo-expand:
+    get:
+      parameters:
+      - description: geosite or geoip
+        in: query
+        name: kind
+        required: true
+        type: string
+      - description: Tag name
+        in: query
+        name: tag
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GeoExpandData'
+      security:
+      - CookieAuth: []
+      summary: HydraRoute geo tag expand
+      tags:
+      - hydraroute
   /hydraroute/geo-files:
     get:
       produces:
@@ -5446,6 +5743,55 @@ paths:
       security:
       - CookieAuth: []
       summary: Delete HydraRoute geo file
+      tags:
+      - hydraroute
+  /hydraroute/geo-files/rescan:
+    post:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GeoFilesRescannedResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Rescan HydraRoute geo files from hrneo.conf
+      tags:
+      - hydraroute
+  /hydraroute/geo-files/take-control:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Filesystem path of the external geo file
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.TakeGeoFileControlRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.GeoFileResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Take HydraRoute geo file under awg-manager control
       tags:
       - hydraroute
   /hydraroute/geo-files/update:
@@ -7994,8 +8340,10 @@ paths:
       consumes:
       - application/json
       description: Simulates which router rule would match the given domain or IP,
-        returning the would-be outbound. Pure simulator — does not invoke sing-box.
-        rule_set matchers are NOT evaluated in this version.
+        returning the would-be outbound. Matchers are evaluated in Go; rule_set matchers
+        are additionally checked via sing-box rule-set match when the binary and rule-set
+        files are available. If unavailable, rule_set degrades to no-match with an
+        explanatory note.
       parameters:
       - description: Domain or IP to test, plus optional port/protocol
         in: body
@@ -8746,39 +9094,6 @@ paths:
       summary: List singbox-router rulesets
       tags:
       - singbox-router
-  /singbox/router/rulesets/refresh:
-    post:
-      consumes:
-      - application/json
-      description: Re-downloads the remote ruleset identified by tag and updates its
-        content/timestamp.
-      parameters:
-      - description: Ruleset tag to re-download
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/api.SingboxRouterRuleSetRefreshRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/api.OkResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-      security:
-      - CookieAuth: []
-      summary: Refresh singbox-router ruleset
-      tags:
-      - singbox-router
   /singbox/router/rulesets/update:
     post:
       consumes:
@@ -9015,6 +9330,28 @@ paths:
       summary: Get sing-box router status
       tags:
       - singbox-router
+  /singbox/router/wan-interfaces:
+    get:
+      description: Returns all router WAN interfaces (no up/down filtering) used by
+        the WAN-binding picker in singbox-router settings. Always a JSON array, never
+        null. The `name` field is the kernel system-name and is the value that should
+        be persisted into `wanInterface`.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SingboxRouterWANInterfacesListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List WAN interfaces
+      tags:
+      - singbox-router
   /singbox/status:
     get:
       description: Available when sing-box integration is enabled in the build.
@@ -9038,6 +9375,58 @@ paths:
       summary: Sing-box status
       tags:
       - singbox
+  /singbox/subscriptions:
+    get:
+      description: Returns configured subscriptions with parsed members. Mocked examples
+        include vless/reality members.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionListResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: List sing-box subscriptions
+      tags:
+      - subscriptions
+  /singbox/subscriptions/active-member:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      - description: member tag
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/api.ActiveMemberRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Set active member
+      tags:
+      - subscriptions
   /singbox/subscriptions/active-now:
     get:
       description: Returns the currently-active member tag as reported by the running
@@ -9080,6 +9469,88 @@ paths:
       security:
       - CookieAuth: []
       summary: Live active member from Clash
+      tags:
+      - subscriptions
+  /singbox/subscriptions/create:
+    post:
+      consumes:
+      - application/json
+      description: Creates subscription from URL or inline share links.
+      parameters:
+      - description: create request
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/api.CreateSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "412":
+          description: Precondition Failed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Create sing-box subscription
+      tags:
+      - subscriptions
+  /singbox/subscriptions/delete:
+    delete:
+      parameters:
+      - description: subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Delete sing-box subscription
+      tags:
+      - subscriptions
+  /singbox/subscriptions/get:
+    get:
+      parameters:
+      - description: subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Get sing-box subscription
       tags:
       - subscriptions
   /singbox/subscriptions/get-stream:
@@ -9197,6 +9668,83 @@ paths:
       security:
       - CookieAuth: []
       summary: Remove a member from an inline subscription
+      tags:
+      - subscriptions
+  /singbox/subscriptions/orphans/delete:
+    post:
+      parameters:
+      - description: subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Delete orphan members from subscription
+      tags:
+      - subscriptions
+  /singbox/subscriptions/refresh:
+    post:
+      parameters:
+      - description: subscription id
+        in: query
+        name: id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Refresh sing-box subscription
+      tags:
+      - subscriptions
+  /singbox/subscriptions/update:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: subscription id
+        in: query
+        name: id
+        required: true
+        type: string
+      - description: update request
+        in: body
+        name: req
+        required: true
+        schema:
+          $ref: '#/definitions/api.UpdateSubscriptionRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SubscriptionResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Update sing-box subscription
       tags:
       - subscriptions
   /singbox/tunnels:
@@ -9321,6 +9869,87 @@ paths:
       summary: Sing-box delay check
       tags:
       - singbox
+  /singbox/tunnels/test/connectivity:
+    get:
+      description: Tests connectivity through a sing-box tunnel. Provide either `tag`
+        (resolved to tunnel kernel interface) or `iface` (direct kernel interface
+        override, useful for subscription tests).
+      parameters:
+      - description: Tunnel tag (required when iface is not set)
+        in: query
+        name: tag
+        type: string
+      - description: Kernel interface override (e.g. t2s12)
+        in: query
+        name: iface
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Sing-box tunnel connectivity test
+      tags:
+      - singbox
+  /singbox/tunnels/test/ip:
+    get:
+      description: Resolves current external IP through a sing-box tunnel. Provide
+        either `tag` (resolved to tunnel kernel interface) or `iface` (direct kernel
+        interface override, useful for subscription tests). Optional `service` overrides
+        IP-check endpoint.
+      parameters:
+      - description: Tunnel tag (required when iface is not set)
+        in: query
+        name: tag
+        type: string
+      - description: Kernel interface override (e.g. t2s12)
+        in: query
+        name: iface
+        type: string
+      - description: Custom IP-check service URL
+        in: query
+        name: service
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Sing-box tunnel IP test
+      tags:
+      - singbox
   /singbox/tunnels/test/speed/stream:
     get:
       produces:
@@ -9353,7 +9982,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.OkResponse'
+            $ref: '#/definitions/api.SingboxStatusResponse'
         "405":
           description: Method Not Allowed
           schema:

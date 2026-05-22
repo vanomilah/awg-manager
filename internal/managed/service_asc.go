@@ -66,6 +66,9 @@ func (s *Service) SetASCParams(ctx context.Context, id string, params json.RawMe
 	if !ok {
 		return fmt.Errorf("managed server not found: %s", id)
 	}
+	if err := validateASCParamsRequired(params); err != nil {
+		return err
+	}
 
 	// Extract I1-I5 from params and persist locally first so the strip-and-send
 	// path below can fail without leaving stale local state.
@@ -88,23 +91,7 @@ func (s *Service) SetASCParams(ctx context.Context, id string, params json.RawMe
 		}
 	}
 
-	// Strip I1-I5 before sending to NDMS
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(params, &raw); err != nil {
-		return fmt.Errorf("parse ASC params: %w", err)
-	}
-	delete(raw, "i1")
-	delete(raw, "i2")
-	delete(raw, "i3")
-	delete(raw, "i4")
-	delete(raw, "i5")
-
-	stripped, err := marshalNoEscape(raw)
-	if err != nil {
-		return fmt.Errorf("marshal stripped ASC params: %w", err)
-	}
-
-	if err := s.commands.Wireguard.SetASCParams(ctx, server.InterfaceName, stripped); err != nil {
+	if err := s.applyASCParams(ctx, server.InterfaceName, params); err != nil {
 		s.appLog.Warn("set-asc", server.InterfaceName, "Failed to set ASC params: "+err.Error())
 		return err
 	}

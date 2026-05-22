@@ -388,6 +388,89 @@ func TestRestore_MergeRejectsDuplicatePeerPublicKey(t *testing.T) {
 	}
 }
 
+func TestRestore_MergeAppliesASCAndPersistsIFields(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	priv := validPrivateKey(55)
+	_ = store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: "Wireguard0",
+		Address:       "10.61.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51851,
+		PrivateKey:    priv,
+		Policy:        "none",
+		Peers:         []storage.ManagedPeer{},
+	})
+
+	pub := mustDerivePublicKey(t, priv)
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {
+		Present:   true,
+		Address:   "10.61.0.1",
+		Mask:      "255.255.255.0",
+		PublicKey: pub,
+	}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	asc := json.RawMessage(`{"jc":3,"jmin":77,"jmax":266,"s1":18,"s2":29,"h1":"103994526","h2":"1201929360","h3":"2403636727","h4":"3602647725","i1":"AA","i2":"BB","i3":"CC","i4":"DD","i5":"EE"}`)
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.61.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51851,
+		PrivateKey:    priv,
+		Policy:        "none",
+		ASC:           asc,
+		Peers:         []storage.ManagedPeer{},
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "merged" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+
+	foundASC := false
+	for _, post := range poster.posts {
+		iface, ok := post["interface"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg0, ok := iface["Wireguard0"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg, ok := wg0["wireguard"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ascPayload, ok := wg["asc"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasI1 := ascPayload["i1"]; hasI1 {
+			t.Fatalf("i1 must be stripped before NDMS ASC apply payload")
+		}
+		if _, hasJC := ascPayload["jc"]; hasJC {
+			foundASC = true
+		}
+	}
+	if !foundASC {
+		t.Fatalf("expected ASC payload in merge path")
+	}
+
+	got, ok := store.GetManagedServerByID("Wireguard0")
+	if !ok {
+		t.Fatalf("server not persisted")
+	}
+	if got.I1 != "AA" || got.I2 != "BB" || got.I3 != "CC" || got.I4 != "DD" || got.I5 != "EE" {
+		t.Fatalf("expected I1..I5 persisted from merge ASC input, got: %+v", got)
+	}
+}
+
 func TestRestore_PolicyNoneDoesNotEmitClearOnCreate(t *testing.T) {
 	dir := t.TempDir()
 	store := storage.NewSettingsStore(dir)
@@ -842,6 +925,115 @@ func TestRestore_AddPeerRespectsEnabledFlag(t *testing.T) {
 	}
 	if !foundConnectFalse {
 		t.Fatalf("expected connect=false in peer add payload")
+	}
+}
+
+func TestRestore_AppliesASCAndPersistsIFields(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {Present: false}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	asc := json.RawMessage(`{"jc":3,"jmin":77,"jmax":266,"s1":18,"s2":29,"h1":"103994526","h2":"1201929360","h3":"2403636727","h4":"3602647725","i1":"AA","i2":"BB","i3":"CC","i4":"DD","i5":"EE"}`)
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.170.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    52010,
+		PrivateKey:    validPrivateKey(31),
+		Policy:        "none",
+		ASC:           asc,
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "created" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+
+	foundASC := false
+	for _, post := range poster.posts {
+		iface, ok := post["interface"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg0, ok := iface["Wireguard0"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg, ok := wg0["wireguard"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ascPayload, ok := wg["asc"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasI1 := ascPayload["i1"]; hasI1 {
+			t.Fatalf("i1 must be stripped before NDMS ASC apply payload")
+		}
+		if _, hasJC := ascPayload["jc"]; hasJC {
+			foundASC = true
+		}
+	}
+	if !foundASC {
+		t.Fatalf("expected ASC apply payload during restore")
+	}
+
+	got, ok := store.GetManagedServerByID("Wireguard0")
+	if !ok {
+		t.Fatalf("server not persisted")
+	}
+	if got.I1 != "AA" || got.I2 != "BB" || got.I3 != "CC" || got.I4 != "DD" || got.I5 != "EE" {
+		t.Fatalf("expected I1..I5 persisted from ASC input, got: %+v", got)
+	}
+}
+
+func TestRestore_WithoutASC_DoesNotAutoApplyASC(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {Present: false}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.171.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    52011,
+		PrivateKey:    validPrivateKey(41),
+		Policy:        "none",
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "created" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+
+	for _, post := range poster.posts {
+		iface, ok := post["interface"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg0, ok := iface["Wireguard0"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg, ok := wg0["wireguard"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, hasASC := wg["asc"]; hasASC {
+			t.Fatalf("ASC payload must not be auto-applied when backup ASC is missing")
+		}
 	}
 }
 

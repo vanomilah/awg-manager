@@ -7,6 +7,7 @@ dist/
 kmod/awg-proxy/out/awg-proxy-build.log
 kmod/awg-proxy/tests/__pycache__/
 kmod/awg-proxy/tests/test_cps
+.cache/
 
 # IDE
 .idea/
@@ -28,7 +29,6 @@ yarn.lock
 # Planning & docs (internal only)
 docs/
 .planning/
-debug.md
 tree.md
 pub.md
 diff.md

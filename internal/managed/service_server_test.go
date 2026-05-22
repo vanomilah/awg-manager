@@ -121,6 +121,11 @@ func newCreateTestService(t *testing.T) (*Service, *storage.SettingsStore) {
 	poster := &recordingPoster{}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	svc := New(poster, nil, queries, nil, store, log, nil)
+	// Create now requires immediate private-key capture; tests should not
+	// depend on host wg-tools availability.
+	svc.wgRun = func(_ context.Context, _ string, _ ...string) (string, error) {
+		return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n", nil
+	}
 	return svc, store
 }
 
@@ -176,10 +181,10 @@ func TestService_CreateMultipleServers(t *testing.T) {
 // specific error substring.
 func TestService_CreateRejectsConflicts(t *testing.T) {
 	cases := []struct {
-		name        string
-		req         CreateServerRequest
-		wantErr     bool
-		wantErrSub  string // substring expected in error message; empty = any error matches
+		name       string
+		req        CreateServerRequest
+		wantErr    bool
+		wantErrSub string // substring expected in error message; empty = any error matches
 	}{
 		{
 			name:    "different subnet, different port — accepted",
@@ -271,7 +276,7 @@ func TestService_CreateRejectsConflicts(t *testing.T) {
 // which equals the NDMS id, so it is treated as garbage and the resolver
 // probe is triggered).
 func TestService_Create_CapturesPrivateKey(t *testing.T) {
-	const wantKey = "TEST_PRIVATE_KEY_BASE64="
+	const wantKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
 	svc, store := newCreateTestService(t)
 
@@ -300,5 +305,100 @@ func TestService_Create_CapturesPrivateKey(t *testing.T) {
 	}
 	if saved.PrivateKey != wantKey {
 		t.Errorf("storage PrivateKey: got %q, want %q", saved.PrivateKey, wantKey)
+	}
+
+	// Create must apply generated ASC params during the creation transaction.
+	poster, ok := svc.transport.(*recordingPoster)
+	if !ok {
+		t.Fatalf("unexpected transport type %T", svc.transport)
+	}
+	foundASC := false
+	for _, post := range poster.posts {
+		iface, ok := post["interface"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		row, ok := iface[server.InterfaceName].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg, ok := row["wireguard"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if asc, ok := wg["asc"].(map[string]interface{}); ok {
+			if _, ok := asc["jc"]; ok {
+				foundASC = true
+				break
+			}
+		}
+	}
+	if !foundASC {
+		t.Fatalf("expected ASC payload in create transaction")
+	}
+}
+
+func TestService_Create_FailsWhenPrivateKeyUnavailable(t *testing.T) {
+	svc, store := newCreateTestService(t)
+
+	svc.wgRun = func(_ context.Context, _ string, _ ...string) (string, error) {
+		return "", errors.New("wg unavailable")
+	}
+
+	_, err := svc.Create(context.Background(), CreateServerRequest{
+		Address:    "10.20.40.1",
+		Mask:       "255.255.255.0",
+		ListenPort: 51921,
+	})
+	if err == nil {
+		t.Fatalf("expected Create to fail when private key cannot be read")
+	}
+	if !strings.Contains(err.Error(), "read private key") {
+		t.Fatalf("expected read private key error, got: %v", err)
+	}
+
+	if got := len(store.GetManagedServers()); got != 0 {
+		t.Fatalf("server must not be persisted on private-key failure, got %d entries", got)
+	}
+}
+
+func TestService_Create_SkipsASCWhenDisabled(t *testing.T) {
+	svc, store := newCreateTestService(t)
+
+	generate := false
+	server, err := svc.Create(context.Background(), CreateServerRequest{
+		Address:     "10.20.50.1",
+		Mask:        "255.255.255.0",
+		ListenPort:  51922,
+		GenerateASC: &generate,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if got := len(store.GetManagedServers()); got != 1 {
+		t.Fatalf("server must be persisted, got %d", got)
+	}
+
+	poster, ok := svc.transport.(*recordingPoster)
+	if !ok {
+		t.Fatalf("unexpected transport type %T", svc.transport)
+	}
+	for _, post := range poster.posts {
+		iface, ok := post["interface"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		row, ok := iface[server.InterfaceName].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		wg, ok := row["wireguard"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if _, ok := wg["asc"]; ok {
+			t.Fatalf("ASC payload must not be sent when GenerateASC=false")
+		}
 	}
 }

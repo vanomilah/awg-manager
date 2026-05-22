@@ -2,6 +2,7 @@ package managed
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 )
 
@@ -233,6 +234,25 @@ func (s *Service) rciSetPrivateKey(ctx context.Context, ifaceName, privateKey st
 			ifaceName: map[string]interface{}{
 				"wireguard": map[string]interface{}{
 					"private-key": privateKey,
+				},
+			},
+		},
+	})
+}
+
+// rciSetASCParams sets AWG ASC params on interface wireguard.asc.
+// Caller must pass JSON object shape accepted by NDMS and already stripped
+// from client-only signature fields (i1..i5).
+func (s *Service) rciSetASCParams(ctx context.Context, ifaceName string, params json.RawMessage) error {
+	var asc map[string]any
+	if err := json.Unmarshal(params, &asc); err != nil {
+		return fmt.Errorf("parse ASC params: %w", err)
+	}
+	return s.rciPost(ctx, map[string]interface{}{
+		"interface": map[string]interface{}{
+			ifaceName: map[string]interface{}{
+				"wireguard": map[string]interface{}{
+					"asc": asc,
 				},
 			},
 		},

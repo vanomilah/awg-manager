@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Modal, Button } from '$lib/components/ui';
+	import { Modal, Button, Toggle } from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 
@@ -7,50 +7,80 @@
 		open: boolean;
 		onclose: () => void;
 		onCreated: (serverId: string) => void;
+		existingListenPorts?: number[];
 	}
 
-	let { open = $bindable(false), onclose, onCreated }: Props = $props();
+	const DEFAULT_LISTEN_PORT = 51820;
+	const MAX_LISTEN_PORT = 65535;
+
+	function suggestListenPort(occupied: number[], start = DEFAULT_LISTEN_PORT): number {
+		const used = new Set(
+			occupied
+				.map((p) => Number(p))
+				.filter((p) => Number.isInteger(p) && p > 0 && p <= MAX_LISTEN_PORT),
+		);
+		for (let port = start; port <= MAX_LISTEN_PORT; port++) {
+			if (!used.has(port)) return port;
+		}
+		return start;
+	}
+
+	let {
+		open = $bindable(false),
+		onclose,
+		onCreated,
+		existingListenPorts = [],
+	}: Props = $props();
 
 	let address = $state('10.0.0.1');
 	let mask = $state('24');
 	let addressDirty = $state(false);
 	let maskDirty = $state(false);
-	let listenPort = $state(51820);
+	let listenPort = $state(DEFAULT_LISTEN_PORT);
+	let listenPortDirty = $state(false);
 	let description = $state('');
 	let endpoint = $state('');
 	let mtu = $state(1376);
+	let generateAsc = $state(false);
 	let creating = $state(false);
 	let wanIP = $state('');
 	let loadingWanIP = $state(false);
 	let wasOpen = $state(false);
 	let showEndpointHint = $state(false);
+	let showAscHint = $state(false);
 
 	// Track initial state for this modal opening to determine isDirty correctly.
 	// Updated synchronously on modal open, and again when API returns suggested values.
 	let initialAddress = $state('10.0.0.1');
 	let initialMask = $state('24');
-	let initialListenPort = $state(51820);
+	let initialListenPort = $state(DEFAULT_LISTEN_PORT);
 	let initialDescription = $state('');
 	let initialEndpoint = $state('');
 	let initialMtu = $state(1376);
+	let initialGenerateAsc = $state(false);
 
 	$effect(() => {
 		if (open && !wasOpen) {
+			const suggestedPort = suggestListenPort(existingListenPorts);
 			// Reset to defaults on modal open
 			address = '10.0.0.1';
 			mask = '24';
 			addressDirty = false;
 			maskDirty = false;
-			listenPort = 51820;
+			listenPort = suggestedPort;
+			listenPortDirty = false;
 			description = '';
 			endpoint = '';
 			mtu = 1376;
+			generateAsc = false;
 			initialAddress = '10.0.0.1';
 			initialMask = '24';
-			initialListenPort = 51820;
+			initialListenPort = suggestedPort;
 			initialDescription = '';
 			initialEndpoint = '';
 			initialMtu = 1376;
+			initialGenerateAsc = false;
+			showAscHint = false;
 
 			wanIP = '';
 			loadingWanIP = true;
@@ -79,13 +109,23 @@
 		wasOpen = open;
 	});
 
+	$effect(() => {
+		if (!open || listenPortDirty) return;
+		const suggestedPort = suggestListenPort(existingListenPorts);
+		if (listenPort !== suggestedPort) {
+			listenPort = suggestedPort;
+			initialListenPort = suggestedPort;
+		}
+	});
+
 	const isDirty = $derived(
 		address !== initialAddress ||
 		mask !== initialMask ||
 		listenPort !== initialListenPort ||
 		description !== initialDescription ||
 		endpoint !== initialEndpoint ||
-		mtu !== initialMtu
+		mtu !== initialMtu ||
+		generateAsc !== initialGenerateAsc
 	);
 
 	function isValidEndpoint(val: string): boolean {
@@ -109,8 +149,8 @@
 				description: description || undefined,
 				endpoint: endpoint || undefined,
 				mtu,
+				generateAsc,
 			});
-			notifications.success('Сервер создан');
 			onclose();
 			onCreated(created.interfaceName);
 		} catch (e) {
@@ -156,7 +196,15 @@
 		</div>
 		<div class="form-group">
 			<label class="label" for="ms-port">Порт</label>
-			<input type="number" id="ms-port" class="input" bind:value={listenPort} min={1} max={65535} />
+			<input
+				type="number"
+				id="ms-port"
+				class="input"
+				bind:value={listenPort}
+				min={1}
+				max={65535}
+				oninput={() => listenPortDirty = true}
+			/>
 		</div>
 
 		<div class="separator"></div>
@@ -180,6 +228,32 @@
 		<div class="form-group">
 			<label class="label" for="ms-mtu">MTU</label>
 			<input type="number" id="ms-mtu" class="input" bind:value={mtu} min={1280} max={1500} />
+		</div>
+
+		<div class="form-group">
+			<div class="label-row asc-label-row">
+				<span class="label">Генерировать ASC-параметры</span>
+				<button
+					type="button"
+					class="hint-toggle"
+					onclick={() => showAscHint = !showAscHint}
+					aria-label="Показать подсказку про ASC-параметры"
+					aria-expanded={showAscHint}
+				>
+					?
+				</button>
+				<Toggle
+					checked={generateAsc}
+					onchange={(checked) => generateAsc = checked}
+					size="sm"
+				/>
+			</div>
+			{#if showAscHint}
+				<p class="hint-text">
+					Если включить, сервер сразу получит случайные параметры обфускации. Если выключить,
+					их можно настроить позже на странице обфускации.
+				</p>
+			{/if}
 		</div>
 	</div>
 
@@ -309,5 +383,17 @@
 
 	.mono {
 		font-family: var(--font-mono, monospace);
+	}
+
+	.asc-label-row {
+		justify-content: space-between;
+	}
+
+	.asc-label-row .label {
+		margin-right: auto;
+	}
+
+	.asc-label-row :global(.toggle-container) {
+		flex-shrink: 0;
 	}
 </style>

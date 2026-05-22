@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strings"
@@ -120,6 +121,15 @@ func (s *Service) restoreOne(ctx context.Context, sv ManagedServerExport, opts R
 			s.sysLog().Warn("managed restore merge preflight conflict", "interface", sv.InterfaceName, "conflicts", len(conflicts))
 			s.appLog.Warn("managed-restore-merge-conflict", sv.InterfaceName, fmt.Sprintf("Merge preflight found %d conflict(s)", len(conflicts)))
 			return outcome
+		}
+		if len(sv.ASC) > 0 {
+			if err := s.applyASCOnMerge(ctx, existingStorage.InterfaceName, sv.ASC); err != nil {
+				outcome.Action = "failed"
+				outcome.Error = err.Error()
+				s.sysLog().Error("managed restore merge ASC apply failed", "interface", sv.InterfaceName, "error", err)
+				s.appLog.Error("managed-restore-merge-failed", sv.InterfaceName, "Failed to apply ASC params on merge path")
+				return outcome
+			}
 		}
 		added, err := s.applyMergePeers(ctx, existingStorage, sv)
 		if err != nil {
@@ -351,6 +361,11 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 	if err := s.applyPolicy(ctx, target, sv.Policy); err != nil {
 		return true, fmt.Errorf("set policy: %w", err)
 	}
+	if len(sv.ASC) > 0 {
+		if err := s.applyASCParams(ctx, target, sv.ASC); err != nil {
+			return true, fmt.Errorf("set ASC params: %w", err)
+		}
+	}
 	for _, peer := range sv.Peers {
 		ip, _, err := net.ParseCIDR(peer.TunnelIP)
 		if err != nil {
@@ -363,6 +378,26 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 	// Persist to settings.json under the (possibly renamed) target.
 	saved := sv
 	saved.InterfaceName = target
+	saved.ASC = nil
+	if len(sv.ASC) > 0 {
+		if i1, i2, i3, i4, i5, err := extractASCSignatures(sv.ASC); err == nil {
+			if i1 != "" {
+				saved.I1 = i1
+			}
+			if i2 != "" {
+				saved.I2 = i2
+			}
+			if i3 != "" {
+				saved.I3 = i3
+			}
+			if i4 != "" {
+				saved.I4 = i4
+			}
+			if i5 != "" {
+				saved.I5 = i5
+			}
+		}
+	}
 	switch persistMode {
 	case persistUpdateExisting:
 		s.sysLog().Debug("managed restore persisting mode", "target", target, "mode", "update-existing")
@@ -490,6 +525,29 @@ func (s *Service) applyMergePeers(ctx context.Context, existing storage.ManagedS
 	}
 	s.sysLog().Info("managed restore merge persisted", "interface", existing.InterfaceName, "addedPeers", added)
 	return added, nil
+}
+
+func (s *Service) applyASCOnMerge(ctx context.Context, ifaceName string, asc json.RawMessage) error {
+	if err := s.applyASCParams(ctx, ifaceName, asc); err != nil {
+		return fmt.Errorf("apply ASC params on merge: %w", err)
+	}
+	i1, i2, i3, i4, i5, err := extractASCSignatures(asc)
+	if err != nil {
+		s.sysLog().Warn("managed restore merge ASC signatures parse failed", "interface", ifaceName, "error", err)
+		s.appLog.Warn("managed-restore-merge-asc-signatures", ifaceName, "ASC applied, but I1-I5 signatures could not be persisted: "+err.Error())
+		return nil
+	}
+	if err := s.settings.UpdateManagedServer(ifaceName, func(target *storage.ManagedServer) error {
+		target.I1 = i1
+		target.I2 = i2
+		target.I3 = i3
+		target.I4 = i4
+		target.I5 = i5
+		return nil
+	}); err != nil {
+		return fmt.Errorf("persist ASC signatures on merge: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) applyPolicy(ctx context.Context, ifaceName, policy string) error {

@@ -1,5 +1,7 @@
 package storage
 
+import "encoding/json"
+
 // Settings represents /opt/etc/awg-manager/settings.json
 type Settings struct {
 	SchemaVersion int  `json:"schemaVersion,omitempty"`
@@ -100,6 +102,10 @@ type ManagedServer struct {
 	I3 string `json:"i3,omitempty"`
 	I4 string `json:"i4,omitempty"`
 	I5 string `json:"i5,omitempty"`
+	// ASC is a runtime-only backup/restore snapshot of numeric/header ASC
+	// params (jc/jmin/jmax/s1/s2/s3/s4/h1/h2/h3/h4). Not persisted in
+	// settings.json — NDMS remains source-of-truth for these fields.
+	ASC json.RawMessage `json:"-"`
 }
 
 // ManagedPeer represents a client peer on the managed server.

@@ -4,8 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/storage"
+)
+
+const (
+	createPrivateKeyReadAttempts = 10
+	createPrivateKeyReadDelay    = 200 * time.Millisecond
 )
 
 // Create creates a new managed WireGuard server interface and persists it.
@@ -52,19 +59,26 @@ func (s *Service) Create(ctx context.Context, req CreateServerRequest) (*storage
 		return nil, fmt.Errorf("enable NAT: %w", err)
 	}
 
-	// Read the auto-generated private key from the kernel so it can be
-	// persisted alongside the rest of the server config. Best-effort: a
-	// failure here (wg-tools missing, kernel-name unresolvable) does not
-	// prevent the server from being created — MigratePrivateKeys retries
-	// at next boot. Outside an unusual misconfiguration the call succeeds
-	// on every Keenetic router with wireguard-tools installed.
-	var privateKey string
-	if kernelName := s.resolveKernelName(ctx, ifaceName); kernelName != "" {
-		if pk, err := readKernelPrivateKeyWith(ctx, kernelName, s.wgRun); err == nil {
-			privateKey = pk
-		} else {
-			s.log.Warn("create: read private key failed (will retry on next boot)",
-				"interface", ifaceName, "error", err)
+	// Read the auto-generated private key from the kernel and fail-fast if
+	// unavailable. A managed server without persisted private key cannot be
+	// exported/restored safely, so Create must not succeed in that state.
+	privateKey, err := s.readCreatedServerPrivateKey(ctx, ifaceName)
+	if err != nil {
+		s.cleanupInterface(ctx, ifaceName)
+		return nil, fmt.Errorf("read private key: %w", err)
+	}
+
+	// Generate/apply ASC params by default (backward-compatible) but allow
+	// callers to opt out explicitly via generateAsc=false.
+	if req.ShouldGenerateASC() {
+		asc, err := s.generateDefaultASCParams()
+		if err != nil {
+			s.cleanupInterface(ctx, ifaceName)
+			return nil, fmt.Errorf("generate ASC params: %w", err)
+		}
+		if err := s.applyASCParams(ctx, ifaceName, asc); err != nil {
+			s.cleanupInterface(ctx, ifaceName)
+			return nil, fmt.Errorf("apply ASC params: %w", err)
 		}
 	}
 
@@ -403,4 +417,33 @@ func (s *Service) resolveMask(mask string) string {
 
 func (s *Service) cleanupInterface(ctx context.Context, name string) {
 	_ = s.rciDeleteInterface(ctx, name)
+}
+
+func (s *Service) readCreatedServerPrivateKey(ctx context.Context, ifaceName string) (string, error) {
+	var lastErr error
+	for attempt := 1; attempt <= createPrivateKeyReadAttempts; attempt++ {
+		kernelName := s.resolveKernelName(ctx, ifaceName)
+		if kernelName == "" {
+			lastErr = fmt.Errorf("kernel interface name is not available yet")
+		} else {
+			pk, err := readKernelPrivateKeyWith(ctx, kernelName, s.wgRun)
+			if err != nil {
+				lastErr = err
+			} else if strings.TrimSpace(pk) == "" {
+				lastErr = fmt.Errorf("empty private key returned for %s", kernelName)
+			} else {
+				return strings.TrimSpace(pk), nil
+			}
+		}
+
+		if attempt == createPrivateKeyReadAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(createPrivateKeyReadDelay):
+		}
+	}
+	return "", fmt.Errorf("cannot read private key after %d attempts: %w", createPrivateKeyReadAttempts, lastErr)
 }

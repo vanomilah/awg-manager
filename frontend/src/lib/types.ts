@@ -387,6 +387,7 @@ export interface CreateManagedServerRequest {
 	endpoint?: string;
 	dns?: string;
 	mtu?: number;
+	generateAsc?: boolean;
 }
 
 // UpdateManagedServerRequest matches the Go-side pointer-field semantics:

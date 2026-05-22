@@ -40,6 +40,102 @@
 
 	let overLimit = $derived(totalBytes > MAX_SIGNATURE_BYTES);
 
+	function isZeroASCState(params: ASCParams): boolean {
+		const numericKeys = ['jc', 'jmin', 'jmax', 's1', 's2'] as const;
+		for (const key of numericKeys) {
+			const raw = params[key] as unknown;
+			if (!(raw === 0 || raw === '0')) {
+				return false;
+			}
+		}
+
+		const textKeys = ['h1', 'h2', 'h3', 'h4'] as const;
+		for (const key of textKeys) {
+			if (String(params[key] ?? '').trim() !== '') {
+				return false;
+			}
+		}
+
+		if ('s3' in params) {
+			const raw = (params as ASCParamsExtended).s3 as unknown;
+			if (!(raw === undefined || raw === null || raw === 0 || raw === '0')) {
+				return false;
+			}
+		}
+
+		if ('s4' in params) {
+			const raw = (params as ASCParamsExtended).s4 as unknown;
+			if (!(raw === undefined || raw === null || raw === 0 || raw === '0')) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	function validateASCBeforeSave(params: ASCParams): string | null {
+		if (isZeroASCState(params)) {
+			return null;
+		}
+
+		const requiredNumeric = ['jc', 'jmin', 'jmax', 's1', 's2'] as const;
+		for (const key of requiredNumeric) {
+			const raw = params[key] as unknown;
+			const value = Number(raw);
+			if (
+				raw === undefined ||
+				raw === null ||
+				raw === '' ||
+				!Number.isFinite(value) ||
+				value <= 0
+			) {
+				return `Заполните параметр ${key.toUpperCase()}`;
+			}
+		}
+
+		if (Number(params.jmax) <= Number(params.jmin)) {
+			return 'Jmax должен быть больше Jmin';
+		}
+
+		const requiredText = ['h1', 'h2', 'h3', 'h4'] as const;
+		for (const key of requiredText) {
+			const value = String(params[key] ?? '').trim();
+			if (!value) {
+				return `Заполните параметр ${key.toUpperCase()}`;
+			}
+		}
+
+		if ('s3' in params) {
+			const raw = (params as ASCParamsExtended).s3 as unknown;
+			const value = Number(raw);
+			if (
+				raw === undefined ||
+				raw === null ||
+				raw === '' ||
+				!Number.isFinite(value) ||
+				value <= 0
+			) {
+				return 'Заполните параметр S3';
+			}
+		}
+
+		if ('s4' in params) {
+			const raw = (params as ASCParamsExtended).s4 as unknown;
+			const value = Number(raw);
+			if (
+				raw === undefined ||
+				raw === null ||
+				raw === '' ||
+				!Number.isFinite(value) ||
+				value <= 0
+			) {
+				return 'Заполните параметр S4';
+			}
+		}
+
+		return null;
+	}
+
 	/** Generate ASC parameters: Jc/Jmin/Jmax, S1-S4, H1-H4. I1-I5 set separately via capture. */
 	async function handleGenerateAll() {
 		if (!ascParams) return;
@@ -126,6 +222,11 @@
 
 	async function handleSave() {
 		if (!ascParams || !serverId) return;
+		const validationError = validateASCBeforeSave(ascParams);
+		if (validationError) {
+			notifications.error(validationError);
+			return;
+		}
 		saving = true;
 		try {
 			const fresh = await api.setManagedServerASC(serverId, ascParams);

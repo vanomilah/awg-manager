@@ -9,6 +9,13 @@ type CreateServerRequest struct {
 	Endpoint    string `json:"endpoint,omitempty"`    // custom endpoint (IP or domain)
 	DNS         string `json:"dns,omitempty"`         // custom DNS for client configs
 	MTU         int    `json:"mtu,omitempty"`         // custom MTU for client configs
+	GenerateASC *bool  `json:"generateAsc,omitempty"` // nil/true => generate ASC on create; false => skip
+}
+
+// ShouldGenerateASC resolves optional GenerateASC with backward-compatible
+// default=true for callers that do not send the field.
+func (r CreateServerRequest) ShouldGenerateASC() bool {
+	return r.GenerateASC == nil || *r.GenerateASC
 }
 
 // UpdateServerRequest contains parameters for updating the managed server.
