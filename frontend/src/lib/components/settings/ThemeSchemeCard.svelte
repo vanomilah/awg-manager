@@ -483,26 +483,6 @@
 		height: 2rem;
 	}
 
-	.theme-foot {
-		display: flex;
-		align-items: center;
-		justify-content: flex-start;
-	}
-
-	.theme-tag {
-		display: inline-flex;
-		align-items: center;
-		padding: 0.2rem 0.5rem;
-		border-radius: var(--radius-pill);
-		background: var(--color-bg-primary);
-		border: 1px solid var(--color-border);
-		color: var(--color-text-muted);
-		font-size: 0.6875rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-
 	.detail-block {
 		margin-top: 0.9rem;
 		padding-top: 0.9rem;

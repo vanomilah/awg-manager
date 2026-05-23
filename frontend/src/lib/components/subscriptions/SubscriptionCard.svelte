@@ -327,7 +327,8 @@
 					onmousedown={stopNestedAction}
 					onclick={openDiagnostics}
 					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ') openDiagnostics(e);
+						if (e.key === 'Enter' || e.key === ' ')
+							openDiagnostics(e as unknown as MouseEvent);
 						else e.stopPropagation();
 					}}
 				>

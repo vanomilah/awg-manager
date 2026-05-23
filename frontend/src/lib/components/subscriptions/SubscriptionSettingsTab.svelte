@@ -109,7 +109,7 @@
 
 <div class="enabled-card" class:off={!enabled}>
 	<div class="enabled-row">
-		<Toggle bind:checked={enabled} variant="flip" />
+		<Toggle bind:checked={enabled} variant="flip" onchange={() => {}} />
 		<div class="enabled-text">
 			<span class="enabled-title">Включена</span>
 			<span class="enabled-hint">
