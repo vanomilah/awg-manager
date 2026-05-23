@@ -139,11 +139,27 @@ collect:
 }
 
 // flush обрабатывает один batch: coalesce → POST → distribute.
-// Pre-flush filter cancelled добавляется в T5.
 func (b *Batcher) flush(pending []readReq) {
 	if len(pending) == 0 {
 		return
 	}
+
+	// Pre-flush filter: drop submits whose ctx is already cancelled.
+	// Caller уже получил ctx.Err() из Submit'a — мы только cleanup'им
+	// orphan reply channels и считаем counter.
+	alive := pending[:0]
+	for _, r := range pending {
+		if r.ctx.Err() == nil {
+			alive = append(alive, r)
+		} else {
+			close(r.reply)
+			b.cancelledDrops.Add(1)
+		}
+	}
+	if len(alive) == 0 {
+		return
+	}
+	pending = alive
 
 	byPath := map[string][]readReq{}
 	uniqueOrder := []string{}

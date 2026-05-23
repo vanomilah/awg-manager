@@ -209,3 +209,97 @@ func TestBatcher_SingleSubmit_FlushesAfterWindow(t *testing.T) {
 		t.Errorf("body = %s, want contains echo wrapper", string(body))
 	}
 }
+
+func TestBatcher_CancelledSubmitsFilteredPreFlush(t *testing.T) {
+	var batchSizes []int
+	var mu sync.Mutex
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var batch []json.RawMessage
+		_ = json.Unmarshal(body, &batch)
+		mu.Lock()
+		batchSizes = append(batchSizes, len(batch))
+		mu.Unlock()
+		responses := make([]json.RawMessage, len(batch))
+		for i := range batch {
+			responses[i] = json.RawMessage(`{}`)
+		}
+		out, _ := json.Marshal(responses)
+		_, _ = w.Write(out)
+	}
+	b, cleanup := newTestBatcher(t, handler, 50*time.Millisecond)
+	defer cleanup()
+
+	// 3 cancellable submits (will be cancelled), 2 stable submits.
+	var wg sync.WaitGroup
+	cancellableCtxs := make([]context.CancelFunc, 3)
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancellableCtxs[i] = cancel
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = b.Submit(ctx, fmt.Sprintf("/show/cancelled-%d/", i))
+		}(i)
+	}
+	stableResults := make(chan []byte, 2)
+	for i := 0; i < 2; i++ {
+		go func(i int) {
+			body, _ := b.Submit(context.Background(), fmt.Sprintf("/show/stable-%d/", i))
+			stableResults <- body
+		}(i)
+	}
+
+	// Sleep so all 5 enqueue, then cancel 3 before window fires.
+	time.Sleep(10 * time.Millisecond)
+	for _, c := range cancellableCtxs {
+		c()
+	}
+
+	// Wait for stable results.
+	for i := 0; i < 2; i++ {
+		<-stableResults
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(batchSizes) != 1 || batchSizes[0] != 2 {
+		t.Errorf("batch sizes = %v, want [2] (3 cancelled dropped)", batchSizes)
+	}
+	if got := b.cancelledDrops.Load(); got != 3 {
+		t.Errorf("cancelledDrops = %d, want 3", got)
+	}
+}
+
+func TestBatcher_AllCancelled_NoPostMade(t *testing.T) {
+	var posted atomic.Uint32
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		posted.Add(1)
+		_, _ = w.Write([]byte("[]"))
+	}
+	b, cleanup := newTestBatcher(t, handler, 50*time.Millisecond)
+	defer cleanup()
+
+	var wg sync.WaitGroup
+	cancels := make([]context.CancelFunc, 3)
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels[i] = cancel
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, _ = b.Submit(ctx, fmt.Sprintf("/show/x-%d/", i))
+		}(i)
+	}
+	time.Sleep(5 * time.Millisecond) // give time to enqueue
+	for _, c := range cancels {
+		c()
+	}
+	time.Sleep(100 * time.Millisecond) // wait past window
+	wg.Wait()
+
+	if got := posted.Load(); got != 0 {
+		t.Errorf("HTTP POST count = %d, want 0 (all cancelled)", got)
+	}
+}
