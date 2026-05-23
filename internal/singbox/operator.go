@@ -1295,11 +1295,11 @@ func nextFreeListenPortSlot(cfg *Config, reserved map[int]bool) int {
 // AddTunnels parses one or more links and atomically adds them.
 // Returns successfully-added tunnels and parse errors.
 func (o *Operator) AddTunnels(ctx context.Context, linksText string) ([]TunnelInfo, []BatchError, error) {
-	o.migrationMu.Lock()
-	defer o.migrationMu.Unlock()
-
 	// Snapshot the flag once for the whole operation — a flip mid-AddTunnels
 	// would split the tunnel's NDMS state from its config.json.
+	// Не держим migrationMu на весь AddTunnels: applyConfig делает sing-box
+	// reload (5-15s на медленных роутерах), а Reconcile/watchdog тогда
+	// тормозит на каждый тик. Migrate*/On держат mutex кратко — этого хватает.
 	ndmsProxyEnabled := o.isNDMSProxyEnabled()
 
 	if o.runtimeLogger != nil {
@@ -1413,9 +1413,9 @@ func (o *Operator) AddTunnels(ctx context.Context, linksText string) ([]TunnelIn
 }
 
 // RemoveTunnel removes outbound+inbound+route+Proxy for a tag.
+// Mutex не берём: применяется applyConfig (sing-box reload, 5-15s).
+// Migrate*/On всё равно сериализуются собственным mutex'ом.
 func (o *Operator) RemoveTunnel(ctx context.Context, tag string) error {
-	o.migrationMu.Lock()
-	defer o.migrationMu.Unlock()
 	if o.runtimeLogger != nil {
 		o.runtimeLogger.Info("single-remove", tag, "start")
 	}
@@ -1548,8 +1548,9 @@ func (o *Operator) Reconcile(ctx context.Context) error {
 		}
 		return nil
 	}
-	o.migrationMu.Lock()
-	defer o.migrationMu.Unlock()
+	// Mutex не берём: Reconcile — watchdog hot path (тикает каждые 30s).
+	// Если Migrate*/On сейчас активны — Reconcile может race'ить с ними
+	// безопасно: SyncProxies идемпотент, orphan cleanup CAS-флаг тоже.
 	cfg, err := o.loadConfig()
 	if err != nil {
 		if os.IsNotExist(err) {
