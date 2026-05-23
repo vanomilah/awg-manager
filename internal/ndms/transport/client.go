@@ -92,15 +92,26 @@ func (c *Client) StartPerfDumper(ctx context.Context, interval time.Duration) {
 					}
 				}
 				if c.batcher != nil {
-					submits, posted, dropped := c.batcher.snapshot()
+					submits, posted, httpCalls, dropped := c.batcher.snapshot()
 					if submits > 0 && c.appLog != nil {
-						coalesceRate := uint64(0)
+						// dedupRate — сколько identical-path reads
+						// "схлопнуты" в один. Реальный win батчинга — это
+						// httpCalls << submits (много submits в одном POST).
+						dedupRate := uint64(0)
 						if submits > posted {
-							coalesceRate = (submits - posted) * 100 / submits
+							dedupRate = (submits - posted) * 100 / submits
+						}
+						foldRate := uint64(0)
+						if submits > httpCalls {
+							foldRate = (submits - httpCalls) * 100 / submits
+						}
+						avgBatch := uint64(0)
+						if httpCalls > 0 {
+							avgBatch = posted / httpCalls
 						}
 						c.appLog.Info("perf-summary", "rci-batcher",
-							fmt.Sprintf("last %s: submits=%d posted=%d (coalesce=%d%%) dropped-cancelled=%d",
-								interval, submits, posted, coalesceRate, dropped))
+							fmt.Sprintf("last %s: submits=%d→posted=%d→http=%d (fold=%d%%, dedup=%d%%, avg-batch=%d) dropped-cancelled=%d",
+								interval, submits, posted, httpCalls, foldRate, dedupRate, avgBatch, dropped))
 					}
 				}
 			}

@@ -46,8 +46,9 @@ type Batcher struct {
 	done           chan struct{}
 
 	// Counters
-	submittedReads atomic.Uint64
-	coalescedReads atomic.Uint64
+	submittedReads atomic.Uint64 // всего submits от callers (raw inbound)
+	coalescedReads atomic.Uint64 // unique paths после dedup (что реально просят NDMS)
+	httpCalls      atomic.Uint64 // реальное число HTTP вызовов (GET fast-path + POST batches)
 	cancelledDrops atomic.Uint64
 }
 
@@ -128,8 +129,11 @@ func (b *Batcher) Close() {
 
 // snapshot возвращает текущие counters и обнуляет их. Для periodic
 // dump в perf-summary log'е. ВРЕМЕННЫЙ — удалить после perf-анализа.
-func (b *Batcher) snapshot() (submits, posted, dropped uint64) {
-	return b.submittedReads.Swap(0), b.coalescedReads.Swap(0), b.cancelledDrops.Swap(0)
+func (b *Batcher) snapshot() (submits, posted, httpCalls, dropped uint64) {
+	return b.submittedReads.Swap(0),
+		b.coalescedReads.Swap(0),
+		b.httpCalls.Swap(0),
+		b.cancelledDrops.Swap(0)
 }
 
 // flusherLoop is the core scheduler — runs as goroutine.
@@ -251,6 +255,7 @@ func (b *Batcher) flush(ctx context.Context, pending []readReq) {
 	// callers одного path всё равно работает — все они получают
 	// результат одного GET. Multi-path batches идут через POST.
 	if b.useFastPath && len(validPaths) == 1 {
+		b.httpCalls.Add(1)
 		path := validPaths[0]
 		body, err := b.cli.getRawDirect(ctx, path)
 		var itemErr error
@@ -266,6 +271,7 @@ func (b *Batcher) flush(ctx context.Context, pending []readReq) {
 		return
 	}
 
+	b.httpCalls.Add(1)
 	raw, err := b.cli.postJSON(ctx, batch)
 	if err != nil {
 		b.distributeAll(byPath, validPaths, nil, fmt.Errorf("rci batch: %w", err))
