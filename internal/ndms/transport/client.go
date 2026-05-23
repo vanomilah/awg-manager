@@ -84,13 +84,24 @@ func (c *Client) StartPerfDumper(ctx context.Context, interval time.Duration) {
 				return
 			case <-ticker.C:
 				total, durMs, slow := c.PerfSnapshot()
-				if total == 0 {
-					continue
+				if total > 0 {
+					avg := durMs / total
+					if c.appLog != nil {
+						c.appLog.Info("perf-summary", "rci",
+							fmt.Sprintf("last %s: %d req, avg %dms, slow(>500ms) %d", interval, total, avg, slow))
+					}
 				}
-				avg := durMs / total
-				if c.appLog != nil {
-					c.appLog.Info("perf-summary", "rci",
-						fmt.Sprintf("last %s: %d req, avg %dms, slow(>500ms) %d", interval, total, avg, slow))
+				if c.batcher != nil {
+					submits, posted, dropped := c.batcher.snapshot()
+					if submits > 0 && c.appLog != nil {
+						coalesceRate := uint64(0)
+						if submits > posted {
+							coalesceRate = (submits - posted) * 100 / submits
+						}
+						c.appLog.Info("perf-summary", "rci-batcher",
+							fmt.Sprintf("last %s: submits=%d posted=%d (coalesce=%d%%) dropped-cancelled=%d",
+								interval, submits, posted, coalesceRate, dropped))
+					}
 				}
 			}
 		}

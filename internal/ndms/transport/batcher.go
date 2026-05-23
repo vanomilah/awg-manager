@@ -97,6 +97,12 @@ func (b *Batcher) Close() {
 	<-b.done
 }
 
+// snapshot возвращает текущие counters и обнуляет их. Для periodic
+// dump в perf-summary log'е. ВРЕМЕННЫЙ — удалить после perf-анализа.
+func (b *Batcher) snapshot() (submits, posted, dropped uint64) {
+	return b.submittedReads.Swap(0), b.coalescedReads.Swap(0), b.cancelledDrops.Swap(0)
+}
+
 // flusherLoop is the core scheduler — runs as goroutine.
 func (b *Batcher) flusherLoop() {
 	defer close(b.done)
