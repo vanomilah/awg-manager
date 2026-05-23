@@ -1012,6 +1012,9 @@ definitions:
     type: object
   api.HealthData:
     properties:
+      instanceId:
+        example: b6c2ef8df6cf4b2782f8f45a7dc8e3a1
+        type: string
       ok:
         example: true
         type: boolean
@@ -3776,6 +3779,11 @@ definitions:
         type: boolean
       sessionActive:
         example: false
+        type: boolean
+    type: object
+  api.ToggleNDMSProxyRequest:
+    properties:
+      enabled:
         type: boolean
     type: object
   api.TunnelConnectionInfoDTO:
@@ -7973,6 +7981,41 @@ paths:
       security:
       - CookieAuth: []
       summary: Install sing-box
+      tags:
+      - singbox
+  /singbox/ndms-proxy:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Toggle value
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.ToggleNDMSProxyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "412":
+          description: Precondition Failed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Toggle NDMS Proxy creation for sing-box tunnels
       tags:
       - singbox
   /singbox/router/disable:

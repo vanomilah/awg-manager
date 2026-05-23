@@ -476,13 +476,10 @@ func (s *Server) AddShutdownHook(fn func()) {
 func (s *Server) ScheduleRestart() {
 	s.restartOnce.Do(func() {
 		go func() {
+			s.appLog.Info("restart", "", "restart requested")
+
 			// Wait for HTTP response to flush
 			time.Sleep(500 * time.Millisecond)
-
-			// Run shutdown hooks (stop PingCheck, sessions, log buffer, etc.)
-			for _, fn := range s.shutdownHooks {
-				fn()
-			}
 
 			executable, err := os.Executable()
 			if err != nil {
@@ -490,6 +487,11 @@ func (s *Server) ScheduleRestart() {
 				return
 			}
 			s.appLog.Info("restart", executable, "restarting daemon")
+
+			// Run shutdown hooks (stop PingCheck, sessions, log buffer, etc.)
+			for _, fn := range s.shutdownHooks {
+				fn()
+			}
 
 			if err := syscall.Exec(executable, os.Args, os.Environ()); err != nil {
 				s.appLog.Error("restart", "", "exec failed: "+err.Error())
@@ -583,7 +585,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	signatureHandler := api.NewSignatureHandler()
 	terminalHandler := api.NewTerminalHandler(s.terminalManager, s.loggingService)
 
-	eventsHandler := api.NewEventsHandler(s.bus)
+	eventsHandler := api.NewEventsHandler(s.bus, s.instanceID)
 
 	// Auth middleware helper
 	guarded := s.authMiddleware.RequireAuthFunc
@@ -595,7 +597,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Health liveness endpoint (public - used by frontend 5s poller to
 	// detect backend offline independently of SSE connection state).
-	mux.Handle("/api/health", api.NewHealthHandler(s.config.Version))
+	mux.Handle("/api/health", api.NewHealthHandler(s.config.Version, s.instanceID))
 
 	// OpenAPI spec (protected). Embedded in the binary at build time so
 	// the spec served here always matches the running awg-manager —

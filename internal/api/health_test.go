@@ -8,7 +8,7 @@ import (
 )
 
 func TestHealthHandler_ReturnsOK(t *testing.T) {
-	h := NewHealthHandler("test-version")
+	h := NewHealthHandler("test-version", "instance-1")
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -19,8 +19,9 @@ func TestHealthHandler_ReturnsOK(t *testing.T) {
 	var body struct {
 		Success bool `json:"success"`
 		Data    struct {
-			OK      bool   `json:"ok"`
-			Version string `json:"version"`
+			OK         bool   `json:"ok"`
+			Version    string `json:"version"`
+			InstanceID string `json:"instanceId"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
@@ -35,10 +36,13 @@ func TestHealthHandler_ReturnsOK(t *testing.T) {
 	if body.Data.Version != "test-version" {
 		t.Errorf("version = %q, want test-version", body.Data.Version)
 	}
+	if body.Data.InstanceID != "instance-1" {
+		t.Errorf("instanceId = %q, want instance-1", body.Data.InstanceID)
+	}
 }
 
 func TestHealthHandler_NonGETRejected(t *testing.T) {
-	h := NewHealthHandler("x")
+	h := NewHealthHandler("x", "instance-x")
 	req := httptest.NewRequest(http.MethodPost, "/api/health", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)

@@ -10,12 +10,13 @@ import (
 
 // EventsHandler serves the SSE event stream.
 type EventsHandler struct {
-	bus *events.Bus
+	bus        *events.Bus
+	instanceID string
 }
 
 // NewEventsHandler creates a new events handler.
-func NewEventsHandler(bus *events.Bus) *EventsHandler {
-	return &EventsHandler{bus: bus}
+func NewEventsHandler(bus *events.Bus, instanceID string) *EventsHandler {
+	return &EventsHandler{bus: bus, instanceID: instanceID}
 }
 
 // Stream serves the SSE event stream.
@@ -53,7 +54,7 @@ func (h *EventsHandler) Stream(w http.ResponseWriter, r *http.Request) {
 	defer unsubscribe()
 
 	// Send initial "connected" event so client confirms stream works.
-	fmt.Fprintf(w, "event: connected\ndata: {\"ok\":true}\n\n")
+	fmt.Fprintf(w, "event: connected\ndata: {\"ok\":true,\"instanceId\":%q}\n\n", h.instanceID)
 	flusher.Flush()
 
 	ctx := r.Context()

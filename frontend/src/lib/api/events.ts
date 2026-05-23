@@ -88,7 +88,7 @@ export interface ResourceInvalidatedEvent {
 
 export interface SSEEventHandlers {
 	// Connection lifecycle
-	onConnected?: () => void;
+	onConnected?: (data?: { ok?: boolean; instanceId?: string }) => void;
 	onDisconnected?: () => void;
 
 	// System events
@@ -131,6 +131,14 @@ export interface SSEEventHandlers {
 
 	// Monitoring matrix snapshot (every scheduler tick).
 	onMonitoringMatrixUpdate?: (data: MonitoringSnapshot) => void;
+}
+
+export function parseConnectedEvent(data: string): { ok?: boolean; instanceId?: string } | undefined {
+	try {
+		return JSON.parse(data) as { ok?: boolean; instanceId?: string };
+	} catch {
+		return undefined;
+	}
 }
 
 export function connectSSE(handlers: SSEEventHandlers): () => void {
@@ -188,9 +196,14 @@ export function connectSSE(handlers: SSEEventHandlers): () => void {
 	handle('monitoring:matrix-update', handlers.onMonitoringMatrixUpdate);
 
 	// Server sends "connected" event immediately on stream start
-	es.addEventListener('connected', () => {
-		handlers.onConnected?.();
-	});
+	es.addEventListener('connected', ((e: MessageEvent) => {
+		const data = parseConnectedEvent(e.data);
+		if (data) {
+			handlers.onConnected?.(data);
+		} else {
+			handlers.onConnected?.();
+		}
+	}) as EventListener);
 
 	es.onerror = () => {
 		if (es.readyState === EventSource.CLOSED) {

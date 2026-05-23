@@ -10,8 +10,9 @@ import (
 
 // HealthData is the response data for GET /health.
 type HealthData struct {
-	OK      bool   `json:"ok" example:"true"`
-	Version string `json:"version" example:"2.5.0"`
+	OK         bool   `json:"ok" example:"true"`
+	Version    string `json:"version" example:"2.5.0"`
+	InstanceID string `json:"instanceId" example:"b6c2ef8df6cf4b2782f8f45a7dc8e3a1"`
 }
 
 // HealthResponse is the envelope for GET /health.
@@ -25,17 +26,18 @@ type HealthResponse struct {
 // to decide when to show the full-screen "backend offline" overlay
 // independently of SSE connection state.
 type HealthHandler struct {
-	version string
+	version    string
+	instanceID string
 }
 
 // NewHealthHandler constructs a HealthHandler that reports the given
 // build version. The version is set via ldflags at build time and
 // propagated from cmd/awg-manager/main.go through server.Config.Version.
-func NewHealthHandler(version string) *HealthHandler {
-	return &HealthHandler{version: version}
+func NewHealthHandler(version, instanceID string) *HealthHandler {
+	return &HealthHandler{version: version, instanceID: instanceID}
 }
 
-// ServeHTTP responds to GET with { ok: true, version: "..." }. Any
+// ServeHTTP responds to GET with { ok: true, version: "...", instanceId: "..." }. Any
 // other method returns 405 Method Not Allowed.
 //
 //	@Summary		Health / liveness
@@ -52,7 +54,8 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, map[string]any{
-		"ok":      true,
-		"version": h.version,
+		"ok":         true,
+		"version":    h.version,
+		"instanceId": h.instanceID,
 	})
 }

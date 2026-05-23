@@ -63,12 +63,22 @@
 
 	let knownInstanceId = '';
 
+	function observeInstanceId(instanceId?: string) {
+		if (!instanceId) return;
+		if (knownInstanceId && knownInstanceId !== instanceId) {
+			location.reload();
+			return;
+		}
+		knownInstanceId = instanceId;
+	}
+
 	function startSSE() {
 		if (disconnectSSE) return;
 		// singboxStatus / singboxTunnels now poll automatically on subscribe;
 		// no eager fetch needed here — components subscribe as they mount.
 		disconnectSSE = connectSSE({
-			onConnected: () => {
+			onConnected: (data) => {
+				observeInstanceId(data?.instanceId);
 				// SSE may have been down for minutes. Clear connectivity side-channel
 				// (it's stream-only, not included in the polling snapshot) and force a
 				// fresh fetch of tunnel state to catch any drift during the outage.
@@ -110,12 +120,7 @@
 				// Phase C: serverOnline.set() is gone (derived from healthMonitor);
 				// keep the booting/instanceId handling — still used by the UI.
 				booting = false;
-				// Detect backend restart — force full page reload to pick up new JS
-				if (knownInstanceId && data.instanceId && knownInstanceId !== data.instanceId) {
-					location.reload();
-					return;
-				}
-				knownInstanceId = data.instanceId;
+				observeInstanceId(data.instanceId);
 			},
 			onSystemBooting: () => {
 				// Phase C: serverOnline.set() is gone; booting flag still drives UI.

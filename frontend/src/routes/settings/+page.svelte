@@ -32,6 +32,7 @@
 		type UsageLevel,
 	} from "$lib/types/usageLevel";
 	import { usageLevel } from "$lib/stores/settings";
+	import { waitForBackendRestart } from "$lib/restartRecovery";
 
 	const expandUsageLevel = $derived($page.url.searchParams.has('mode'));
 
@@ -445,13 +446,82 @@ onMount(() => {
 	async function restartDaemon() {
 		restartConfirmOpen = false;
 		restarting = true;
+		const before = await readBackendInstanceId().catch(() => null);
 		try {
-			await api.restartDaemon();
-			notifications.success("AWG Manager перезапускается...");
-		} catch {
-			notifications.error("Не удалось перезапустить");
+			const result = await requestDaemonRestart();
+			if (result === 'accepted') {
+				notifications.success("AWG Manager перезапускается...");
+			} else {
+				notifications.warning("Соединение оборвалось, проверяю перезапуск AWG Manager...");
+			}
+			const waitResult = await waitForDaemonRestart(before);
+			if (waitResult === 'timeout') {
+				restarting = false;
+				notifications.warning('Не удалось подтвердить перезапуск AWG Manager. Обновите страницу вручную.');
+				return;
+			}
+			location.reload();
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось перезапустить");
 			restarting = false;
 		}
+	}
+
+	async function requestDaemonRestart(): Promise<'accepted' | 'network-drop'> {
+		try {
+			const response = await fetch('/api/system/restart', {
+				method: 'POST',
+				credentials: 'same-origin',
+				cache: 'no-store',
+				headers: { 'Content-Type': 'application/json' },
+			});
+
+			if (response.status === 401) {
+				throw new Error('Сессия истекла');
+			}
+
+			if (!response.ok) {
+				const text = await response.text().catch(() => '');
+				throw new Error(`Не удалось перезапустить AWG Manager (${response.status}): ${text.substring(0, 120)}`);
+			}
+
+			return 'accepted';
+		} catch (e) {
+			if (e instanceof TypeError) {
+				return 'network-drop';
+			}
+			throw e;
+		}
+	}
+
+	async function readBackendInstanceId(): Promise<string | null> {
+		const res = await fetch('/api/health', {
+			method: 'GET',
+			cache: 'no-store',
+			credentials: 'same-origin',
+		});
+		if (!res.ok) {
+			return null;
+		}
+		const body = await res.json().catch(() => null);
+		const id = body?.data?.instanceId;
+		return typeof id === 'string' && id.length > 0 ? id : null;
+	}
+
+	function sleep(ms: number) {
+		return new Promise<void>((resolve) => setTimeout(resolve, ms));
+	}
+
+	async function waitForDaemonRestart(previousInstanceId: string | null) {
+		return waitForBackendRestart({
+			previousInstanceId,
+			readInstanceId: readBackendInstanceId,
+			sleep,
+			now: () => Date.now(),
+			timeoutMs: 45_000,
+			pollMs: 750,
+			stableOnlineMs: 3_000,
+		});
 	}
 
 	async function refreshSystemInfo() {

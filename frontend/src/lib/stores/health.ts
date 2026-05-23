@@ -4,6 +4,7 @@ export type HealthState = {
 	online: boolean;
 	lastCheckAt: number;
 	consecutiveFailures: number;
+	instanceId?: string;
 };
 
 export interface HealthMonitor extends Readable<HealthState> {
@@ -14,11 +15,16 @@ export interface HealthMonitor extends Readable<HealthState> {
 const POLL_INTERVAL_MS = 5_000;
 const OFFLINE_THRESHOLD = 2; // consecutive failures before flipping online=false
 
+export function shouldReloadForInstanceSwitch(previous?: string, next?: string): boolean {
+	return Boolean(previous && next && previous !== next);
+}
+
 function createHealthMonitor(): HealthMonitor {
 	const state = writable<HealthState>({
 		online: true,
 		lastCheckAt: 0,
 		consecutiveFailures: 0,
+		instanceId: undefined,
 	});
 
 	let timer: ReturnType<typeof setInterval> | null = null;
@@ -27,9 +33,25 @@ function createHealthMonitor(): HealthMonitor {
 
 	async function tick() {
 		try {
-			const res = await fetch('/api/health', { method: 'GET' });
+			const res = await fetch('/api/health', { method: 'GET', cache: 'no-store', credentials: 'same-origin' });
 			if (!res.ok) throw new Error(`health ${res.status}`);
-			state.set({ online: true, lastCheckAt: Date.now(), consecutiveFailures: 0 });
+			const body = await res.json().catch(() => ({}));
+			const nextInstanceId = typeof body?.data?.instanceId === 'string' ? body.data.instanceId : undefined;
+			let shouldReload = false;
+			state.update((s) => {
+				if (shouldReloadForInstanceSwitch(s.instanceId, nextInstanceId)) {
+					shouldReload = true;
+				}
+				return {
+					online: true,
+					lastCheckAt: Date.now(),
+					consecutiveFailures: 0,
+					instanceId: nextInstanceId ?? s.instanceId,
+				};
+			});
+			if (shouldReload && typeof location !== 'undefined') {
+				location.reload();
+			}
 		} catch {
 			state.update(s => {
 				const fails = s.consecutiveFailures + 1;
