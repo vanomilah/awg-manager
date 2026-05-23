@@ -84,6 +84,10 @@ type Device struct {
 	Active   bool   `json:"active"`
 	Link     string `json:"link,omitempty"`
 	Policy   string `json:"policy,omitempty"`
+	// Access is the access-policy name assigned to this host, when set.
+	// Older firmware exposes this under "access" (see dnscheck.checkPolicy);
+	// some builds use "policy". Wire decoder reads both and prefers "access".
+	Access string `json:"access,omitempty"`
 }
 
 // Route — one row from /show/ip/route.

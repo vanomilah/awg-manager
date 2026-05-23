@@ -34,6 +34,7 @@ type hotspotHostWire struct {
 	Active   any    `json:"active"`
 	Link     string `json:"link"`
 	Policy   string `json:"policy"`
+	Access   string `json:"access"`
 }
 
 type hotspotRespWire struct {
@@ -73,6 +74,7 @@ func (s *HotspotStore) fetch(ctx context.Context) ([]ndms.Device, error) {
 			Active:   parseActive(h.Active),
 			Link:     h.Link,
 			Policy:   h.Policy,
+			Access:   h.Access,
 		}
 		if idx, dup := seen[h.MAC]; dup {
 			if d.Active {

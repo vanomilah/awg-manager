@@ -14,6 +14,8 @@ type Queries struct {
 	Routes           *RouteStore
 	ObjectGroups     *ObjectGroupStore
 	DNSProxy         *DNSProxyStore
+	DNSProxyConfig   *DNSProxyConfigStore
+	IPHost           *IPHostStore
 	PingCheckProfile *PingCheckProfileStore
 	PingCheckStatus  *PingCheckStatusStore
 	RunningConfig    *RunningConfigStore
@@ -68,6 +70,8 @@ func NewQueries(d Deps) *Queries {
 		Routes:           NewRouteStore(d.Getter, d.Logger),
 		ObjectGroups:     NewObjectGroupStore(d.Getter, d.Logger),
 		DNSProxy:         NewDNSProxyStore(d.Getter, d.Logger, isOS5),
+		DNSProxyConfig:   NewDNSProxyConfigStore(d.Getter, d.Logger),
+		IPHost:           NewIPHostStore(d.Getter, d.Logger),
 		PingCheckProfile: NewPingCheckProfileStore(d.Getter, d.Logger),
 		PingCheckStatus:  NewPingCheckStatusStore(d.Getter, d.Logger),
 		RunningConfig:    NewRunningConfigStore(d.Getter, d.Logger),

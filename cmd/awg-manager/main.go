@@ -1142,6 +1142,9 @@ func main() {
 	// DNS routing diagnostics
 	dnsCheckService := dnscheck.NewService(
 		ndmsTransportClient,
+		ndmsQueries.Hotspot,
+		ndmsQueries.IPHost,
+		ndmsQueries.DNSProxyConfig,
 		&dnsRouteCountAdapter{store: dnsRouteStore},
 		&runningTunnelAdapter{svc: tunnelService},
 		loggingService,
