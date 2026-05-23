@@ -134,6 +134,7 @@ func New(sem *Semaphore) *Client {
 		maxSize := env.IntDefault("AWG_NDMS_BATCH_MAX_SIZE", defaultBatchMaxSize)
 		submitBuf := env.IntDefault("AWG_NDMS_BATCH_SUBMIT_BUF", defaultBatchSubmit)
 		c.batcher = newBatcher(c, time.Duration(windowMs)*time.Millisecond, maxSize, submitBuf)
+		c.batcher.EnableFastPath() // production: single-path через direct GET (perf win)
 		c.batcher.Start()
 	}
 	return c

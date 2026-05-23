@@ -32,6 +32,14 @@ type Batcher struct {
 	maxBatch int
 	log      *logging.ScopedLogger
 
+	// useFastPath: если включён, single-unique-path flush'и идут через
+	// direct GET (cli.getRawDirect), не batch POST. POST в реальном NDMS
+	// значимо дороже GET — выгода батчинга проявляется только когда
+	// есть multi-path coalesce. Default false: production включает
+	// через EnableFastPath() после конструкции; тесты не вызывают
+	// чтобы их mock-handlers (POST-only) продолжали работать.
+	useFastPath bool
+
 	// Lifecycle
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
@@ -60,6 +68,14 @@ func newBatcher(cli *Client, window time.Duration, maxBatch, submitBuf int) *Bat
 // SetAppLogger wires the UI-visible logger. Optional, nil-safe.
 func (b *Batcher) SetAppLogger(log *logging.ScopedLogger) {
 	b.log = log
+}
+
+// EnableFastPath включает direct-GET для single-unique-path flush'ей.
+// Вызывается из production transport.New() после конструкции. Tests
+// его не вызывают, чтобы остаться на POST batch (mock handlers только
+// POST поддерживают).
+func (b *Batcher) EnableFastPath() {
+	b.useFastPath = true
 }
 
 // Start launches the flusher goroutine.
@@ -228,6 +244,27 @@ func (b *Batcher) flush(ctx context.Context, pending []readReq) {
 
 	b.submittedReads.Add(uint64(len(pending)))
 	b.coalescedReads.Add(uint64(len(batch)))
+
+	// Fast path: single unique path → direct GET вместо POST batch.
+	// POST через NDMS заметно дороже GET (handler overhead),
+	// и для одного запроса batching выгод не даёт. Coalescing N
+	// callers одного path всё равно работает — все они получают
+	// результат одного GET. Multi-path batches идут через POST.
+	if b.useFastPath && len(validPaths) == 1 {
+		path := validPaths[0]
+		body, err := b.cli.getRawDirect(ctx, path)
+		var itemErr error
+		if err != nil {
+			itemErr = err
+		} else if msg := ExtractError(body); msg != "" {
+			itemErr = &NDMSAppError{Method: "GET", Path: path, Message: msg, Body: body}
+		}
+		for _, r := range byPath[path] {
+			r.reply <- readResult{body, itemErr}
+			close(r.reply)
+		}
+		return
+	}
 
 	raw, err := b.cli.postJSON(ctx, batch)
 	if err != nil {
