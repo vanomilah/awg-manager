@@ -2,7 +2,26 @@ package transport
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+)
+
+// Sentinel errors для Batcher (DataLoader pattern для RCI reads).
+// См. internal/ndms/transport/batcher.go.
+var (
+	// ErrBatcherClosed возвращается из Submit, если Batcher был закрыт
+	// до того как submit смог enqueue request.
+	ErrBatcherClosed = errors.New("rci batcher: closed")
+
+	// ErrBatchResponseShape возвращается когда NDMS вернул response не в
+	// форме JSON-массива (например объект или строка). Сигнал что
+	// формат batch'а несовместим — нужно investigate.
+	ErrBatchResponseShape = errors.New("rci batcher: unexpected response shape (expected JSON array)")
+
+	// ErrBatchLengthMismatch возвращается когда len(response array) !=
+	// len(batch). Может означать NDMS reorder'ил или потерял элементы —
+	// сигнал что нужно перейти на id-tagged batch'и.
+	ErrBatchLengthMismatch = errors.New("rci batcher: response array length mismatch")
 )
 
 // HTTPError is returned by Client.Get / GetRaw / Post when NDMS replies
