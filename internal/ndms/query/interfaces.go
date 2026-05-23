@@ -910,7 +910,8 @@ func wireToInterface(w ifaceWire) ndms.Interface {
 //   - opkgtun/awg: our own managed tunnels
 //   - wireguard/nwg/wg: WireGuard (Keenetic native or third-party)
 //   - ipsec/sstp/openvpn: pure VPN protocols
-//   - proxy: Keenetic proxy interfaces (t2s), depend on underlying WAN
+//   - proxy/t2s: Keenetic sing-box proxy interfaces, depend on underlying WAN.
+//     NDMS id is ProxyN but the hook's system_name carries the kernel name t2sN.
 //
 // NOT excluded (ISPs do use these): PPTP, L2TP, GRE, IPIP, EoIP, PPPoE, IPoE.
 func IsNonISPInterface(name string) bool {
@@ -923,7 +924,8 @@ func IsNonISPInterface(name string) bool {
 		strings.HasPrefix(n, "ipsec") ||
 		strings.HasPrefix(n, "sstp") ||
 		strings.HasPrefix(n, "openvpn") ||
-		strings.HasPrefix(n, "proxy")
+		strings.HasPrefix(n, "proxy") ||
+		strings.HasPrefix(n, "t2s")
 }
 
 // isOwnTunnel returns true for interfaces owned by awg-manager itself
