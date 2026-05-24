@@ -141,9 +141,8 @@ func (h *UpdateHandler) Apply(w http.ResponseWriter, r *http.Request) {
 
 // Changelog returns changelog entries. Two modes:
 //   - Range: from and to both supplied → entries in (from, to], newest-first.
-//   - Single: only to supplied → entry matching to exactly (used by the
-//     "what's new" button when no upgrade is pending, so the user can
-//     still review what's in their current release).
+//   - Minor line: only to supplied → all entries with the same major.minor
+//     as to, with version <= to (used when no upgrade is pending).
 //
 // GET /api/system/update/changelog?from=2.7.5&to=2.8.0
 // GET /api/system/update/changelog?to=2.8.1
@@ -171,14 +170,10 @@ func (h *UpdateHandler) Changelog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if from == "" {
-		entry, err := h.updater.GetChangelogSingle(r.Context(), to)
+		entries, err := h.updater.GetChangelogMinor(r.Context(), to)
 		if err != nil {
 			response.ErrorWithStatus(w, http.StatusBadGateway, err.Error(), "CHANGELOG_FETCH_FAILED")
 			return
-		}
-		entries := []updater.Entry{}
-		if entry != nil {
-			entries = []updater.Entry{*entry}
 		}
 		response.Success(w, map[string]interface{}{"entries": entries})
 		return

@@ -28,6 +28,7 @@ Thumbs.db
 # Frontend
 node_modules/
 frontend/build/
+frontend/.macos-frontend-build.sha256
 frontend/.svelte-kit/
 frontend/static/openapi.yaml
 yarn.lock

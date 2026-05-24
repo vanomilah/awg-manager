@@ -132,15 +132,16 @@
 				>
 					Обновить
 				</Button>
+			{:else}
+				<Button
+					variant="secondary"
+					size="sm"
+					onclick={checkForUpdates}
+					loading={checking}
+				>
+					{checking ? 'Проверка...' : 'Проверить'}
+				</Button>
 			{/if}
-			<Button
-				variant="secondary"
-				size="sm"
-				onclick={checkForUpdates}
-				loading={checking}
-			>
-				{checking ? 'Проверка...' : 'Проверить'}
-			</Button>
 		{/if}
 	</div>
 </div>
@@ -163,9 +164,14 @@
 {#if updateInfo?.currentVersion}
 	<ChangelogModal
 		open={showChangelog}
+		pendingUpdate={Boolean(updateInfo.available && updateInfo.latestVersion)}
 		fromVersion={updateInfo.available && updateInfo.latestVersion ? updateInfo.currentVersion : ''}
 		toVersion={updateInfo.available && updateInfo.latestVersion ? updateInfo.latestVersion : updateInfo.currentVersion}
 		sourceLabel={downloadRouteLabel}
+		oncheckUpdates={() => {
+			showChangelog = false;
+			void checkForUpdates();
+		}}
 		onclose={() => (showChangelog = false)}
 	/>
 {/if}

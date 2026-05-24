@@ -30,6 +30,12 @@ var groupLine = regexp.MustCompile(`^###\s+(.+?)\s*$`)
 // itemLine matches "- something" or "* something".
 var itemLine = regexp.MustCompile(`^[-*]\s+(.+?)\s*$`)
 
+// proseLine matches markdown headings that are not version/group lines.
+var proseLine = regexp.MustCompile(`^#{1,6}\s`)
+
+// hrLine matches horizontal rules (---, ***, ___).
+var hrLine = regexp.MustCompile(`^(-{3,}|\*{3,}|_{3,})$`)
+
 // ParseChangelog returns version-keyed entries parsed from a CHANGELOG.md body.
 // Unparseable leftover lines are skipped silently so a partial file still
 // produces usable data.
@@ -52,6 +58,21 @@ func ParseChangelog(md string) (map[string]Entry, error) {
 		}
 	}
 
+	appendLine := func(trimmed string) {
+		if proseLine.MatchString(trimmed) || hrLine.MatchString(trimmed) {
+			return
+		}
+		// Prose before the first ### becomes a group with an empty heading.
+		if curGroup == nil {
+			curGroup = &Group{}
+		}
+		if m := itemLine.FindStringSubmatch(trimmed); m != nil {
+			curGroup.Items = append(curGroup.Items, m[1])
+			return
+		}
+		curGroup.Items = append(curGroup.Items, trimmed)
+	}
+
 	for _, raw := range strings.Split(md, "\n") {
 		line := strings.TrimRight(raw, "\r")
 		trimmed := strings.TrimSpace(line)
@@ -72,26 +93,54 @@ func ParseChangelog(md string) (map[string]Entry, error) {
 			curGroup = &Group{Heading: m[1]}
 			continue
 		}
-		if curGroup == nil {
-			continue
-		}
-		if m := itemLine.FindStringSubmatch(trimmed); m != nil {
-			curGroup.Items = append(curGroup.Items, m[1])
-		}
+		appendLine(trimmed)
 	}
 	flushEntry()
 	return out, nil
 }
 
 // Single returns the entry for an exact version, or nil if no entry
-// matches. Used by the "what's new" UI affordance when the user is
-// already on the latest release and only wants to see what landed in
-// the current version.
+// matches.
 func Single(entries map[string]Entry, version string) *Entry {
-	if e, ok := entries[version]; ok {
+	key := semver.Base(version)
+	if e, ok := entries[key]; ok {
 		return &e
 	}
+	if key != version {
+		if e, ok := entries[version]; ok {
+			return &e
+		}
+	}
 	return nil
+}
+
+// MinorLine returns changelog entries sharing major.minor with version,
+// with entry version <= version, sorted newest-first. Used when no
+// upgrade is pending so "what's new" covers the whole 2.11.x line.
+func MinorLine(entries map[string]Entry, version string) []Entry {
+	ceiling := semver.Base(version)
+	parts := strings.Split(ceiling, ".")
+	if len(parts) < 2 {
+		if e := Single(entries, version); e != nil {
+			return []Entry{*e}
+		}
+		return nil
+	}
+	prefix := parts[0] + "." + parts[1] + "."
+	out := make([]Entry, 0)
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Version+".", prefix) {
+			continue
+		}
+		if semver.Compare(e.Version, ceiling) > 0 {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return semver.Compare(out[i].Version, out[j].Version) > 0
+	})
+	return out
 }
 
 // Slice returns entries where fromVer < v <= toVer, sorted newest-first.

@@ -549,9 +549,7 @@ class ApiClient {
 
 	async getUpdateChangelog(from: string, to: string): Promise<{ entries: ChangelogEntry[] }> {
 		const parts = [`to=${encodeURIComponent(to)}`];
-		// Omit `from` to request the single-version view for `to` — backend
-		// returns just that one entry (used by "Что нового" when no update
-		// is pending).
+		// Omit `from` for the current minor line up to `to` (2.11.0…2.11.2 on 2.11.2+r70).
 		if (from) parts.push(`from=${encodeURIComponent(from)}`);
 		return this.request(`/system/update/changelog?${parts.join('&')}`);
 	}
