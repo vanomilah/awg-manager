@@ -52,3 +52,20 @@ func TestCountProxySlotsListEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestHasSlotListeningInList(t *testing.T) {
+	const list = `46.149.74.35:443 listen=127.0.0.1:51958 rx=10 tx=20
+1.2.3.4:51820 listen=127.0.0.1:40001 rx=0 tx=0`
+	if !hasSlotListeningInList(list, 51958) {
+		t.Error("want true for listen port 51958")
+	}
+	if !hasSlotListeningInList(list, 40001) {
+		t.Error("want true for listen port 40001")
+	}
+	if hasSlotListeningInList(list, 99999) {
+		t.Error("want false for absent listen port 99999")
+	}
+	if hasSlotListeningInList("", 51958) {
+		t.Error("want false for empty list")
+	}
+}

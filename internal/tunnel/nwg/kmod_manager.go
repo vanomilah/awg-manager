@@ -229,6 +229,20 @@ func countProxySlotsList(data string) int {
 	return count
 }
 
+// hasSlotListeningInList reports whether the /proc/awg_proxy/list contents contain
+// a slot listening on 127.0.0.1:listenPort.
+func hasSlotListeningInList(data string, listenPort int) bool {
+	want := fmt.Sprintf("listen=127.0.0.1:%d", listenPort)
+	for _, line := range strings.Split(data, "\n") {
+		for _, field := range strings.Fields(line) {
+			if field == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // readListenPortLocked reads /proc/awg_proxy/list and finds the listen port
 // for the given endpoint. Must be called with km.mu held.
 func (km *KmodManager) readListenPortLocked(endpointIP string, endpointPort int) (int, error) {
@@ -286,6 +300,16 @@ func (km *KmodManager) RemoveTunnel(tunnelID string) error {
 	delete(km.tunnels, tunnelID)
 	km.appLog.Info("remove-tunnel", tunnelID, "removed")
 	return nil
+}
+
+// HasSlotListening reports whether a live kmod proxy slot is listening on
+// 127.0.0.1:listenPort (read from /proc/awg_proxy/list).
+func (km *KmodManager) HasSlotListening(listenPort int) bool {
+	data, err := os.ReadFile("/proc/awg_proxy/list")
+	if err != nil {
+		return false
+	}
+	return hasSlotListeningInList(string(data), listenPort)
 }
 
 // IsLoaded checks if /proc/awg_proxy/version exists.
