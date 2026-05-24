@@ -33,7 +33,7 @@
 ```sh
 opkg update && opkg upgrade
 opkg install curl
-curl -sL https://raw.githubusercontent.com/hoaxisr/awg-manager/main/scripts/install.sh | sh
+curl -sL https://raw.githubusercontent.com/hoaxisr/awg-manager/master/scripts/install.sh | sh
 ```
 
 После установки веб-интерфейс доступен по адресу роутера на назначенном порту.
