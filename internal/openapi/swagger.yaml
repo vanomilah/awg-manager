@@ -884,6 +884,12 @@ definitions:
         example: direct
         type: string
     type: object
+  api.DownloadSettingsDTO:
+    properties:
+      routeTag:
+        example: direct
+        type: string
+    type: object
   api.EnabledToggleRequest:
     properties:
       enabled:
@@ -2290,6 +2296,8 @@ definitions:
         type: boolean
       dnsRoute:
         $ref: '#/definitions/api.DNSRouteSettingsDTO'
+      download:
+        $ref: '#/definitions/api.DownloadSettingsDTO'
       logging:
         $ref: '#/definitions/api.LoggingSettingsDTO'
       monitoringExcludedTunnels:
@@ -9221,8 +9229,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Replaces the ruleset identified by tag with new content. Tag rename
-        is not supported.
+      description: Replaces the ruleset identified by tag with new content. If the
+        payload tag differs, references are renamed atomically.
       parameters:
       - description: Tag + new RuleSet payload
         in: body

@@ -689,6 +689,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		hrHandler.SetDeviceProxyService(s.deviceProxySvc)
 		hrHandler.SetSingboxOperator(s.singboxOp)
 		hrHandler.SetSingboxOrchestrator(s.singboxOrch)
+		hrHandler.SetSettingsStore(s.settings)
 		mux.HandleFunc("/api/hydraroute/config", guarded(hrHandler.GetConfig))
 		mux.HandleFunc("/api/hydraroute/config/update", guarded(hrHandler.UpdateConfig))
 		mux.HandleFunc("/api/download/outbounds", guarded(hrHandler.ListDownloadOutbounds))

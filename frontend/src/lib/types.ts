@@ -674,6 +674,10 @@ export interface UpdateSettings {
 	checkEnabled: boolean;
 }
 
+export interface DownloadSettings {
+	routeTag: string;
+}
+
 export interface DNSRouteSettings {
 	autoRefreshEnabled: boolean;
 	refreshIntervalHours: number;
@@ -690,6 +694,7 @@ export interface Settings {
 	logging: LoggingSettings;
 	disableMemorySaving: boolean;
 	updates: UpdateSettings;
+	download: DownloadSettings;
 	dnsRoute: DNSRouteSettings;
 	usageLevel: UsageLevel;
 	hiddenSystemTunnels?: string[];

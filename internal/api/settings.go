@@ -53,6 +53,10 @@ type UpdateSettingsDTO struct {
 	CheckEnabled bool `json:"checkEnabled" example:"true"`
 }
 
+type DownloadSettingsDTO struct {
+	RouteTag string `json:"routeTag" example:"direct"`
+}
+
 // DNSRouteSettingsDTO mirrors frontend DNSRouteSettings.
 type DNSRouteSettingsDTO struct {
 	AutoRefreshEnabled   bool   `json:"autoRefreshEnabled" example:"true"`
@@ -71,6 +75,7 @@ type SettingsData struct {
 	MonitoringExcludedTunnels []string             `json:"monitoringExcludedTunnels,omitempty" example:"tn-1,sys-2"`
 	DisableMemorySaving       bool                 `json:"disableMemorySaving" example:"false"`
 	Updates                   UpdateSettingsDTO    `json:"updates"`
+	Download                  DownloadSettingsDTO  `json:"download"`
 	DnsRoute                  DNSRouteSettingsDTO  `json:"dnsRoute"`
 	// UsageLevel controls which UI sections are visible to the user.
 	// Filtering is frontend-only — the API does not enforce it.

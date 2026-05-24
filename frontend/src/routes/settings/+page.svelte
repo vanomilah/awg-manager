@@ -11,6 +11,7 @@
 		SystemInfoGrid,
 		LoggingSettings,
 		UpdateSection,
+		DownloadSettings,
 		DnsRouteSettings,
 		IntegrationsCard,
 		ThemeSchemeCard,
@@ -23,6 +24,7 @@
 		Settings,
 		UpdateInfo,
 		HydraRouteStatus,
+		DownloadOutbound,
 	} from "$lib/types";
 	import {
 		USAGE_LEVEL_LABELS,
@@ -45,6 +47,9 @@
 	const showHydraIntegration = $derived(isRoutingSubTabVisible($usageLevel, "hrNeo"));
 	const showDnsRouteCard = $derived(isRoutingSubTabVisible($usageLevel, "dnsRoutes"));
 	let updateInfo: UpdateInfo | null = $state(null);
+	let downloadOutbounds = $state<DownloadOutbound[]>([]);
+	let downloadOutboundsLoading = $state(false);
+	let downloadOutboundsError = $state('');
 	let restarting = $state(false);
 	let restartConfirmOpen = $state(false);
 	let hydraStatus = $state<HydraRouteStatus | null>(null);
@@ -210,6 +215,45 @@
 		return systemInfoInFlight;
 	}
 
+	async function refreshDownloadOutbounds() {
+		downloadOutboundsLoading = true;
+		downloadOutboundsError = '';
+		try {
+			const list = await api.listDownloadOutbounds();
+			downloadOutbounds = list;
+		} catch (e) {
+			downloadOutbounds = [];
+			downloadOutboundsError = e instanceof Error ? e.message : 'Не удалось загрузить список маршрутов';
+		} finally {
+			downloadOutboundsLoading = false;
+		}
+	}
+
+	async function selectDownloadRoute(routeTag: string) {
+		if (!settings) return;
+		saving = true;
+		try {
+			settings = await api.updateSettings({
+				download: { routeTag },
+			});
+			setGlobalSettings(settings);
+			notifications.success('Маршрут загрузок сохранён');
+		} catch {
+			notifications.error('Не удалось сохранить маршрут загрузок');
+		} finally {
+			saving = false;
+		}
+	}
+
+	function scrollToSettingsHashTarget() {
+		if (typeof window === "undefined") return;
+		if (window.location.hash !== "#downloads") return;
+		window.requestAnimationFrame(() => {
+			const target = document.getElementById("downloads");
+			target?.scrollIntoView({ behavior: "smooth", block: "start" });
+		});
+	}
+
 onMount(() => {
 	const timer = setInterval(() => {
 		void fetchSystemInfo(true);
@@ -223,6 +267,8 @@ onMount(() => {
 			]);
 			settings = appSettings;
 			setGlobalSettings(appSettings);
+			await refreshDownloadOutbounds();
+			scrollToSettingsHashTarget();
 		} catch (e) {
 			notifications.error(e instanceof Error ? e.message : "Не удалось загрузить настройки");
 		} finally {
@@ -533,6 +579,7 @@ onMount(() => {
 		if (!from?.url || from.url.pathname !== "/settings") {
 			await fetchSystemInfo(true);
 		}
+		scrollToSettingsHashTarget();
 	});
 </script>
 
@@ -620,6 +667,19 @@ onMount(() => {
 							disabled={saving}
 						/>
 					</div>
+				</div>
+
+				<div class="card">
+					<div class="section-label">Загрузки</div>
+					<DownloadSettings
+						bind:settings
+						{saving}
+						outbounds={downloadOutbounds}
+						loading={downloadOutboundsLoading}
+						error={downloadOutboundsError}
+						onRefresh={refreshDownloadOutbounds}
+						onSelectRoute={selectDownloadRoute}
+					/>
 				</div>
 
 				<div class="card">

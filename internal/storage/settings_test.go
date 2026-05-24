@@ -45,6 +45,9 @@ func TestSettingsStore_LoadDefault(t *testing.T) {
 	if !settings.SingboxRouter.SnifferEnabled {
 		t.Error("SingboxRouter.SnifferEnabled = false, want true")
 	}
+	if settings.Download.RouteTag != "direct" {
+		t.Errorf("Download.RouteTag = %q, want direct", settings.Download.RouteTag)
+	}
 }
 
 func TestSettingsStore_MigrateFromV1(t *testing.T) {
@@ -435,11 +438,30 @@ func TestSettings_MigrateV20toV21_SetsSingboxLogLevel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if s.SchemaVersion != 21 {
-		t.Fatalf("schema = %d, want 21", s.SchemaVersion)
+	if s.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("schema = %d, want %d", s.SchemaVersion, CurrentSchemaVersion)
 	}
 	if s.Logging.SingboxLogLevel != DefaultSingboxLogLevel {
 		t.Fatalf("singboxLogLevel = %q, want %q", s.Logging.SingboxLogLevel, DefaultSingboxLogLevel)
+	}
+}
+
+func TestSettings_MigrateV21toV22_SetsDownloadRouteTag(t *testing.T) {
+	tmpDir := t.TempDir()
+	legacy := `{"schemaVersion":21,"authEnabled":false,"usageLevel":"basic","download":{"routeTag":""}}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "settings.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+	store := NewSettingsStore(tmpDir)
+	s, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("schema = %d, want %d", s.SchemaVersion, CurrentSchemaVersion)
+	}
+	if s.Download.RouteTag != "direct" {
+		t.Fatalf("download.routeTag = %q, want direct", s.Download.RouteTag)
 	}
 }
 

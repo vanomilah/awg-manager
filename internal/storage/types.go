@@ -16,6 +16,7 @@ type Settings struct {
 	Logging             LoggingSettings   `json:"logging"`
 	DisableMemorySaving bool              `json:"disableMemorySaving"` // false = auto, true = soft mode
 	Updates             UpdateSettings    `json:"updates"`
+	Download            DownloadSettings  `json:"download"`
 	DNSRoute            DNSRouteSettings  `json:"dnsRoute"`
 	UsageLevel          string            `json:"usageLevel"`
 	ServerInterfaces    []string          `json:"serverInterfaces,omitempty"`
@@ -39,6 +40,10 @@ type Settings struct {
 	// Default true (back-compat). See docs/superpowers/specs/
 	// 2026-05-22-singbox-ndms-proxy-toggle-design.md.
 	CreateNDMSProxyForSingbox bool `json:"createNDMSProxyForSingbox"`
+}
+
+type DownloadSettings struct {
+	RouteTag string `json:"routeTag"` // default: "direct"
 }
 
 type SingboxRouterSettings struct {
