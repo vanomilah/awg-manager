@@ -2371,6 +2371,7 @@ const MOCK_AMNEZIA_PREMIUM_SID = 'mock-v_sid-amnezia-premium-dev';
 const MOCK_AMNEZIA_PREMIUM_COUNTRIES = [
 	{ server_country_code: 'ru', server_country_name: 'Russia (mock)' },
 	{ server_country_code: 'nl', server_country_name: 'Netherlands (mock)' },
+	{ server_country_code: 'ee', server_country_name: 'Estonia (mock stale)' },
 ];
 
 function buildMockAmneziaPremiumConf(countryCode) {
@@ -2564,10 +2565,20 @@ const server = http.createServer(async (req, res) => {
 							{
 								server_country_code: 'nl',
 								server_country_name: 'Netherlands (mock issued)',
+								worker_last_updated: '2026-02-03T13:49:07.090912Z',
 								last_downloaded: new Date().toISOString(),
 								source_type: 'country_config',
 								os_version: 'Web',
 								installation_uuid: '00000000-0000-4000-8000-000000000001',
+							},
+							{
+								server_country_code: 'ee',
+								server_country_name: 'Estonia (mock stale)',
+								worker_last_updated: '2026-04-30T17:34:17.821424Z',
+								last_downloaded: '2026-04-23T16:07:43.367914Z',
+								source_type: 'country_config',
+								os_version: 'Web',
+								installation_uuid: '00000000-0000-4000-8000-000000000002',
 							},
 						],
 						subscription_status: 'active',

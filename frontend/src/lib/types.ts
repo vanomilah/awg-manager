@@ -1551,7 +1551,9 @@ export interface AmneziaPremiumCountry {
 /** Запись из `data.issued_configs` (уже выданные конфиги в Amnezia CP). */
 export interface AmneziaPremiumIssuedConfig {
 	installation_uuid?: string;
+	/** Время последнего изменения адреса/воркера на стороне CP. */
 	worker_last_updated?: string;
+	/** Время последней выдачи конфига клиенту; если раньше worker_last_updated — конфиг устарел. */
 	last_downloaded?: string;
 	server_country_code?: string;
 	server_country_name?: string;

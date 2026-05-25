@@ -384,11 +384,28 @@
 		await executeImport(importContent);
 	}
 
-	function isPremiumCountryIssued(code: string): boolean {
+	function premiumIssuedConfigsForCountry(code: string): AmneziaPremiumIssuedConfig[] {
 		const cc = code.trim().toLowerCase();
-		return premiumIssuedConfigs.some(
+		return premiumIssuedConfigs.filter(
 			(ic) => String(ic.server_country_code ?? '').trim().toLowerCase() === cc
 		);
+	}
+
+	function isPremiumCountryIssued(code: string): boolean {
+		return premiumIssuedConfigsForCountry(code).length > 0;
+	}
+
+	/** worker_last_updated позже last_downloaded — адрес на сервере меняли после последней выдачи. */
+	function isPremiumCountryConfigStale(code: string): boolean {
+		return premiumIssuedConfigsForCountry(code).some((ic) => {
+			const workerRaw = ic.worker_last_updated?.trim();
+			const downloadedRaw = ic.last_downloaded?.trim();
+			if (!workerRaw || !downloadedRaw) return false;
+			const workerMs = Date.parse(workerRaw);
+			const downloadedMs = Date.parse(downloadedRaw);
+			if (!Number.isFinite(workerMs) || !Number.isFinite(downloadedMs)) return false;
+			return workerMs > downloadedMs;
+		});
 	}
 
 	function requestPremiumCountryPick(code: string, label: string) {
@@ -636,16 +653,23 @@ AllowedIPs = 0.0.0.0/0"
 					<ul class="premium-country-list" role="listbox">
 						{#each premiumCountries as c (c.server_country_code)}
 							{@const issued = isPremiumCountryIssued(c.server_country_code)}
+							{@const stale = isPremiumCountryConfigStale(c.server_country_code)}
 							<li>
 								<button
 									type="button"
 									class="premium-country-row"
-									class:premium-country-row--issued={issued}
+									class:premium-country-row--issued={issued && !stale}
+									class:premium-country-row--stale={stale}
 									disabled={!!premiumPickBusy}
 									onclick={() => requestPremiumCountryPick(c.server_country_code, c.server_country_name)}
 								>
 									<span class="premium-country-name">{c.server_country_name}</span>
-									{#if issued}
+									{#if stale}
+										<span
+											class="premium-country-stale-badge"
+											title="Адрес был изменён, обновите конфигурацию"
+										>ТРЕБУЕТСЯ ПЕРЕВЫПУСК</span>
+									{:else if issued}
 										<span class="premium-country-issued-badge">Выдано</span>
 									{/if}
 									<span class="premium-country-code">{c.server_country_code.toUpperCase()}</span>
@@ -1021,6 +1045,27 @@ AllowedIPs = 0.0.0.0/0"
 		border-radius: 4px;
 		background: color-mix(in srgb, var(--color-warning) 14%, transparent);
 		border: 1px solid var(--color-warning-border);
+	}
+
+	.premium-country-row--stale {
+		background: var(--color-error-tint);
+		box-shadow: inset 3px 0 0 var(--color-error);
+	}
+
+	.premium-country-row--stale:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--color-error) 20%, var(--color-bg-tertiary));
+	}
+
+	.premium-country-stale-badge {
+		flex-shrink: 0;
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		color: var(--color-error);
+		padding: 2px 8px;
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--color-error) 14%, transparent);
+		border: 1px solid var(--color-error-border);
 	}
 
 	.premium-country-list li:last-child .premium-country-row {
