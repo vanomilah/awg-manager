@@ -117,9 +117,11 @@ func Single(entries map[string]Entry, version string) *Entry {
 // MinorLine returns changelog entries sharing major.minor with version,
 // with entry version <= version, sorted newest-first. Used when no
 // upgrade is pending so "what's new" covers the whole 2.11.x line.
+// Revision-aware: develop entries like "2.11.2+r95" are compared using
+// CompareWithRevision so same-base revisions are ordered correctly.
 func MinorLine(entries map[string]Entry, version string) []Entry {
-	ceiling := semver.Base(version)
-	parts := strings.Split(ceiling, ".")
+	base := semver.Base(version)
+	parts := strings.Split(base, ".")
 	if len(parts) < 2 {
 		if e := Single(entries, version); e != nil {
 			return []Entry{*e}
@@ -132,31 +134,33 @@ func MinorLine(entries map[string]Entry, version string) []Entry {
 		if !strings.HasPrefix(e.Version+".", prefix) {
 			continue
 		}
-		if semver.Compare(e.Version, ceiling) > 0 {
+		if semver.CompareWithRevision(e.Version, version) > 0 {
 			continue
 		}
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return semver.Compare(out[i].Version, out[j].Version) > 0
+		return semver.CompareWithRevision(out[i].Version, out[j].Version) > 0
 	})
 	return out
 }
 
 // Slice returns entries where fromVer < v <= toVer, sorted newest-first.
-// Version comparison reuses semver.Compare (dotted-numeric semver-like).
+// Revision-aware: develop entries like "2.11.2+r95" are compared using
+// CompareWithRevision so same-base revisions (e.g. r93→r95) are handled
+// correctly. Stable versions (no +rN) behave identically to semver.Compare.
 func Slice(entries map[string]Entry, fromVer, toVer string) []Entry {
-	if semver.Compare(fromVer, toVer) >= 0 {
+	if semver.CompareWithRevision(fromVer, toVer) >= 0 {
 		return nil
 	}
 	out := make([]Entry, 0)
 	for _, e := range entries {
-		if semver.Compare(e.Version, fromVer) > 0 && semver.Compare(e.Version, toVer) <= 0 {
+		if semver.CompareWithRevision(e.Version, fromVer) > 0 && semver.CompareWithRevision(e.Version, toVer) <= 0 {
 			out = append(out, e)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return semver.Compare(out[i].Version, out[j].Version) > 0
+		return semver.CompareWithRevision(out[i].Version, out[j].Version) > 0
 	})
 	return out
 }
