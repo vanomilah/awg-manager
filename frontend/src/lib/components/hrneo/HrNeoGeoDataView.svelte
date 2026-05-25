@@ -361,6 +361,39 @@
 
 	{#if err}<div class="error-banner">{err}</div>{/if}
 
+    <div>
+		{#if routeSettingsError}
+		<div class="route-status route-status-error">
+			{routeSettingsError}. Откройте Настройки → Загрузки и обновления или обновите страницу.
+		</div>
+		{:else if !routeSettingsReady}
+		<div class="route-status route-status-live">
+			Загрузка настроек маршрута geo.dat…
+		</div>
+		{:else if routeSettingsWarning}
+		<div class="route-status route-status-warn">
+			Через: <strong>{downloadRouteLabel}</strong>. Не удалось обновить список маршрутов, используется последний известный список: {routeSettingsWarning}
+		</div>
+		{:else}
+		<div class="route-status route-status-live">
+			Загрузка и обновления через: <strong>{downloadRouteLabel}</strong>.
+			Изменяется в <a href="/settings#downloads" data-sveltekit-reload>Настройки → Загрузки и обновления</a>.
+		</div>
+	{/if}
+	{#if activeDownload}
+		<div class="route-status route-status-live">
+			Текущая операция через <strong>{activeDownload.routeLabel}</strong>
+		</div>
+	{:else if lastDownload}
+		<div class="route-status {lastDownload.ok ? 'route-status-ok' : 'route-status-error'}">
+			{lastDownload.ok ? 'Последняя операция успешна' : 'Последняя операция завершилась ошибкой'}:
+			{lastDownload.action} ({lastDownload.routeLabel}){#if lastDownload.message}
+				— {lastDownload.message}
+			{/if}
+		</div>
+	{/if}
+	</div>
+	
 	{#if files.length === 0}
 		<div class="empty">Файлы не загружены. Добавьте URL ниже.</div>
 	{:else}
@@ -437,39 +470,6 @@
 			{/each}
 		</div>
 	{/if}
-
-	<div class="route-box">
-		{#if routeSettingsError}
-			<div class="route-status route-status-error">
-				{routeSettingsError}. Откройте Настройки → Загрузки или обновите страницу.
-			</div>
-		{:else if !routeSettingsReady}
-			<div class="route-status route-status-live">
-				Загрузка настроек маршрута geo.dat…
-			</div>
-		{:else if routeSettingsWarning}
-			<div class="route-status route-status-warn">
-				Через: <strong>{downloadRouteLabel}</strong>. Не удалось обновить список маршрутов, используется последний известный список: {routeSettingsWarning}
-			</div>
-		{:else}
-			<div class="route-status route-status-live">
-				Через: <strong>{downloadRouteLabel}</strong>.
-				Изменяется в <a href="/settings#downloads" data-sveltekit-reload>Настройки → Загрузки</a>.
-			</div>
-		{/if}
-		{#if activeDownload}
-			<div class="route-status route-status-live">
-				Текущая операция через <strong>{activeDownload.routeLabel}</strong>
-			</div>
-		{:else if lastDownload}
-			<div class="route-status {lastDownload.ok ? 'route-status-ok' : 'route-status-error'}">
-				{lastDownload.ok ? 'Последняя операция успешна' : 'Последняя операция завершилась ошибкой'}:
-				{lastDownload.action} ({lastDownload.routeLabel}){#if lastDownload.message}
-					— {lastDownload.message}
-				{/if}
-			</div>
-		{/if}
-	</div>
 
 	<div class="add-form">
 		<div class="form-label">Пресеты Ground-Zerro</div>

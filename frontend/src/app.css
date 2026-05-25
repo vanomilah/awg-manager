@@ -683,7 +683,7 @@ label {
 
 .setting-row {
 	display: flex;
-	align-items: flex-start;
+	align-items: center;
 	justify-content: space-between;
 	gap: 1rem;
 	padding: 0.875rem 0;

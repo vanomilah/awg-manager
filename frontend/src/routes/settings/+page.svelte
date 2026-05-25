@@ -680,7 +680,7 @@ onMount(() => {
 				</div>
 
 				<div class="card">
-					<div class="section-label">Обновления</div>
+					<div class="section-label">Загрузки и обновления</div>
 					<div class="setting-row toggle-inline-row">
 						<div class="flex flex-col gap-1">
 							<span class="font-medium">Автопроверка обновлений</span>
@@ -692,6 +692,14 @@ onMount(() => {
 							disabled={saving}
 						/>
 					</div>
+					{#if systemInfo.isOS5 && showDnsRouteCard}
+						<DnsRouteSettings
+							bind:settings
+							{saving}
+							onToggle={toggleDnsAutoRefresh}
+							onSave={saveDnsRouteSettings}
+						/>
+					{/if}
 					{#if isUpdateChannelSwitchVisible(settings.usageLevel)}
 						<div class="setting-row toggle-inline-row">
 							<div class="flex flex-col gap-1">
@@ -722,10 +730,6 @@ onMount(() => {
 							</div>
 						</div>
 					{/if}
-				</div>
-
-				<div class="card">
-					<div class="section-label">Загрузки</div>
 					<DownloadSettings
 						bind:settings
 						{saving}
@@ -746,23 +750,6 @@ onMount(() => {
 						onSave={saveLoggingSettings}
 					/>
 				</div>
-
-				{#if systemInfo.isOS5 && showDnsRouteCard}
-					<div class="card">
-						<div class="section-label section-label-with-route">
-							<span>DNS-маршрутизация</span>
-							<span class="section-label-route" title={`DNSRoute URL-списки загружаются через ${downloadRouteLabel}`}>
-								списки через {downloadRouteLabel}
-							</span>
-						</div>
-						<DnsRouteSettings
-							bind:settings
-							{saving}
-							onToggle={toggleDnsAutoRefresh}
-							onSave={saveDnsRouteSettings}
-						/>
-					</div>
-				{/if}
 
 				{#if $usageLevel === "expert"}
 				<div class="card">
