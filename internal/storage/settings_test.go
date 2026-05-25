@@ -510,6 +510,25 @@ func TestNormalizeUsageLevel(t *testing.T) {
 	}
 }
 
+func TestDefaultSettingsChannelIsStable(t *testing.T) {
+	s := (&SettingsStore{}).defaultSettings()
+	if s.Updates.Channel != "stable" {
+		t.Errorf("default Updates.Channel = %q, want \"stable\"", s.Updates.Channel)
+	}
+}
+
+func TestMigrateToV23SetsStableChannel(t *testing.T) {
+	var s Settings
+	s.SchemaVersion = 22
+	(&SettingsStore{}).migrateToV23(&s)
+	if s.Updates.Channel != "stable" {
+		t.Errorf("after migrateToV23 Channel = %q, want \"stable\"", s.Updates.Channel)
+	}
+	if s.SchemaVersion != 23 {
+		t.Errorf("SchemaVersion = %d, want 23", s.SchemaVersion)
+	}
+}
+
 func TestSettingsStore_SetSingboxCreateNDMSProxy_PersistsAtomic(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := NewSettingsStore(tmpDir)

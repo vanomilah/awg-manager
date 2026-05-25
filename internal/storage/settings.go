@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CurrentSchemaVersion = 22
+	CurrentSchemaVersion = 23
 	DefaultPort          = 2222
 	DefaultInterface     = "br0"
 )
@@ -126,6 +126,9 @@ func (s *SettingsStore) Load() (*Settings, error) {
 		if settings.SchemaVersion < 22 {
 			s.migrateToV22(&settings)
 		}
+		if settings.SchemaVersion < 23 {
+			s.migrateToV23(&settings)
+		}
 	}
 
 	// Self-heal duplicated managed servers — see dedupManagedServers comment.
@@ -174,6 +177,7 @@ func (s *SettingsStore) defaultSettings() *Settings {
 		},
 		Updates: UpdateSettings{
 			CheckEnabled: true,
+			Channel:      "stable",
 		},
 		Download: DownloadSettings{
 			RouteTag: "direct",
@@ -388,6 +392,15 @@ func (s *SettingsStore) migrateToV22(settings *Settings) {
 		settings.Download.RouteTag = "direct"
 	}
 	settings.SchemaVersion = 22
+}
+
+// migrateToV23 introduces UpdateSettings.Channel. Existing installs default
+// to the stable channel to preserve current behaviour.
+func (s *SettingsStore) migrateToV23(settings *Settings) {
+	if settings.Updates.Channel == "" {
+		settings.Updates.Channel = "stable"
+	}
+	settings.SchemaVersion = 23
 }
 
 // dedupManagedServers returns servers with duplicate InterfaceName entries

@@ -22,7 +22,7 @@ func newDefaultDownloader() Downloader {
 	return downloader.NewService(downloader.Deps{})
 }
 
-func fetchLatestPackageWithDownloader(ctx context.Context, dl Downloader, pkgsURL, packageName string) (PackageEntry, error) {
+func fetchLatestPackageWithDownloader(ctx context.Context, dl Downloader, pkgsURL, packageName string, cmp func(a, b string) int) (PackageEntry, error) {
 	if dl == nil {
 		dl = newDefaultDownloader()
 	}
@@ -35,5 +35,5 @@ func fetchLatestPackageWithDownloader(ctx context.Context, dl Downloader, pkgsUR
 	if err != nil {
 		return PackageEntry{}, err
 	}
-	return parsePackagesGz(bytes.NewReader(body), packageName)
+	return parsePackagesGz(bytes.NewReader(body), packageName, cmp)
 }

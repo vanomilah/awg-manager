@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/hoaxisr/awg-manager/internal/downloader"
 )
 
 // --- archSuffix sanity check (the function lives in repo.go now) ---
@@ -188,5 +191,71 @@ func TestCheck_HTTPError(t *testing.T) {
 	}
 	if info.Error == "" {
 		t.Fatal("expected error message")
+	}
+}
+
+func TestCheck_DevelopDetectsNewerRevision(t *testing.T) {
+	arch := archSuffix()
+	archDir := archSuffixToRepoDir(arch)
+	ipk := "awg-manager_2.11.2+r71_" + arch + "-kn.ipk"
+	packages := "Package: awg-manager\nVersion: 2.11.2+r71\nFilename: " + ipk + "\n"
+
+	var seen downloader.Request
+	dl := &fakeDownloader{
+		readAllFn: func(_ context.Context, req downloader.Request) ([]byte, downloader.ResponseMeta, error) {
+			seen = req
+			return gzipBytes(t, packages), downloader.ResponseMeta{StatusCode: http.StatusOK}, nil
+		},
+	}
+
+	info := checkWithDownloader(context.Background(), "2.11.2+r70", "develop", dl)
+
+	if !strings.Contains(seen.URL, "/develop/") {
+		t.Errorf("request URL %q does not contain /develop/", seen.URL)
+	}
+	wantSuffix := archDir + "/Packages.gz"
+	if !strings.HasSuffix(seen.URL, wantSuffix) {
+		t.Errorf("request URL %q does not end with %q", seen.URL, wantSuffix)
+	}
+	if !info.Available {
+		t.Fatal("expected Available=true: r71 > r70 on develop")
+	}
+	if info.LatestVersion != "2.11.2+r71" {
+		t.Errorf("LatestVersion = %q, want 2.11.2+r71", info.LatestVersion)
+	}
+	wantURL := entwareRepoURL + "/develop/" + archDir + "/" + ipk
+	if info.DownloadURL != wantURL {
+		t.Errorf("DownloadURL = %q, want %q", info.DownloadURL, wantURL)
+	}
+}
+
+func TestCheck_DevelopSameRevisionUpToDate(t *testing.T) {
+	arch := archSuffix()
+	archDir := archSuffixToRepoDir(arch)
+	ipk := "awg-manager_2.11.2+r70_" + arch + "-kn.ipk"
+	packages := "Package: awg-manager\nVersion: 2.11.2+r70\nFilename: " + ipk + "\n"
+
+	var seen downloader.Request
+	dl := &fakeDownloader{
+		readAllFn: func(_ context.Context, req downloader.Request) ([]byte, downloader.ResponseMeta, error) {
+			seen = req
+			return gzipBytes(t, packages), downloader.ResponseMeta{StatusCode: http.StatusOK}, nil
+		},
+	}
+
+	info := checkWithDownloader(context.Background(), "2.11.2+r70", "develop", dl)
+
+	if !strings.Contains(seen.URL, "/develop/") {
+		t.Errorf("request URL %q does not contain /develop/", seen.URL)
+	}
+	wantSuffix := archDir + "/Packages.gz"
+	if !strings.HasSuffix(seen.URL, wantSuffix) {
+		t.Errorf("request URL %q does not end with %q", seen.URL, wantSuffix)
+	}
+	if info.Available {
+		t.Fatal("expected Available=false: same revision")
+	}
+	if info.DownloadURL != "" {
+		t.Errorf("DownloadURL = %q, want empty", info.DownloadURL)
 	}
 }

@@ -38,8 +38,18 @@ func New(version string, settings *storage.SettingsStore, appLogger logging.AppL
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
 	}
-	s.changelog = newChangelogFetcher(defaultChangelogURL, 10*time.Minute, s.downloader)
+	s.changelog = newChangelogFetcher(changelogURLForChannel(channelStable), 10*time.Minute, s.downloader)
 	return s
+}
+
+// channel returns the configured update channel, defaulting to stable.
+func (s *Service) channel() string {
+	if s.settings != nil {
+		if st, err := s.settings.Get(); err == nil && st.Updates.Channel != "" {
+			return st.Updates.Channel
+		}
+	}
+	return channelStable
 }
 
 func (s *Service) SetDownloader(dl Downloader) {
@@ -107,7 +117,9 @@ func (s *Service) doCheck() {
 	s.appLog.Debug("check", "", "Checking for updates")
 
 	ctx := context.Background()
-	info := checkWithDownloader(ctx, s.version, s.downloader)
+	ch := s.channel()
+	s.changelog.SetURL(changelogURLForChannel(ch))
+	info := checkWithDownloader(ctx, s.version, ch, s.downloader)
 
 	s.mu.Lock()
 	s.cached = info
@@ -145,7 +157,9 @@ func (s *Service) CheckNow(ctx context.Context) *UpdateInfo {
 	}
 	s.mu.Unlock()
 
-	info := checkWithDownloader(ctx, s.version, s.downloader)
+	ch := s.channel()
+	s.changelog.SetURL(changelogURLForChannel(ch))
+	info := checkWithDownloader(ctx, s.version, ch, s.downloader)
 
 	// A user-forced refresh should also invalidate the changelog cache so
 	// the next "Что нового" click hits the repo server for fresh content.

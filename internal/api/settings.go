@@ -50,7 +50,8 @@ type LoggingSettingsDTO struct {
 
 // UpdateSettingsDTO mirrors frontend UpdateSettings.
 type UpdateSettingsDTO struct {
-	CheckEnabled bool `json:"checkEnabled" example:"true"`
+	CheckEnabled bool   `json:"checkEnabled" example:"true"`
+	Channel      string `json:"channel" example:"stable" enums:"stable,develop"`
 }
 
 type DownloadSettingsDTO struct {

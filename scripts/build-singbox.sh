@@ -215,6 +215,8 @@ file "$OUTPUT"
 ls -lh "$OUTPUT"
 
 OUTPUT_SHA256="$(sha256_file "$OUTPUT")"
+# Sidecar для независимой проверки целостности при зеркалировании на repo.
+printf '%s\n' "$OUTPUT_SHA256" > "${OUTPUT}.sha256"
 OUTPUT_URL="$RELEASE_BASE_URL/$(basename "$OUTPUT")"
 
 EMBEDDED_GO="$REQUIRED_VERSION_FILE" \

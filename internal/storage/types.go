@@ -164,7 +164,8 @@ type LoggingSettings struct {
 
 // UpdateSettings contains auto-update configuration.
 type UpdateSettings struct {
-	CheckEnabled bool `json:"checkEnabled"` // default: true
+	CheckEnabled bool   `json:"checkEnabled"` // default: true
+	Channel      string `json:"channel"`      // "stable" (default) | "develop"
 }
 
 // DNSRouteSettings contains DNS route auto-refresh configuration.

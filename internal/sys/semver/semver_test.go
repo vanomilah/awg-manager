@@ -72,3 +72,27 @@ func TestCompare_BuildRevisionNotLessThanRelease(t *testing.T) {
 		t.Fatalf("build revision must not compare less than release: got %d", got)
 	}
 }
+
+func TestCompareWithRevision(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"2.11.2+r70", "2.11.2+r71", -1},
+		{"2.11.2+r71", "2.11.2+r70", 1},
+		{"2.11.2+r70", "2.11.2+r70", 0},
+		{"2.11.2", "2.11.2+r1", -1},
+		{"2.11.2+r1", "2.11.2", 1},
+		{"2.11.2", "2.11.2", 0},
+		{"2.11.2+r99", "2.11.3", -1},
+		{"2.11.3", "2.11.2+r99", 1},
+		{"2.11.2+r5", "2.11.10+r1", -1},
+		{"2.11.2+rX", "2.11.2", 0},
+		{"2.11.2+r", "2.11.2", 0},
+	}
+	for _, c := range cases {
+		if got := CompareWithRevision(c.a, c.b); got != c.want {
+			t.Errorf("CompareWithRevision(%q, %q) = %d, want %d", c.a, c.b, got, c.want)
+		}
+	}
+}

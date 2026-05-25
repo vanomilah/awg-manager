@@ -24,38 +24,63 @@ const (
 	pkgName               = "awg-manager"
 )
 
+const (
+	channelStable  = "stable"
+	channelDevelop = "develop"
+)
+
 // entwareRepoURL is a variable so tests can override it with httptest server URL.
 var entwareRepoURL = defaultEntwareRepoURL
 
-// Check queries the entware repo's Packages.gz for the latest awg-manager
-// version and returns update info including the .ipk download URL if a newer
-// version is available.
-func Check(ctx context.Context, currentVersion string) *UpdateInfo {
-	return checkWithDownloader(ctx, currentVersion, newDefaultDownloader())
+// channelBaseURL возвращает базовый URL репозитория для канала. develop
+// отдаётся из подкаталога /develop того же сервера.
+func channelBaseURL(channel string) string {
+	if channel == channelDevelop {
+		return entwareRepoURL + "/develop"
+	}
+	return entwareRepoURL
 }
 
-func checkWithDownloader(ctx context.Context, currentVersion string, dl Downloader) *UpdateInfo {
+// versionComparator выбирает сравнялку версий по каналу: develop учитывает
+// build-revision (+rN), stable — нет (как было).
+func versionComparator(channel string) func(a, b string) int {
+	if channel == channelDevelop {
+		return semver.CompareWithRevision
+	}
+	return semver.Compare
+}
+
+// Check queries the entware repo's Packages.gz for the latest awg-manager
+// version and returns update info including the .ipk download URL if a newer
+// version is available. Uses the stable channel.
+func Check(ctx context.Context, currentVersion string) *UpdateInfo {
+	return checkWithDownloader(ctx, currentVersion, channelStable, newDefaultDownloader())
+}
+
+func checkWithDownloader(ctx context.Context, currentVersion, channel string, dl Downloader) *UpdateInfo {
 	info := &UpdateInfo{
 		CurrentVersion: currentVersion,
 		CheckedAt:      time.Now(),
 	}
 
+	cmp := versionComparator(channel)
+	base := channelBaseURL(channel)
 	archDir := archSuffixToRepoDir(archSuffix())
-	pkgsURL := fmt.Sprintf("%s/%s/Packages.gz", entwareRepoURL, archDir)
+	pkgsURL := fmt.Sprintf("%s/%s/Packages.gz", base, archDir)
 
-	pkg, err := fetchLatestPackageWithDownloader(ctx, dl, pkgsURL, pkgName)
+	pkg, err := fetchLatestPackageWithDownloader(ctx, dl, pkgsURL, pkgName, cmp)
 	if err != nil {
 		info.Error = fmt.Sprintf("entware repo: %s", err)
 		return info
 	}
 
-	if semver.Compare(currentVersion, pkg.Version) >= 0 {
+	if cmp(currentVersion, pkg.Version) >= 0 {
 		return info
 	}
 
 	info.Available = true
 	info.LatestVersion = pkg.Version
-	info.DownloadURL = fmt.Sprintf("%s/%s/%s", entwareRepoURL, archDir, pkg.Filename)
+	info.DownloadURL = fmt.Sprintf("%s/%s/%s", base, archDir, pkg.Filename)
 	return info
 }
 

@@ -73,3 +73,42 @@ func parseComponent(part string) int {
 	}
 	return n
 }
+
+// CompareWithRevision сравнивает версии с учётом build-revision вида "+rN".
+// Сначала сравнивается база (как Compare); при равных базах решает целое
+// после "+r". Отсутствующий или нечисловой revision трактуется как 0.
+// Нужно для develop-канала, где версии имеют вид "<base>+r<N>" и обычный
+// Compare (игнорирующий build-metadata) считал бы соседние сборки равными.
+func CompareWithRevision(a, b string) int {
+	if c := Compare(a, b); c != 0 {
+		return c
+	}
+	ra, rb := revision(a), revision(b)
+	switch {
+	case ra < rb:
+		return -1
+	case ra > rb:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// revision извлекает целое N из суффикса "+rN". Возвращает 0, если суффикс
+// отсутствует или не является числом.
+func revision(v string) int {
+	v = strings.TrimSpace(v)
+	i := strings.IndexByte(v, '+')
+	if i < 0 {
+		return 0
+	}
+	meta := v[i+1:]
+	if !strings.HasPrefix(meta, "r") {
+		return 0
+	}
+	n, err := strconv.Atoi(meta[1:])
+	if err != nil {
+		return 0
+	}
+	return n
+}

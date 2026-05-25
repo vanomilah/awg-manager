@@ -5,6 +5,8 @@ import (
 	"compress/gzip"
 	"strings"
 	"testing"
+
+	"github.com/hoaxisr/awg-manager/internal/sys/semver"
 )
 
 // gzipBytes is a test helper that gzips a string and returns the bytes.
@@ -28,7 +30,7 @@ Architecture: aarch64-3.10
 Filename: awg-manager_2.7.3_aarch64-3.10-kn.ipk
 Size: 4354993
 `
-	pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager")
+	pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.Compare)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,7 +55,7 @@ Package: awg-manager
 Version: 2.7.10
 Filename: awg-manager_2.7.10_aarch64-3.10-kn.ipk
 `
-	pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager")
+	pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.Compare)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -78,7 +80,7 @@ Package: iptables
 Version: 1.8.7
 Filename: iptables_1.8.7_aarch64-3.10.ipk
 `
-	pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager")
+	pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.Compare)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +94,7 @@ func TestParsePackagesGz_NoMatchingPackage(t *testing.T) {
 Version: 8.0.1
 Filename: curl_8.0.1_aarch64-3.10.ipk
 `
-	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager")
+	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.Compare)
 	if err == nil {
 		t.Fatal("expected error for missing package")
 	}
@@ -105,7 +107,7 @@ func TestParsePackagesGz_MissingVersion(t *testing.T) {
 	body := `Package: awg-manager
 Filename: awg-manager_2.7.3_aarch64-3.10-kn.ipk
 `
-	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager")
+	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.Compare)
 	if err == nil {
 		t.Fatal("expected error for block missing Version field")
 	}
@@ -115,23 +117,40 @@ func TestParsePackagesGz_MissingFilename(t *testing.T) {
 	body := `Package: awg-manager
 Version: 2.7.3
 `
-	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager")
+	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.Compare)
 	if err == nil {
 		t.Fatal("expected error for block missing Filename field")
 	}
 }
 
 func TestParsePackagesGz_EmptyBody(t *testing.T) {
-	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, "")), "awg-manager")
+	_, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, "")), "awg-manager", semver.Compare)
 	if err == nil {
 		t.Fatal("expected error for empty body")
 	}
 }
 
 func TestParsePackagesGz_MalformedGzip(t *testing.T) {
-	_, err := parsePackagesGz(bytes.NewReader([]byte("not-a-gzip-stream")), "awg-manager")
+	_, err := parsePackagesGz(bytes.NewReader([]byte("not-a-gzip-stream")), "awg-manager", semver.Compare)
 	if err == nil {
 		t.Fatal("expected gunzip error")
+	}
+}
+
+func TestParsePackagesGz_DevelopPicksHighestRevision(t *testing.T) {
+	r70 := "Package: awg-manager\nVersion: 2.11.2+r70\nFilename: awg-manager_2.11.2+r70_aarch64-3.10-kn.ipk\n"
+	r71 := "Package: awg-manager\nVersion: 2.11.2+r71\nFilename: awg-manager_2.11.2+r71_aarch64-3.10-kn.ipk\n"
+	for _, body := range []string{r70 + "\n" + r71, r71 + "\n" + r70} {
+		pkg, err := parsePackagesGz(bytes.NewReader(gzipBytes(t, body)), "awg-manager", semver.CompareWithRevision)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if pkg.Version != "2.11.2+r71" {
+			t.Errorf("selected %q, want 2.11.2+r71 (order-independent)", pkg.Version)
+		}
+		if pkg.Filename != "awg-manager_2.11.2+r71_aarch64-3.10-kn.ipk" {
+			t.Errorf("Filename = %q, want awg-manager_2.11.2+r71_aarch64-3.10-kn.ipk", pkg.Filename)
+		}
 	}
 }
 

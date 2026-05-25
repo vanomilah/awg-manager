@@ -11,9 +11,15 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/downloader"
 )
 
-// defaultChangelogURL is the full URL to the CHANGELOG.md on the repo
-// server.
-const defaultChangelogURL = "http://repo.hoaxisr.ru/CHANGELOG.md"
+// changelogURLForChannel возвращает URL CHANGELOG.md для канала. develop
+// отдаётся из /develop. База берётся из entwareRepoURL (переопределяема в
+// тестах), чтобы остаться согласованной с Packages.gz.
+func changelogURLForChannel(channel string) string {
+	if channel == channelDevelop {
+		return entwareRepoURL + "/develop/CHANGELOG.md"
+	}
+	return entwareRepoURL + "/CHANGELOG.md"
+}
 
 // changelogFetcher pulls the monolithic CHANGELOG.md, parses it, and
 // serves cached results. Single-flight via fetchMu so a slow HTTP call
@@ -68,6 +74,17 @@ func (c *changelogFetcher) Invalidate() {
 	c.cached = nil
 }
 
+// SetURL переключает источник changelog (например при смене канала).
+// Сброс кэша гарантирует, что следующий Fetch ударит по новому URL.
+func (c *changelogFetcher) SetURL(url string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.url != url {
+		c.url = url
+		c.cached = nil
+	}
+}
+
 func (c *changelogFetcher) peek() (map[string]Entry, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -89,9 +106,12 @@ func (c *changelogFetcher) download(ctx context.Context) (string, error) {
 	if dl == nil {
 		dl = newDefaultDownloader()
 	}
+	c.mu.RLock()
+	url := c.url
+	c.mu.RUnlock()
 	body, meta, err := dl.ReadAll(ctx, downloader.Request{
 		Purpose:       "awgm-changelog",
-		URL:           c.url,
+		URL:           url,
 		Method:        http.MethodGet,
 		Timeout:       repoTimeout,
 		MaxBodyBytes:  changelogMaxBytes,

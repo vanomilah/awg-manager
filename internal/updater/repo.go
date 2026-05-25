@@ -7,8 +7,6 @@ import (
 	"io"
 	"runtime"
 	"strings"
-
-	"github.com/hoaxisr/awg-manager/internal/sys/semver"
 )
 
 // PackageEntry is a single Debian-style package block from a Packages index,
@@ -22,7 +20,7 @@ type PackageEntry struct {
 // returns the entry with the highest Version field whose Package name matches
 // pkgName. Returns an error if the gzip stream is invalid or no matching
 // package is found.
-func parsePackagesGz(r io.Reader, pkgName string) (PackageEntry, error) {
+func parsePackagesGz(r io.Reader, pkgName string, cmp func(a, b string) int) (PackageEntry, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return PackageEntry{}, fmt.Errorf("gunzip: %w", err)
@@ -35,7 +33,7 @@ func parsePackagesGz(r io.Reader, pkgName string) (PackageEntry, error) {
 	}
 	flush := func() {
 		if current.pkg == pkgName && current.ver != "" && current.fn != "" {
-			if best.Version == "" || semver.Compare(current.ver, best.Version) > 0 {
+			if best.Version == "" || cmp(current.ver, best.Version) > 0 {
 				best = PackageEntry{Version: current.ver, Filename: current.fn}
 			}
 		}
