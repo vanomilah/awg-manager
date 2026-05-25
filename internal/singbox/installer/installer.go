@@ -59,8 +59,9 @@ type Downloader interface {
 // space can't be queried. Normally the limit is dynamic — actual free space
 // minus diskReserveBytes — so large (uncompressed) binaries download fine on
 // routers with roomy /opt (e.g. entware on external storage) while tiny-disk
-// routers are still protected.
-const binaryMaxBytes = 64 << 20
+// routers are still protected. 128 MiB covers current uncompressed develop
+// builds (~70-86 MB per arch) even on the statfs-unavailable fallback path.
+const binaryMaxBytes = 128 << 20
 
 // diskReserveBytes is kept free after the download so activation/other writes
 // don't fill the filesystem completely.

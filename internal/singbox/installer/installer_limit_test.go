@@ -4,7 +4,7 @@ import "testing"
 
 func TestDownloadByteLimit(t *testing.T) {
 	const (
-		fallback = 64 << 20
+		fallback = 128 << 20
 		reserve  = 16 << 20
 	)
 	cases := []struct {
