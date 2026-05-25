@@ -151,10 +151,22 @@
 	}
 
 	.qr-image {
-		width: 360px;
-		height: 360px;
+		width: min(360px, 100%);
+		aspect-ratio: 1 / 1;
+		height: auto;
+		object-fit: contain;
 		border-radius: 8px;
 		image-rendering: pixelated;
+	}
+
+	@media (max-width: 640px) {
+		.qr-container {
+			padding: 1rem;
+		}
+
+		.qr-image {
+			width: min(320px, 100%);
+		}
 	}
 
 	.qr-hint {

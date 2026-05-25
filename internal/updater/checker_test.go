@@ -127,6 +127,23 @@ func TestCheck_AlreadyUpToDate(t *testing.T) {
 	}
 }
 
+func TestCheck_BuildRevisionSameAsRepoRelease(t *testing.T) {
+	arch := archSuffix()
+	body := "Package: awg-manager\nVersion: 2.11.2\nFilename: awg-manager_2.11.2_" + arch + "-kn.ipk\n"
+
+	srv := newMockEntwareServer(t, body, http.StatusOK)
+	defer srv.Close()
+	withMockRepo(t, srv)
+
+	info := Check(context.Background(), "2.11.2+r70")
+	if info.Available {
+		t.Fatal("expected Available=false when repo release matches base of build revision")
+	}
+	if info.LatestVersion != "" {
+		t.Errorf("LatestVersion = %q, want empty", info.LatestVersion)
+	}
+}
+
 func TestCheck_NewerThanRepo(t *testing.T) {
 	arch := archSuffix()
 	body := "Package: awg-manager\nVersion: 2.3.10\nFilename: awg-manager_2.3.10_" + arch + "-kn.ipk\n"

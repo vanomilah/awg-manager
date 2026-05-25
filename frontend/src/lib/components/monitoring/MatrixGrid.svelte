@@ -101,6 +101,8 @@
 				return 'Trojan';
 			case 'naive':
 				return 'Naive';
+			case 'mieru':
+				return 'Mieru';
 			default:
 				return proto.toUpperCase();
 		}

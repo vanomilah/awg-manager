@@ -518,6 +518,48 @@ func (h *SingboxHandler) UpdateTunnel(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, out)
 }
 
+// RenameTunnel handles PATCH /api/singbox/tunnels/rename.
+// Body: {"oldTag":"old","newTag":"new"}.
+func (h *SingboxHandler) RenameTunnel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		response.MethodNotAllowed(w)
+		return
+	}
+	var body struct {
+		OldTag string `json:"oldTag"`
+		NewTag string `json:"newTag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		response.BadRequest(w, "invalid request")
+		return
+	}
+	if body.OldTag == "" || body.NewTag == "" {
+		response.BadRequest(w, "oldTag and newTag required")
+		return
+	}
+	h.log.Info("single-rename", body.OldTag, "requested via API")
+	if err := h.op.RenameTunnel(r.Context(), body.OldTag, body.NewTag); err != nil {
+		switch {
+		case errors.Is(err, singbox.ErrInvalidTunnelTag):
+			response.BadRequest(w, err.Error())
+		case errors.Is(err, singbox.ErrTunnelNotFound):
+			response.ErrorWithStatus(w, http.StatusNotFound, err.Error(), "NOT_FOUND")
+		case errors.Is(err, singbox.ErrTunnelTagConflict):
+			response.ErrorWithStatus(w, http.StatusConflict, err.Error(), "TAG_CONFLICT")
+		default:
+			response.InternalError(w, err.Error())
+		}
+		return
+	}
+	publishInvalidated(h.bus, ResourceSingboxTunnels, "tunnel-renamed")
+	out, err := h.enrichedTunnels(r.Context())
+	if err != nil {
+		response.InternalError(w, err.Error())
+		return
+	}
+	response.Success(w, out)
+}
+
 // CheckConnectivity performs connectivity test through a sing-box tunnel.
 //
 //	@Summary		Sing-box tunnel connectivity test

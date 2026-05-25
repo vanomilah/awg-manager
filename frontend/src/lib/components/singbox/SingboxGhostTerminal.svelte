@@ -74,7 +74,7 @@
 	<div class="term-singbox">
 		<textarea
 			class="term-singbox-input"
-			placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland\nnaive+https://u:p@host:443#Japan`}
+			placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland\nmierus://user:pass@host?profile=default&port=443&protocol=TCP`}
 			rows="5"
 			bind:value={input}
 		></textarea>

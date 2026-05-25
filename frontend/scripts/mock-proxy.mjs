@@ -48,6 +48,51 @@ const VALID = new Set(['basic', 'advanced', 'expert']);
 // realistic case for development against the redesigned routing page.
 let usageLevel = 'expert';
 let singboxLogLevel = 'trace';
+let downloadRouteTag = 'direct';
+const MOCK_DOWNLOAD_OUTBOUNDS = [
+	{
+		tag: 'direct',
+		kind: 'direct',
+		label: 'Direct (WAN)',
+		detail: 'без туннеля',
+		available: true,
+	},
+	{
+		tag: 'awg-de-frankfurt',
+		kind: 'awg',
+		label: 'DE Frankfurt',
+		detail: 'awg0 · de-fra.demo.example:51820',
+		available: true,
+	},
+	{
+		tag: 'awg-nl-amsterdam',
+		kind: 'awg',
+		label: 'NL Amsterdam',
+		detail: 'opkgtun0 · nl-ams.demo.example:51820',
+		available: true,
+	},
+	{
+		tag: 'sb-vless-1',
+		kind: 'vless',
+		label: 'VLESS EU-1',
+		detail: 'eu1.vpn.example:443',
+		available: true,
+	},
+	{
+		tag: 'sb-subscription-1',
+		kind: 'subscription',
+		label: 'Sing subscription RU',
+		detail: 'sub-ru.demo.example',
+		available: true,
+	},
+	{
+		tag: 'sb-wg-reserve',
+		kind: 'wireguard',
+		label: 'WireGuard Reserve',
+		detail: 'wg-reserve.demo.example:51820',
+		available: false,
+	},
+];
 let singboxInstallShouldFail = process.env.MOCK_SINGBOX_INSTALL_FAIL === '1';
 let mockProxyInstances = [
 	{
@@ -2392,8 +2437,20 @@ const server = http.createServer(async (req, res) => {
 					body.data.logging = {};
 				}
 				body.data.logging.singboxLogLevel = singboxLogLevel;
+				if (!body.data.download || typeof body.data.download !== 'object') {
+					body.data.download = {};
+				}
+				body.data.download.routeTag = downloadRouteTag;
 			}
 			send(res, status, body);
+		});
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/download/outbounds') {
+		send(res, 200, {
+			success: true,
+			data: MOCK_DOWNLOAD_OUTBOUNDS,
 		});
 		return;
 	}
@@ -2424,6 +2481,15 @@ const server = http.createServer(async (req, res) => {
 				) {
 					singboxLogLevel = payload.logging.singboxLogLevel;
 				}
+				if (
+					payload &&
+					typeof payload === 'object' &&
+					payload.download &&
+					typeof payload.download === 'object' &&
+					typeof payload.download.routeTag === 'string'
+				) {
+					downloadRouteTag = payload.download.routeTag;
+				}
 				const { status, body } = await fetchJSON('/settings/get');
 				if (body && typeof body === 'object' && body.data) {
 					body.data.usageLevel = usageLevel;
@@ -2431,9 +2497,13 @@ const server = http.createServer(async (req, res) => {
 						body.data.logging = {};
 					}
 					body.data.logging.singboxLogLevel = singboxLogLevel;
+					if (!body.data.download || typeof body.data.download !== 'object') {
+						body.data.download = {};
+					}
+					body.data.download.routeTag = downloadRouteTag;
 				}
 				send(res, status, body);
-				console.log(`[mock-proxy] usageLevel → ${usageLevel}, singboxLogLevel → ${singboxLogLevel}`);
+				console.log(`[mock-proxy] usageLevel → ${usageLevel}, singboxLogLevel → ${singboxLogLevel}, downloadRouteTag → ${downloadRouteTag}`);
 			} catch (e) {
 				send(res, 500, { success: false, error: String(e) });
 			}

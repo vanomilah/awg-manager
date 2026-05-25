@@ -2,6 +2,7 @@ package updater
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -134,5 +135,102 @@ func TestParseChangelog_Empty(t *testing.T) {
 	got, err := ParseChangelog("")
 	if err != nil || len(got) != 0 {
 		t.Errorf("empty input should be (empty map, nil): %v %v", got, err)
+	}
+}
+
+func TestParseChangelog_ProseLinesUnderGroup(t *testing.T) {
+	md := `## [2.11.1] - 2026-05-23
+
+### Два hot-fix в догонку
+
+**Proxy интерфейсы роутера** - исключены из наблюдения.
+**Запросы к роутеру** - скорректированы для Wireguard/peer и Wireguard/wireguard/asc путей.
+`
+	got, err := ParseChangelog(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := got["2.11.1"]
+	if len(entry.Groups) != 1 {
+		t.Fatalf("groups = %+v", entry.Groups)
+	}
+	want := []string{
+		"**Proxy интерфейсы роутера** - исключены из наблюдения.",
+		"**Запросы к роутеру** - скорректированы для Wireguard/peer и Wireguard/wireguard/asc путей.",
+	}
+	if !reflect.DeepEqual(entry.Groups[0].Items, want) {
+		t.Errorf("items = %+v, want %+v", entry.Groups[0].Items, want)
+	}
+}
+
+func TestParseChangelog_IntroBeforeFirstGroup(t *testing.T) {
+	md := `## [2.11.0] - 2026-05-23
+
+Релиз посвящён производительности и стабильности: разговор с роутером ускорился.
+
+### Производительность
+
+- **NDMS-запросы ускорены** — средняя задержка снижена.
+`
+	got, err := ParseChangelog(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := got["2.11.0"]
+	if len(entry.Groups) != 2 {
+		t.Fatalf("groups = %+v, want intro + Производительность", entry.Groups)
+	}
+	if entry.Groups[0].Heading != "" {
+		t.Errorf("intro heading = %q, want empty", entry.Groups[0].Heading)
+	}
+	if len(entry.Groups[0].Items) != 1 || !strings.Contains(entry.Groups[0].Items[0], "производительности") {
+		t.Errorf("intro items = %+v", entry.Groups[0].Items)
+	}
+	if entry.Groups[1].Heading != "Производительность" {
+		t.Errorf("second group = %+v", entry.Groups[1])
+	}
+}
+
+func TestParseChangelog_HorizontalRulesIgnored(t *testing.T) {
+	md := `## [1.0.0] - 2026-01-01
+
+Intro before rule.
+
+---
+
+### Added
+- one
+`
+	got, _ := ParseChangelog(md)
+	items := got["1.0.0"].Groups
+	var all []string
+	for _, g := range items {
+		all = append(all, g.Items...)
+	}
+	for _, item := range all {
+		if item == "---" {
+			t.Errorf("horizontal rule must not become a changelog item: %+v", all)
+		}
+	}
+}
+
+func TestParseChangelog_MixedBulletsAndProse(t *testing.T) {
+	md := `## [2.11.2] - 2026-05-23
+
+### Исправлено
+
+- **Batch запросы** - Исправления batch
+**Extra prose** - без маркера
+`
+	got, _ := ParseChangelog(md)
+	items := got["2.11.2"].Groups[0].Items
+	if len(items) != 2 {
+		t.Fatalf("items = %+v", items)
+	}
+	if items[0] != "**Batch запросы** - Исправления batch" {
+		t.Errorf("bullet item = %q", items[0])
+	}
+	if items[1] != "**Extra prose** - без маркера" {
+		t.Errorf("prose item = %q", items[1])
 	}
 }

@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +82,20 @@ func TestNormalize_HTMLWithJSONEscapedURL(t *testing.T) {
 	want := "vless://uuid@host.example.com:443?flow=xtls-rprx-vision&encryption=none&security=reality&sni=foo.com&pbk=AAA&sid=bbb&spx=/#tag"
 	if got != want {
 		t.Errorf("URL not properly unescaped:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestNormalize_ExtractsMieruLinks(t *testing.T) {
+	body := []byte("first mieru://AAAA second mierus://u:p@h?profile=default&port=443&protocol=TCP")
+	lines := NormalizeBody(body, "text/plain")
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines: %+v", len(lines), lines)
+	}
+	if lines[0] != "mieru://AAAA" {
+		t.Fatalf("lines[0]=%q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "mierus://") {
+		t.Fatalf("lines[1]=%q", lines[1])
 	}
 }
 

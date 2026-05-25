@@ -355,6 +355,20 @@ func TestParseSingboxBody_BrokenJSON(t *testing.T) {
 	}
 }
 
+func TestParseSingboxBody_Mieru(t *testing.T) {
+	body := `{"outbounds":[{"type":"mieru","tag":"m","server":"h","server_port":443,"transport":"TCP","username":"u","password":"p"}]}`
+	res := ParseSingboxBody([]byte(body))
+	if len(res.Errors) != 0 {
+		t.Fatalf("errors: %+v", res.Errors)
+	}
+	if len(res.Outbounds) != 1 {
+		t.Fatalf("got %d outbounds, want 1", len(res.Outbounds))
+	}
+	if res.Outbounds[0].Protocol != "mieru" {
+		t.Fatalf("protocol=%q", res.Outbounds[0].Protocol)
+	}
+}
+
 func TestParseSingboxBody_TagBecomesLabel(t *testing.T) {
 	body := `{"outbounds":[{"type":"vless","tag":"🚀 emoji name","server":"h","server_port":443,"uuid":"u"}]}`
 	res := ParseSingboxBody([]byte(body))

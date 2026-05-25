@@ -203,6 +203,19 @@
 		display: flex;
 		gap: 0.5rem;
 	}
+	@media (max-width: 640px) {
+		.backup-toolbar {
+			flex: 1 0 100%;
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem;
+			width: 100%;
+		}
+		.backup-toolbar :global(.btn) {
+			width: 100%;
+			justify-content: center;
+		}
+	}
 	.warn-box {
 		margin-top: 0.75rem;
 		padding: 0.5rem 0.75rem;

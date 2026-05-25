@@ -17,7 +17,7 @@ func TestFetchChangelog_CachesAcrossCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newChangelogFetcher(srv.URL, 10*time.Minute)
+	c := newChangelogFetcher(srv.URL, 10*time.Minute, nil)
 
 	for i := 0; i < 3; i++ {
 		entries, err := c.Fetch(context.Background())
@@ -41,7 +41,7 @@ func TestFetchChangelog_ErrorNotCached(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := newChangelogFetcher(srv.URL, 10*time.Minute)
+	c := newChangelogFetcher(srv.URL, 10*time.Minute, nil)
 
 	for i := 0; i < 2; i++ {
 		if _, err := c.Fetch(context.Background()); err == nil {

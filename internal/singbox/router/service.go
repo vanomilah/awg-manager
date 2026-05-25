@@ -1039,6 +1039,15 @@ func (s *ServiceImpl) emitCfgEvent(event string, cfg *RouterConfig) {
 		return
 	}
 	switch event {
+	case "all":
+		s.deps.Events.Publish("singbox-router:rules", cfg.Route.Rules)
+		s.deps.Events.Publish("singbox-router:rulesets", cfg.Route.RuleSet)
+		s.deps.Events.Publish("singbox-router:outbounds", cfg.CompositeOutbounds())
+		s.deps.Events.Publish("singbox-router:dns-servers", cfg.DNS.Servers)
+		s.deps.Events.Publish("singbox-router:dns-rules", cfg.DNS.Rules)
+		s.deps.Events.Publish("singbox-router:dns-globals", map[string]string{
+			"final": cfg.DNS.Final, "strategy": cfg.DNS.Strategy,
+		})
 	case "rules":
 		s.deps.Events.Publish("singbox-router:rules", cfg.Route.Rules)
 	case "rulesets":
@@ -1057,6 +1066,106 @@ func (s *ServiceImpl) emitCfgEvent(event string, cfg *RouterConfig) {
 	if status, err := s.GetStatus(context.Background()); err == nil {
 		s.deps.Events.Publish("singbox-router:status", status)
 	}
+}
+
+// IsOutboundTagInUse reports whether tag is already occupied by any outbound
+// catalog visible to singbox-router.
+func (s *ServiceImpl) IsOutboundTagInUse(ctx context.Context, tag string) bool {
+	cfg, err := s.loadRouterConfig()
+	if err != nil {
+		cfg = NewEmptyConfig()
+	}
+	return s.isKnownOutboundTag(ctx, tag, cfg)
+}
+
+// RenameExternalOutboundTag rewrites references to a base outbound owned by
+// another producer (for example a single sing-box tunnel in 10-tunnels.json).
+// It updates both live/disabled router config and the pending draft, if any.
+func (s *ServiceImpl) RenameExternalOutboundTag(ctx context.Context, oldTag, newTag string) error {
+	oldTag = strings.TrimSpace(oldTag)
+	newTag = strings.TrimSpace(newTag)
+	if oldTag == "" || newTag == "" || oldTag == newTag {
+		return nil
+	}
+	if s.deps.Orch == nil {
+		return s.withConfig(ctx, "all", func(c *RouterConfig) error {
+			c.renameOutboundReferences(oldTag, newTag)
+			return nil
+		})
+	}
+
+	configDir := s.deps.Orch.ConfigDir()
+	activePath := filepath.Join(configDir, "20-router.json")
+	disabledPath := filepath.Join(configDir, "disabled", "20-router.json")
+	pendingPath := filepath.Join(configDir, "pending", "20-router.json")
+	changed := false
+
+	if data, ok, err := rewriteRouterConfigOutboundRefs(activePath, oldTag, newTag); err != nil {
+		return err
+	} else if ok {
+		if err := s.deps.Orch.Save(orchestrator.SlotRouter, data); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if data, ok, err := rewriteRouterConfigOutboundRefs(disabledPath, oldTag, newTag); err != nil {
+		return err
+	} else if ok {
+		if err := writeRouterConfigAtomic(disabledPath, data); err != nil {
+			return err
+		}
+		changed = true
+	}
+	if data, ok, err := rewriteRouterConfigOutboundRefs(pendingPath, oldTag, newTag); err != nil {
+		return err
+	} else if ok {
+		if err := s.deps.Orch.SaveDraft(orchestrator.SlotRouter, data); err != nil {
+			return err
+		}
+		s.emitStagingEvent("staged")
+		changed = true
+	}
+	if changed {
+		if cfg, err := s.loadRouterConfig(); err == nil {
+			s.emitCfgEvent("all", s.ruleSetMaterializer().restoreConfig(cfg))
+		}
+	}
+	return nil
+}
+
+func rewriteRouterConfigOutboundRefs(path, oldTag, newTag string) ([]byte, bool, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	cfg := NewEmptyConfig()
+	if err := json.Unmarshal(raw, cfg); err != nil {
+		return nil, false, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if len(cfg.outboundReferences(oldTag)) == 0 {
+		return nil, false, nil
+	}
+	cfg.renameOutboundReferences(oldTag, newTag)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
+func writeRouterConfigAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func (s *ServiceImpl) ListRules(ctx context.Context) ([]Rule, error) {

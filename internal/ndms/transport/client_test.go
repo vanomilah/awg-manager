@@ -59,6 +59,65 @@ func TestClient_GetRaw_ReturnsBytes(t *testing.T) {
 	}
 }
 
+// TestGetRaw_RcInterfaceByName_BypassesBatch проверяет, что read-путь
+// /show/rc/interface/<name> идёт direct GET, минуя batcher. Причина:
+// NDMS на batch-POST `{"show":{"rc":{"interface":{"<name>":{}}}}}` отдаёт
+// двойную вложенность (show.rc.interface.<name>.interface.<name>.{контент}),
+// которую unwrapKeys не разворачивают → парсер WGServerStore получает
+// {interface:{<name>:...}} вместо {wireguard:{peer:[...]}} и теряет пиров.
+// Direct GET спускается по сегментам пути и отдаёт контент напрямую.
+// Verified на Keenetic 5.0.11 2026-05-24.
+func TestGetRaw_RcInterfaceByName_BypassesBatch(t *testing.T) {
+	var gotMethod string
+	var mu sync.Mutex
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotMethod = r.Method
+		mu.Unlock()
+		if r.Method == http.MethodGet {
+			// Direct GET: контент напрямую (форма, которую ждёт парсер).
+			_, _ = io.WriteString(w, `{"wireguard":{"peer":[{"key":"K"}]}}`)
+			return
+		}
+		// Batch POST: двойная вложенность, как реально отдаёт NDMS.
+		_, _ = io.WriteString(w, `[{"show":{"rc":{"interface":{"Wireguard0":{"interface":{"Wireguard0":{"wireguard":{"peer":[{"key":"K"}]}}}}}}}}]`)
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	cli := NewWithURL(srv.URL, NewSemaphore(30))
+	// Fast-path OFF (как в тестах): без bypass одиночный submit пошёл бы POST.
+	cli.batcher = newBatcher(cli, 10*time.Millisecond, 64, 256)
+	cli.batcher.Start()
+	t.Cleanup(cli.batcher.Close)
+
+	body, err := cli.GetRaw(context.Background(), "/show/rc/interface/Wireguard0")
+	if err != nil {
+		t.Fatalf("GetRaw: %v", err)
+	}
+
+	mu.Lock()
+	method := gotMethod
+	mu.Unlock()
+	if method != http.MethodGet {
+		t.Errorf("HTTP method = %s, want GET (rc/interface/<name> must bypass batch)", method)
+	}
+
+	var rc struct {
+		Wireguard *struct {
+			Peer []struct {
+				Key string `json:"key"`
+			} `json:"peer"`
+		} `json:"wireguard"`
+	}
+	if err := json.Unmarshal(body, &rc); err != nil {
+		t.Fatalf("unmarshal body %s: %v", body, err)
+	}
+	if rc.Wireguard == nil || len(rc.Wireguard.Peer) != 1 {
+		t.Fatalf("want wireguard.peer with 1 element (direct-GET shape), got %s", body)
+	}
+}
+
 func TestClient_Get_NonOKStatus(t *testing.T) {
 	c, _ := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -13,6 +13,7 @@ kmod/awg-proxy/tests/mac1_aad_cookie.py
 kmod/awg-proxy/tests/manual_tunnel.sh
 kmod/awg-proxy/tests/manual_tunnel_kernel.sh
 .cache/
+down_ref_plan.md
 
 # IDE
 .idea/
@@ -27,6 +28,7 @@ Thumbs.db
 # Frontend
 node_modules/
 frontend/build/
+frontend/.macos-frontend-build.sha256
 frontend/.svelte-kit/
 frontend/static/openapi.yaml
 yarn.lock
@@ -72,14 +74,6 @@ scripts/build-singbox-naive.sh
 scripts/build-singbox-binaries.sh
 scripts/publish-github-release.sh
 
-# Local debug helpers — used live to validate router iptables behaviour
-# during P3 (singbox-router DNS fallthrough). Not part of the production
-# package; the production logic lives in internal/singbox/router/.
-scripts/test-awgm-dns-nopolicy.sh
-
-# Local one-off diagnostic scripts (kept local; the reusable RCI template
-# scripts/diag-rci-endpoints.sh stays tracked, so listed explicitly here
-# rather than via a diag-*.sh glob).
-scripts/diag-issue-136-peer-no.sh
-scripts/diag-replace-handshake.sh
-scripts/diag-singbox-router.sh
+# Local diagnostic / test scripts — run live against a router to gather
+# evidence; not part of the production package. Kept local-only.
+scripts/diag/

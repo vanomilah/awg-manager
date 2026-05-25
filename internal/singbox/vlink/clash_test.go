@@ -293,6 +293,43 @@ func TestParseClashBody_EmptyProxies(t *testing.T) {
 	}
 }
 
+func TestParseClashBody_Mieru(t *testing.T) {
+	body := []byte(`
+proxies:
+  - name: m1
+    type: mieru
+    server: 12.34.56.78
+    port: 2027
+    transport: TCP
+    username: user
+    password: pass
+    multiplexing: MULTIPLEXING_HIGH
+  - name: m2
+    type: mieru
+    server: 12.34.56.78
+    port-range: 2012-2022
+    transport: UDP
+    username: user
+    password: pass
+`)
+	res := ParseClashBody(body)
+	if len(res.Errors) != 0 {
+		t.Fatalf("errors: %+v", res.Errors)
+	}
+	if len(res.Outbounds) != 2 {
+		t.Fatalf("got %d outbounds, want 2", len(res.Outbounds))
+	}
+	first := decodeOutbound(t, res.Outbounds[0])
+	if first["type"] != "mieru" || first["transport"] != "TCP" || first["server_port"] != float64(2027) {
+		t.Fatalf("bad first outbound: %+v", first)
+	}
+	second := decodeOutbound(t, res.Outbounds[1])
+	if second["transport"] != "UDP" {
+		t.Fatalf("bad second outbound: %+v", second)
+	}
+	assertStringSlice(t, second["server_ports"], []string{"2012-2022"})
+}
+
 func TestParseClashBody_InvalidYAML(t *testing.T) {
 	res := ParseClashBody([]byte("\x00\x01\x02not valid: : :\n  - %"))
 	if len(res.Outbounds) != 0 {

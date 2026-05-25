@@ -549,9 +549,7 @@ class ApiClient {
 
 	async getUpdateChangelog(from: string, to: string): Promise<{ entries: ChangelogEntry[] }> {
 		const parts = [`to=${encodeURIComponent(to)}`];
-		// Omit `from` to request the single-version view for `to` — backend
-		// returns just that one entry (used by "Что нового" when no update
-		// is pending).
+		// Omit `from` for the current minor line up to `to` (2.11.0…2.11.2 on 2.11.2+r70).
 		if (from) parts.push(`from=${encodeURIComponent(from)}`);
 		return this.request(`/system/update/changelog?${parts.join('&')}`);
 	}
@@ -1492,6 +1490,10 @@ class ApiClient {
 			}
 			outbound.transport = { type: t.transport || 'tcp' };
 			if (Object.keys(tls).length > 0) outbound.tls = tls;
+		} else if (t.protocol === 'mieru') {
+			outbound.transport = (t.transport || 'TCP').toUpperCase();
+			outbound.username = t.username || '';
+			outbound.password = '';
 		}
 
 		return outbound;
@@ -1501,6 +1503,13 @@ class ApiClient {
 		return this.request(`/singbox/tunnels?tag=${encodeURIComponent(tag)}`, {
 			method: 'PUT',
 			body: JSON.stringify({ outbound })
+		});
+	}
+
+	async singboxRenameTunnel(oldTag: string, newTag: string): Promise<SingboxTunnel[]> {
+		return this.request('/singbox/tunnels/rename', {
+			method: 'PATCH',
+			body: JSON.stringify({ oldTag, newTag })
 		});
 	}
 

@@ -24,7 +24,7 @@ SINGBOX_LOW_MEMORY="${SINGBOX_LOW_MEMORY:-1}"
 CRONET_GO_DIR="${CRONET_GO_DIR:-$HOME/cronet-go}"
 RELEASE_REPO="${RELEASE_REPO:-hoaxisr/awg-manager}"
 RELEASE_TAG="${RELEASE_TAG:-latest}"
-RELEASE_BASE_URL="${RELEASE_BASE_URL:-http://repo.hoaxisr.ru/singbox/$SINGBOX_VERSION}"
+RELEASE_BASE_URL="${RELEASE_BASE_URL:-https://github.com/$RELEASE_REPO/releases/download/$RELEASE_TAG}"
 export GOTOOLCHAIN="${GOTOOLCHAIN:-local}"
 
 case "$ENTWARE_ARCH" in
@@ -115,6 +115,26 @@ else
 fi
 
 cd "$SINGBOX_DIR"
+
+apply_mieru_patch() {
+    local patch_file="$PROJECT_ROOT/scripts/patches/mieru.patch"
+    if [[ ! -f "$patch_file" ]]; then
+        echo "ERROR: missing Mieru sing-box patch: $patch_file" >&2
+        exit 1
+    fi
+    if git apply --reverse --check "$patch_file" >/dev/null 2>&1; then
+        echo "Mieru patch already applied"
+        return
+    fi
+    echo "Applying Mieru patch: $patch_file"
+    if ! git apply --3way --whitespace=fix "$patch_file"; then
+        echo "ERROR: failed to apply Mieru patch to sing-box source at $SINGBOX_DIR" >&2
+        echo "       Check that SINGBOX_REF=$SINGBOX_REF is compatible with scripts/patches/mieru.patch" >&2
+        exit 1
+    fi
+}
+
+apply_mieru_patch
 
 append_tag() {
     local tag="$1"

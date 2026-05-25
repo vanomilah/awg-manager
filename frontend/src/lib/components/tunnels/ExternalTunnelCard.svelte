@@ -277,5 +277,10 @@
 		.list-card {
 			grid-template-columns: minmax(0, 1fr);
 		}
+
+		.actions-wrapper :global(.btn),
+		.list-cell-actions :global(.btn) {
+			width: 100%;
+		}
 	}
 </style>

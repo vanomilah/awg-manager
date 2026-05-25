@@ -37,6 +37,11 @@
     <div class="row">
       <div class="field"><span class="label">Пользователь</span><span class="value">{tunnel.username || '—'}</span></div>
     </div>
+  {:else if tunnel.protocol === 'mieru'}
+    <div class="row">
+      <div class="field"><span class="label">Пользователь</span><span class="value">{tunnel.username || '—'}</span></div>
+      <div class="field"><span class="label">Transport</span><span class="value">{tunnel.transport || '—'}</span></div>
+    </div>
   {/if}
 </div>
 

@@ -52,3 +52,52 @@ func TestSlice_MissingToIgnored(t *testing.T) {
 		t.Errorf("missing 'to' should still slice by version comparison: %+v", got)
 	}
 }
+
+func TestSlice_BuildRevisionSameAsRelease(t *testing.T) {
+	entries := map[string]Entry{
+		"2.11.2": {Version: "2.11.2", Date: "2026-05-23"},
+		"2.11.1": {Version: "2.11.1", Date: "2026-05-23"},
+	}
+	got := Slice(entries, "2.11.2+r70", "2.11.2")
+	if len(got) != 0 {
+		t.Errorf("same release + build revision must not list older entries: %+v", got)
+	}
+}
+
+func TestSlice_BuildRevisionUpgradeToNextPatch(t *testing.T) {
+	entries := map[string]Entry{
+		"2.11.3": {Version: "2.11.3"},
+		"2.11.2": {Version: "2.11.2"},
+		"2.11.1": {Version: "2.11.1"},
+	}
+	got := Slice(entries, "2.11.2+r70", "2.11.3")
+	if len(got) != 1 || got[0].Version != "2.11.3" {
+		t.Errorf("want only 2.11.3, got %+v", got)
+	}
+}
+
+func TestMinorLine_IncludesPatchLineUpToCurrent(t *testing.T) {
+	entries := map[string]Entry{
+		"2.11.2": {Version: "2.11.2"},
+		"2.11.1": {Version: "2.11.1"},
+		"2.11.0": {Version: "2.11.0"},
+		"2.10.9": {Version: "2.10.9"},
+	}
+	got := MinorLine(entries, "2.11.2+r70")
+	if len(got) != 3 {
+		t.Fatalf("want 2.11.x through 2.11.2, got %+v", got)
+	}
+	if got[0].Version != "2.11.2" || got[2].Version != "2.11.0" {
+		t.Errorf("order/newest-first: %+v", got)
+	}
+}
+
+func TestSingle_BuildRevisionLookup(t *testing.T) {
+	entries := map[string]Entry{
+		"2.11.2": {Version: "2.11.2", Groups: []Group{{Heading: "Fixed", Items: []string{"x"}}}},
+	}
+	got := Single(entries, "2.11.2+r70")
+	if got == nil || got.Version != "2.11.2" {
+		t.Fatalf("Single(2.11.2+r70) = %+v, want 2.11.2 entry", got)
+	}
+}

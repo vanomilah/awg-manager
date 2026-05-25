@@ -45,6 +45,8 @@
 {#if href}
   <a
     class="btn"
+    class:has-icon-before={!!iconBefore || loading}
+    class:has-icon-after={!!iconAfter}
     class:variant-primary={variant === 'primary'}
     class:variant-secondary={variant === 'secondary'}
     class:variant-ghost={variant === 'ghost'}
@@ -65,13 +67,21 @@
     role="button"
     tabindex={isDisabled ? -1 : 0}
   >
-    {#if loading}<span class="spinner" aria-hidden="true"></span>{:else if iconBefore}{@render iconBefore()}{/if}
+    {#if loading}
+      <span class="icon icon-before spinner" aria-hidden="true"></span>
+    {:else if iconBefore}
+      <span class="icon icon-before" aria-hidden="true">{@render iconBefore()}</span>
+    {/if}
     <span class="label">{@render children()}</span>
-    {#if iconAfter && !loading}{@render iconAfter()}{/if}
+    {#if iconAfter && !loading}
+      <span class="icon icon-after" aria-hidden="true">{@render iconAfter()}</span>
+    {/if}
   </a>
 {:else}
   <button
     class="btn"
+    class:has-icon-before={!!iconBefore || loading}
+    class:has-icon-after={!!iconAfter}
     class:variant-primary={variant === 'primary'}
     class:variant-secondary={variant === 'secondary'}
     class:variant-ghost={variant === 'ghost'}
@@ -88,9 +98,15 @@
     {onclick}
     {title}
   >
-    {#if loading}<span class="spinner" aria-hidden="true"></span>{:else if iconBefore}{@render iconBefore()}{/if}
+    {#if loading}
+      <span class="icon icon-before spinner" aria-hidden="true"></span>
+    {:else if iconBefore}
+      <span class="icon icon-before" aria-hidden="true">{@render iconBefore()}</span>
+    {/if}
     <span class="label">{@render children()}</span>
-    {#if iconAfter && !loading}{@render iconAfter()}{/if}
+    {#if iconAfter && !loading}
+      <span class="icon icon-after" aria-hidden="true">{@render iconAfter()}</span>
+    {/if}
   </button>
 {/if}
 
@@ -110,6 +126,46 @@
     text-decoration: none;
     user-select: none;
     white-space: nowrap;
+  }
+
+  .btn.has-icon-before,
+  .btn.has-icon-after {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    column-gap: 0.4375rem;
+  }
+
+  .btn.has-icon-before {
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
+  }
+
+  .btn.has-icon-after {
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
+  }
+
+  .btn .icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+
+  .btn .icon-before {
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  .btn .icon-after {
+    grid-column: 3;
+    justify-self: end;
+  }
+
+  .btn .label {
+    grid-column: 2;
+    text-align: center;
   }
 
   .btn.full-width { width: 100%; }
@@ -155,8 +211,8 @@
   }
 
   .variant-danger {
-    background: var(--color-error);
-    color: var(--color-error-contrast, #ffffff);
+    background: #ef4444;
+    color: #ffffff;
   }
   .variant-danger:hover:not(:disabled):not(.is-disabled) {
     filter: brightness(1.1);
@@ -172,12 +228,12 @@
 
   .variant-outline-danger {
     background: transparent;
-    color: var(--color-error);
-    border-color: var(--color-error-border);
+    color: #ef4444;
+    border-color: color-mix(in srgb, #ef4444 45%, transparent);
   }
   .variant-outline-danger:hover:not(:disabled):not(.is-disabled) {
-    background: var(--color-error-tint);
-    border-color: var(--color-error);
+    background: color-mix(in srgb, #ef4444 14%, transparent);
+    border-color: #ef4444;
   }
 
   .variant-outline-primary {
@@ -210,7 +266,8 @@
     to { transform: rotate(360deg); }
   }
 
-  :global(.btn > svg) {
+  :global(.btn > svg),
+  :global(.btn .icon > svg) {
     width: 14px;
     height: 14px;
     flex-shrink: 0;

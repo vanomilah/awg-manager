@@ -13,8 +13,8 @@ import (
 // ParsedOutbound mirrors the legacy singbox.ParsedOutbound shape so callers
 // can switch import paths without touching the rest of their code.
 type ParsedOutbound struct {
-	Tag      string          // from URI fragment or auto-generated
-	Protocol string          // "vless"|"trojan"|"shadowsocks"|"hysteria2"|"naive"
+	Tag      string // from URI fragment or auto-generated
+	Protocol string // "vless"|"trojan"|"shadowsocks"|"hysteria2"|"naive"
 	Server   string
 	Port     uint16
 	Outbound json.RawMessage // sing-box outbound JSON
@@ -49,8 +49,23 @@ var (
 
 // ParseLink dispatches a single share link to its scheme-specific parser.
 // Returns ParsedOutbound on success. Returns ErrSchemeDropped for vmess so
-// callers can count vs. report differently.
+// callers can count vs. report differently. Multi-outbound links such as
+// mieru:// should use ParseLinkMany; this helper returns the first parsed
+// outbound for backwards-compatible single-link call sites.
 func ParseLink(input string) (*ParsedOutbound, error) {
+	parsed, err := ParseLinkMany(input)
+	if err != nil {
+		return nil, err
+	}
+	if len(parsed) == 0 {
+		return nil, ErrUnsupportedScheme
+	}
+	return &parsed[0], nil
+}
+
+// ParseLinkMany dispatches a single share link and may return multiple
+// outbounds when the source format describes multiple usable endpoints.
+func ParseLinkMany(input string) ([]ParsedOutbound, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return nil, ErrEmptyInput
@@ -58,21 +73,32 @@ func ParseLink(input string) (*ParsedOutbound, error) {
 	lower := strings.ToLower(input)
 	switch {
 	case strings.HasPrefix(lower, "vless://"):
-		return parseVless(input)
+		return singleOutbound(parseVless(input))
 	case strings.HasPrefix(lower, "trojan://"):
-		return parseTrojan(input)
+		return singleOutbound(parseTrojan(input))
 	case strings.HasPrefix(lower, "ss://"):
-		return parseShadowsocks(input)
+		return singleOutbound(parseShadowsocks(input))
 	case strings.HasPrefix(lower, "hysteria2://") || strings.HasPrefix(lower, "hy2://"):
-		return parseHysteria2(input)
+		return singleOutbound(parseHysteria2(input))
 	case strings.HasPrefix(lower, "naive+"):
-		return parseNaive(input)
+		return singleOutbound(parseNaive(input))
 	case strings.HasPrefix(lower, "vpn://"):
-		return parseAmnezia(input)
+		return singleOutbound(parseAmnezia(input))
+	case strings.HasPrefix(lower, "mieru://"):
+		return parseMieruStandard(input)
+	case strings.HasPrefix(lower, "mierus://"):
+		return parseMieruSimple(input)
 	case strings.HasPrefix(lower, "vmess://"):
 		return nil, ErrSchemeDropped
 	}
 	return nil, ErrUnsupportedScheme
+}
+
+func singleOutbound(out *ParsedOutbound, err error) ([]ParsedOutbound, error) {
+	if err != nil {
+		return nil, err
+	}
+	return []ParsedOutbound{*out}, nil
 }
 
 // ParseBatch processes a list of lines, aggregating results. Empty lines and
@@ -88,7 +114,7 @@ func ParseBatch(lines []string) BatchResult {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		parsed, err := ParseLink(line)
+		parsed, err := ParseLinkMany(line)
 		if err != nil {
 			scheme := detectScheme(line)
 			if errors.Is(err, ErrSchemeDropped) {
@@ -103,7 +129,7 @@ func ParseBatch(lines []string) BatchResult {
 			out.Errors = append(out.Errors, ParseError{LineIdx: i, Scheme: scheme, Message: err.Error()})
 			continue
 		}
-		out.Outbounds = append(out.Outbounds, *parsed)
+		out.Outbounds = append(out.Outbounds, parsed...)
 	}
 	return out
 }

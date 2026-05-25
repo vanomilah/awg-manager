@@ -121,6 +121,7 @@ func (f *fakeSingbox) IsRunning() (bool, int) {
 	return false, 0
 }
 func (f *fakeSingbox) Start() error                              { return nil }
+func (f *fakeSingbox) Stop() error                               { return nil }
 func (f *fakeSingbox) ValidateConfigDir(_ context.Context) error { return nil }
 func (f *fakeSingbox) ConfigDir() string                         { return f.dir }
 func (f *fakeSingbox) Binary() string                            { return f.binary }
@@ -242,6 +243,51 @@ func TestSetRouteFinal_AllowsSubscriptionCompositeTag(t *testing.T) {
 	}
 	if cfg.Route.Final != "sub-test" {
 		t.Fatalf("route.final: want sub-test, got %q", cfg.Route.Final)
+	}
+}
+
+func TestRenameExternalOutboundTag_UpdatesActiveAndPending(t *testing.T) {
+	dir := t.TempDir()
+	orch := orchestrator.New(dir, &fakeSingbox{dir: dir})
+	if err := orch.Register(orchestrator.SlotMeta{Slot: orchestrator.SlotRouter, Filename: "20-router.json"}); err != nil {
+		t.Fatalf("Register router slot: %v", err)
+	}
+	if err := orch.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if err := orch.SetEnabled(orchestrator.SlotRouter, true); err != nil {
+		t.Fatalf("SetEnabled: %v", err)
+	}
+	active := []byte(`{"inbounds":[],"outbounds":[{"type":"selector","tag":"g","outbounds":["old"],"default":"old"}],"route":{"rules":[{"action":"route","outbound":"old"}],"final":"old"},"dns":{"servers":[{"tag":"d","type":"https","server":"example","detour":"old"}]}}`)
+	if err := orch.Save(orchestrator.SlotRouter, active); err != nil {
+		t.Fatalf("Save active: %v", err)
+	}
+	pending := []byte(`{"inbounds":[],"outbounds":[],"route":{"rules":[{"type":"logical","rules":[{"outbound":"old"}]}],"final":"direct","rule_set":[{"tag":"rs","type":"remote","url":"https://example.com/rs.srs","download_detour":"old"}]}}`)
+	if err := orch.SaveDraft(orchestrator.SlotRouter, pending); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+	svc := &ServiceImpl{deps: Deps{Singbox: &fakeSingbox{dir: dir}, Orch: orch}}
+
+	if err := svc.RenameExternalOutboundTag(context.Background(), "old", "new"); err != nil {
+		t.Fatalf("RenameExternalOutboundTag: %v", err)
+	}
+
+	activeCfg, err := LoadConfig(filepath.Join(dir, "20-router.json"))
+	if err != nil {
+		t.Fatalf("Load active: %v", err)
+	}
+	if activeCfg.Route.Final != "new" || activeCfg.Route.Rules[0].Outbound != "new" ||
+		activeCfg.Outbounds[0].Outbounds[0] != "new" || activeCfg.Outbounds[0].Default != "new" ||
+		activeCfg.DNS.Servers[0].Detour != "new" {
+		t.Fatalf("active refs not renamed: %+v", activeCfg)
+	}
+	pendingCfg, err := LoadConfig(filepath.Join(dir, "pending", "20-router.json"))
+	if err != nil {
+		t.Fatalf("Load pending: %v", err)
+	}
+	if pendingCfg.Route.Rules[0].Rules[0].Outbound != "new" ||
+		pendingCfg.Route.RuleSet[0].DownloadDetour != "new" {
+		t.Fatalf("pending refs not renamed: %+v", pendingCfg)
 	}
 }
 

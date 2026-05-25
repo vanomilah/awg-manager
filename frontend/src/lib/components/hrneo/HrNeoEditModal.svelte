@@ -406,7 +406,7 @@
 	     important user choice) is visible without scrolling past long
 	     domain/CIDR textareas. -->
 	<section class="form-section">
-		<div class="field-label">Target</div>
+		<div class="field-label">Цель</div>
 		<div class="seg-tabs">
 			<button
 				type="button"
@@ -749,6 +749,20 @@
 	}
 	.field-error :global(.field-input) {
 		border-color: var(--color-error);
+	}
+
+	@media (max-width: 640px) {
+		.radio-block {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			width: 100%;
+		}
+
+		.radio-option {
+			width: 100%;
+			justify-content: center;
+			min-width: 0;
+		}
 	}
 
 </style>

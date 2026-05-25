@@ -43,6 +43,22 @@ type PolicyTracker interface {
 	GetManagedPolicies() []string
 }
 
+// TunnelLifecycle starts/stops a MANAGED tunnel through the orchestrator
+// (full lifecycle, incl. NativeWG kmod proxy setup + peer endpoint rewrite).
+// Optional — nil disables managed-tunnel routing and SetInterfaceUp falls
+// back to a raw NDMS interface flip.
+type TunnelLifecycle interface {
+	Start(ctx context.Context, tunnelID string) error
+	Stop(ctx context.Context, tunnelID string) error
+}
+
+// ManagedTunnelResolver maps an NDMS interface name (e.g. "Wireguard4") to a
+// managed tunnel ID. ok=false means the interface is not a managed tunnel
+// (a plain system interface) and should use the raw NDMS flip.
+type ManagedTunnelResolver interface {
+	ManagedTunnelByNDMSName(ctx context.Context, ndmsName string) (id string, ok bool)
+}
+
 // ServiceImpl implements Service on top of the NDMS CQRS layer
 // (command.PolicyCommands for writes, query.Queries for reads).
 // InterfaceCommands is plumbed in so SetInterfaceUp can reuse the
@@ -55,6 +71,22 @@ type ServiceImpl struct {
 	tracker     PolicyTracker
 	appLog      *logging.ScopedLogger
 	policyMarks PolicyMarkSource
+
+	// lifecycle + tunnelResolver route SetInterfaceUp for managed tunnels
+	// through the orchestrator instead of a raw NDMS flip. Both optional;
+	// nil → raw flip (system interfaces, or wiring contexts without a
+	// lifecycle such as the startup cleanup sweep). Wired via
+	// SetTunnelLifecycle after construction.
+	lifecycle      TunnelLifecycle
+	tunnelResolver ManagedTunnelResolver
+}
+
+// SetTunnelLifecycle wires managed-tunnel lifecycle routing for
+// SetInterfaceUp. Call once after construction. Pass nil resolver or
+// lifecycle to keep the raw-flip behaviour.
+func (s *ServiceImpl) SetTunnelLifecycle(lc TunnelLifecycle, resolver ManagedTunnelResolver) {
+	s.lifecycle = lc
+	s.tunnelResolver = resolver
 }
 
 // New creates a new access policy service backed by the NDMS CQRS layer.
@@ -439,6 +471,31 @@ func (s *ServiceImpl) SetInterfaceUp(ctx context.Context, ndmsName string, up bo
 	if !up {
 		action = "down"
 	}
+
+	// Managed tunnels must go through the orchestrator lifecycle, not a raw
+	// NDMS interface flip. A bare "up" brings the NDMS interface running with
+	// its stored peer endpoint, but NativeWG needs the orchestrator to
+	// (re)build the kmod proxy and rewrite the peer endpoint to the local
+	// proxy port — otherwise the handshake never completes (issue #183).
+	// The reverse (down) needs the full stop so the kmod slot is removed and
+	// the disabled state is persisted instead of diverging from NDMS.
+	if s.lifecycle != nil && s.tunnelResolver != nil {
+		if id, ok := s.tunnelResolver.ManagedTunnelByNDMSName(ctx, ndmsName); ok {
+			var lerr error
+			if up {
+				lerr = s.lifecycle.Start(ctx, id)
+			} else {
+				lerr = s.lifecycle.Stop(ctx, id)
+			}
+			if lerr != nil {
+				s.appLog.Warn("set-interface", ndmsName, fmt.Sprintf("Failed to %s managed tunnel %s: %v", action, id, lerr))
+				return lerr
+			}
+			s.appLog.Full("set-interface", ndmsName, fmt.Sprintf("Managed tunnel %s set %s via lifecycle", id, action))
+			return nil
+		}
+	}
+
 	var err error
 	if up {
 		err = s.interfaces.InterfaceUp(ctx, ndmsName)

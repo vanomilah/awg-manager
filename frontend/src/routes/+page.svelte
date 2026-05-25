@@ -1236,7 +1236,9 @@
 					<Button variant="secondary" size="md" onclick={handleExportAll} disabled={exporting} iconBefore={exportIcon}>
 						Экспорт
 					</Button>
-					<Button variant="primary" size="md" href="/tunnels/new">+ Создать</Button>
+					<Button variant="primary" size="md" href="/tunnels/new" iconBefore={createIcon}>
+						Создать
+					</Button>
 				</div>
 			</div>
 			{#if awgEffectiveViewMode === 'list'}
@@ -2035,7 +2037,7 @@
 	>
 		<p class="confirm-text">Удалить туннель <strong>{tunnelName}</strong>?</p>
 		{#snippet actions()}
-			<Button variant="ghost" size="md" onclick={() => deleteConfirmId = null}>Отмена</Button>
+			<Button variant="secondary" size="md" onclick={() => deleteConfirmId = null}>Отмена</Button>
 			<Button variant="danger" size="md" onclick={() => handleDelete(deleteConfirmId!)}>Удалить</Button>
 		{/snippet}
 	</Modal>
@@ -2148,6 +2150,13 @@
 		<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
 		<polyline points="7 10 12 15 17 10"/>
 		<line x1="12" y1="15" x2="12" y2="3"/>
+	</svg>
+{/snippet}
+
+{#snippet createIcon()}
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+		<path d="M12 5v14"/>
+		<path d="M5 12h14"/>
 	</svg>
 {/snippet}
 
@@ -3273,8 +3282,14 @@
 		}
 
 		.toolbar-actions {
-			justify-content: space-between;
-			flex-wrap: wrap;
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem;
+			width: 100%;
+		}
+
+		.toolbar-actions :global(.btn) {
+			width: 100%;
 		}
 	}
 </style>

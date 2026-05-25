@@ -20,6 +20,7 @@
 		onupdateSingbox?: () => void;
 		showSingbox?: boolean;
 		showHydra?: boolean;
+		downloadRouteLabel?: string;
 	}
 
 	let {
@@ -36,6 +37,7 @@
 		onupdateSingbox,
 		showSingbox = true,
 		showHydra = true,
+		downloadRouteLabel = '',
 	}: Props = $props();
 
 	const singboxInstalled = $derived(singboxStatus?.installed ?? false);
@@ -167,6 +169,11 @@
 								</span>
 							{/if}
 						{/if}
+						{#if downloadRouteLabel}
+							<span class="integration-route" title={downloadRouteLabel}>
+								Через {downloadRouteLabel}
+							</span>
+						{/if}
 					</div>
 				</div>
 				{#if installProgress}
@@ -221,6 +228,11 @@
 						{#if !hydraStatusLoading && hydraProbeNote}
 							<span class="integration-probe-note">{hydraProbeNote}</span>
 						{/if}
+						{#if downloadRouteLabel}
+							<span class="integration-route" title={downloadRouteLabel}>
+								geo.dat: через {downloadRouteLabel}
+							</span>
+						{/if}
 					</div>
 				</div>
 				{#if hydraInstalled}
@@ -229,7 +241,7 @@
 					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
 				{:else}
 					<Button
-						variant="primary"
+						variant="outline-primary"
 						size="sm"
 						href="https://github.com/Ground-Zerro/HydraRoute"
 						target="_blank"
@@ -278,6 +290,14 @@
 		font-size: 0.6875rem;
 		font-family: var(--font-mono);
 		color: var(--color-text-muted);
+	}
+	.integration-route {
+		font-size: 0.6875rem;
+		font-family: var(--font-mono);
+		color: var(--color-text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.warning {

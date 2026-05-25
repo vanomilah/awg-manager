@@ -218,6 +218,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		width: 100%;
+		gap: 12px;
 	}
 
 	.section-header h4 {
@@ -238,6 +240,24 @@
 
 	.link-btn:hover {
 		text-decoration: underline;
+	}
+
+	@media (max-width: 640px) {
+		.section-header {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			align-items: center;
+		}
+
+		.section-header h4 {
+			min-width: 0;
+			text-align: left;
+		}
+
+		.link-btn {
+			justify-self: end;
+			margin-left: 0;
+		}
 	}
 
 	.add-dropdown {

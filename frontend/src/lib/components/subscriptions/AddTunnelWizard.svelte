@@ -273,6 +273,7 @@
 				Каждая строка — отдельный sing-box туннель со своим Proxy NDMS.
 				Поддерживаются <code>vless://</code>, <code>hy2://</code>,
 				<code>trojan://</code>, <code>ss://</code>, <code>hysteria2://</code>,
+				<code>mieru://</code>, <code>mierus://</code>,
 				<code>naive+http://</code>, <code>naive+https://</code>.
 				Список через пробел при вставке разбивается на строки автоматически.
 			</p>
@@ -283,7 +284,7 @@
 			{/if}
 			<ShareLinksTextarea
 				bind:value={singleLinks}
-				placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland`}
+				placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland\nmierus://user:pass@host?profile=default&port=443&protocol=TCP`}
 				rows={6}
 				disabled={!singboxInstalled || submitting}
 				onpaste={(e) => onShareListPaste(e, () => singleLinks, (v) => (singleLinks = v))}
@@ -337,7 +338,7 @@
 					<span class="lbl">Ссылки на серверы (по одной на строку)</span>
 					<ShareLinksTextarea
 						bind:value={inlineText}
-						placeholder={`vless://...\ntrojan://...\nhysteria2://...\nnaive+https://\nss://...`}
+						placeholder={`vless://...\ntrojan://...\nhysteria2://...\nnaive+https://\nss://...\nmieru://...`}
 						rows={6}
 						onpaste={(e) => onShareListPaste(e, () => inlineText, (v) => (inlineText = v))}
 					/>

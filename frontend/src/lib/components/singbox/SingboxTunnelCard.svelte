@@ -83,6 +83,8 @@
 				return 'Shadowsocks';
 			case 'naive':
 				return 'Naive';
+			case 'mieru':
+				return 'Mieru';
 			default:
 				return protocol ? protocol.charAt(0).toUpperCase() + protocol.slice(1) : '—';
 		}
@@ -1091,6 +1093,7 @@
 	.b-hysteria2 { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
 	.b-trojan { background: rgba(244, 63, 94, 0.15); color: #fb7185; }
 	.b-shadowsocks { background: rgba(16, 185, 129, 0.15); color: #34d399; }
+	.b-mieru { background: rgba(20, 184, 166, 0.18); color: #5eead4; }
 	/* Cyan-400 on 15% alpha perceptually washed out against the dark
 	   bg — bump to cyan-300 text with slightly denser background so
 	   NaiveProxy matches the contrast of the other protocol badges. */

@@ -1673,7 +1673,19 @@
 
 	@media (max-width: 400px) {
 		.actions {
-			flex-wrap: wrap;
+			display: grid;
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			gap: 4px;
+		}
+
+		.action-btn {
+			width: 100%;
+			justify-content: center;
+			padding-inline: 6px;
+		}
+
+		.action-btn svg {
+			flex-shrink: 0;
 		}
 	}
 

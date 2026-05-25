@@ -28,8 +28,8 @@
 	</div>
 
 	<p class="page-intro">
-		Вставьте одну или несколько ссылок <code>vless://</code>, <code>hysteria2://</code>
-		или <code>naive+https://</code> — каждая на своей строке.
+		Вставьте одну или несколько ссылок <code>vless://</code>, <code>hysteria2://</code>,
+		<code>mieru://</code> или <code>mierus://</code> — каждая на своей строке.
 	</p>
 
 	<SingboxGhostTerminal oncomplete={onComplete} />

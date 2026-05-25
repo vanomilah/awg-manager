@@ -63,21 +63,21 @@
 			<div>
 				<div class="section-label">Поведение</div>
 				<div class="settings-panel">
-					<div class="setting-row">
+					<div class="setting-row setting-row-toggle">
 						<div class="flex flex-col gap-1">
 							<span class="font-medium">Auto-start</span>
 							<span class="setting-description">запуск при загрузке роутера</span>
 						</div>
 						<Toggle checked={cfg.autoStart} onchange={(v) => touch('autoStart', v)} />
 					</div>
-					<div class="setting-row">
+					<div class="setting-row setting-row-toggle">
 						<div class="flex flex-col gap-1">
 							<span class="font-medium">Clear ipset</span>
 							<span class="setting-description">очищать ipset при старте</span>
 						</div>
 						<Toggle checked={cfg.clearIPSet} onchange={(v) => touch('clearIPSet', v)} />
 					</div>
-					<div class="setting-row">
+					<div class="setting-row setting-row-toggle">
 						<div class="flex flex-col gap-1">
 							<span class="font-medium">Conntrack flush</span>
 							<span class="setting-description">сбрасывать conntrack при появлении нового IP</span>
@@ -87,7 +87,7 @@
 							onchange={(v) => touch('conntrackFlush', v)}
 						/>
 					</div>
-					<div class="setting-row">
+					<div class="setting-row setting-row-toggle">
 						<div class="flex flex-col gap-1">
 							<span class="font-medium">Global routing</span>
 							<span class="setting-description warn">перезаписывает политики роутера — используйте осторожно</span>
@@ -103,7 +103,7 @@
 			<div>
 				<div class="section-label">Ipset</div>
 				<div class="settings-panel">
-					<div class="setting-row">
+					<div class="setting-row setting-row-toggle">
 						<div class="flex flex-col gap-1">
 							<span class="font-medium">Enable timeout</span>
 							<span class="setting-description">записи в ipset будут удаляться по таймауту</span>
@@ -186,7 +186,7 @@
 				</button>
 				{#if advancedOpen}
 					<div class="settings-panel">
-						<div class="setting-row">
+						<div class="setting-row setting-row-toggle">
 							<div class="flex flex-col gap-1">
 								<span class="font-medium">DirectRoute enabled</span>
 								<span class="setting-description">прямая маршрутизация на интерфейс</span>
@@ -259,5 +259,32 @@
 		cursor: pointer;
 		padding: 4px 0;
 		font-family: inherit;
+	}
+
+	@media (max-width: 640px) {
+		.setting-row-toggle {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) auto;
+			align-items: center;
+			gap: 0.75rem;
+		}
+
+		.setting-row-toggle > :first-child {
+			min-width: 0;
+		}
+
+		.setting-row-toggle > :last-child {
+			justify-self: end;
+		}
+
+		.num,
+		.log-select {
+			width: 100%;
+			min-width: 0;
+		}
+
+		.setting-row input {
+			max-width: none;
+		}
 	}
 </style>

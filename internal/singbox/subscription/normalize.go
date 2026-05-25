@@ -8,7 +8,7 @@ import (
 )
 
 // shareSchemeCore matches supported share-link scheme names (no ://).
-const shareSchemeCore = `(?:vless|trojan|ss|hysteria2|hy2|naive\+\w+|vpn)`
+const shareSchemeCore = `(?:vless|trojan|ss|hysteria2|hy2|naive\+\w+|vpn|mieru|mierus)`
 
 // shareURLStartPlain finds share URLs in plain text: after line start or ASCII whitespace.
 // Used so fragments may contain spaces (e.g. "#📆 Осталось: 28 дней") and space-separated
@@ -22,6 +22,12 @@ var shareURLStartHTML = regexp.MustCompile(`(?i)(?:^|[\s"'<>=]+)(` + shareScheme
 // (quotes, commas, angle brackets, whitespace).
 func trimShareURLSuffix(u string) string {
 	u = strings.TrimSpace(u)
+	lower := strings.ToLower(u)
+	if strings.HasPrefix(lower, "mieru://") || strings.HasPrefix(lower, "mierus://") {
+		if fields := strings.Fields(u); len(fields) > 0 {
+			u = fields[0]
+		}
+	}
 	// React/JSON payloads: URL value often followed by "} after the fragment.
 	if j := strings.LastIndex(u, "\"}"); j > 0 && strings.Contains(u, "://") {
 		u = u[:j]

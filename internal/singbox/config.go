@@ -335,6 +335,102 @@ func (c *Config) UpdateTunnel(tag string, outbound json.RawMessage) error {
 	return nil
 }
 
+// RenameTunnel changes a user tunnel tag and all local references owned by
+// 10-tunnels.json. It preserves the listen_port, therefore the ProxyN/t2sN
+// slot remains stable.
+func (c *Config) RenameTunnel(oldTag, newTag string) error {
+	oldTag = strings.TrimSpace(oldTag)
+	newTag = strings.TrimSpace(newTag)
+	if oldTag == "" || newTag == "" {
+		return ErrInvalidTunnelTag
+	}
+	if oldTag == newTag {
+		found := false
+		for _, ob := range c.userOutbounds() {
+			if t, _ := ob["tag"].(string); t == oldTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%w: %q", ErrTunnelNotFound, oldTag)
+		}
+		return nil
+	}
+
+	found := false
+	for _, ob := range c.userOutbounds() {
+		t, _ := ob["tag"].(string)
+		if t == oldTag {
+			found = true
+		}
+	}
+	for _, v := range c.outbounds() {
+		ob, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ob["tag"].(string); t == newTag {
+			return fmt.Errorf("%w: %q", ErrTunnelTagConflict, newTag)
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: %q", ErrTunnelNotFound, oldTag)
+	}
+
+	for _, v := range c.outbounds() {
+		ob, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ob["tag"].(string); t == oldTag {
+			ob["tag"] = newTag
+		}
+	}
+
+	oldInTag := oldTag + "-in"
+	newInTag := newTag + "-in"
+	for _, v := range c.inbounds() {
+		ib, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ib["tag"].(string); t == oldInTag {
+			ib["tag"] = newInTag
+		}
+	}
+
+	renameTunnelRouteRefs(c.routeRules(), oldTag, newTag, oldInTag, newInTag)
+	return nil
+}
+
+func renameTunnelRouteRefs(values []any, oldOut, newOut, oldIn, newIn string) {
+	for _, v := range values {
+		r, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if ob, _ := r["outbound"].(string); ob == oldOut {
+			r["outbound"] = newOut
+		}
+		switch in := r["inbound"].(type) {
+		case string:
+			if in == oldIn {
+				r["inbound"] = newIn
+			}
+		case []any:
+			for i, raw := range in {
+				if s, _ := raw.(string); s == oldIn {
+					in[i] = newIn
+				}
+			}
+		}
+		if nested, ok := r["rules"].([]any); ok {
+			renameTunnelRouteRefs(nested, oldOut, newOut, oldIn, newIn)
+		}
+	}
+}
+
 // GetOutbound returns the raw outbound JSON for a tag.
 func (c *Config) GetOutbound(tag string) (json.RawMessage, error) {
 	for _, v := range c.outbounds() {
@@ -421,6 +517,8 @@ func detectTransport(ob map[string]any) string {
 		return "quic"
 	case "naive":
 		return "https"
+	case "mieru":
+		return strings.ToLower(strOr(ob["transport"], "tcp"))
 	}
 	if tr, ok := ob["transport"].(map[string]any); ok {
 		return strOr(tr["type"], "tcp")
@@ -455,7 +553,7 @@ func detectFingerprint(ob map[string]any) string {
 // awgoutbounds package. Spec only references their tags.
 type DeviceProxySpec struct {
 	Enabled     bool
-	ListenAddr  string   // already resolved to an IP literal
+	ListenAddr  string // already resolved to an IP literal
 	Port        int
 	Auth        DeviceProxyAuth
 	SelectedTag string   // member tag that becomes selector.default

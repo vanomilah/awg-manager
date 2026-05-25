@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -267,13 +268,30 @@ func (c *Client) postJSON(ctx context.Context, payload any) (json.RawMessage, er
 	return json.RawMessage(data), nil
 }
 
-// GetRaw делегирует в Batcher (по умолчанию). Если batcher отключён или
-// nil — fallback на legacy direct GET.
+// GetRaw делегирует в Batcher (по умолчанию). Если batcher отключён,
+// nil, или путь в bypass-списке — fallback на legacy direct GET.
 func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
-	if c.batcher != nil {
+	if c.batcher != nil && !bypassBatch(path) {
 		return c.batcher.Submit(ctx, path)
 	}
 	return c.getRawDirect(ctx, path)
+}
+
+// bypassBatch сообщает, что путь нельзя гонять через batch-POST: его
+// NDMS-ответ в batch-форме не совпадает по shape с direct GET, и
+// unwrapKeys не могут это восстановить.
+//
+// `/show/rc/interface/<name>` (и под-пути типа .../wireguard/asc): NDMS на
+// `{"show":{"rc":{"interface":{"<name>":{}}}}}` трактует <name> как
+// под-команду, эхо-оборачивает входное дерево И вкладывает естественный
+// вывод `{interface:{<name>:...}}` → двойная вложенность
+// show.rc.interface.<name>.interface.<name>.{контент}. unwrapKeys
+// (path_command.go) доходят только до первого <name> → отдают
+// {interface:{<name>:...}} вместо контента, и WGServerStore теряет пиров.
+// Direct GET спускается по сегментам пути и отдаёт контент напрямую.
+// Verified на Keenetic 5.0.11 2026-05-24.
+func bypassBatch(path string) bool {
+	return strings.HasPrefix(path, "/show/rc/interface/")
 }
 
 // getRawDirect — legacy single-GET path. Используется когда Batcher

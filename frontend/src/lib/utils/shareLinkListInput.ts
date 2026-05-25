@@ -4,7 +4,7 @@
  * Space/tab only before a scheme — not full `\\s`, so multiline YAML/JSON indents are not touched.
  */
 const SPACE_BEFORE_SCHEME_PATTERN =
-	'[ \\t]+(naive\\+https://|naive\\+http://|hysteria2://|vless://|hy2://|trojan://|ss://)';
+	'[ \\t]+(naive\\+https://|naive\\+http://|hysteria2://|vless://|hy2://|trojan://|ss://|mierus://|mieru://)';
 
 const spaceBeforeShareSchemeRe = new RegExp(SPACE_BEFORE_SCHEME_PATTERN, 'g');
 
@@ -23,4 +23,3 @@ export function mergePastedShareList(
 	const next = current.slice(0, selectionStart) + normalized + current.slice(selectionEnd);
 	return { next, caret: selectionStart + normalized.length };
 }
-

@@ -261,6 +261,8 @@ func ParseClashBody(body []byte) BatchResult {
 			parsed, err = mapClashShadowsocks(p)
 		case "hysteria2":
 			parsed, err = mapClashHysteria2(p)
+		case "mieru":
+			parsed, err = mapClashMieru(p)
 		case "vmess":
 			out.SkippedVmess++
 			continue

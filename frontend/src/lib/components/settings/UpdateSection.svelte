@@ -7,9 +7,10 @@
 
 	interface Props {
 		updateInfo: UpdateInfo | null;
+		downloadRouteLabel?: string;
 	}
 
-	let { updateInfo = $bindable() }: Props = $props();
+	let { updateInfo = $bindable(), downloadRouteLabel = '' }: Props = $props();
 
 	let checking = $state(false);
 	let upgrading = $state(false);
@@ -20,18 +21,21 @@
 		checking = true;
 		try {
 			updateInfo = await api.checkUpdate(true);
+			const viaInline = downloadRouteLabel ? ` через ${downloadRouteLabel}` : '';
+			const viaLine = downloadRouteLabel ? `\n(получено через ${downloadRouteLabel})` : '';
 			if (updateInfo.error) {
-				notifications.error(`Ошибка проверки: ${updateInfo.error}`);
+				notifications.error(`Ошибка проверки${viaInline}: ${updateInfo.error}`);
 			} else if (updateInfo.available) {
-				notifications.success(`Доступна версия ${updateInfo.latestVersion}`);
+				notifications.success(`Доступна версия ${updateInfo.latestVersion}${viaLine}`);
 			} else {
-				notifications.info('Обновлений нет');
+				notifications.info(`Обновлений нет${viaLine}`);
 			}
 			if (updateInfo.warning) {
 				notifications.info(updateInfo.warning);
 			}
 		} catch (e) {
-			notifications.error('Ошибка проверки обновлений');
+			const via = downloadRouteLabel ? ` через ${downloadRouteLabel}` : '';
+			notifications.error(`Ошибка проверки обновлений${via}`);
 		} finally {
 			checking = false;
 		}
@@ -84,7 +88,6 @@
 
 <div class="setting-row update-row">
 	<div class="flex flex-col gap-1 update-info">
-		<span class="font-medium">Версия</span>
 		{#if upgrading}
 			<span class="setting-description update-status">
 				Обновление... не закрывайте страницу
@@ -129,15 +132,16 @@
 				>
 					Обновить
 				</Button>
+			{:else}
+				<Button
+					variant="secondary"
+					size="sm"
+					onclick={checkForUpdates}
+					loading={checking}
+				>
+					{checking ? 'Проверка...' : 'Проверить'}
+				</Button>
 			{/if}
-			<Button
-				variant="secondary"
-				size="sm"
-				onclick={checkForUpdates}
-				loading={checking}
-			>
-				{checking ? 'Проверка...' : 'Проверить'}
-			</Button>
 		{/if}
 	</div>
 </div>
@@ -160,8 +164,14 @@
 {#if updateInfo?.currentVersion}
 	<ChangelogModal
 		open={showChangelog}
+		pendingUpdate={Boolean(updateInfo.available && updateInfo.latestVersion)}
 		fromVersion={updateInfo.available && updateInfo.latestVersion ? updateInfo.currentVersion : ''}
 		toVersion={updateInfo.available && updateInfo.latestVersion ? updateInfo.latestVersion : updateInfo.currentVersion}
+		sourceLabel={downloadRouteLabel}
+		oncheckUpdates={() => {
+			showChangelog = false;
+			void checkForUpdates();
+		}}
 		onclose={() => (showChangelog = false)}
 	/>
 {/if}
@@ -194,7 +204,15 @@
 		}
 
 		.update-actions {
-			justify-content: flex-start;
+			justify-content: stretch;
+			width: 100%;
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem;
+		}
+
+		.update-actions :global(button) {
+			width: 100%;
 		}
 	}
 
@@ -214,7 +232,6 @@
 	.update-status {
 		color: var(--accent) !important;
 	}
-
 	.update-spinner {
 		width: 20px;
 		height: 20px;

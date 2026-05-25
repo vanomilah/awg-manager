@@ -689,6 +689,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		hrHandler.SetDeviceProxyService(s.deviceProxySvc)
 		hrHandler.SetSingboxOperator(s.singboxOp)
 		hrHandler.SetSingboxOrchestrator(s.singboxOrch)
+		hrHandler.SetSettingsStore(s.settings)
 		mux.HandleFunc("/api/hydraroute/config", guarded(hrHandler.GetConfig))
 		mux.HandleFunc("/api/hydraroute/config/update", guarded(hrHandler.UpdateConfig))
 		mux.HandleFunc("/api/download/outbounds", guarded(hrHandler.ListDownloadOutbounds))
@@ -1041,6 +1042,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/singbox/tunnels/test/connectivity", guarded(s.singboxHandler.CheckConnectivity))
 		mux.HandleFunc("/api/singbox/tunnels/test/ip", guarded(s.singboxHandler.CheckIP))
 		mux.HandleFunc("/api/singbox/tunnels/test/speed/stream", guarded(s.singboxHandler.SpeedTestStream))
+		mux.HandleFunc("/api/singbox/tunnels/rename", guarded(s.singboxHandler.RenameTunnel))
 		mux.HandleFunc("/api/singbox/tunnels", guarded(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
 			case http.MethodGet:

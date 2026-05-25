@@ -222,6 +222,8 @@
   .mobile-selector {
     display: none;
     position: relative;
+    width: 100%;
+    align-self: stretch;
   }
 
   .mobile-trigger {
@@ -251,6 +253,7 @@
     top: calc(100% + 4px);
     left: 0;
     right: 0;
+    width: 100%;
     background: var(--color-bg-secondary);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);

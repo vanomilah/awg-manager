@@ -3,10 +3,12 @@ package updater
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"sync"
 	"time"
+
+	"net/http"
+
+	"github.com/hoaxisr/awg-manager/internal/downloader"
 )
 
 // defaultChangelogURL is the full URL to the CHANGELOG.md on the repo
@@ -17,8 +19,9 @@ const defaultChangelogURL = "http://repo.hoaxisr.ru/CHANGELOG.md"
 // serves cached results. Single-flight via fetchMu so a slow HTTP call
 // converges to one real request under concurrent load.
 type changelogFetcher struct {
-	url string
-	ttl time.Duration
+	url        string
+	ttl        time.Duration
+	downloader Downloader
 
 	fetchMu sync.Mutex
 	mu      sync.RWMutex
@@ -26,8 +29,8 @@ type changelogFetcher struct {
 	fetched time.Time
 }
 
-func newChangelogFetcher(url string, ttl time.Duration) *changelogFetcher {
-	return &changelogFetcher{url: url, ttl: ttl}
+func newChangelogFetcher(url string, ttl time.Duration, dl Downloader) *changelogFetcher {
+	return &changelogFetcher{url: url, ttl: ttl, downloader: dl}
 }
 
 // Fetch returns the parsed changelog map. Fresh cache hits skip HTTP;
@@ -82,26 +85,26 @@ func (c *changelogFetcher) store(entries map[string]Entry) {
 }
 
 func (c *changelogFetcher) download(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
+	dl := c.downloader
+	if dl == nil {
+		dl = newDefaultDownloader()
+	}
+	body, meta, err := dl.ReadAll(ctx, downloader.Request{
+		Purpose:       "awgm-changelog",
+		URL:           c.url,
+		Method:        http.MethodGet,
+		Timeout:       repoTimeout,
+		MaxBodyBytes:  changelogMaxBytes,
+		AllowedStatus: []int{http.StatusOK, http.StatusNotFound},
+	})
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
+	if meta.StatusCode == http.StatusNotFound {
 		return "", fmt.Errorf("changelog not published yet")
 	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("changelog status %d", resp.StatusCode)
+	if meta.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("changelog status %d", meta.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
+	return string(body), nil
 }

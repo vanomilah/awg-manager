@@ -158,8 +158,8 @@
 		sing-box · {headerLabel}
 	</span>
 	<div class="header-actions">
-		<Button size="sm" variant="ghost" onclick={() => (inspectorOpen = true)}>Инспектор</Button>
-		<Button size="sm" variant="ghost" onclick={() => (drawerOpen = true)}>Конфиг</Button>
+		<Button size="sm" variant="secondary" onclick={() => (inspectorOpen = true)}>Инспектор</Button>
+		<Button size="sm" variant="secondary" onclick={() => (drawerOpen = true)}>Конфиг</Button>
 	</div>
 </header>
 
@@ -242,5 +242,14 @@
 	}
 	.sub-content {
 		margin-top: 1rem;
+	}
+	@media (max-width: 720px) {
+		.header-actions {
+			width: 100%;
+		}
+		.header-actions :global(.btn) {
+			flex: 1 1 0;
+			min-width: 0;
+		}
 	}
 </style>

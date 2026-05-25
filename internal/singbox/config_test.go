@@ -80,6 +80,59 @@ func TestConfig_RemoveTunnel(t *testing.T) {
 	}
 }
 
+func TestConfig_RenameTunnel_RewritesLocalReferences(t *testing.T) {
+	c := NewConfig()
+	if err := c.AddTunnel("old", "vless", "h", 443, json.RawMessage(`{"type":"vless","tag":"old","server":"h","server_port":443}`)); err != nil {
+		t.Fatal(err)
+	}
+	c.setRouteRules(append(c.routeRules(), map[string]any{
+		"type": "logical",
+		"rules": []any{
+			map[string]any{"inbound": []any{"old-in", "other-in"}, "outbound": "old"},
+		},
+	}))
+
+	if err := c.RenameTunnel("old", "new"); err != nil {
+		t.Fatalf("RenameTunnel: %v", err)
+	}
+
+	list := c.Tunnels()
+	if len(list) != 1 || list[0].Tag != "new" || list[0].ListenPort != firstPort {
+		t.Fatalf("tunnels after rename: %+v", list)
+	}
+	if got := c.inbounds()[0].(map[string]any)["tag"]; got != "new-in" {
+		t.Fatalf("inbound tag = %v, want new-in", got)
+	}
+	firstRule := c.routeRules()[0].(map[string]any)
+	if firstRule["inbound"] != "new-in" || firstRule["outbound"] != "new" {
+		t.Fatalf("route rule = %+v", firstRule)
+	}
+	nested := c.routeRules()[1].(map[string]any)["rules"].([]any)[0].(map[string]any)
+	inbounds := nested["inbound"].([]any)
+	if nested["outbound"] != "new" || inbounds[0] != "new-in" || inbounds[1] != "other-in" {
+		t.Fatalf("nested rule = %+v", nested)
+	}
+}
+
+func TestConfig_RenameTunnel_Errors(t *testing.T) {
+	c := NewConfig()
+	if err := c.AddTunnel("A", "vless", "h", 1, json.RawMessage(`{"type":"vless","tag":"A"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.AddTunnel("B", "vless", "h", 2, json.RawMessage(`{"type":"vless","tag":"B"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RenameTunnel("missing", "C"); err == nil {
+		t.Fatal("expected missing old tag error")
+	}
+	if err := c.RenameTunnel("A", ""); err == nil {
+		t.Fatal("expected empty new tag error")
+	}
+	if err := c.RenameTunnel("A", "B"); err == nil {
+		t.Fatal("expected duplicate new tag error")
+	}
+}
+
 func TestConfig_ProxyInterface_StableAcrossRemove(t *testing.T) {
 	c := NewConfig()
 	c.AddTunnel("A", "vless", "h", 1, json.RawMessage(`{"type":"vless","tag":"A"}`))

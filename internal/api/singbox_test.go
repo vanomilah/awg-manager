@@ -57,6 +57,16 @@ func TestSingboxHandler_MethodNotAllowed_UpdateTunnel(t *testing.T) {
 	}
 }
 
+func TestSingboxHandler_MethodNotAllowed_RenameTunnel(t *testing.T) {
+	h := &SingboxHandler{op: nil}
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/tunnels/rename", nil)
+	w := httptest.NewRecorder()
+	h.RenameTunnel(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
 func TestSingboxHandler_MethodNotAllowed_DeleteTunnel(t *testing.T) {
 	h := &SingboxHandler{op: nil}
 	req := httptest.NewRequest(http.MethodGet, "/api/singbox/tunnels?tag=foo", nil)

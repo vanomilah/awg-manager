@@ -435,6 +435,26 @@
     return routerOffset;
   }
 
+  async function getFreshRouterClockOrWarn(): Promise<{ routerTime: string; routerOffset: number } | null> {
+    await systemInfo.refetch();
+
+    const routerTime = $systemInfo.data?.routerTime;
+    const routerOffset = $systemInfo.data?.routerTimezoneOffsetMinutes;
+
+    if (!routerTime || routerOffset === undefined || routerOffset === null || !Number.isFinite(routerOffset)) {
+      notifications.warning('Время роутера ещё не загружено, попробуйте через несколько секунд');
+      return null;
+    }
+
+    return { routerTime, routerOffset };
+  }
+
+  function formatRouterClockFilenameStamp(routerTime: string, routerOffset: number): string {
+    return formatDateTimeWithOffset(routerTime, routerOffset)
+      .replace(' ', '-')
+      .replace(/:/g, '-');
+  }
+
   async function copyText(text: string, successMsg: string) {
     if (await copyToClipboard(text)) {
       notifications.success(successMsg);
@@ -461,19 +481,16 @@
   }
 
   async function handleDownload() {
-    const routerOffset = getRouterOffsetOrWarn();
-    if (routerOffset === null) return;
     downloading = true;
     try {
+      const clock = await getFreshRouterClockOrWarn();
+      if (clock === null) return;
+
       const resp = await api.getLogs(buildLogQuery($totalStore || 10000, 0));
-      const text = resp.logs.map((log) => formatLine(log, routerOffset)).join('\n');
+      const text = resp.logs.map((log) => formatLine(log, clock.routerOffset)).join('\n');
       const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
-      const stamp = new Date()
-        .toISOString()
-        .slice(0, 19)
-        .replace(/:/g, '-')
-        .replace('T', '-');
+      const stamp = formatRouterClockFilenameStamp(clock.routerTime, clock.routerOffset);
       const a = document.createElement('a');
       a.href = url;
       a.download = `awg-manager-${bucket}-logs-${stamp}.txt`;

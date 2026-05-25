@@ -22,6 +22,7 @@ type SettingsPatch struct {
 	Logging                   *LoggingSettingsPatch  `json:"logging,omitempty"`
 	DisableMemorySaving       *bool                  `json:"disableMemorySaving,omitempty"`
 	Updates                   *UpdateSettings        `json:"updates,omitempty"`
+	Download                  *DownloadSettings      `json:"download,omitempty"`
 	DNSRoute                  *DNSRouteSettings      `json:"dnsRoute,omitempty"`
 	UsageLevel                *string                `json:"usageLevel,omitempty"`
 	ServerInterfaces          *[]string              `json:"serverInterfaces,omitempty"`

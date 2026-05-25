@@ -3,14 +3,16 @@ package updater
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"os"
 	osexec "os/exec"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/sys/semver"
 )
 
@@ -29,6 +31,10 @@ var entwareRepoURL = defaultEntwareRepoURL
 // version and returns update info including the .ipk download URL if a newer
 // version is available.
 func Check(ctx context.Context, currentVersion string) *UpdateInfo {
+	return checkWithDownloader(ctx, currentVersion, newDefaultDownloader())
+}
+
+func checkWithDownloader(ctx context.Context, currentVersion string, dl Downloader) *UpdateInfo {
 	info := &UpdateInfo{
 		CurrentVersion: currentVersion,
 		CheckedAt:      time.Now(),
@@ -37,7 +43,7 @@ func Check(ctx context.Context, currentVersion string) *UpdateInfo {
 	archDir := archSuffixToRepoDir(archSuffix())
 	pkgsURL := fmt.Sprintf("%s/%s/Packages.gz", entwareRepoURL, archDir)
 
-	pkg, err := fetchLatestPackage(ctx, pkgsURL, pkgName)
+	pkg, err := fetchLatestPackageWithDownloader(ctx, dl, pkgsURL, pkgName)
 	if err != nil {
 		info.Error = fmt.Sprintf("entware repo: %s", err)
 		return info
@@ -53,79 +59,84 @@ func Check(ctx context.Context, currentVersion string) *UpdateInfo {
 	return info
 }
 
-// fetchLatestPackage downloads pkgsURL and returns the highest-version entry
-// for pkgName from the gzipped Packages index.
-func fetchLatestPackage(ctx context.Context, pkgsURL, pkgName string) (PackageEntry, error) {
-	ctx, cancel := context.WithTimeout(ctx, repoTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pkgsURL, nil)
-	if err != nil {
-		return PackageEntry{}, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return PackageEntry{}, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return PackageEntry{}, fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-
-	return parsePackagesGz(resp.Body, pkgName)
-}
-
 // Upgrade downloads the IPK from downloadURL and launches opkg install in a
 // detached process.
-func Upgrade(_ context.Context, downloadURL string) error {
-	filename := path.Base(downloadURL)
-	ipkPath := downloadDir + "/" + filename
+func Upgrade(ctx context.Context, downloadURL string) error {
+	return upgradeWithDownloader(ctx, downloadURL, newDefaultDownloader())
+}
 
-	if err := downloadFile(downloadURL, ipkPath); err != nil {
-		return fmt.Errorf("download IPK: %w", err)
-	}
-
+var startDetachedUpgrade = func(ipkPath string) error {
 	cmd := osexec.Command("sh", "-c", fmt.Sprintf("sleep 2 && opkg install %s && rm -f %s", ipkPath, ipkPath))
 	setUpgradeDetachedProcess(cmd)
 	if err := cmd.Start(); err != nil {
-		os.Remove(ipkPath)
 		return err
 	}
-	go cmd.Wait() // reap zombie if upgrade fails and we survive
+	go cmd.Wait()
 	return nil
 }
 
-// downloadFile downloads a file from url to the given path.
-func downloadFile(url, destPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func upgradeWithDownloader(ctx context.Context, downloadURL string, dl Downloader) error {
+	if dl == nil {
+		dl = newDefaultDownloader()
+	}
+	filename, err := ipkFilenameFromURL(downloadURL)
 	if err != nil {
 		return err
 	}
+	ipkPath := downloadDir + "/" + filename
 
-	resp, err := http.DefaultClient.Do(req)
+	_, err = dl.DownloadFile(ctx, downloader.FileRequest{
+		Request: downloader.Request{
+			Purpose:      "awgm-update-ipk",
+			URL:          downloadURL,
+			Method:       http.MethodGet,
+			Timeout:      downloadTimeout,
+			MaxBodyBytes: ipkMaxBytes,
+		},
+		DestPath:     ipkPath,
+		MaxFileBytes: ipkMaxBytes,
+		Mode:         0o644,
+		Atomic:       true,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("download IPK: %w", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download status %d", resp.StatusCode)
-	}
-
-	f, err := os.Create(destPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		os.Remove(destPath)
+	if err := startDetachedUpgrade(ipkPath); err != nil {
+		os.Remove(ipkPath)
 		return err
 	}
 	return nil
+}
+
+func ipkFilenameFromURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid download URL: %w", err)
+	}
+	if strings.Contains(u.Path, "..") || strings.Contains(u.EscapedPath(), "..") || strings.Contains(strings.ToLower(u.EscapedPath()), "%2e") {
+		return "", fmt.Errorf("invalid download URL path: %q", raw)
+	}
+	name := path.Base(u.Path)
+	if name == "" || name == "." || name == "/" {
+		return "", fmt.Errorf("invalid download URL path: %q", raw)
+	}
+	if !isSafeIPKFilename(name) {
+		return "", fmt.Errorf("invalid package filename %q", name)
+	}
+	return name, nil
+}
+
+var safeIPKFilenameRe = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
+
+func isSafeIPKFilename(name string) bool {
+	if name == "" || name == "." || name == "/" {
+		return false
+	}
+	if !strings.HasPrefix(name, pkgName+"_") {
+		return false
+	}
+	if !strings.HasSuffix(strings.ToLower(name), ".ipk") {
+		return false
+	}
+	return safeIPKFilenameRe.MatchString(name)
 }

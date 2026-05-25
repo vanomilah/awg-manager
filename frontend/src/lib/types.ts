@@ -674,6 +674,10 @@ export interface UpdateSettings {
 	checkEnabled: boolean;
 }
 
+export interface DownloadSettings {
+	routeTag: string;
+}
+
 export interface DNSRouteSettings {
 	autoRefreshEnabled: boolean;
 	refreshIntervalHours: number;
@@ -690,6 +694,7 @@ export interface Settings {
 	logging: LoggingSettings;
 	disableMemorySaving: boolean;
 	updates: UpdateSettings;
+	download: DownloadSettings;
 	dnsRoute: DNSRouteSettings;
 	usageLevel: UsageLevel;
 	hiddenSystemTunnels?: string[];
@@ -1087,7 +1092,7 @@ export type {
 
 export interface SingboxTunnel {
 	tag: string;
-	protocol: 'vless' | 'hysteria2' | 'naive' | 'trojan' | 'shadowsocks';
+	protocol: 'vless' | 'hysteria2' | 'naive' | 'trojan' | 'shadowsocks' | 'mieru';
 	server: string;
 	port: number;
 	security: 'reality' | 'tls' | 'none';

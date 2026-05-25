@@ -177,6 +177,13 @@ type Operator struct {
 	// during AddTunnels could leave a tunnel with NDMS state inconsistent
 	// with the new mode.
 	migrationMu sync.Mutex
+
+	outboundRefs outboundReferenceRenamer
+}
+
+type outboundReferenceRenamer interface {
+	IsOutboundTagInUse(ctx context.Context, tag string) bool
+	RenameExternalOutboundTag(ctx context.Context, oldTag, newTag string) error
 }
 
 // OperatorDeps are external dependencies for DI.
@@ -400,6 +407,12 @@ func (o *Operator) Process() *Process { return o.proc }
 // uses it (when non-nil) to write 10-tunnels.json through the slot
 // writer instead of the legacy direct-write path.
 func (o *Operator) SetOrch(orch *orchestrator.Orchestrator) { o.orch = orch }
+
+// SetOutboundReferenceRenamer wires the singbox-router reference updater.
+// Optional: when nil, RenameTunnel only updates 10-tunnels.json.
+func (o *Operator) SetOutboundReferenceRenamer(r outboundReferenceRenamer) {
+	o.outboundRefs = r
+}
 
 // SetInstaller wires the managed-binary installer. Optional — Operator
 // works without it for read-only paths; install/update/cleanup of the
@@ -1797,6 +1810,104 @@ func (o *Operator) UpdateTunnel(ctx context.Context, tag string, outbound json.R
 	}
 	if o.runtimeLogger != nil {
 		o.runtimeLogger.Info("single-update", tag, "done")
+	}
+	return nil
+}
+
+var reservedOutboundTags = map[string]struct{}{
+	"direct": {},
+	"block":  {},
+	"dns":    {},
+}
+
+// RenameTunnel changes a single sing-box tunnel tag and rewrites every
+// singbox-router reference that points at that outbound.
+func (o *Operator) RenameTunnel(ctx context.Context, oldTag, newTag string) error {
+	defer perftrace.LogDuration(o.runtimeLogger, "perf", "RenameTunnel", "total", time.Now())
+	oldTag = strings.TrimSpace(oldTag)
+	newTag = strings.TrimSpace(newTag)
+	if oldTag == "" || newTag == "" {
+		return ErrInvalidTunnelTag
+	}
+	if _, reserved := reservedOutboundTags[newTag]; reserved {
+		return fmt.Errorf("%w: %q is reserved", ErrInvalidTunnelTag, newTag)
+	}
+
+	o.migrationMu.Lock()
+	defer o.migrationMu.Unlock()
+	if o.runtimeLogger != nil {
+		o.runtimeLogger.Info("single-rename", oldTag, "start new="+newTag)
+	}
+
+	cfg, err := o.loadConfig()
+	if err != nil {
+		if o.runtimeLogger != nil {
+			o.runtimeLogger.Error("single-rename", oldTag, "load config failed: "+err.Error())
+		}
+		return err
+	}
+	var renamed TunnelInfo
+	found := false
+	for _, t := range cfg.Tunnels() {
+		if t.Tag == oldTag {
+			renamed = t
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: %q", ErrTunnelNotFound, oldTag)
+	}
+	if oldTag == newTag {
+		return nil
+	}
+	for _, t := range cfg.Tunnels() {
+		if t.Tag == newTag {
+			return fmt.Errorf("%w: %q", ErrTunnelTagConflict, newTag)
+		}
+	}
+	for _, v := range cfg.outbounds() {
+		ob, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := ob["tag"].(string); t == newTag {
+			return fmt.Errorf("%w: %q", ErrTunnelTagConflict, newTag)
+		}
+	}
+	if o.outboundRefs != nil && o.outboundRefs.IsOutboundTagInUse(ctx, newTag) {
+		return fmt.Errorf("%w: %q", ErrTunnelTagConflict, newTag)
+	}
+
+	if err := cfg.RenameTunnel(oldTag, newTag); err != nil {
+		return err
+	}
+	refsRenamed := false
+	if o.outboundRefs != nil {
+		if err := o.outboundRefs.RenameExternalOutboundTag(ctx, oldTag, newTag); err != nil {
+			return err
+		}
+		refsRenamed = true
+	}
+	if err := o.ApplyConfig(ctx, cfg); err != nil {
+		if refsRenamed {
+			_ = o.outboundRefs.RenameExternalOutboundTag(context.Background(), newTag, oldTag)
+		}
+		return err
+	}
+
+	if o.isNDMSProxyEnabled() && renamed.ProxyInterface != "" {
+		if idx, err := parseProxyIdx(renamed.ProxyInterface); err == nil && idx >= 0 {
+			if err := o.proxyMgr.EnsureProxy(ctx, idx, renamed.ListenPort, newTag); err != nil {
+				o.log.Warn("rename proxy description failed", "old", oldTag, "new", newTag, "err", err)
+			}
+		}
+	}
+	if o.bus != nil {
+		o.bus.Publish("singbox:tunnels-changed", nil)
+	}
+	if o.runtimeLogger != nil {
+		o.runtimeLogger.Info("single-rename", oldTag, "done new="+newTag)
 	}
 	return nil
 }

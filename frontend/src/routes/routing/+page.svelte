@@ -245,7 +245,7 @@
     <PageHeader title="Маршрутизация">
         {#snippet actions()}
             <Button
-                variant="ghost"
+                variant="secondary"
                 size="sm"
                 onclick={() => (searchOpen = true)}
                 iconBefore={searchIcon}
@@ -254,7 +254,7 @@
             </Button>
             <!-- TODO Phase 1: warning variant for missing>0 -->
             <Button
-                variant={missing.length > 0 ? 'secondary' : 'ghost'}
+                variant="secondary"
                 size="sm"
                 onclick={handleRefresh}
                 disabled={refreshing}
@@ -346,3 +346,18 @@
     </svg>
 {/snippet}
 
+<style>
+	@media (max-width: 640px) {
+		:global(.page-header .actions) {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem;
+			width: 100%;
+		}
+
+		:global(.page-header .actions .btn) {
+			width: 100%;
+			justify-content: center;
+		}
+	}
+</style>

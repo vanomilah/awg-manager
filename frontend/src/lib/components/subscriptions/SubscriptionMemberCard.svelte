@@ -47,6 +47,7 @@
 			case 'shadowsocks': return 'Shadowsocks';
 			case 'hysteria2': return 'Hysteria2';
 			case 'naive': return 'Naive';
+			case 'mieru': return 'Mieru';
 			default: return member.protocol;
 		}
 	});

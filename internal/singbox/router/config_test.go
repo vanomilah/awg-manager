@@ -116,6 +116,42 @@ func TestSetRouteFinal_RejectsEmpty(t *testing.T) {
 	}
 }
 
+func TestRenameOutboundReferences_RewritesEveryReference(t *testing.T) {
+	cfg := NewEmptyConfig()
+	cfg.Route.Final = "old"
+	cfg.Route.Rules = []Rule{
+		{Action: "route", Outbound: "old"},
+		{Type: "logical", Mode: "or", Rules: []Rule{{Action: "route", Outbound: "old"}}},
+	}
+	cfg.Outbounds = []Outbound{
+		{Type: "selector", Tag: "group", Outbounds: []string{"old", "other"}, Default: "old"},
+	}
+	cfg.DNS.Servers = []DNSServer{
+		{Tag: "dns", Type: "https", Server: "dns.example", Detour: "old"},
+	}
+	cfg.Route.RuleSet = []RuleSet{
+		{Tag: "geo", Type: "remote", URL: "https://example.com/geo.srs", DownloadDetour: "old"},
+	}
+
+	cfg.renameOutboundReferences("old", "new")
+
+	if cfg.Route.Final != "new" {
+		t.Fatalf("route.final = %q, want new", cfg.Route.Final)
+	}
+	if cfg.Route.Rules[0].Outbound != "new" || cfg.Route.Rules[1].Rules[0].Outbound != "new" {
+		t.Fatalf("rules = %+v", cfg.Route.Rules)
+	}
+	if cfg.Outbounds[0].Outbounds[0] != "new" || cfg.Outbounds[0].Default != "new" {
+		t.Fatalf("composite outbound = %+v", cfg.Outbounds[0])
+	}
+	if cfg.DNS.Servers[0].Detour != "new" {
+		t.Fatalf("dns detour = %q, want new", cfg.DNS.Servers[0].Detour)
+	}
+	if cfg.Route.RuleSet[0].DownloadDetour != "new" {
+		t.Fatalf("download_detour = %q, want new", cfg.Route.RuleSet[0].DownloadDetour)
+	}
+}
+
 func TestStripLegacyAWGDirect(t *testing.T) {
 	in := []Outbound{
 		{Type: "direct", Tag: "legacy-a", BindInterface: "t2s0"},

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/diagnostics"
 	"github.com/hoaxisr/awg-manager/internal/dnscheck"
 	"github.com/hoaxisr/awg-manager/internal/dnsroute"
+	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/hydraroute"
 	"github.com/hoaxisr/awg-manager/internal/logging"
@@ -576,6 +578,10 @@ func main() {
 
 	// Access policy service (NDMS ip policy management) — wired to CQRS layer.
 	accessPolicySvc := accesspolicy.New(ndmsCommands.Policies, ndmsCommands.Interfaces, ndmsQueries, settingsStore, loggingService, ndmsquery.NewPolicyMarkStore(ndmsTransportClient, nil))
+	// Route SetInterfaceUp for managed tunnels through the orchestrator
+	// lifecycle (NativeWG needs kmod proxy + endpoint rewrite, not a raw NDMS
+	// flip — issue #183). System interfaces keep the raw flip.
+	accessPolicySvc.SetTunnelLifecycle(orchLifecycleAdapter{orch}, storeManagedTunnelResolver{awgStore})
 
 	// HydraRoute NDMS wiring — now that ndmsCommands/Queries are ready.
 	hydraService.SetQueries(ndmsQueries)
@@ -775,6 +781,7 @@ func main() {
 	// Wire managed-binary installer into Operator. The installer is keyed
 	// by the build-time arch string (e.g. "mipsel-3.4") so it can resolve
 	// the correct download URL and SHA256 from EmbeddedBinaries.
+	var singboxInstaller *installer.Installer
 	arch := detectArch()
 	if arch == "" {
 		bootLog.Warn("managed-singbox", runtime.GOARCH, "could not derive arch — install/update disabled")
@@ -783,7 +790,7 @@ func main() {
 		if !ok {
 			bootLog.Warn("managed-singbox", arch, "no embedded BinarySpec — install/update disabled")
 		} else {
-			singboxInstaller := installer.New(installer.DefaultBinaryPath, arch, spec, loggingService)
+			singboxInstaller = installer.New(installer.DefaultBinaryPath, arch, spec, loggingService)
 			singboxOp.SetInstaller(singboxInstaller)
 
 			// Stream sing-box install/update lifecycle over SSE so the UI
@@ -798,23 +805,6 @@ func main() {
 				})
 			})
 
-			// Auto-migration goroutine: when legacy sing-box-naive opkg
-			// package is present but managed binary is missing, run the
-			// jump from opkg → managed in the background. Failures keep
-			// awg-manager on the legacy install — retry happens on next boot.
-			go func() {
-				ctx := context.Background()
-				if singboxInstaller.CurrentVersion(ctx) != "" {
-					return // managed binary already in place
-				}
-				if !singboxInstaller.IsLegacyOpkgInstalled(ctx) {
-					return // nothing to migrate
-				}
-				lc := &operatorLifecycle{op: singboxOp}
-				if err := singboxInstaller.Migrate(ctx, lc); err != nil {
-					bootLog.Warn("singbox-auto-migration", "", "deferred: "+err.Error())
-				}
-			}()
 		}
 	}
 
@@ -1023,6 +1013,33 @@ func main() {
 	if err := deviceProxySvc.Reconcile(context.Background()); err != nil {
 		bootLog.Warn("deviceproxy-reconcile", "", err.Error())
 	}
+	sharedDownloadSvc := downloader.NewSettingsBackedService(
+		deviceProxySvc,
+		singboxOp,
+		sbOrch,
+		settingsStore,
+	)
+	updaterService.SetDownloader(sharedDownloadSvc)
+	if singboxInstaller != nil {
+		singboxInstaller.SetDownloader(&installerDownloaderAdapter{svc: sharedDownloadSvc})
+		// Auto-migration goroutine: when legacy sing-box-naive opkg
+		// package is present but managed binary is missing, run the
+		// jump from opkg → managed in the background. Failures keep
+		// awg-manager on the legacy install — retry happens on next boot.
+		go func() {
+			ctx := context.Background()
+			if singboxInstaller.CurrentVersion(ctx) != "" {
+				return // managed binary already in place
+			}
+			if !singboxInstaller.IsLegacyOpkgInstalled(ctx) {
+				return // nothing to migrate
+			}
+			lc := &operatorLifecycle{op: singboxOp}
+			if err := singboxInstaller.Migrate(ctx, lc); err != nil {
+				bootLog.Warn("singbox-auto-migration", "", "deferred: "+err.Error())
+			}
+		}()
+	}
 
 	srv.SetDeviceProxyService(deviceProxySvc)
 	// Note: legacy awg-* outbound cleanup happens lazily on first
@@ -1052,6 +1069,7 @@ func main() {
 		Orch:                   sbOrch,
 		WANInterfaces:          &routerWANInterfaceAdapter{store: ndmsQueries.Interfaces},
 	})
+	singboxOp.SetOutboundReferenceRenamer(routerSvc)
 	tunnelService.SetAWGSyncer(awgoutboundsSvc)
 	tunnelService.SetDeviceProxyRefChecker(deviceProxySvc)
 	tunnelService.SetRouterRefChecker(routerSvc)
@@ -1863,6 +1881,45 @@ func (s *monitoringSystemTunnelAdapter) List(ctx context.Context) ([]monitoring.
 	return out, nil
 }
 
+// orchLifecycleAdapter routes accesspolicy.SetInterfaceUp for managed tunnels
+// to the orchestrator lifecycle (full start/stop incl. NativeWG kmod proxy).
+type orchLifecycleAdapter struct{ orch *orchestrator.Orchestrator }
+
+func (a orchLifecycleAdapter) Start(ctx context.Context, id string) error {
+	err := a.orch.HandleEvent(ctx, orchestrator.Event{Type: orchestrator.EventStart, Tunnel: id})
+	if errors.Is(err, tunnel.ErrAlreadyRunning) {
+		return nil // already running — user's "on" intent fulfilled
+	}
+	return err
+}
+
+func (a orchLifecycleAdapter) Stop(ctx context.Context, id string) error {
+	return a.orch.HandleEvent(ctx, orchestrator.Event{Type: orchestrator.EventStop, Tunnel: id})
+}
+
+// storeManagedTunnelResolver maps an NDMS interface name to a managed tunnel
+// ID by scanning the AWG tunnel store. ok=false for plain system interfaces.
+type storeManagedTunnelResolver struct{ store *storage.AWGTunnelStore }
+
+func (r storeManagedTunnelResolver) ManagedTunnelByNDMSName(_ context.Context, ndmsName string) (string, bool) {
+	tunnels, err := r.store.List()
+	if err != nil {
+		return "", false
+	}
+	for _, t := range tunnels {
+		var nm string
+		if t.Backend == "nativewg" {
+			nm = nwg.NewNWGNames(t.NWGIndex).NDMSName
+		} else {
+			nm = tunnel.NewNames(t.ID).NDMSName
+		}
+		if nm != "" && nm == ndmsName {
+			return t.ID, true
+		}
+	}
+	return "", false
+}
+
 // operatorLifecycle adapts *singbox.Operator to installer.Lifecycle so
 // the installer can stop/start the daemon during migration without the
 // installer package taking a circular dependency on singbox.
@@ -1876,6 +1933,42 @@ func (l *operatorLifecycle) Stop(ctx context.Context) error {
 
 func (l *operatorLifecycle) Start(ctx context.Context) error {
 	return l.op.Control(ctx, "start")
+}
+
+type installerDownloaderAdapter struct {
+	svc *downloader.Service
+}
+
+func (a *installerDownloaderAdapter) DownloadFile(ctx context.Context, req installer.DownloadFileRequest) (installer.DownloadFileResult, error) {
+	if a == nil || a.svc == nil {
+		return installer.DownloadFileResult{}, fmt.Errorf("downloader service is not configured")
+	}
+
+	res, err := a.svc.DownloadFile(ctx, downloader.FileRequest{
+		Request: downloader.Request{
+			Purpose: "singbox-binary",
+			URL:     req.URL,
+			Timeout: req.Timeout,
+		},
+		// Intentional: req.DestPath is already "<binary>.tmp" from installer.
+		// We keep temp == dest here, and activation of live binary is done
+		// separately in Installer.Activate().
+		DestPath:     req.DestPath,
+		TempPath:     req.DestPath,
+		MaxFileBytes: req.MaxFileBytes,
+		Mode:         req.Mode,
+		// Intentional: do not atomically move to final binary here.
+		// Installer.Activate() performs chmod + final atomic rename.
+		Atomic:       false,
+		Progress:     req.Progress,
+	})
+	if err != nil {
+		return installer.DownloadFileResult{}, err
+	}
+	return installer.DownloadFileResult{
+		Path: res.Path,
+		Size: res.Size,
+	}, nil
 }
 
 // singboxAndSubLister satisfies singbox.tunnelLister by combining the regular

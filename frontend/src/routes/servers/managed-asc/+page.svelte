@@ -197,7 +197,8 @@
 				disabled={!ascParams}
 				loading={generating}
 			>
-				Сгенерировать параметры
+				<span class="gen-label gen-label-desktop">Сгенерировать параметры</span>
+				<span class="gen-label gen-label-mobile">Сгенерировать</span>
 			</Button>
 			<Button
 				variant="primary"
@@ -509,10 +510,30 @@
 
 
 	@media (max-width: 640px) {
-		.inline-row-2,
-		.inline-row-3 {
-			grid-template-columns: auto 1fr;
+		.header-actions {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 0.5rem;
+			width: 100%;
 		}
+
+		.header-actions :global(.btn) {
+			width: 100%;
+			min-width: 0;
+		}
+
+	.header-actions :global(.btn:last-child) {
+		grid-column: 1 / -1;
+	}
+
+	.gen-label-mobile {
+		display: none;
+	}
+
+	.inline-row-2,
+	.inline-row-3 {
+		grid-template-columns: auto 1fr;
+	}
 
 		.sticky-header {
 			flex-direction: column;
@@ -522,6 +543,14 @@
 
 		.header-left {
 			flex-wrap: wrap;
+		}
+
+		.gen-label-desktop {
+			display: none;
+		}
+
+		.gen-label-mobile {
+			display: inline;
 		}
 	}
 </style>

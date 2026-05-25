@@ -399,7 +399,7 @@
 				class="add-inp"
 				type="text"
 				bind:value={addLink}
-				placeholder="vless://... or trojan://... or hysteria2://..."
+				placeholder="vless://... or trojan://... or hysteria2://... or mieru://..."
 				autocomplete="off"
 				required
 			/>

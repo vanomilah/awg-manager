@@ -369,7 +369,7 @@
 					showSearch={(server.peers ?? []).length >= 5}
 				/>
 				<Button variant="secondary" size="sm" onclick={() => addPeerOpen = true} iconBefore={addPeerIcon}>
-					Добавить
+					Добавить клиента
 				</Button>
 			</div>
 		</div>
@@ -786,6 +786,25 @@
 	}
 
 	@media (max-width: 640px) {
+		.policy-row {
+			flex-direction: column;
+			align-items: stretch;
+		}
+
+		.policy-info {
+			flex: 0 0 auto;
+		}
+
+		.policy-select {
+			width: 100%;
+			min-width: 0;
+			max-width: none;
+		}
+
+		.policy-select :global(.dropdown) {
+			width: 100%;
+		}
+
 		.peers-header {
 			flex-direction: column;
 			align-items: stretch;
@@ -794,6 +813,10 @@
 
 		.peers-controls {
 			flex-wrap: wrap;
+		}
+
+		.peers-controls :global(.btn) {
+			width: 100%;
 		}
 
 		.card-header {

@@ -14,14 +14,15 @@ const checkInterval = 24 * time.Hour
 
 // Service manages periodic update checks and caches results.
 type Service struct {
-	version   string
-	appLog    *logging.ScopedLogger
-	settings  *storage.SettingsStore
-	changelog *changelogFetcher
-	mu        sync.RWMutex
-	cached    *UpdateInfo
-	stop      chan struct{}
-	done      chan struct{}
+	version    string
+	appLog     *logging.ScopedLogger
+	settings   *storage.SettingsStore
+	downloader Downloader
+	changelog  *changelogFetcher
+	mu         sync.RWMutex
+	cached     *UpdateInfo
+	stop       chan struct{}
+	done       chan struct{}
 
 	// Guard against concurrent upgrades
 	upgrading bool
@@ -30,14 +31,25 @@ type Service struct {
 // New creates a new updater service.
 func New(version string, settings *storage.SettingsStore, appLogger logging.AppLogger) *Service {
 	s := &Service{
-		version:  version,
-		appLog:   logging.NewScopedLogger(appLogger, logging.GroupSystem, logging.SubUpdate),
-		settings: settings,
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		version:    version,
+		appLog:     logging.NewScopedLogger(appLogger, logging.GroupSystem, logging.SubUpdate),
+		settings:   settings,
+		downloader: newDefaultDownloader(),
+		stop:       make(chan struct{}),
+		done:       make(chan struct{}),
 	}
-	s.changelog = newChangelogFetcher(defaultChangelogURL, 10*time.Minute)
+	s.changelog = newChangelogFetcher(defaultChangelogURL, 10*time.Minute, s.downloader)
 	return s
+}
+
+func (s *Service) SetDownloader(dl Downloader) {
+	if dl == nil {
+		dl = newDefaultDownloader()
+	}
+	s.downloader = dl
+	if s.changelog != nil {
+		s.changelog.downloader = dl
+	}
 }
 
 // Start begins periodic update checks.
@@ -95,7 +107,7 @@ func (s *Service) doCheck() {
 	s.appLog.Debug("check", "", "Checking for updates")
 
 	ctx := context.Background()
-	info := Check(ctx, s.version)
+	info := checkWithDownloader(ctx, s.version, s.downloader)
 
 	s.mu.Lock()
 	s.cached = info
@@ -133,7 +145,7 @@ func (s *Service) CheckNow(ctx context.Context) *UpdateInfo {
 	}
 	s.mu.Unlock()
 
-	info := Check(ctx, s.version)
+	info := checkWithDownloader(ctx, s.version, s.downloader)
 
 	// A user-forced refresh should also invalidate the changelog cache so
 	// the next "Что нового" click hits the repo server for fresh content.
@@ -159,14 +171,19 @@ func (s *Service) ApplyUpgrade(ctx context.Context) error {
 	if s.cached != nil {
 		downloadURL = s.cached.DownloadURL
 	}
-	s.upgrading = true
-	s.mu.Unlock()
-
 	if downloadURL == "" {
+		s.mu.Unlock()
 		return fmt.Errorf("no download URL available, run check first")
 	}
-
-	return Upgrade(ctx, downloadURL)
+	s.upgrading = true
+	s.mu.Unlock()
+	if err := upgradeWithDownloader(ctx, downloadURL, s.downloader); err != nil {
+		s.mu.Lock()
+		s.upgrading = false
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // GetChangelog fetches the monolithic CHANGELOG.md from the repo server,
@@ -182,13 +199,21 @@ func (s *Service) GetChangelog(ctx context.Context, fromVer, toVer string) ([]En
 
 // GetChangelogSingle fetches the monolithic CHANGELOG.md and returns
 // only the entry that exactly matches version, or nil if there is no
-// such entry. The "what's new" button uses this when no upgrade is
-// pending so the UI can still show the user what's in their current
-// release.
+// such entry.
 func (s *Service) GetChangelogSingle(ctx context.Context, version string) (*Entry, error) {
 	entries, err := s.changelog.Fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return Single(entries, version), nil
+}
+
+// GetChangelogMinor returns all CHANGELOG entries for the same major.minor
+// as version up to and including that release (e.g. 2.11.0–2.11.2 on 2.11.2+r70).
+func (s *Service) GetChangelogMinor(ctx context.Context, version string) ([]Entry, error) {
+	entries, err := s.changelog.Fetch(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return MinorLine(entries, version), nil
 }

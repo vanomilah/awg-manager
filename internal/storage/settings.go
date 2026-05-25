@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	CurrentSchemaVersion = 21
+	CurrentSchemaVersion = 22
 	DefaultPort          = 2222
 	DefaultInterface     = "br0"
 )
@@ -123,6 +123,9 @@ func (s *SettingsStore) Load() (*Settings, error) {
 		if settings.SchemaVersion < 21 {
 			s.migrateToV21(&settings)
 		}
+		if settings.SchemaVersion < 22 {
+			s.migrateToV22(&settings)
+		}
 	}
 
 	// Self-heal duplicated managed servers — see dedupManagedServers comment.
@@ -171,6 +174,9 @@ func (s *SettingsStore) defaultSettings() *Settings {
 		},
 		Updates: UpdateSettings{
 			CheckEnabled: true,
+		},
+		Download: DownloadSettings{
+			RouteTag: "direct",
 		},
 		SingboxRouter: SingboxRouterSettings{
 			Enabled:         false,
@@ -373,6 +379,15 @@ func (s *SettingsStore) migrateToV21(settings *Settings) {
 		settings.Logging.SingboxLogLevel = DefaultSingboxLogLevel
 	}
 	settings.SchemaVersion = 21
+}
+
+// migrateToV22 introduces Download.RouteTag.
+// Existing installs default to "direct".
+func (s *SettingsStore) migrateToV22(settings *Settings) {
+	if strings.TrimSpace(settings.Download.RouteTag) == "" {
+		settings.Download.RouteTag = "direct"
+	}
+	settings.SchemaVersion = 22
 }
 
 // dedupManagedServers returns servers with duplicate InterfaceName entries

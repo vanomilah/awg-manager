@@ -37,6 +37,7 @@ func TestMigrate_HappyPath(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "sing-box")
 	inst := New(target, "test", BinarySpec{Version: "1.13.11", URL: srv.URL, SHA256: hexSum}, nil)
+	inst.SetDownloader(&testHTTPDownloader{})
 	inst.opkgRemove = func(ctx context.Context) error { return nil }
 
 	lc := &fakeLifecycle{}
@@ -109,6 +110,7 @@ func TestMigrate_OpkgRemoveErrorIsLogged_NotFatal(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "sing-box")
 	inst := New(target, "test", BinarySpec{Version: "1.13.11", URL: srv.URL, SHA256: hexSum}, nil)
+	inst.SetDownloader(&testHTTPDownloader{})
 	// opkg returns an error (e.g. lock contention) — Migrate should still
 	// activate the managed binary and start the daemon.
 	inst.opkgRemove = func(ctx context.Context) error { return os.ErrInvalid }
@@ -143,6 +145,7 @@ func TestMigrate_TolerantOfStopFailure(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "sing-box")
 	inst := New(target, "test", BinarySpec{Version: "1.13.11", URL: srv.URL, SHA256: hexSum}, nil)
+	inst.SetDownloader(&testHTTPDownloader{})
 	inst.opkgRemove = func(ctx context.Context) error { return nil }
 
 	// Stop returns an error — Migrate should log and continue, NOT abort.

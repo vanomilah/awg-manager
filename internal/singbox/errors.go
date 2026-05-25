@@ -5,6 +5,12 @@ import "errors"
 // ErrTunnelNotFound is returned when a tunnel tag does not exist in config.json.
 var ErrTunnelNotFound = errors.New("tunnel not found")
 
+// ErrTunnelTagConflict is returned when a requested tunnel tag is already used.
+var ErrTunnelTagConflict = errors.New("tunnel tag already exists")
+
+// ErrInvalidTunnelTag is returned when a requested tunnel tag cannot be used.
+var ErrInvalidTunnelTag = errors.New("invalid tunnel tag")
+
 // ErrSingboxNotRunning is returned by operations that require a live
 // sing-box process when the daemon is down. Callers that want
 // best-effort semantics (e.g. deviceproxy runtime switch persists to

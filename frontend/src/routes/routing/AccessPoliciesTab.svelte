@@ -261,4 +261,22 @@
             max-height: calc(100dvh - 11rem);
         }
     }
+
+    @media (max-width: 640px) {
+        .section-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.5rem;
+            width: 100%;
+        }
+
+        .section-buttons > :global([role='status']) {
+            grid-column: 1 / -1;
+        }
+
+        .section-buttons :global(.btn) {
+            width: 100%;
+            justify-content: center;
+        }
+    }
 </style>

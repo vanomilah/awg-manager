@@ -9,10 +9,22 @@
 		open: boolean;
 		fromVersion: string;
 		toVersion: string;
+		/** true — диапазон до pending-релиза; false — уже установленная ветка (minor line). */
+		pendingUpdate?: boolean;
+		sourceLabel?: string;
+		oncheckUpdates?: () => void;
 		onclose: () => void;
 	}
 
-	let { open, fromVersion, toVersion, onclose }: Props = $props();
+	let {
+		open,
+		fromVersion,
+		toVersion,
+		pendingUpdate = false,
+		sourceLabel = '',
+		oncheckUpdates,
+		onclose
+	}: Props = $props();
 
 	let loading = $state(false);
 	let error = $state('');
@@ -38,12 +50,30 @@
 
 <Modal {open} title="Что нового" size="lg" {onclose}>
 	<div class="modal-body">
+		{#if !pendingUpdate}
+			<div class="changelog-notice" role="status">
+				<p>
+					В данном списке представлены изменения из версий, которые были выпущены и установлены ранее.
+				</p>
+				<p class="changelog-notice-hint">
+					Вы можете проверить, доступно ли обновление, нажав кнопку ниже.
+				</p>
+				{#if oncheckUpdates}
+					<Button variant="secondary" size="sm" onclick={oncheckUpdates}>
+						Проверить обновления
+					</Button>
+				{/if}
+			</div>
+		{/if}
+		{#if sourceLabel}
+			<p class="source-msg">(получено через {sourceLabel})</p>
+		{/if}
 		{#if loading}
 			<LoadingSpinner />
 		{:else if error}
 			<p class="state-msg state-error">Не удалось загрузить changelog. {error}</p>
 		{:else if entries.length === 0}
-			<p class="state-msg">Нет данных о новых версиях.</p>
+			<p class="state-msg">В CHANGELOG нет записей для этой ветки версий.</p>
 		{:else}
 			<ChangelogRender {entries} />
 		{/if}
@@ -63,7 +93,32 @@
 		padding: 12px 0;
 		color: var(--text-muted);
 	}
+	.source-msg {
+		margin: 0 0 8px 0;
+		color: var(--text-muted);
+		font-size: 0.95rem;
+	}
 	.state-error {
 		color: var(--error);
+	}
+	.changelog-notice {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.5rem;
+		padding: 0.75rem 1rem;
+		margin-bottom: 0.75rem;
+		border: 1px solid var(--color-warning-border, var(--border));
+		border-radius: var(--radius);
+		background: var(--color-warning-tint, var(--bg-secondary, rgba(234, 179, 8, 0.08)));
+	}
+	.changelog-notice p {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--text-secondary);
+		line-height: 1.4;
+	}
+	.changelog-notice-hint {
+		color: var(--text-muted) !important;
 	}
 </style>

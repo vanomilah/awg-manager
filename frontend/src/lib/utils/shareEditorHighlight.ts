@@ -7,7 +7,7 @@ function escapeHtml(text: string): string {
 }
 
 const PROTO_CORE =
-	'naive\\+https://|naive\\+http://|hysteria2://|vless://|hy2://|trojan://|ss://';
+	'naive\\+https://|naive\\+http://|hysteria2://|vless://|hy2://|trojan://|ss://|mierus://|mieru://';
 
 /** Match scheme at line start / after indent / after whitespace (not inside HTML). */
 const PROTO_IN_ESCAPED = new RegExp(

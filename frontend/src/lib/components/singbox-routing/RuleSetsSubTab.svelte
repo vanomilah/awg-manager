@@ -561,4 +561,17 @@
 		border: 1px dashed var(--color-border);
 		border-radius: var(--radius);
 	}
+	@media (max-width: 720px) {
+		.meta-row {
+			align-items: start;
+		}
+		.src {
+			overflow: visible;
+			text-overflow: initial;
+			white-space: normal;
+			overflow-wrap: anywhere;
+			word-break: break-word;
+			line-height: 1.35;
+		}
+	}
 </style>

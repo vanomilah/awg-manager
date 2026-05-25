@@ -537,9 +537,26 @@
 		.t-head,
 		.t-row {
 			grid-template-columns: 28px 52px 70px 1fr 60px;
+			align-items: start;
 		}
 		.col-out {
 			display: none;
+		}
+		.col-match {
+			overflow: visible;
+			text-overflow: initial;
+			white-space: normal;
+			overflow-wrap: anywhere;
+			word-break: break-word;
+			line-height: 1.35;
+		}
+		.col-idx,
+		.col-order {
+			align-self: center;
+		}
+		.col-action,
+		.col-edit {
+			align-self: center;
 		}
 	}
 </style>

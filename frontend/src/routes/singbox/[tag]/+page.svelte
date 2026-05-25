@@ -13,12 +13,16 @@
 	let error = $state<string | null>(null);
 	let outbound = $state<Record<string, any> | null>(null);
 	let protocol = $state<string>('');
+	let editableTag = $state('');
+	let initialOutboundFingerprint = '';
 
 	onMount(async () => {
 		try {
 			const r = await api.singboxGetTunnel(tag);
 			outbound = r.outbound as Record<string, any>;
 			protocol = outbound?.type ?? '';
+			editableTag = r.tag;
+			initialOutboundFingerprint = outboundFingerprint(outbound);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -28,11 +32,26 @@
 
 	async function save(): Promise<void> {
 		if (!outbound) return;
+		const nextTag = editableTag.trim();
+		if (!nextTag) {
+			error = 'Название / tag обязательно';
+			return;
+		}
 		saving = true;
 		error = null;
 		try {
-			const fresh = await api.singboxUpdateTunnel(tag, outbound);
-			singboxTunnels.applyMutationResponse(fresh);
+			outbound = { ...outbound, tag: nextTag };
+			const tagChanged = nextTag !== tag;
+			const outboundChanged = outboundFingerprint(outbound) !== initialOutboundFingerprint;
+			let fresh = $singboxTunnels.data ?? [];
+			if (tagChanged) {
+				fresh = await api.singboxRenameTunnel(tag, nextTag);
+				singboxTunnels.applyMutationResponse(fresh);
+			}
+			if (outboundChanged) {
+				fresh = await api.singboxUpdateTunnel(nextTag, outbound);
+				singboxTunnels.applyMutationResponse(fresh);
+			}
 			goto('/?tab=singbox');
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -59,6 +78,24 @@
 			obj = obj[p];
 		}
 		return obj;
+	}
+
+	function serverPortsText(value: unknown): string {
+		return Array.isArray(value) ? value.map(String).join('\n') : '';
+	}
+
+	function parseServerPorts(value: string): string[] | undefined {
+		const parts = value
+			.split(/[\n,]+/)
+			.map((v) => v.trim())
+			.filter(Boolean);
+		return parts.length > 0 ? parts : undefined;
+	}
+
+	function outboundFingerprint(value: Record<string, any> | null): string {
+		if (!value) return '';
+		const { tag: _tag, ...rest } = value;
+		return JSON.stringify(rest);
 	}
 </script>
 
@@ -95,8 +132,18 @@
 		<div class="py-12 text-center text-error-500">{error ?? 'Туннель не найден'}</div>
 	{:else}
 		<form onsubmit={(e) => { e.preventDefault(); save(); }}>
-			<div class="section">
+				<div class="section">
 				<h2 class="section-title">Основные параметры</h2>
+
+				<div class="form-group">
+					<label class="label" for="tag">Название / tag</label>
+					<input
+						id="tag"
+						class="input"
+						bind:value={editableTag}
+						autocomplete="off"
+					/>
+				</div>
 
 				<div class="form-group">
 					<label class="label" for="server">Сервер</label>
@@ -304,6 +351,77 @@
 							value={outbound.password ?? ''}
 							oninput={(e) => setField(['password'], (e.target as HTMLInputElement).value)}
 						/>
+					</div>
+				</div>
+			{:else if protocol === 'mieru'}
+				<div class="section">
+					<h2 class="section-title">Mieru</h2>
+
+					<div class="form-group">
+						<label class="label" for="mieru_username">Пользователь</label>
+						<input
+							id="mieru_username"
+							class="input"
+							value={outbound.username ?? ''}
+							oninput={(e) => setField(['username'], (e.target as HTMLInputElement).value)}
+						/>
+					</div>
+
+					<div class="form-group">
+						<label class="label" for="mieru_password">Пароль</label>
+						<input
+							id="mieru_password"
+							class="input"
+							type="password"
+							value={outbound.password ?? ''}
+							oninput={(e) => setField(['password'], (e.target as HTMLInputElement).value)}
+						/>
+					</div>
+
+					<div class="form-group">
+						<Dropdown
+							id="mieru_transport"
+							label="Transport"
+							value={outbound.transport ?? 'TCP'}
+							options={[
+								{ value: 'TCP', label: 'TCP' },
+								{ value: 'UDP', label: 'UDP' },
+							]}
+							onchange={(v) => setField(['transport'], v)}
+							fullWidth
+						/>
+					</div>
+
+					<div class="form-group">
+						<label class="label" for="mieru_server_ports">Дополнительные порты / диапазоны</label>
+						<textarea
+							id="mieru_server_ports"
+							class="input textarea"
+							rows="3"
+							value={serverPortsText(outbound.server_ports)}
+							oninput={(e) => setField(['server_ports'], parseServerPorts((e.target as HTMLTextAreaElement).value))}
+						></textarea>
+					</div>
+
+					<div class="form-group">
+						<label class="label" for="mieru_multiplexing">Multiplexing</label>
+						<input
+							id="mieru_multiplexing"
+							class="input"
+							value={outbound.multiplexing ?? ''}
+							oninput={(e) => setField(['multiplexing'], (e.target as HTMLInputElement).value)}
+						/>
+					</div>
+
+					<div class="form-group">
+						<label class="label" for="mieru_traffic_pattern">Traffic pattern</label>
+						<textarea
+							id="mieru_traffic_pattern"
+							class="input textarea"
+							rows="3"
+							value={outbound.traffic_pattern ?? ''}
+							oninput={(e) => setField(['traffic_pattern'], (e.target as HTMLTextAreaElement).value)}
+						></textarea>
 					</div>
 				</div>
 			{/if}

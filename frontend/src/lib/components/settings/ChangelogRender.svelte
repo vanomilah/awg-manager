@@ -49,12 +49,20 @@
 				<span class="entry-date">{e.date}</span>
 			</header>
 			{#each e.groups as g}
-				<h4 class="group-heading">{label(g.heading)}</h4>
-				<ul class="group-items">
-					{#each g.items as item}
-						<li>{@html parseInline(item)}</li>
-					{/each}
-				</ul>
+				{#if g.heading}
+					<h4 class="group-heading">{label(g.heading)}</h4>
+					<ul class="group-items">
+						{#each g.items as item}
+							<li>{@html parseInline(item)}</li>
+						{/each}
+					</ul>
+				{:else}
+					<div class="group-intro">
+						{#each g.items as item}
+							<p>{@html parseInline(item)}</p>
+						{/each}
+					</div>
+				{/if}
 			{/each}
 		</section>
 	{/each}
@@ -90,6 +98,18 @@
 		color: var(--text-muted);
 		font-size: 0.8125rem;
 		font-variant-numeric: tabular-nums;
+	}
+	.group-intro {
+		margin: 0 0 12px;
+	}
+	.group-intro p {
+		margin: 0 0 8px;
+		font-size: 0.875rem;
+		color: var(--text-primary);
+		line-height: 1.45;
+	}
+	.group-intro p:last-child {
+		margin-bottom: 0;
 	}
 	.group-heading {
 		margin: 8px 0 4px;

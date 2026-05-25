@@ -107,7 +107,7 @@
 	{/if}
 
 	{#snippet actions()}
-		<Button variant="ghost" onclick={onclose}>Отмена</Button>
+		<Button variant="secondary" onclick={onclose}>Отмена</Button>
 		<Button variant="primary" onclick={handleSave} disabled={loading} loading={saving}>
 			Сохранить
 		</Button>

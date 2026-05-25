@@ -326,7 +326,7 @@
         <div class="section-buttons">
             <StoreStatusBadge store={dnsRoutesStore} />
             {#if dnsRoutes.length > 0}
-                <Button variant="ghost" size="sm" onclick={() => { dnsSelectionMode = true; dnsSelected = new Set(); }} disabled={bodyLoading}>Выбрать</Button>
+                <Button variant="secondary" size="sm" onclick={() => { dnsSelectionMode = true; dnsSelected = new Set(); }} disabled={bodyLoading}>Выбрать</Button>
             {/if}
             <div class="dropdown-wrapper">
                 <Button variant="primary" size="sm" disabled={bodyLoading} onclick={(e) => { e.stopPropagation(); addMenuOpen = !addMenuOpen; }}>
@@ -681,6 +681,24 @@
             flex-direction: column;
             align-items: center;
         }
-        /* TODO Phase 1: full-width Button on narrow viewport (was .empty-actions .btn { width: 100% }) */
+        .section-buttons {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.5rem;
+            width: 100%;
+        }
+
+        .section-buttons > :global([role='status']) {
+            grid-column: 1 / -1;
+        }
+
+        .section-buttons > .dropdown-wrapper {
+            width: 100%;
+        }
+
+        .section-buttons :global(.btn) {
+            width: 100%;
+            justify-content: center;
+        }
     }
 </style>
