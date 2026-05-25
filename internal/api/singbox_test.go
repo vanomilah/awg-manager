@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -245,5 +246,69 @@ func TestResolveTunnelInterfaceFromList_NoInterface(t *testing.T) {
 	}, "A")
 	if !errors.Is(err, errTunnelNoInterface) {
 		t.Fatalf("expected errTunnelNoInterface, got %v", err)
+	}
+}
+
+func TestSingboxStatusData_MapsAllFields(t *testing.T) {
+	in := singbox.Status{
+		Installed:        true,
+		Version:          "1.13.11",
+		Running:          false,
+		PID:              4242,
+		TunnelCount:      3,
+		ProxyComponent:   true,
+		NDMSProxyEnabled: false,
+		Features:         []string{"with_quic", "with_gvisor"},
+		LastError:        "+0000 2026-05-14 21:45:56 FATAL[0000] failed to initialize",
+		CurrentVersion:   "1.13.10",
+		RequiredVersion:  "1.13.11",
+		CurrentSHA256:    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		RequiredSHA256:   "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		UpdateAvailable:  true,
+	}
+
+	got := singboxStatusData(in)
+
+	if got.Installed != in.Installed {
+		t.Fatalf("Installed = %v, want %v", got.Installed, in.Installed)
+	}
+	if got.Version != in.Version {
+		t.Fatalf("Version = %q, want %q", got.Version, in.Version)
+	}
+	if got.Running != in.Running {
+		t.Fatalf("Running = %v, want %v", got.Running, in.Running)
+	}
+	if got.PID != in.PID {
+		t.Fatalf("PID = %d, want %d", got.PID, in.PID)
+	}
+	if got.TunnelCount != in.TunnelCount {
+		t.Fatalf("TunnelCount = %d, want %d", got.TunnelCount, in.TunnelCount)
+	}
+	if got.ProxyComponent != in.ProxyComponent {
+		t.Fatalf("ProxyComponent = %v, want %v", got.ProxyComponent, in.ProxyComponent)
+	}
+	if got.NDMSProxyEnabled != in.NDMSProxyEnabled {
+		t.Fatalf("NDMSProxyEnabled = %v, want %v", got.NDMSProxyEnabled, in.NDMSProxyEnabled)
+	}
+	if !reflect.DeepEqual(got.Features, in.Features) {
+		t.Fatalf("Features = %v, want %v", got.Features, in.Features)
+	}
+	if got.LastError != in.LastError {
+		t.Fatalf("LastError = %q, want %q", got.LastError, in.LastError)
+	}
+	if got.CurrentVersion != in.CurrentVersion {
+		t.Fatalf("CurrentVersion = %q, want %q", got.CurrentVersion, in.CurrentVersion)
+	}
+	if got.RequiredVersion != in.RequiredVersion {
+		t.Fatalf("RequiredVersion = %q, want %q", got.RequiredVersion, in.RequiredVersion)
+	}
+	if got.CurrentSHA256 != in.CurrentSHA256 {
+		t.Fatalf("CurrentSHA256 = %q, want %q", got.CurrentSHA256, in.CurrentSHA256)
+	}
+	if got.RequiredSHA256 != in.RequiredSHA256 {
+		t.Fatalf("RequiredSHA256 = %q, want %q", got.RequiredSHA256, in.RequiredSHA256)
+	}
+	if got.UpdateAvailable != in.UpdateAvailable {
+		t.Fatalf("UpdateAvailable = %v, want %v", got.UpdateAvailable, in.UpdateAvailable)
 	}
 }

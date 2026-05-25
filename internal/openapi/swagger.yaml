@@ -3236,6 +3236,12 @@ definitions:
       installed:
         example: true
         type: boolean
+      lastError:
+        example: +0000 2026-05-14 21:45:56 FATAL[0000] failed to initialize
+        type: string
+      ndmsProxyEnabled:
+        example: true
+        type: boolean
       pid:
         example: 12345
         type: integer
