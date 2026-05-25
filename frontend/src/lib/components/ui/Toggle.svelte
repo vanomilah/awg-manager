@@ -8,6 +8,13 @@
         hint?: string;
         size?: 'sm' | 'md';
         variant?: 'slider' | 'flip';
+        // controlled: parent owns the state. The toggle does NOT self-commit
+        // the click — it reverts the DOM to `checked` and lets the parent
+        // drive the value via onchange. Needed when onchange defers the change
+        // (e.g. behind a confirm modal): on cancel the prop never changes, so
+        // the toggle must not stay visually flipped. Default keeps the legacy
+        // optimistic behaviour (and bind:checked support).
+        controlled?: boolean;
     }
 
     let {
@@ -19,6 +26,7 @@
         hint = '',
         size = 'md',
         variant = 'slider',
+        controlled = false,
     }: Props = $props();
 
     function handleInput(event: Event) {
@@ -28,6 +36,13 @@
         }
         const input = event.currentTarget as HTMLInputElement;
         const nextChecked = input.checked;
+        if (controlled) {
+            // Revert the browser's optimistic flip; the parent re-renders
+            // `checked` only if it accepts the change.
+            input.checked = checked;
+            if (onchange) onchange(nextChecked);
+            return;
+        }
         checked = nextChecked;
         if (onchange) onchange(nextChecked);
     }

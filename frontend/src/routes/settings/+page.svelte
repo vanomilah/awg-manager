@@ -789,6 +789,7 @@ onMount(() => {
 							</div>
 							<Toggle
 								checked={ndmsProxyEnabled}
+								controlled
 								disabled={ndmsProxyBusy}
 								onchange={handleNDMSProxyToggleClick}
 							/>
