@@ -334,7 +334,7 @@ func (s *Server) SetSubscriptionHandler(h *api.SubscriptionHandler) {
 }
 
 // SetDNSRewritesHandler wires the DNS rewrites CRUD handler so the
-// /api/singbox/dns-rewrites/* routes can be registered.
+// /api/singbox/router/dns/rewrites/* routes can be registered.
 func (s *Server) SetDNSRewritesHandler(h *api.DNSRewritesHandler) {
 	s.dnsRewritesHandler = h
 }
@@ -1168,11 +1168,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	if s.dnsRewritesHandler != nil {
 		rw := s.dnsRewritesHandler
-		mux.HandleFunc("/api/singbox/dns-rewrites/list", guarded(rw.List))
-		mux.HandleFunc("/api/singbox/dns-rewrites/add", guarded(rw.Add))
-		mux.HandleFunc("/api/singbox/dns-rewrites/update", guarded(rw.Update))
-		mux.HandleFunc("/api/singbox/dns-rewrites/delete", guarded(rw.Delete))
-		mux.HandleFunc("/api/singbox/dns-rewrites/move", guarded(rw.Move))
+		mux.HandleFunc("/api/singbox/router/dns/rewrites/list", guarded(rw.List))
+		mux.HandleFunc("/api/singbox/router/dns/rewrites/add", guarded(rw.Add))
+		mux.HandleFunc("/api/singbox/router/dns/rewrites/update", guarded(rw.Update))
+		mux.HandleFunc("/api/singbox/router/dns/rewrites/delete", guarded(rw.Delete))
+		mux.HandleFunc("/api/singbox/router/dns/rewrites/move", guarded(rw.Move))
 	}
 
 	// Static files (SPA) - must be last.
