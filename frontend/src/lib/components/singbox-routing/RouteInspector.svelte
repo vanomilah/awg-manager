@@ -19,6 +19,10 @@
 	let protocol = $state<'' | 'tcp' | 'udp'>('');
 	let advancedOpen = $state(false);
 	let testing = $state(false);
+	let inspectRunId = $state(0);
+	let inspectStartedAt = $state<number | null>(null);
+	let elapsedSec = $state(0);
+	let progressTimer = $state<ReturnType<typeof setInterval> | null>(null);
 	let result = $state<SingboxRouterInspectResult | null>(null);
 	let error = $state('');
 	let showAllRules = $state(false);
@@ -31,27 +35,59 @@
 		'192.168.1.1',
 	];
 
+	function stopProgressTimer(): void {
+		if (progressTimer) {
+			clearInterval(progressTimer);
+			progressTimer = null;
+		}
+		inspectStartedAt = null;
+		elapsedSec = 0;
+	}
+
+	const progressMessage = $derived.by(() => {
+		if (elapsedSec <= 1) return 'Загружаем конфигурацию маршрутизации…';
+		if (elapsedSec <= 15) return 'Проверяем правила маршрутизации…';
+		if (elapsedSec <= 30) return 'Проверяем rule_set. Для больших списков это может занять дольше…';
+		if (elapsedSec <= 50) return 'Инспектор всё ещё работает. Большие rule_set могут проверяться до 30 секунд…';
+		return 'Всё ещё ждём ответ backend. Не закрывайте окно — результат появится здесь.';
+	});
+
 	async function testRoute(): Promise<void> {
 		const trimmed = inputValue.trim();
 		if (!trimmed) return;
+		const runId = inspectRunId + 1;
+		inspectRunId = runId;
 
 		testing = true;
+		inspectStartedAt = Date.now();
+		elapsedSec = 0;
+		if (progressTimer) clearInterval(progressTimer);
+		progressTimer = setInterval(() => {
+			if (!inspectStartedAt) return;
+			elapsedSec = Math.max(0, Math.floor((Date.now() - inspectStartedAt) / 1000));
+		}, 1000);
 		error = '';
 		result = null;
 		showAllRules = false;
 
 		try {
-			result = await api.singboxRouterInspectRoute({
+			const next = await api.singboxRouterInspectRoute({
 				domain: trimmed,
 				port: typeof port === 'number' && port > 0 ? port : undefined,
 				protocol: protocol || undefined,
 			});
+			if (runId !== inspectRunId) return;
+			result = next;
 		} catch (e) {
+			if (runId !== inspectRunId) return;
 			const msg = e instanceof Error ? e.message : String(e);
 			error = msg;
 			notifications.error(`Не удалось проверить маршрут: ${msg}`);
 		} finally {
-			testing = false;
+			if (runId === inspectRunId) {
+				testing = false;
+				stopProgressTimer();
+			}
 		}
 	}
 
@@ -67,6 +103,8 @@
 	}
 
 	function reset(): void {
+		inspectRunId += 1;
+		stopProgressTimer();
 		inputValue = '';
 		port = '';
 		protocol = '';
@@ -177,6 +215,15 @@
 				{/each}
 			</div>
 		</section>
+
+		{#if testing}
+			<section class="card progress-card" aria-live="polite">
+				<div class="progress-title">Идёт проверка маршрута</div>
+				<div class="progress-message">{progressMessage}</div>
+				<div class="progress-elapsed">Прошло: {elapsedSec} сек</div>
+				<div class="progress-hint">Инспектор симулирует правила и может проверять rule_set через sing-box.</div>
+			</section>
+		{/if}
 
 		{#if error}
 			<div class="error-banner">{error}</div>
@@ -303,7 +350,7 @@
 					</ul>
 				</section>
 			{/if}
-		{:else if !error}
+		{:else if !error && !testing}
 			<div class="empty-state">
 				Введите домен или IP-адрес — инспектор покажет, через какой outbound пойдёт
 				трафик и какое правило сработает. Это симуляция, sing-box не вызывается.
@@ -702,5 +749,33 @@
 		line-height: 1.5;
 		border: 1px dashed var(--color-border);
 		border-radius: var(--radius-sm);
+	}
+
+	.progress-card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.progress-title {
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-text-primary);
+	}
+
+	.progress-message {
+		font-size: 12px;
+		color: var(--color-text-secondary);
+	}
+
+	.progress-elapsed {
+		font-size: 12px;
+		color: var(--color-text-muted);
+		font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	}
+
+	.progress-hint {
+		font-size: 11px;
+		color: var(--color-text-muted);
 	}
 </style>
