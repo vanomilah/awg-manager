@@ -126,3 +126,47 @@ func TestDelete_Refused_DeviceProxy(t *testing.T) {
 		t.Errorf("expected ErrTunnelReferenced, got %T (%v)", err, err)
 	}
 }
+
+func TestCheckTunnelReferences_AllThreeRefs(t *testing.T) {
+	dp := &fakeDeviceProxyRefs{references: map[string]bool{"awg-tun-a": true}}
+	r := &fakeRouterRefs{
+		rules: map[string][]int{"awg-tun-a": {2}},
+		other: map[string][]string{"awg-tun-a": {"route.final"}},
+	}
+	err := checkTunnelReferences("tun-a", dp, r)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	refErr, ok := err.(ErrTunnelReferenced)
+	if !ok {
+		t.Fatalf("expected ErrTunnelReferenced, got %T", err)
+	}
+	if !refErr.DeviceProxy {
+		t.Errorf("expected DeviceProxy=true")
+	}
+	if len(refErr.RouterRules) != 1 || refErr.RouterRules[0] != 2 {
+		t.Errorf("expected RouterRules [2], got %v", refErr.RouterRules)
+	}
+	if len(refErr.RouterOther) != 1 || refErr.RouterOther[0] != "route.final" {
+		t.Errorf("expected RouterOther [route.final], got %v", refErr.RouterOther)
+	}
+}
+
+func TestDelete_Refused_RouterOther(t *testing.T) {
+	s := &ServiceImpl{
+		routerRefs: &fakeRouterRefs{other: map[string][]string{
+			"awg-tun-a": {`outbounds[0="sel"].outbounds[0]`},
+		}},
+	}
+	err := s.Delete(context.Background(), "tun-a")
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	refErr, ok := err.(ErrTunnelReferenced)
+	if !ok {
+		t.Fatalf("expected ErrTunnelReferenced, got %T (%v)", err, err)
+	}
+	if len(refErr.RouterOther) != 1 {
+		t.Errorf("expected 1 RouterOther ref, got %v", refErr.RouterOther)
+	}
+}
