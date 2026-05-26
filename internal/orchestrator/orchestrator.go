@@ -145,7 +145,7 @@ func (o *Orchestrator) SetSupportsASC(fn func() bool) {
 // the next lifecycle event and triggers NDMS "interface has no
 // assigned profile" warnings.
 //
-// Runtime-only fields (Running, Monitoring, ExternalRestart counters)
+// Runtime-only fields (Running, Monitoring, quiescentUntil)
 // live only in the orchestrator's cache, so they are preserved across
 // the refresh — reloading them from storage would clobber the action
 // layer's view of the world.
@@ -161,6 +161,7 @@ func (o *Orchestrator) RefreshTunnelState(tunnelID string) {
 	if cur, ok := o.state.tunnels[tunnelID]; ok {
 		fresh.Running = cur.Running
 		fresh.Monitoring = cur.Monitoring
+		fresh.quiescentUntil = cur.quiescentUntil
 	}
 	o.state.tunnels[tunnelID] = fresh
 }
@@ -229,7 +230,7 @@ func (o *Orchestrator) consumeExpectedHook(ndmsName, level string) bool {
 	now := o.nowFn()
 	kept := o.expectedHooks[:0]
 	for _, h := range o.expectedHooks {
-		if now.After(h.expiresAt) {
+		if !now.Before(h.expiresAt) {
 			continue
 		}
 		kept = append(kept, h)
