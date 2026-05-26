@@ -4,14 +4,15 @@
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { servers } from '$lib/stores/servers';
-	import { formatBytes, formatRelativeTime } from '$lib/utils/format';
+	import { formatBytes } from '$lib/utils/format';
 	import { Toggle, Button, IconButton, Dropdown, type DropdownOption } from '$lib/components/ui';
 	import {
 		EditManagedServerModal,
 		AddManagedPeerModal,
 		EditManagedPeerModal,
 		PeerConfModal,
-		PeerSortControls
+		PeerSortControls,
+		ManagedPeerTable,
 	} from '$lib/components/servers';
 	import { comparePeerFieldsDirected } from '$lib/utils/peerSort';
 	import { peerSort } from '$lib/stores/peerSort';
@@ -377,60 +378,15 @@
 		{#if (server.peers ?? []).length === 0}
 			<div class="empty-peers">Нет клиентов. Добавьте первого.</div>
 		{:else}
-			<div class="peers-list">
-				{#each sortedPeers as peer (peer.publicKey)}
-					{@const peerStats = getPeerStats(peer.publicKey)}
-					<div class="peer-row" class:peer-disabled={!peer.enabled}>
-						<div class="peer-info">
-							<div class="peer-name-row">
-								{#if peerStats}
-									<span class="peer-led" class:peer-led-online={peerStats.online} class:peer-led-offline={!peerStats.online}></span>
-								{/if}
-								<span class="peer-name">{peer.description || peer.publicKey.substring(0, 12) + '...'}</span>
-							</div>
-							<div class="peer-meta">
-								<span class="peer-ip mono">{peer.tunnelIP}</span>
-								{#if peerStats?.endpoint}
-									<span class="peer-endpoint mono">{peerStats.endpoint}</span>
-								{/if}
-								{#if peerStats}
-									<span class="peer-traffic mono">↓{formatBytes(peerStats.txBytes)} ↑{formatBytes(peerStats.rxBytes)}</span>
-								{/if}
-								{#if peerStats?.lastHandshake}
-									<span class="peer-handshake">{formatRelativeTime(peerStats.lastHandshake)}</span>
-								{/if}
-							</div>
-						</div>
-						<div class="peer-actions">
-							<Toggle
-								checked={peer.enabled}
-								onchange={() => handleTogglePeer(peer)}
-								size="sm"
-							/>
-							<button class="peer-action-btn" onclick={() => openConf(peer)} title="Скачать .conf">
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-								</svg>
-							</button>
-							<button class="peer-action-btn" onclick={() => openEditPeer(peer)} title="Редактировать">
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-								</svg>
-							</button>
-							<button
-								class="peer-action-btn peer-action-btn-danger"
-								class:peer-action-btn-confirm={confirmDeletePeerKey === peer.publicKey}
-								onclick={() => handleDeletePeerClick(peer)}
-								title={confirmDeletePeerKey === peer.publicKey ? 'Нажмите ещё раз для удаления' : 'Удалить'}
-							>
-								<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-									<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-								</svg>
-							</button>
-						</div>
-					</div>
-				{/each}
-			</div>
+			<ManagedPeerTable
+				peers={sortedPeers}
+				{getPeerStats}
+				{confirmDeletePeerKey}
+				onTogglePeer={handleTogglePeer}
+				onOpenConf={openConf}
+				onOpenEditPeer={openEditPeer}
+				onDeletePeerClick={handleDeletePeerClick}
+			/>
 		{/if}
 	</div>
 </div>
@@ -637,92 +593,6 @@
 		color: var(--text-muted);
 	}
 
-	.peers-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-
-	.peer-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 0.625rem 0.75rem;
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		gap: 0.75rem;
-	}
-
-	.peer-disabled {
-		opacity: 0.5;
-	}
-
-	.peer-info {
-		display: flex;
-		flex-direction: column;
-		gap: 0.125rem;
-		min-width: 0;
-	}
-
-	.peer-name {
-		font-size: 0.8125rem;
-		font-weight: 500;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.peer-ip {
-		font-size: 0.6875rem;
-		color: var(--text-muted);
-	}
-
-	.peer-actions {
-		display: flex;
-		align-items: center;
-		gap: 0.375rem;
-		flex-shrink: 0;
-	}
-
-
-	.peer-action-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: auto;
-		height: auto;
-		padding: 0.375rem;
-		background: transparent;
-		border: none;
-		color: var(--text-secondary);
-		cursor: pointer;
-		border-radius: var(--radius-sm);
-		transition: color 0.15s ease, background 0.15s ease;
-		box-sizing: border-box;
-		filter: none;
-	}
-
-	.peer-action-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-		filter: none;
-	}
-
-	.peer-action-btn-danger:hover {
-		color: var(--error, #ef4444);
-	}
-
-	.peer-action-btn-confirm {
-		background: var(--error, #ef4444);
-		color: white;
-	}
-
-	.peer-action-btn-confirm:hover {
-		background: var(--error, #ef4444);
-		color: white;
-		filter: brightness(1.1);
-	}
 
 	/* LED indicators */
 	.led {
@@ -741,49 +611,6 @@
 		background: var(--text-muted);
 	}
 
-	.peer-led {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		flex-shrink: 0;
-	}
-
-	.peer-led-online {
-		background: var(--success, #22c55e);
-		box-shadow: 0 0 3px var(--success, #22c55e);
-	}
-
-	.peer-led-offline {
-		background: var(--text-muted);
-	}
-
-	.peer-name-row {
-		display: flex;
-		align-items: center;
-		gap: 0.375rem;
-	}
-
-	.peer-meta {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		flex-wrap: wrap;
-	}
-
-	.peer-endpoint {
-		font-size: 0.6875rem;
-		color: var(--text-muted);
-	}
-
-	.peer-traffic {
-		font-size: 0.6875rem;
-		color: var(--text-muted);
-	}
-
-	.peer-handshake {
-		font-size: 0.6875rem;
-		color: var(--text-muted);
-	}
 
 	@media (max-width: 640px) {
 		.policy-row {
@@ -827,14 +654,5 @@
 			align-self: flex-end;
 		}
 
-		.peer-row {
-			flex-direction: column;
-			align-items: stretch;
-			gap: 0.5rem;
-		}
-
-		.peer-actions {
-			justify-content: flex-end;
-		}
 	}
 </style>
