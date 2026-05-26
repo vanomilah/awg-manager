@@ -240,6 +240,21 @@ func TestDo_Metrics_NoDNS(t *testing.T) {
 	}
 }
 
+func TestDo_UserAgent_SetToCurl(t *testing.T) {
+	ts := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		ua := r.Header.Get("User-Agent")
+		if !strings.HasPrefix(ua, "curl/") {
+			t.Errorf("User-Agent = %q, want curl/* prefix", ua)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	c := New()
+	_, err := c.Do(context.Background(), CallConfig{URL: ts.URL})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestDo_URL_Missing(t *testing.T) {
 	c := New()
 	_, err := c.Do(context.Background(), CallConfig{})

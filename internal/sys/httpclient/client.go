@@ -125,6 +125,10 @@ func (c *Client) Do(ctx context.Context, cfg CallConfig) (*Result, error) {
 		return nil, fmt.Errorf("httpclient: new request: %w", err)
 	}
 
+	// Mimic curl's User-Agent so IP-check services (e.g. 2ip.ru) that
+	// block Go's default "Go-http-client/1.1" return plain-text responses.
+	req.Header.Set("User-Agent", "curl/8.7.1")
+
 	if cfg.PostData != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
