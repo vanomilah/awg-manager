@@ -2,6 +2,7 @@
 	import type {
 		SingboxRouterDNSServer,
 		SingboxRouterDNSRule,
+		SingboxRouterDNSRewrite,
 		SingboxRouterDNSGlobals,
 		SingboxRouterRuleSet,
 	} from '$lib/types';
@@ -9,18 +10,20 @@
 	import DNSGlobals from './DNSGlobals.svelte';
 	import DNSServersList from './DNSServersList.svelte';
 	import DNSRulesList from './DNSRulesList.svelte';
+	import DNSRewritesList from './DNSRewritesList.svelte';
 
 	interface Props {
 		servers: SingboxRouterDNSServer[];
 		rules: SingboxRouterDNSRule[];
+		rewrites: SingboxRouterDNSRewrite[];
 		globals: SingboxRouterDNSGlobals;
 		ruleSets: SingboxRouterRuleSet[];
 		outboundOptions: OutboundGroup[];
 		onChange: () => Promise<void> | void;
 	}
-	let { servers, rules, globals, ruleSets, outboundOptions, onChange }: Props = $props();
+	let { servers, rules, rewrites, globals, ruleSets, outboundOptions, onChange }: Props = $props();
 
-	type DNSSection = 'servers' | 'rules';
+	type DNSSection = 'servers' | 'rewrites' | 'rules';
 	let section = $state<DNSSection>('servers');
 </script>
 
@@ -30,6 +33,9 @@
 	<button class:active={section === 'servers'} onclick={() => (section = 'servers')} type="button">
 		Серверы <span class="count">{servers.length}</span>
 	</button>
+	<button class:active={section === 'rewrites'} onclick={() => (section = 'rewrites')} type="button">
+		Перезаписи <span class="count">{rewrites.length}</span>
+	</button>
 	<button class:active={section === 'rules'} onclick={() => (section = 'rules')} type="button">
 		Правила <span class="count">{rules.length}</span>
 	</button>
@@ -38,6 +44,8 @@
 <div class="section-content">
 	{#if section === 'servers'}
 		<DNSServersList {servers} {outboundOptions} {onChange} />
+	{:else if section === 'rewrites'}
+		<DNSRewritesList {rewrites} {onChange} />
 	{:else}
 		<DNSRulesList {rules} {servers} availableRuleSets={ruleSets} finalLabel={globals.final} {onChange} />
 	{/if}
