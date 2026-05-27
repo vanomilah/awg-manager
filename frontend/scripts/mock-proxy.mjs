@@ -1564,6 +1564,77 @@ const mockDnsCheckClientPayload = {
 	],
 };
 
+/** Диагностика → «Сведения о DNS»: распарсенный /show/dns-proxy
+ *  (GET /diagnostics/dns-proxy). displayName уже заполнен — на проде это
+ *  делает handler через access-policies; здесь отдаём готовую форму. */
+const mockDnsProxyInfo = {
+	proxies: [
+		{
+			name: 'System',
+			displayName: 'Системный',
+			tcpPort: 53,
+			udpPort: 53,
+			stat: { totalRequests: 1242, proxyRequestsSent: 318, cacheHitRatio: 0.744, cacheHits: 924, memory: '13.33K' },
+			upstreams: [
+				{ address: '8.8.8.8', port: 0, encryption: 'DoT', sni: 'dns.google', scope: 'all', rSent: 120, aRcvd: 120, nxRcvd: 4, medResp: '38ms', avgResp: '41ms', rank: 6 },
+				{ address: '77.88.8.8', port: 853, encryption: 'DoT', sni: 'common.dot.dns.yandex.net', scope: 'ru', rSent: 64, aRcvd: 64, nxRcvd: 1, medResp: '70ms', avgResp: '78ms', rank: 4 },
+				{ address: '9.9.9.9', port: 0, encryption: 'DoT', sni: '', scope: 'all', rSent: 134, aRcvd: 132, nxRcvd: 2, medResp: '52ms', avgResp: '60ms', rank: 5 },
+			],
+			staticRecords: [
+				{ host: 'host1.example.net', type: 'A', value: '203.0.113.10', flag: 1 },
+				{ host: 'host1.example.net', type: 'AAAA', value: '2001:db8::1', flag: 1 },
+				{ host: 'awgm-dnscheck.test', type: 'A', value: '10.10.10.1', flag: 0 },
+				{ host: 'host2.example.com', type: 'A', value: '203.0.113.10', flag: 1 },
+				{ host: 'host2.example.com', type: 'AAAA', value: '2001:db8::1', flag: 1 },
+				{ host: 'host3.example.ru', type: 'A', value: '203.0.113.10', flag: 1 },
+			],
+			rebind: { enabled: true, nets: ['10.10.10.1:24', '10.10.20.1:24', '172.16.6.1:24', '255.255.255.255:32'], excludes: ['ru', '*.ru'] },
+		},
+		{
+			name: 'Policy0',
+			displayName: 'IoT_VPN',
+			tcpPort: 41100,
+			udpPort: 41100,
+			stat: { totalRequests: 87, proxyRequestsSent: 30, cacheHitRatio: 0.655, cacheHits: 57, memory: '12.75K' },
+			upstreams: [
+				{ address: '8.8.8.8', port: 0, encryption: 'DoT', sni: 'dns.google', scope: 'all', rSent: 6, aRcvd: 6, nxRcvd: 0, medResp: '44ms', avgResp: '49ms', rank: 5 },
+				{ address: '77.88.8.8', port: 853, encryption: 'DoT', sni: 'common.dot.dns.yandex.net', scope: 'ru', rSent: 3, aRcvd: 3, nxRcvd: 0, medResp: '120ms', avgResp: '120ms', rank: 4 },
+				{ address: '9.9.9.9', port: 0, encryption: 'DoT', sni: '', scope: 'all', rSent: 21, aRcvd: 21, nxRcvd: 1, medResp: '58ms', avgResp: '63ms', rank: 5 },
+			],
+			staticRecords: [{ host: 'awgm-dnscheck.test', type: 'A', value: '10.10.10.1', flag: 0 }],
+			rebind: { enabled: true, nets: ['10.10.10.1:24'], excludes: ['ru', '*.ru'] },
+		},
+		{
+			name: 'Policy1',
+			displayName: 'Netflix',
+			tcpPort: 41101,
+			udpPort: 41101,
+			stat: { totalRequests: 283, proxyRequestsSent: 102, cacheHitRatio: 0.64, cacheHits: 181, memory: '17.25K' },
+			upstreams: [
+				{ address: '8.8.8.8', port: 0, encryption: 'DoT', sni: 'dns.google', scope: 'all', rSent: 4, aRcvd: 4, nxRcvd: 0, medResp: '144ms', avgResp: '143ms', rank: 4 },
+				{ address: '77.88.8.8', port: 853, encryption: 'DoT', sni: 'common.dot.dns.yandex.net', scope: 'ru', rSent: 11, aRcvd: 11, nxRcvd: 0, medResp: '70ms', avgResp: '60ms', rank: 8 },
+				{ address: '9.9.9.9', port: 0, encryption: 'DoT', sni: '', scope: 'all', rSent: 87, aRcvd: 87, nxRcvd: 0, medResp: '147ms', avgResp: '109ms', rank: 4 },
+			],
+			staticRecords: [{ host: 'awgm-dnscheck.test', type: 'A', value: '10.10.10.1', flag: 0 }],
+			rebind: { enabled: true, nets: ['10.10.10.1:24'], excludes: ['ru', '*.ru'] },
+		},
+		{
+			name: 'Policy2',
+			displayName: 'Policy2',
+			tcpPort: 41102,
+			udpPort: 41102,
+			stat: { totalRequests: 0, proxyRequestsSent: 0, cacheHitRatio: 0, cacheHits: 0, memory: '12.75K' },
+			upstreams: [
+				{ address: '8.8.8.8', port: 0, encryption: 'DoT', sni: 'dns.google', scope: 'all', rSent: 0, aRcvd: 0, nxRcvd: 0, medResp: '0ms', avgResp: '0ms', rank: 1 },
+				{ address: '77.88.8.8', port: 853, encryption: 'DoT', sni: 'common.dot.dns.yandex.net', scope: 'ru', rSent: 0, aRcvd: 0, nxRcvd: 0, medResp: '0ms', avgResp: '0ms', rank: 1 },
+				{ address: '9.9.9.9', port: 0, encryption: 'DoT', sni: '', scope: 'all', rSent: 0, aRcvd: 0, nxRcvd: 0, medResp: '0ms', avgResp: '0ms', rank: 1 },
+			],
+			staticRecords: [],
+			rebind: { enabled: false, nets: [], excludes: [] },
+		},
+	],
+};
+
 /** HydraRoute Neo в блоке AWGM (GET /system/hydraroute-status). */
 const mockHydraRouteStatus = {
 	installed: true,
@@ -3209,6 +3280,11 @@ const server = http.createServer(async (req, res) => {
 
 	if (req.method === 'GET' && path === '/dns-check/client') {
 		send(res, 200, { success: true, data: mockDnsCheckClientPayload });
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/diagnostics/dns-proxy') {
+		send(res, 200, { success: true, data: mockDnsProxyInfo });
 		return;
 	}
 
