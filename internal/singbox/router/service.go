@@ -471,6 +471,28 @@ func (s *ServiceImpl) persistConfig(ctx context.Context, cfg *RouterConfig) erro
 		if err != nil {
 			return fmt.Errorf("marshal router config: %w", err)
 		}
+		// Phantom-draft guard: an inline rule-set's rules live in sidecar
+		// artifacts, not in 20-router.json (which carries only a
+		// {type:local,format:binary,path} reference). Editing only the rules
+		// of an already-applied inline rule-set therefore leaves the
+		// materialized config byte-identical to active — materializeConfig
+		// has already rewritten the live .srs and sing-box hot-reloads it
+		// without SIGHUP. There is no real config change to stage, so a draft
+		// would only raise a phantom "unsaved changes" banner. Drop any stale
+		// draft and return. This guard's safety rests on the invariant that
+		// any genuinely structural change (new rule-set, tag rename, route/DNS/
+		// outbound edit) perturbs the materialized bytes and so is never
+		// byte-equal. A missing/unreadable active file (router disabled, first
+		// Enable, slot parked under disabled/) is NOT equal — fall through to
+		// staging so the change is applied normally.
+		activePath := filepath.Join(s.deps.Orch.ConfigDir(), "20-router.json")
+		if existing, rerr := os.ReadFile(activePath); rerr == nil && bytes.Equal(existing, data) {
+			if err := s.deps.Orch.DiscardDraft(orchestrator.SlotRouter); err != nil {
+				return err
+			}
+			s.emitStagingEvent("discarded")
+			return nil
+		}
 		if err := s.deps.Orch.SaveDraft(orchestrator.SlotRouter, data); err != nil {
 			return err
 		}
