@@ -4,6 +4,7 @@
 	const isExpert = $derived($usageLevel === 'expert');
 
 	const credits = [
+		'@amatol',
 		'@paris19891', '@The_Immortal', '@LionEvil', '@dio1122', '@Nidre',
 		'@rexsniper', '@tiffolk', '@Shidla', '@palik_lelyakin', '@user_shurik',
 		'@metasevss', '@reSigo', '@dnstkrv', '@JentRy', '@Il131',
@@ -25,6 +26,9 @@
 		'@Novosat', '@Evgenii', '@ayastrebov', '@dany_massiv', '@Litvix',
 		'@Evko', '@gen****@m****u', '@Frinstall', '@ev**************y@g*******m', '@IARESI',
 		'@ig*****@g*******m', '@Да**** Т***в', '@vi*****@g*******.m', '@ku*******@g*******m',
+		'@d****8@y***u', '@PolarPriest', '@augin', '@me***-***r@y***u', '@Byrnane',
+		'@a******r@g*******m', '@k*******7@g*******m', '@Лохматая Чупакабра', '@Proxy', '@DELETED',
+		'@2*****6@g*******m', '@S A', '@Ig**M**v***v', '@A Tu', '@metalnalks',
 	];
 
 	let open = $state(false);
@@ -70,7 +74,7 @@
 		<div class="card credits-card">
 			<div class="credits-content">
 				{#each credits as nick}
-					<span class="credits-nick">{nick}</span>
+					<span class="credits-nick" class:gold={nick === '@amatol'} class:bronze={nick === '@tiffolk'}>{nick}</span>
 				{/each}
 			</div>
 		</div>
@@ -151,5 +155,19 @@
 		padding: 0.125rem 0.5rem;
 		border-radius: 10px;
 		border: 1px solid var(--color-border);
+	}
+
+	.credits-nick.gold {
+		color: #d4af37;
+		font-weight: 700;
+		background: rgba(212, 175, 55, 0.12);
+		border-color: rgba(212, 175, 55, 0.7);
+	}
+
+	.credits-nick.bronze {
+		color: #cd7f32;
+		font-weight: 700;
+		background: rgba(205, 127, 50, 0.12);
+		border-color: rgba(205, 127, 50, 0.7);
 	}
 </style>
