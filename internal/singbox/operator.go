@@ -2353,6 +2353,12 @@ func (o *Operator) Install(ctx context.Context) error {
 	if o.inst == nil {
 		return fmt.Errorf("installer not wired")
 	}
+	if o.inst.EvaluateInstallState() == installer.InstallStateMissingNoSpace {
+		if o.installProgress != nil {
+			o.installProgress("install", "error", 0, 0, "недостаточно места на диске")
+		}
+		return nil // намеренно не error: фронт показывает баннер из GetStatus
+	}
 	report := func(phase string, downloaded, total int64, errMsg string) {
 		if o.installProgress != nil {
 			o.installProgress("install", phase, downloaded, total, errMsg)

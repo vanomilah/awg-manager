@@ -1765,3 +1765,21 @@ func TestRemoveFinalFromBase_MalformedJSON_NoOp(t *testing.T) {
 		t.Errorf("malformed file mutated: got %q, want %q", string(raw), garbage)
 	}
 }
+
+func TestOperator_Install_NoSpace_ReturnsNil(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "sing-box") // не существует
+	op := NewOperator(OperatorDeps{Dir: dir, Binary: binary})
+	inst := installer.New(binary, "test-arch", installer.BinarySpec{
+		Version: "1.2.3", URL: "u", SHA256: "s", Size: 100 << 20,
+	}, nil)
+	inst.SetFreeDiskFn(func(string) (int64, bool) { return 50 << 20, true })
+	op.SetInstaller(inst)
+
+	if err := op.Install(context.Background()); err != nil {
+		t.Fatalf("Install returned error, expected nil: %v", err)
+	}
+	if got := inst.EvaluateInstallState(); got != installer.InstallStateMissingNoSpace {
+		t.Fatalf("EvaluateInstallState=%q, want %q", got, installer.InstallStateMissingNoSpace)
+	}
+}
