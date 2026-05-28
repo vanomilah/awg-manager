@@ -34,6 +34,7 @@ type BinarySpec struct {
 	Version string
 	URL     string
 	SHA256  string
+	Size    int64 // bytes (uncompressed); 0 → disk-gate skipped (backwards-compatible)
 }
 
 // Installer downloads, verifies, and activates sing-box binaries.
@@ -119,6 +120,10 @@ func (i *Installer) RequiredVersion() string { return i.spec.Version }
 
 // RequiredSHA256 is the checksum this awg-manager build is pinned to.
 func (i *Installer) RequiredSHA256() string { return i.spec.SHA256 }
+
+// RequiredSize is the expected size of the pinned binary (bytes, uncompressed).
+// Zero means unknown — disk-gate is skipped.
+func (i *Installer) RequiredSize() int64 { return i.spec.Size }
 
 // CurrentSHA256 returns the checksum of the installed managed binary.
 func (i *Installer) CurrentSHA256() (string, error) {
