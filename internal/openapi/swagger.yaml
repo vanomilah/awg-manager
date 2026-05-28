@@ -10548,6 +10548,26 @@ paths:
       - singbox
   /singbox/tunnels/test/speed/stream:
     get:
+      parameters:
+      - description: Sing-box outbound tag
+        in: query
+        name: tag
+        required: true
+        type: string
+      - description: iperf3 server host
+        in: query
+        name: server
+        required: true
+        type: string
+      - description: iperf3 server port
+        in: query
+        name: port
+        required: true
+        type: integer
+      - description: Kernel interface override (NDMS Proxy must be enabled)
+        in: query
+        name: iface
+        type: string
       produces:
       - text/event-stream
       responses:
@@ -10557,6 +10577,14 @@ paths:
             type: string
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Tunnel tag not found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "412":
+          description: NDMS Proxy disabled — iface override unavailable
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "500":

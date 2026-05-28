@@ -1124,7 +1124,9 @@ func main() {
 	})
 	subSched.SetAppLogger(loggingService)
 	subSched.Start(context.Background())
-	srv.SetSubscriptionHandler(api.NewSubscriptionHandler(subSvc, singboxOp, loggingService))
+	subHandler := api.NewSubscriptionHandler(subSvc, singboxOp, loggingService)
+	subHandler.SetNDMSProxyToggler(settingsStore)
+	srv.SetSubscriptionHandler(subHandler)
 	srv.AddShutdownHook(subSched.Stop)
 
 	// DNS Rewrites — sing-box slot 17-dns-rewrites.json.
