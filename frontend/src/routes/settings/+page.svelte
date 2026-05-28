@@ -776,7 +776,7 @@ onMount(() => {
 									: "Сначала нажмите «Сгенерировать»"}
 							/>
 							<div class="api-key-action">
-								<Button variant="secondary" size="sm" onclick={generateApiKey} disabled={saving}>
+								<Button variant="secondary" size="md" onclick={generateApiKey} disabled={saving}>
 									Сгенерировать
 								</Button>
 							</div>
@@ -978,6 +978,23 @@ onMount(() => {
 		align-items: center;
 	}
 
+	@media (min-width: 641px) {
+		.actions-card > .setting-row > :global(.btn),
+		.action-buttons :global(.btn) {
+			width: 7.5rem;
+			min-width: 7.5rem;
+		}
+
+		.action-buttons > span {
+			display: inline-flex;
+		}
+
+		.action-buttons > span :global(.btn) {
+			width: 7.5rem;
+			min-width: 7.5rem;
+		}
+	}
+
 	.section-label-with-route {
 		display: flex;
 		align-items: baseline;
@@ -1034,6 +1051,41 @@ onMount(() => {
 	}
 	.api-key-setting > *:first-child {
 		min-width: 0;
+	}
+
+	@media (min-width: 641px) {
+		.api-key-setting {
+			grid-template-columns: minmax(0, 1fr) minmax(0, min(50%, 34rem));
+			align-items: start;
+		}
+
+		.api-key-setting > *:first-child {
+			display: flex;
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 0.25rem;
+		}
+
+		.api-key-setting .setting-description {
+			white-space: normal;
+			overflow: visible;
+			text-overflow: clip;
+		}
+
+		.api-key-controls {
+			width: 100%;
+			grid-template-columns: minmax(0, 1fr) auto;
+			align-items: stretch;
+		}
+
+		.api-key-action {
+			display: flex;
+		}
+
+		.api-key-action :global(.btn) {
+			width: auto;
+			min-width: 7.5rem;
+		}
 	}
 
 	@media (max-width: 640px) {

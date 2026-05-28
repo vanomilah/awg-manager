@@ -563,6 +563,22 @@
 		}
 	}
 
+	@media (min-width: 641px) {
+		.mode-switch {
+			display: grid;
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			width: 100%;
+			border-radius: var(--radius-md);
+		}
+
+		.mode-pill {
+			width: 100%;
+			min-width: 0;
+			padding-inline: 0.25rem;
+			text-align: center;
+		}
+	}
+
 	.custom-block {
 		display: flex;
 		flex-direction: column;

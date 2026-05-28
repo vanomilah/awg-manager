@@ -115,7 +115,7 @@
 			</div>
 			<Button
 				variant="secondary"
-				size="sm"
+				size="md"
 				onclick={onRefresh}
 				disabled={saving || loading}
 			>

@@ -208,13 +208,18 @@
 	}
 
 	.hours-select {
-		width: 132px;
-		min-width: 132px;
+		width: 180px;
+		min-width: 180px;
 	}
 
 	.num-input {
 		width: 180px;
 		min-width: 180px;
+	}
+
+	.logging-main-row .hours-select {
+		width: 132px;
+		min-width: 132px;
 	}
 
 	.num-input input {
