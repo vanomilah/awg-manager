@@ -16,6 +16,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/storage"
+	"github.com/hoaxisr/awg-manager/internal/sys/env"
 )
 
 type Service interface {
@@ -636,7 +637,10 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 	// Soft timeout: log and proceed if sing-box is slow; the alternative
 	// (refusing to install iptables) leaves the router with no routing
 	// at all, which is worse than a brief packet-drop blip.
-	if err := s.waitForSingbox(ctx, 15*time.Second); err != nil {
+	// Same env-var contract as singbox.maxSingboxBootWait — keep both
+	// in sync. Import-cycle (integration_test in parent already pulls
+	// router) blocks reusing singbox.BootWaitTimeout() directly.
+	if err := s.waitForSingbox(ctx, env.DurationDefault("AWG_SINGBOX_BOOT_WAIT", 45*time.Second)); err != nil {
 		s.appLog.Warn("install", "", "sing-box not ready: "+err.Error())
 	}
 
