@@ -31,16 +31,29 @@ import (
 // before declaring the cold start failed. On MIPS routers with gvisor
 // enabled, sing-box boot can take 5–10s; with heavy outbounds (hy2 QUIC
 // handshake, vless TLS init) on slow CPUs cold start can stretch to
-// 30s+. 45s default leaves real headroom without letting a truly-broken
+// 30s+. 60s default leaves real headroom without letting a truly-broken
 // config hang the caller indefinitely.
 //
-// Override via AWG_SINGBOX_BOOT_WAIT (Go duration string, e.g. "60s",
-// "1m30s"). Same env-var also read by router/service.go waitForSingbox —
-// keep both call sites in sync if you change the key.
+// Override via AWG_SINGBOX_BOOT_WAIT (Go duration string, e.g. "90s",
+// "2m"). Clamped to a 60s floor — going lower was the root cause of
+// issue #221 where a soft-fail let iptables install before sing-box
+// finished initializing, leaving DNS dead-ended at a port nothing was
+// listening on. Same env-var also read by router/service.go
+// waitForSingbox — keep both call sites in sync if you change the key.
 //
 // var (not const) so the env override applies at process start; tests
 // can patch by re-assigning.
-var maxSingboxBootWait = env.DurationDefault("AWG_SINGBOX_BOOT_WAIT", 45*time.Second)
+var maxSingboxBootWait = clampSingboxBootWait(env.DurationDefault("AWG_SINGBOX_BOOT_WAIT", 60*time.Second))
+
+// singboxBootWaitFloor enforces the lower bound for AWG_SINGBOX_BOOT_WAIT.
+const singboxBootWaitFloor = 60 * time.Second
+
+func clampSingboxBootWait(d time.Duration) time.Duration {
+	if d < singboxBootWaitFloor {
+		return singboxBootWaitFloor
+	}
+	return d
+}
 
 const (
 	// singboxProbeInterval controls how often we poll Clash during boot.
