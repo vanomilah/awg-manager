@@ -3356,6 +3356,12 @@ definitions:
         items:
           type: string
         type: array
+      freeBytes:
+        example: 8221456
+        type: integer
+      installState:
+        example: outdated_no_space
+        type: string
       installed:
         example: true
         type: boolean
@@ -3371,6 +3377,9 @@ definitions:
       proxyComponent:
         example: true
         type: boolean
+      requiredBytes:
+        example: 32145678
+        type: integer
       requiredSha256:
         example: 76e67bb07b5c2bf4cef108c2f21a5ffaa684d124c21ffe220fc89b39cf1de934
         type: string
