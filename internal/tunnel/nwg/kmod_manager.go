@@ -379,23 +379,6 @@ func (km *KmodManager) HasTunnel(tunnelID string) bool {
 	return ok
 }
 
-// RemoveAllTunnels removes all tracked tunnels from the kernel module.
-// The module itself stays loaded (safe for daemon restart).
-func (km *KmodManager) RemoveAllTunnels() {
-	km.mu.Lock()
-	ids := make([]string, 0, len(km.tunnels))
-	for id := range km.tunnels {
-		ids = append(ids, id)
-	}
-	km.mu.Unlock()
-
-	for _, id := range ids {
-		if err := km.RemoveTunnel(id); err != nil {
-			km.appLog.Warn("remove-tunnel", id, "on shutdown: "+err.Error())
-		}
-	}
-}
-
 // buildProcLine builds the config line for /proc/awg_proxy/add.
 // Format: IP:PORT H1=min-max H2=... S1=N ... Jc=N ... PUB_SERVER=hex PUB_CLIENT=hex I1="template"
 func buildProcLine(cfg KmodConfig) string {

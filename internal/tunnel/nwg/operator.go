@@ -684,11 +684,6 @@ func (o *OperatorNativeWG) RestoreKmodTunnel(ctx context.Context, stored *storag
 	return nil
 }
 
-// KmodManager returns the kmod manager (for shutdown hook).
-func (o *OperatorNativeWG) KmodManager() *KmodManager {
-	return o.kmod
-}
-
 // ResolveActiveWAN reads the peer "via" field from RCI and resolves the
 // NDMS WAN name (e.g. "PPPoE0") to a kernel interface name (e.g. "ppp0").
 // Returns empty string if no peer.via is set (= default routing) or if

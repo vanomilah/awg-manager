@@ -1207,11 +1207,15 @@ func main() {
 
 	// Register shutdown hooks for graceful cleanup before syscall.Exec restart.
 	srv.AddShutdownHook(shutdownCancel)
-	if !ndmsinfo.SupportsWireguardASC() {
-		srv.AddShutdownHook(func() {
-			nwgOp.KmodManager().RemoveAllTunnels()
-		})
-	}
+	// Intentionally NOT removing kmod proxy slots on restart: the
+	// reconnect path (EventReconnect → ActionRestoreKmod →
+	// KmodManager.RestoreTunnel) adopts each existing slot without
+	// touching /proc/awg_proxy/del, so kernel WG keeps forwarding
+	// through the live slot across syscall.Exec. This is what makes
+	// "Перезапуск AWGM, туннели продолжат работать" actually true on
+	// proxy-firmware. Touching /proc/del here also opened a kernel-side
+	// race on awg_proxy < 1.1.10 (issue #234) — slots are now left
+	// to the reconnect path.
 	srv.AddShutdownHook(pingCheckService.Stop)
 	srv.AddShutdownHook(monitoringService.Stop)
 	srv.AddShutdownHook(dnsRefreshScheduler.Stop)
