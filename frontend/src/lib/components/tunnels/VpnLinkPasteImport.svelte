@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { Button, ConfirmModal } from '$lib/components/ui';
+	import DownloadRouteNote from '$lib/components/downloads/DownloadRouteNote.svelte';
 	import AmneziaConfEditor from './AmneziaConfEditor.svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
@@ -320,6 +321,7 @@
 		spellcheck="false"
 	></textarea>
 	{#if showPremiumChrome}
+		<DownloadRouteNote text="Список стран и конфигурации Amnezia Premium будут получены через" />
 		<p class="premium-cp-note">
 			Если распознан ключ для получения параметров подписки, приложение может обратиться к внешнему сервису по вашей инициативе.<br>
 			AWG Manager не связан с операторами таких сервисов, не проверяет и не гарантирует ключи, доступность их API а так же стабильность работы данного функционала.<br>

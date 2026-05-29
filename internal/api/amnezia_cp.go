@@ -81,7 +81,17 @@ func setAmneziaCPBrowserHeaders(req *http.Request, refererPath string) {
 
 // Login exchanges vpnKey for a portal session JWT (v_sid).
 //
-//	@Router /amnezia-premium/login [post]
+//	@Summary	Login to Amnezia Premium portal
+//	@Tags		amnezia-premium
+//	@Accept		json
+//	@Produce	json
+//	@Security	CookieAuth
+//	@Param		body	body		AmneziaPremiumLoginRequest	true	"Premium vpn:// key"
+//	@Success	200		{object}	AmneziaPremiumLoginResponse
+//	@Failure	400		{object}	APIErrorEnvelope
+//	@Failure	422		{object}	APIErrorEnvelope
+//	@Failure	500		{object}	APIErrorEnvelope
+//	@Router		/amnezia-premium/login [post]
 func (h *AmneziaCPHandler) Login(w http.ResponseWriter, r *http.Request) {
 	reqBody, ok := parseJSON[struct {
 		VPNKey      string `json:"vpnKey"`
@@ -159,7 +169,16 @@ func (h *AmneziaCPHandler) Login(w http.ResponseWriter, r *http.Request) {
 
 // AccountInfo returns subscription metadata including available_countries (proxied JSON.data).
 //
-//	@Router /amnezia-premium/account-info [post]
+//	@Summary	Get Amnezia Premium account info
+//	@Tags		amnezia-premium
+//	@Accept		json
+//	@Produce	json
+//	@Security	CookieAuth
+//	@Param		body	body		AmneziaPremiumAccountInfoRequest	true	"Portal session id returned by login"
+//	@Success	200		{object}	AmneziaPremiumAccountInfoResponse
+//	@Failure	400		{object}	APIErrorEnvelope
+//	@Failure	500		{object}	APIErrorEnvelope
+//	@Router		/amnezia-premium/account-info [post]
 func (h *AmneziaCPHandler) AccountInfo(w http.ResponseWriter, r *http.Request) {
 	reqBody, ok := parseJSON[struct {
 		Sid string `json:"sid"`
@@ -221,7 +240,16 @@ func (h *AmneziaCPHandler) AccountInfo(w http.ResponseWriter, r *http.Request) {
 
 // DownloadConfig fetches AWG/WG client config text for a country code.
 //
-//	@Router /amnezia-premium/download-config [post]
+//	@Summary	Download Amnezia Premium config
+//	@Tags		amnezia-premium
+//	@Accept		json
+//	@Produce	json
+//	@Security	CookieAuth
+//	@Param		body	body		AmneziaPremiumDownloadConfigRequest	true	"Portal session id and country code"
+//	@Success	200		{object}	AmneziaPremiumDownloadConfigResponse
+//	@Failure	400		{object}	APIErrorEnvelope
+//	@Failure	500		{object}	APIErrorEnvelope
+//	@Router		/amnezia-premium/download-config [post]
 func (h *AmneziaCPHandler) DownloadConfig(w http.ResponseWriter, r *http.Request) {
 	reqBody, ok := parseJSON[struct {
 		Sid         string `json:"sid"`

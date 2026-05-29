@@ -839,6 +839,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/import/conf", guarded(importHandler.ImportConf))
 
 	amneziaCPHandler := api.NewAmneziaCPHandler(appLog)
+	amneziaCPHandler.SetDownloader(s.downloadSvc)
 	mux.HandleFunc("/api/amnezia-premium/login", guarded(amneziaCPHandler.Login))
 	mux.HandleFunc("/api/amnezia-premium/account-info", guarded(amneziaCPHandler.AccountInfo))
 	mux.HandleFunc("/api/amnezia-premium/download-config", guarded(amneziaCPHandler.DownloadConfig))

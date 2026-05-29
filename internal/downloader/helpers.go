@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ type Request struct {
 	URL           string
 	Method        string
 	Headers       http.Header
+	Body          []byte
 	Timeout       time.Duration
 	MaxBodyBytes  int64
 	UserAgent     string
@@ -30,6 +32,7 @@ type ResponseMeta struct {
 	StatusCode    int
 	ContentLength int64
 	ContentType   string
+	Headers       http.Header
 	Route         RouteInfo
 }
 
@@ -74,7 +77,11 @@ func (s *Service) ReadAll(ctx context.Context, req Request) ([]byte, ResponseMet
 	if method == "" {
 		method = http.MethodGet
 	}
-	httpReq, err := http.NewRequestWithContext(requestCtx, method, req.URL, nil)
+	var requestBody io.Reader
+	if req.Body != nil {
+		requestBody = bytes.NewReader(req.Body)
+	}
+	httpReq, err := http.NewRequestWithContext(requestCtx, method, req.URL, requestBody)
 	if err != nil {
 		return nil, ResponseMeta{}, fmt.Errorf("download via %s: build request: %w", lease.Route.DisplayName(), err)
 	}
@@ -85,6 +92,9 @@ func (s *Service) ReadAll(ctx context.Context, req Request) ([]byte, ResponseMet
 		for _, v := range vals {
 			httpReq.Header.Add(k, v)
 		}
+	}
+	if strings.EqualFold(httpReq.Header.Get("Connection"), "close") {
+		httpReq.Close = true
 	}
 
 	client := lease.Client
@@ -118,6 +128,7 @@ func (s *Service) ReadAll(ctx context.Context, req Request) ([]byte, ResponseMet
 		StatusCode:    resp.StatusCode,
 		ContentLength: resp.ContentLength,
 		ContentType:   resp.Header.Get("Content-Type"),
+		Headers:       resp.Header.Clone(),
 		Route:         lease.Route,
 	}
 	return body, meta, nil
@@ -151,7 +162,11 @@ func (s *Service) DownloadFile(ctx context.Context, req FileRequest) (FileResult
 	if method == "" {
 		method = http.MethodGet
 	}
-	httpReq, err := http.NewRequestWithContext(requestCtx, method, req.URL, nil)
+	var requestBody io.Reader
+	if req.Body != nil {
+		requestBody = bytes.NewReader(req.Body)
+	}
+	httpReq, err := http.NewRequestWithContext(requestCtx, method, req.URL, requestBody)
 	if err != nil {
 		return FileResult{}, fmt.Errorf("download via %s: build request: %w", lease.Route.DisplayName(), err)
 	}
@@ -162,6 +177,9 @@ func (s *Service) DownloadFile(ctx context.Context, req FileRequest) (FileResult
 		for _, v := range vals {
 			httpReq.Header.Add(k, v)
 		}
+	}
+	if strings.EqualFold(httpReq.Header.Get("Connection"), "close") {
+		httpReq.Close = true
 	}
 
 	client := lease.Client
