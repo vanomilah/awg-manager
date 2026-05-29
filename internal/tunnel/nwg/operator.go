@@ -684,6 +684,48 @@ func (o *OperatorNativeWG) RestoreKmodTunnel(ctx context.Context, stored *storag
 	return nil
 }
 
+// SyncKmodSlot rebuilds the awg_proxy.ko slot from the freshly-stored
+// config and pushes the resulting listen port to the NDMS peer endpoint.
+// Used by Service.applyDiffNWG when an Update changes a kmod-shaping
+// field (PrivateKey, Peer.PublicKey, Peer.Endpoint, obfuscation) on a
+// running tunnel — without this the slot keeps the pre-Update params
+// silently, and the next daemon-restart RestoreTunnel would adopt the
+// stale slot. AddTunnel always installs a fresh slot, EEXIST'ing the
+// existing one out of the way; that's the rebuild we need.
+//
+// No-op on ASC-native firmware (no kmod slot exists).
+func (o *OperatorNativeWG) SyncKmodSlot(ctx context.Context, stored *storage.AWGTunnel) error {
+	if o.supportsASC() {
+		return nil
+	}
+	bindIface := o.ResolveActiveWAN(ctx, stored)
+
+	endpointIP, endpointPort, err := o.resolveEndpointWithFallback(stored)
+	if err != nil {
+		return fmt.Errorf("resolve endpoint: %w", err)
+	}
+	kmodCfg, err := buildKmodConfigResolved(stored, endpointIP, endpointPort, bindIface)
+	if err != nil {
+		return fmt.Errorf("build kmod config: %w", err)
+	}
+
+	result, err := o.kmod.AddTunnel(stored.ID, kmodCfg)
+	if err != nil {
+		return fmt.Errorf("kmod add: %w", err)
+	}
+
+	// listen port likely changed on rebuild — push it to NDMS so the
+	// kernel WG peer points at the new local proxy.
+	names := NewNWGNames(stored.NWGIndex)
+	proxyEndpoint := fmt.Sprintf("127.0.0.1:%d", result.ListenPort)
+	if _, err := o.transport.Post(ctx, payloads.CmdWireguardPeerEndpoint(names.NDMSName, stored.Peer.PublicKey, proxyEndpoint)); err != nil {
+		o.appLog.Warn("sync-kmod-slot", names.NDMSName, "update peer endpoint to "+proxyEndpoint+": "+err.Error())
+	}
+
+	o.appLog.Info("sync-kmod-slot", names.NDMSName, fmt.Sprintf("slot rebuilt → 127.0.0.1:%d", result.ListenPort))
+	return nil
+}
+
 // ResolveActiveWAN reads the peer "via" field from RCI and resolves the
 // NDMS WAN name (e.g. "PPPoE0") to a kernel interface name (e.g. "ppp0").
 // Returns empty string if no peer.via is set (= default routing) or if

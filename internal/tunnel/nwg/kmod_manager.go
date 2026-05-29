@@ -137,7 +137,8 @@ func (km *KmodManager) EnsureLoaded() error {
 		} else {
 			// Do not purge unknown slots here. After daemon restart km.tunnels
 			// is empty while /proc/awg_proxy/list may still contain live slots
-			// used by NDMS. AddTunnel adopts the matching slot instead.
+			// used by NDMS. RestoreTunnel adopts the matching slot on the
+			// reconnect path; AddTunnel always installs fresh.
 			return nil
 		}
 	}
@@ -208,18 +209,27 @@ func (km *KmodManager) RestoreTunnel(tunnelID string, cfg KmodConfig) (KmodResul
 	km.mu.Lock()
 	defer km.mu.Unlock()
 
-	if _, tracked := km.tunnels[tunnelID]; !tracked {
-		if listenPort, err := km.readListenPortLocked(cfg.EndpointIP, cfg.EndpointPort); err == nil {
-			km.tunnels[tunnelID] = kmodEntry{
-				endpointIP:   cfg.EndpointIP,
-				endpointPort: cfg.EndpointPort,
-				listenPort:   listenPort,
-			}
-			km.appLog.Info("adopt-tunnel", tunnelID, fmt.Sprintf("%s:%d -> 127.0.0.1:%d", cfg.EndpointIP, cfg.EndpointPort, listenPort))
-			return KmodResult{ListenPort: listenPort, Adopted: true}, nil
-		}
+	// Idempotency guard: if the caller already tracked this tunnel —
+	// this is a redundant restore (e.g. flapping reconnect) — short-
+	// circuit instead of falling through to addFreshLocked, which would
+	// del the slot we already adopted, change the listen port, and
+	// leave NDMS peer endpoint pointing at the old port.
+	if entry, tracked := km.tunnels[tunnelID]; tracked {
+		km.appLog.Info("restore-tunnel", tunnelID, fmt.Sprintf("already tracked → 127.0.0.1:%d (no-op)", entry.listenPort))
+		return KmodResult{ListenPort: entry.listenPort, Adopted: true}, nil
 	}
 
+	if listenPort, err := km.readListenPortLocked(cfg.EndpointIP, cfg.EndpointPort); err == nil {
+		km.tunnels[tunnelID] = kmodEntry{
+			endpointIP:   cfg.EndpointIP,
+			endpointPort: cfg.EndpointPort,
+			listenPort:   listenPort,
+		}
+		km.appLog.Info("adopt-tunnel", tunnelID, fmt.Sprintf("%s:%d -> 127.0.0.1:%d", cfg.EndpointIP, cfg.EndpointPort, listenPort))
+		return KmodResult{ListenPort: listenPort, Adopted: true}, nil
+	}
+
+	km.appLog.Info("restore-tunnel", tunnelID, fmt.Sprintf("no live slot for %s:%d, adding fresh", cfg.EndpointIP, cfg.EndpointPort))
 	return km.addFreshLocked(tunnelID, cfg)
 }
 
@@ -234,7 +244,9 @@ func (km *KmodManager) addFreshLocked(tunnelID string, cfg KmodConfig) (KmodResu
 	err := km.procWriteFn("/proc/awg_proxy/add", []byte(line))
 	if err != nil && errors.Is(err, syscall.EEXIST) {
 		km.appLog.Info("add-tunnel", tunnelID, fmt.Sprintf("%s exists, replacing", delLine))
-		_ = km.procWriteFn("/proc/awg_proxy/del", []byte(delLine))
+		if delErr := km.procWriteFn("/proc/awg_proxy/del", []byte(delLine)); delErr != nil {
+			km.appLog.Warn("add-tunnel", tunnelID, fmt.Sprintf("EEXIST fallback del failed (retry add will likely also fail): %s", delErr.Error()))
+		}
 		err = km.procWriteFn("/proc/awg_proxy/add", []byte(line))
 	}
 	if err != nil {

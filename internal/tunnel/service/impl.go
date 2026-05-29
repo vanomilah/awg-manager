@@ -547,8 +547,20 @@ func (s *ServiceImpl) applyDiffNWG(ctx context.Context, oldStored, newStored *st
 		}
 	}
 
-	if oldStored.Peer.Endpoint != newStored.Peer.Endpoint || oldStored.ISPInterface != newStored.ISPInterface {
-		s.logInfo("update", tunnelID, "endpoint/ISPInterface changed; restart tunnel to apply route changes")
+	// Rebuild the kmod proxy slot when fields that shape it change. Without
+	// this, the slot keeps pre-Update keys/obfuscation silently, and the
+	// next daemon-restart's RestoreTunnel adopts the stale slot — handshake
+	// fails forever with no log line beyond "adopt-tunnel". SyncKmodSlot
+	// is a no-op on ASC-native firmware (no kmod slot exists).
+	if kmodShapingChanged(oldStored, newStored) {
+		if err := s.nwgOperator.SyncKmodSlot(ctx, newStored); err != nil {
+			s.logWarn("update", tunnelID, "Failed to sync kmod slot: "+err.Error())
+			errs = append(errs, fmt.Errorf("sync kmod slot: %w", err))
+		}
+	}
+
+	if oldStored.ISPInterface != newStored.ISPInterface {
+		s.logInfo("update", tunnelID, "ISPInterface changed; restart tunnel to apply route changes")
 	}
 
 	if oldStored.DefaultRoute != newStored.DefaultRoute {
@@ -599,6 +611,20 @@ func awgPeerEqual(a, b storage.AWGPeer) bool {
 // new obfuscation fields without manual enumeration.
 func awgParamsEqual(a, b storage.AWGInterface) bool {
 	return a.AWGObfuscation == b.AWGObfuscation
+}
+
+// kmodShapingChanged reports whether any field that shapes the awg_proxy.ko
+// slot differs between the old and new stored configs: PrivateKey,
+// Peer.PublicKey, Peer.Endpoint, and obfuscation parameters. When true,
+// applyDiffNWG must rebuild the slot — otherwise it keeps pre-Update
+// values silently and the next daemon-restart's RestoreTunnel adopts the
+// stale slot. PresharedKey is NOT included: it's WG-side only, the kmod
+// proxy does not see it.
+func kmodShapingChanged(old, neu *storage.AWGTunnel) bool {
+	return old.Interface.PrivateKey != neu.Interface.PrivateKey ||
+		old.Peer.PublicKey != neu.Peer.PublicKey ||
+		old.Peer.Endpoint != neu.Peer.Endpoint ||
+		old.Interface.AWGObfuscation != neu.Interface.AWGObfuscation
 }
 
 // SetEnabled changes the enabled/autostart state of a tunnel.

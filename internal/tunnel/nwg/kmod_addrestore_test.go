@@ -243,6 +243,66 @@ func TestRestoreTunnel_AddsIfNoMatchingSlot(t *testing.T) {
 	}
 }
 
+func TestRestoreTunnel_DoubleRestoreIsIdempotent(t *testing.T) {
+	// I-4: a redundant RestoreTunnel (e.g. flapping reconnect) must NOT
+	// fall through to addFreshLocked, which would del the live slot we
+	// just adopted and assign a new listen port — leaving NDMS peer
+	// endpoint stale until the next sync.
+	km, stub := newKmodManagerForTest()
+	cfg := defaultCfg()
+	stub.setListSlot(cfg.EndpointIP, cfg.EndpointPort, 56034)
+
+	first, err := km.RestoreTunnel("tunnel-A", cfg)
+	if err != nil {
+		t.Fatalf("first RestoreTunnel: %v", err)
+	}
+	if !first.Adopted || first.ListenPort != 56034 {
+		t.Fatalf("first restore: want Adopted=true, port=56034; got %+v", first)
+	}
+
+	second, err := km.RestoreTunnel("tunnel-A", cfg)
+	if err != nil {
+		t.Fatalf("second RestoreTunnel: %v", err)
+	}
+	if second.ListenPort != first.ListenPort {
+		t.Fatalf("double-restore changed listen port (%d → %d) — would orphan NDMS peer endpoint", first.ListenPort, second.ListenPort)
+	}
+	if got := stub.countWritesTo("/proc/awg_proxy/add"); got != 0 {
+		t.Fatalf("double-restore must not write /proc/awg_proxy/add; got %d", got)
+	}
+	if got := stub.countWritesTo("/proc/awg_proxy/del"); got != 0 {
+		t.Fatalf("double-restore must not write /proc/awg_proxy/del; got %d", got)
+	}
+}
+
+func TestRestoreTunnel_AdoptDiscardsCallerCfg(t *testing.T) {
+	// I-6: documents the trust boundary. adopt-by-endpoint uses the LIVE
+	// slot's parameters from kernel; caller-supplied cfg (keys / obfuscation)
+	// is silently dropped. If the caller's stored config diverged from the
+	// in-kernel slot, that mismatch survives across daemon-restart. Service-
+	// level mitigation lives in applyDiffNWG → SyncKmodSlot for the Update
+	// path; adopt itself is intentionally "trust the kernel state".
+	km, stub := newKmodManagerForTest()
+	cfg := defaultCfg()
+	cfg.PubServerHex = strings.Repeat("aa", 32) // brand-new keys
+	cfg.PubClientHex = strings.Repeat("bb", 32)
+	stub.setListSlot(cfg.EndpointIP, cfg.EndpointPort, 49494) // pre-existing slot (old keys)
+
+	res, err := km.RestoreTunnel("tunnel-mismatch", cfg)
+	if err != nil {
+		t.Fatalf("RestoreTunnel: %v", err)
+	}
+	if !res.Adopted {
+		t.Fatalf("adopt path must fire on matching endpoint regardless of cfg drift; got Adopted=false")
+	}
+	// Crucially: no /proc/add write — the caller-supplied PUB_SERVER / PUB_CLIENT
+	// never reach the kernel. This is the residual silent-failure window the
+	// service layer is expected to close before calling RestoreTunnel.
+	if got := stub.countWritesTo("/proc/awg_proxy/add"); got != 0 {
+		t.Fatalf("adopt must NOT push caller cfg via /proc/add; got %d writes (#234 invariant breach)", got)
+	}
+}
+
 // --- errnoPathErr wraps a syscall errno so errors.Is(err, syscall.EEXIST)
 // works the same way it does in real *os.PathError from os.WriteFile. ----
 
