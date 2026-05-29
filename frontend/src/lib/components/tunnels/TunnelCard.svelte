@@ -456,6 +456,11 @@
 			{#if view === 'cards'}
 			<div class="header-dense-body">
 				<div class="tunnel-name-row">
+					<span
+						class="led title-led led-{ledColor}"
+						class:led-pulse={ledPulse}
+						title={statusHint || listStatusText}
+					></span>
 					<button
 						type="button"
 						class="tunnel-name tunnel-name-dense"
@@ -481,9 +486,8 @@
 				</div>
 			</div>
 			<div class="dense-toolbar" title={statusHint || undefined}>
-				<!-- row 1: LED + toggle -->
+				<!-- row 1: toggle -->
 				<div class="dense-toolbar-top">
-					<span class="led led-{ledColor}" class:led-pulse={ledPulse}></span>
 				<span
 					class:toggle-recovering={borderState === 'recovering'}
 			class:toggle-starting={toggleStarting}
@@ -527,6 +531,11 @@
 			{:else}
 				<div class="head-left">
 					<div class="title-line">
+						<span
+							class="led title-led led-{ledColor}"
+							class:led-pulse={ledPulse}
+							title={statusHint || listStatusText}
+						></span>
 						<button
 							type="button"
 							class="tunnel-name"
@@ -555,10 +564,6 @@
 
 				<div class="head-right">
 					<div class="led-toggle">
-						<span
-							class="led led-{ledColor}"
-							class:led-pulse={ledPulse}
-						></span>
 					<span
 						class:toggle-recovering={borderState === 'recovering'}
 						class:toggle-starting={toggleStarting}
@@ -1154,11 +1159,6 @@
 		padding: 0;
 	}
 
-	.card.view-dense .dense-toolbar-top .led {
-		width: 6px;
-		height: 6px;
-	}
-
 	.details-dense-cols {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) 5.5rem;
@@ -1303,16 +1303,22 @@
 		gap: 4px;
 	}
 
-	.card.view-dense .dense-toolbar .led {
-		width: 6px;
-		height: 6px;
-	}
-
 	.head-left {
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
 		min-width: 0;
+	}
+
+	.title-led {
+		flex: 0 0 auto;
+		margin-top: 1px;
+	}
+
+	.card.view-dense .title-led {
+		width: 6px;
+		height: 6px;
+		margin-top: 0;
 	}
 
 	.title-line {
