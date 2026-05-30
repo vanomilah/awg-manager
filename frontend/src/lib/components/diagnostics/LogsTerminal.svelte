@@ -9,6 +9,8 @@
   import { systemInfo } from '$lib/stores/system';
   import { copyToClipboard } from '$lib/utils/clipboard';
   import { formatDateTimeWithOffset } from '$lib/utils/format';
+  import { diagnosticsSanitized, toggleDiagnosticsSanitized } from '$lib/stores/diagnosticsPrivacy';
+  import { sanitizeLogEntry } from '$lib/utils/log-privacy';
   import LogRow from './LogRow.svelte';
   import LogsToolbar, { ALL_LEVELS } from './LogsToolbar.svelte';
   import LogsContextMenu from './LogsContextMenu.svelte';
@@ -333,6 +335,10 @@
     scrollEl?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
+  function logForPrivacy(log: LogEntry): LogEntry {
+    return $diagnosticsSanitized ? sanitizeLogEntry(log) : log;
+  }
+
   async function applyFilter(f: LogsFilter) {
     // Filter changes should be predictable: drop manual pause snapshot and return to live mode.
     manualPause = false;
@@ -384,12 +390,14 @@
     }
     if (filter.search) {
       const q = filter.search.toLowerCase();
-      arr = arr.filter(
-        (l) =>
-          l.message.toLowerCase().includes(q) ||
-          l.target.toLowerCase().includes(q) ||
-          l.action.toLowerCase().includes(q),
-      );
+      arr = arr.filter((l) => {
+        const visible = logForPrivacy(l);
+        return (
+          visible.message.toLowerCase().includes(q) ||
+          visible.target.toLowerCase().includes(q) ||
+          visible.action.toLowerCase().includes(q)
+        );
+      });
     }
     return arr;
   });
@@ -421,9 +429,10 @@
   }
 
   function formatLine(log: LogEntry, routerOffset: number): string {
-    const scope = log.subgroup ? `${log.group}/${log.subgroup}` : log.group;
-    const t = formatDateTimeWithOffset(log.timestamp, routerOffset);
-    return `[${t}] [${log.level.toUpperCase()}] [${scope}] ${log.action} ${log.target}: ${log.message}`;
+    const visible = logForPrivacy(log);
+    const scope = visible.subgroup ? `${visible.group}/${visible.subgroup}` : visible.group;
+    const t = formatDateTimeWithOffset(visible.timestamp, routerOffset);
+    return `[${t}] [${visible.level.toUpperCase()}] [${scope}] ${visible.action} ${visible.target}: ${visible.message}`;
   }
 
   function getRouterOffsetOrWarn(): number | null {
@@ -594,6 +603,8 @@
       onClear={handleClear}
       {showFullTimestamp}
       onToggleFullTimestamp={toggleFullTimestamp}
+      sanitizeLogs={$diagnosticsSanitized}
+      onToggleSanitizeLogs={toggleDiagnosticsSanitized}
       totalEntries={$totalStore}
       visibleEntries={displayLogs.length}
       bufferStats={$statsStore}
@@ -611,15 +622,16 @@
       {/if}
       {#each displayLogs as log (logKey(log))}
         {@const k = logKey(log) /* WeakMap returns the same id; reuse for expanded[] */}
+        {@const visibleLog = logForPrivacy(log)}
         <LogRow
-          {log}
+          log={visibleLog}
           routerOffset={$systemInfo.data?.routerTimezoneOffsetMinutes}
           showFullTimestamp={showFullTimestamp}
           expanded={expanded[k] ?? false}
           onToggleExpand={() => (expanded = { ...expanded, [k]: !expanded[k] })}
           onClickScope={handleClickScope}
           onClickLevel={handleClickLevel}
-          onCopyLine={handleCopyLine}
+          onCopyLine={() => handleCopyLine(log)}
           onCopyMessage={handleCopyMessage}
         />
       {/each}
