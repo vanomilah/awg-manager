@@ -10,6 +10,7 @@
   import { singboxStatus } from '$lib/stores/singbox';
   import { systemInfo } from '$lib/stores/system';
   import { drawerOpen, closeDrawer } from './drawerStore';
+  import { mode } from './modeStore';
   import DrawerSection from './DrawerSection.svelte';
   import DrawerRow from './DrawerRow.svelte';
   import DepRow from './DepRow.svelte';
@@ -31,6 +32,7 @@
   let issueCount = $derived(issues.length);
 
   let engineEnabled = $derived(s?.enabled ?? false);
+  let isExpert = $derived($mode === 'expert');
 
   function versionLabel(value?: string | null): string {
     const v = (value ?? '').trim();
@@ -40,8 +42,6 @@
   let sbVersionLabel = $derived(versionLabel(
     singboxInstallStatus?.version ?? singboxInstallStatus?.currentVersion ?? sysInfo?.singbox?.version,
   ));
-  let amVersion = $derived(sysInfo?.version ?? 'unknown');
-  let fwVersion = $derived(sysInfo?.firmwareVersion ?? 'unknown');
 
   let bigTitle = $derived(engineEnabled ? 'Движок работает' : 'Движок выключен');
   let bigSubtitle = $derived.by(() => {
@@ -106,24 +106,28 @@
       {/each}
     </DrawerSection>
 
-    <!-- Устройства -->
-    <DrawerSection title="Устройства" actionHint="Изменить (в Эксперт)">
-      <DrawerRow label="NDMS policy" value={s?.policyName || '—'} mono />
-      {#if s?.policyMark}
-        <DrawerRow label="Mark" value={s.policyMark} mono />
-      {/if}
-      <DrawerRow label="Привязано" value={`${s?.deviceCount ?? 0} устройств`} />
-      <DrawerRow label="Режим" value={s?.deviceMode === 'all' ? 'Все устройства' : 'Только policy'} />
-    </DrawerSection>
+    {#if isExpert}
+      <!-- Устройства -->
+      <DrawerSection title="Устройства" actionHint="Изменить (в Эксперт)">
+        <DrawerRow label="NDMS policy" value={s?.policyName || '—'} mono />
+        {#if s?.policyMark}
+          <DrawerRow label="Mark" value={s.policyMark} mono />
+        {/if}
+        <DrawerRow label="Привязано" value={`${s?.deviceCount ?? 0} устройств`} />
+        <DrawerRow label="Режим" value={s?.deviceMode === 'all' ? 'Все устройства' : 'Только policy'} />
+      </DrawerSection>
+    {/if}
 
-    <!-- WAN-интерфейс -->
-    <DrawerSection title="WAN-интерфейс" actionHint="Изменить (в Эксперт)">
-      <DrawerRow label="Режим" value={wanMode} />
-      <DrawerRow label="Текущий" value={wanCurrent} mono />
-    </DrawerSection>
+    {#if isExpert}
+      <!-- WAN-интерфейс -->
+      <DrawerSection title="WAN-интерфейс" actionHint="Изменить (в Эксперт)">
+        <DrawerRow label="Режим" value={wanMode} />
+        <DrawerRow label="Текущий" value={wanCurrent} mono />
+      </DrawerSection>
+    {/if}
 
     <!-- Замечания -->
-    {#if issueCount > 0}
+    {#if isExpert && issueCount > 0}
       <DrawerSection title="Замечания">
         {#snippet badge()}
           <Badge variant="warning" size="sm">{issueCount}</Badge>
@@ -138,15 +142,10 @@
     <DrawerSection title="Дополнительно" collapsed>
       <DrawerRow label="Sniffer" value={s?.snifferEnabled ? 'Включён' : 'Выключен'} small />
       <DrawerRow label="Final outbound" value={s?.final || 'direct'} mono small />
-      <DrawerRow label="AWG outbounds" value={String(s?.outboundAwgCount ?? 0)} small />
-      <DrawerRow label="Composite outbounds" value={String(s?.outboundCompositeCount ?? 0)} small />
-    </DrawerSection>
-
-    <!-- Версия -->
-    <DrawerSection title="Версия">
-      <DrawerRow label="sing-box" value={sbVersionLabel} mono />
-      <DrawerRow label="awg-manager" value={amVersion} mono />
-      <DrawerRow label="прошивка" value={fwVersion} mono />
+      {#if isExpert}
+        <DrawerRow label="AWG outbounds" value={String(s?.outboundAwgCount ?? 0)} small />
+        <DrawerRow label="Composite outbounds" value={String(s?.outboundCompositeCount ?? 0)} small />
+      {/if}
     </DrawerSection>
   </div>
 
