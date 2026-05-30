@@ -253,6 +253,12 @@
   function navigateConnections() {
     void goto('/routing?tab=singbox&sub=connections');
   }
+  function navigateEngine() {
+    void goto('/routing?tab=singbox&sub=engine');
+  }
+  function navigatePresets() {
+    void goto('/routing?tab=singbox&sub=presets');
+  }
 </script>
 
 
@@ -330,6 +336,14 @@
           addRuleDisabled={readOnly}
           addRuleTitle={readOnly ? readOnlyActionTitle : undefined}
         />
+      </SidePanel>
+
+      <SidePanel title="Движок" count="" actionLabel="Управление →" onAction={navigateEngine}>
+        <div class="panel-cap">статус, установка, запуск/остановка, WAN, policy</div>
+      </SidePanel>
+
+      <SidePanel title="Пресеты" count="" actionLabel="Открыть →" onAction={navigatePresets}>
+        <div class="panel-cap">готовые конфигурации правил</div>
       </SidePanel>
 
       <SidePanel
