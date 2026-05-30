@@ -43,6 +43,7 @@
   import CompositeOutboundEditModal from '$lib/components/routing/singboxRouter/CompositeOutboundEditModal.svelte';
   import DNSServerEditModal from '$lib/components/routing/singboxRouter/DNSServerEditModal.svelte';
   import DNSRuleEditModal from '$lib/components/routing/singboxRouter/DNSRuleEditModal.svelte';
+  import { DNSRewritesList } from '$lib/components/routing/singboxRouter';
 
   // Store subscriptions
   const storeStatus = singboxRouterStore.status;
@@ -51,6 +52,7 @@
   const storeOutbounds = singboxRouterStore.outbounds;
   const storeDnsServers = singboxRouterStore.dnsServers;
   const storeDnsRules = singboxRouterStore.dnsRules;
+  const storeDnsRewrites = singboxRouterStore.dnsRewrites;
   const storeOptions = singboxRouterStore.options;
 
   let activeProxyCount = $state<number | null>(null);
@@ -123,6 +125,7 @@
     { label: 'Rule-sets', value: String($storeRuleSets.length) },
     { label: 'Outbounds', value: String($storeOutbounds.length) },
     { label: 'DNS правил', value: String($storeDnsRules.length) },
+    { label: 'Перезаписей', value: String($storeDnsRewrites.length) },
     { label: 'Прокси', value: activeProxyCount === null ? '—' : String(activeProxyCount) },
   ]);
 
@@ -311,6 +314,10 @@
           onEditRule={(idx) => (dnsRuleEditIdx = idx)}
           onAddRule={() => (dnsRuleAddOpen = true)}
         />
+      </SidePanel>
+
+      <SidePanel title="DNS-перезаписи" count={String($storeDnsRewrites.length)}>
+        <DNSRewritesList rewrites={$storeDnsRewrites} onChange={() => singboxRouterStore.loadAll()} />
       </SidePanel>
 
       <SidePanel title="Движок" count="" actionLabel="Управление →" onAction={navigateEngine}>
