@@ -103,21 +103,6 @@ export { dismissTemplatesModal } from './templatesStore';
 // F5c — EmptyState
 export { default as EmptyState } from './EmptyState.svelte';
 export { default as EmptyHero } from './EmptyHero.svelte';
-export { default as StepCard, type StepState } from './StepCard.svelte';
-export { default as RecipeCard, type RecipeTint as RecipeCardTint } from './RecipeCard.svelte';
-export {
-  RECIPES,
-  getRecipeTemplateIds,
-  type Recipe,
-  type RecipeTint,
-} from './recipes';
-export {
-  applyRecipe,
-  createDefaultPolicy,
-  setAutoDetectWan,
-  setManualWan,
-  enableEngine,
-} from './emptyStateActions';
 
 // F6 — Expert view components
 export { default as RuleSetsTable } from './RuleSetsTable.svelte';
