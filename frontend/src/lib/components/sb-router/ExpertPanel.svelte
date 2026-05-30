@@ -241,12 +241,6 @@
   function navigateConnections() {
     void goto('/routing?tab=singbox&sub=connections');
   }
-  function navigateEngine() {
-    void goto('/routing?tab=singbox&sub=engine');
-  }
-  function navigatePresets() {
-    void goto('/routing?tab=singbox&sub=presets');
-  }
 </script>
 
 
@@ -259,6 +253,7 @@
         title="Правила маршрутизации"
         count={String($storeRules.length)}
         actionLabel="+ Правило"
+        actionVariant="filled"
         onAction={() => (ruleAddOpen = true)}
       >
         <div class="panel-cap">first-match-wins · final → direct</div>
@@ -276,6 +271,7 @@
         title="Rule-sets"
         count={String($storeRuleSets.length)}
         actionLabel="+ Набор"
+        actionVariant="filled"
         onAction={() => (rsAddOpen = true)}
       >
         <div class="panel-cap">наборы доменов и IP, на которые ссылаются правила</div>
@@ -293,6 +289,7 @@
         title="Outbounds"
         count={String($storeOutbounds.length)}
         actionLabel="+ Composite"
+        actionVariant="filled"
         onAction={() => (outboundAddOpen = true)}
       >
         <OutboundsCompact
@@ -305,6 +302,7 @@
         title="DNS-серверы"
         count={String($storeDnsServers.length)}
         actionLabel="+ Сервер"
+        actionVariant="filled"
         onAction={() => (dnsServerAddOpen = true)}
       >
         <DnsServersCompact
@@ -318,14 +316,6 @@
 
       <SidePanel title="DNS-перезаписи" count={String($storeDnsRewrites.length)}>
         <DNSRewritesList rewrites={$storeDnsRewrites} onChange={() => singboxRouterStore.loadAll()} />
-      </SidePanel>
-
-      <SidePanel title="Движок" count="" actionLabel="Управление →" onAction={navigateEngine}>
-        <div class="panel-cap">статус, установка, запуск/остановка, WAN, policy</div>
-      </SidePanel>
-
-      <SidePanel title="Пресеты" count="" actionLabel="Открыть →" onAction={navigatePresets}>
-        <div class="panel-cap">готовые конфигурации правил</div>
       </SidePanel>
 
       <SidePanel

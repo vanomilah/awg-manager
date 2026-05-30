@@ -4,7 +4,7 @@
 
 <script lang="ts">
   import type { SingboxRouterDNSServer, SingboxRouterDNSRule } from '$lib/types';
-  import { Badge } from '$lib/components/ui';
+  import { Badge, Button } from '$lib/components/ui';
   import { ArrowRight } from 'lucide-svelte';
 
   interface Props {
@@ -61,7 +61,7 @@
   <div class="rules-cap">
     <span class="rules-cap-label">DNS-правила · {rules.length}</span>
     {#if onAddRule}
-      <button type="button" class="rules-add" onclick={onAddRule} disabled={addRuleDisabled} title={addRuleTitle}>+ Правило</button>
+      <Button variant="primary" size="sm" onclick={onAddRule} disabled={addRuleDisabled}>+ Правило</Button>
     {/if}
   </div>
   {#if rules.length > 0}
@@ -137,26 +137,6 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 600;
-  }
-  .rules-add {
-    background: transparent;
-    border: 0;
-    color: var(--accent);
-    font-size: 11.5px;
-    cursor: pointer;
-    font-family: inherit;
-    padding: 0;
-    text-transform: none;
-    letter-spacing: 0;
-    font-weight: 500;
-  }
-  .rules-add:hover:not(:disabled) {
-    text-decoration: underline;
-  }
-  .rules-add:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-    text-decoration: none;
   }
   .rules-empty {
     padding: 12px 14px;

@@ -4,11 +4,14 @@
 
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { Button } from '$lib/components/ui';
 
   interface Props {
     title: string;
     count?: string;
     actionLabel?: string;
+    /** 'link' — текст-ссылка (навигация); 'filled' — заливная кнопка (add-действия). */
+    actionVariant?: 'link' | 'filled';
     actionDisabled?: boolean;
     actionTitle?: string;
     onAction?: () => void;
@@ -18,7 +21,7 @@
   }
 
   let {
-    title, count, actionLabel, actionDisabled = false, actionTitle, onAction, actions, children,
+    title, count, actionLabel, actionVariant = 'link', actionDisabled = false, actionTitle, onAction, actions, children,
   }: Props = $props();
 </script>
 
@@ -32,7 +35,11 @@
       {#if actions}
         {@render actions()}
       {:else if actionLabel && onAction}
-        <button type="button" class="action" onclick={onAction} disabled={actionDisabled} title={actionTitle}>{actionLabel}</button>
+        {#if actionVariant === 'filled'}
+          <Button variant="primary" size="sm" onclick={onAction} disabled={actionDisabled}>{actionLabel}</Button>
+        {:else}
+          <button type="button" class="action" onclick={onAction} disabled={actionDisabled} title={actionTitle}>{actionLabel}</button>
+        {/if}
       {/if}
     </div>
   </header>
