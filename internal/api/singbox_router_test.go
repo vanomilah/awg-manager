@@ -45,6 +45,9 @@ func (m *mockRouterSvc) UpdateSettings(ctx context.Context, s storage.SingboxRou
 func (m *mockRouterSvc) ListWANInterfaces(ctx context.Context) ([]router.WANInterfaceInfo, error) {
 	return nil, nil
 }
+func (m *mockRouterSvc) ListBindableInterfaces(ctx context.Context) ([]router.WANInterfaceInfo, error) {
+	return []router.WANInterfaceInfo{{Name: "ipsec0", Label: "IPSec", Up: true}}, nil
+}
 func (m *mockRouterSvc) ListRules(ctx context.Context) ([]router.Rule, error) { return nil, nil }
 func (m *mockRouterSvc) AddRule(ctx context.Context, rule router.Rule) error  { return nil }
 func (m *mockRouterSvc) UpdateRule(ctx context.Context, index int, rule router.Rule) error {
@@ -479,5 +482,36 @@ func TestInspectPost_InvalidPortAndProtocol_Returns400(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		b, _ := io.ReadAll(rr.Body)
 		t.Fatalf("want 400, got %d body=%s", rr.Code, string(b))
+	}
+}
+
+func TestListBindableInterfaces_Returns200WithData(t *testing.T) {
+	h := newMockRouterHandler(&mockRouterSvc{})
+	req := httptest.NewRequest(http.MethodGet, "/api/singbox/router/bindable-interfaces", nil)
+	rr := httptest.NewRecorder()
+	h.ListBindableInterfaces(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var env struct {
+		Data []struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatalf("unmarshal: %v (body: %s)", err, rr.Body.String())
+	}
+	if len(env.Data) != 1 || env.Data[0].Name != "ipsec0" {
+		t.Errorf("unexpected data: %+v", env.Data)
+	}
+}
+
+func TestListBindableInterfaces_405OnWrongMethod(t *testing.T) {
+	h := newMockRouterHandler(&mockRouterSvc{})
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/router/bindable-interfaces", nil)
+	rr := httptest.NewRecorder()
+	h.ListBindableInterfaces(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("want 405, got %d", rr.Code)
 	}
 }

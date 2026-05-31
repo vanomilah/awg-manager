@@ -23,7 +23,7 @@
     import AccessPoliciesTab from './AccessPoliciesTab.svelte';
     import ClientRoutesTab from './ClientRoutesTab.svelte';
     import { HrNeoTab } from '$lib/components/hrneo';
-    import { SingboxRoutingPage } from '$lib/components/singbox-routing';
+    import { SingboxRouterRedesignPage } from '$lib/components/sb-router';
     import GeoDataTab from './GeoDataTab.svelte';
     import { isRoutingSubTabVisible, type RoutingSubTab, type UsageLevel } from '$lib/types/usageLevel';
     import { usageLevel } from '$lib/stores/settings';
@@ -322,7 +322,7 @@
     {:else if activeTab === 'geodata'}
         <GeoDataTab />
     {:else if activeTab === 'singbox'}
-        <SingboxRoutingPage />
+        <SingboxRouterRedesignPage />
     {/if}
     </div>
 </PageContainer>

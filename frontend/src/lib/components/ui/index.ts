@@ -38,3 +38,4 @@ export { default as LatencySparkline } from './LatencySparkline.svelte';
 export { default as PingButton } from './PingButton.svelte';
 export { default as BackLink } from './BackLink.svelte';
 export { default as GridListToggle } from './GridListToggle.svelte';
+export { default as SectionLabel } from './SectionLabel.svelte';

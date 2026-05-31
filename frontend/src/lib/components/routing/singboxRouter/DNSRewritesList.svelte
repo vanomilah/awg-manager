@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
-	import { Button } from '$lib/components/ui';
+	import { Button, ConfirmModal } from '$lib/components/ui';
+	import { Trash2 } from 'lucide-svelte';
 	import CreateIcon from '$lib/components/ui/icons/CreateIcon.svelte';
 	import type { SingboxRouterDNSRewrite } from '$lib/types';
 	import DNSRewriteEditModal from './DNSRewriteEditModal.svelte';
@@ -9,18 +10,32 @@
 	interface Props {
 		rewrites: SingboxRouterDNSRewrite[];
 		onChange: () => Promise<void> | void;
+		/** Показывать встроенный заголовок (счётчик + кнопка «Добавить»). */
+		showHeader?: boolean;
+		/** Режим добавления — bindable, чтобы триггерить add из родителя. */
+		addMode?: boolean;
 	}
-	let { rewrites, onChange }: Props = $props();
+	let { rewrites, onChange, showHeader = true, addMode = $bindable(false) }: Props = $props();
 
-	let addMode = $state(false);
 	let editIndex = $state<number | null>(null);
+	let deleteIndex = $state<number | null>(null);
+	let deleteBusy = $state(false);
 
-	async function remove(i: number): Promise<void> {
+	function requestDelete(i: number): void {
+		deleteIndex = i;
+	}
+
+	async function confirmDelete(): Promise<void> {
+		if (deleteIndex === null) return;
+		deleteBusy = true;
 		try {
-			await api.singboxRouterDeleteDNSRewrite(i);
+			await api.singboxRouterDeleteDNSRewrite(deleteIndex);
+			deleteIndex = null;
 			await onChange();
 		} catch (e) {
 			notifications.error((e as Error).message);
+		} finally {
+			deleteBusy = false;
 		}
 	}
 </script>
@@ -29,12 +44,14 @@
 	<CreateIcon />
 {/snippet}
 
-<div class="header">
-	<div class="hint">{rewrites.length} перезаписей</div>
-	<Button variant="primary" size="sm" onclick={() => (addMode = true)} iconBefore={createIcon}>
-		Добавить
-	</Button>
-</div>
+{#if showHeader}
+	<div class="header">
+		<div class="hint">{rewrites.length} перезаписей</div>
+		<Button variant="primary" size="sm" onclick={() => (addMode = true)} iconBefore={createIcon}>
+			Добавить
+		</Button>
+	</div>
+{/if}
 
 {#if rewrites.length === 0}
 	<div class="empty-mild">
@@ -55,7 +72,7 @@
 				<span class="arrow">→</span>
 				<span class="ips mono">{rw.ips.join(', ')}</span>
 				<button class="icon-btn" onclick={() => (editIndex = i)} aria-label="Редактировать">✎</button>
-				<button class="icon-btn danger" onclick={() => remove(i)} aria-label="Удалить">✕</button>
+				<button class="icon-btn danger" onclick={() => requestDelete(i)} aria-label="Удалить" title="Удалить"><Trash2 size={14} /></button>
 			</div>
 		{/each}
 	</div>
@@ -84,6 +101,15 @@
 		}}
 	/>
 {/if}
+
+<ConfirmModal
+	open={deleteIndex !== null}
+	title="Удалить перезапись"
+	message={deleteIndex !== null ? `Удалить перезапись «${rewrites[deleteIndex]?.pattern ?? ''}»?` : ''}
+	busy={deleteBusy}
+	onConfirm={confirmDelete}
+	onClose={() => { if (!deleteBusy) deleteIndex = null; }}
+/>
 
 <style>
 	.header {
@@ -147,14 +173,22 @@
 		white-space: nowrap;
 	}
 	.icon-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		background: transparent;
 		border: none;
 		color: var(--muted-text);
 		cursor: pointer;
 		font-size: 0.9rem;
 		padding: 0.15rem;
+		border-radius: 4px;
 	}
-	.icon-btn.danger {
+	.icon-btn:hover {
+		color: var(--text);
+		background: var(--surface-bg);
+	}
+	.icon-btn.danger:hover {
 		color: var(--danger, #dc2626);
 	}
 </style>

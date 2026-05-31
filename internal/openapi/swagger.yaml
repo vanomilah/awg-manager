@@ -10398,6 +10398,26 @@ paths:
       summary: Get sing-box router status
       tags:
       - singbox-router
+  /singbox/router/bindable-interfaces:
+    get:
+      description: Returns router interfaces (minus our own and AWG/WG auto-covered)
+        that a direct outbound can bind to.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SingboxRouterWANInterfacesListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List bindable interfaces for direct outbounds
+      tags:
+      - singbox-router
   /singbox/router/wan-interfaces:
     get:
       description: Returns all router WAN interfaces (no up/down filtering) used by

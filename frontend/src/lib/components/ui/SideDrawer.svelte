@@ -126,13 +126,43 @@
 	}
 
 	@media (max-width: 768px) {
-		.drawer {
-			width: 100%;
-			border-left: none;
-			animation: slide-up 200ms ease;
-		}
 		.backdrop {
 			display: none;
+		}
+
+		.drawer {
+			top: auto !important;
+			right: 0 !important;
+			bottom: 0 !important;
+			left: 0 !important;
+			width: 100% !important;
+			max-width: none !important;
+			height: auto !important;
+			max-height: 85vh;
+			border-radius: 16px 16px 0 0;
+			border-left: none;
+			border-right: none;
+			border-top: 1px solid var(--color-border);
+			box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.3);
+			animation: slide-up 220ms ease-out;
+		}
+
+		/* Drag handle */
+		.drawer::before {
+			content: '';
+			display: block;
+			width: 40px;
+			height: 4px;
+			border-radius: 2px;
+			background: var(--color-text-muted, var(--text-muted));
+			opacity: 0.4;
+			margin: 8px auto 4px;
+			flex-shrink: 0;
+		}
+
+		.drawer-body {
+			max-height: calc(85vh - 60px);
+			overflow-y: auto;
 		}
 	}
 </style>

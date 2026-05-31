@@ -1083,6 +1083,7 @@ func main() {
 		SubscriptionComposites: router.NewSubscriptionCompositesAdapter(subAdapter),
 		Orch:                   sbOrch,
 		WANInterfaces:          &routerWANInterfaceAdapter{store: ndmsQueries.Interfaces},
+		BindableInterfaces:     &routerWANInterfaceAdapter{store: ndmsQueries.Interfaces},
 	})
 	singboxOp.SetOutboundReferenceRenamer(routerSvc)
 	tunnelService.SetAWGSyncer(awgoutboundsSvc)

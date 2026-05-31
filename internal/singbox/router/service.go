@@ -33,6 +33,10 @@ type Service interface {
 	// system-name from this list.
 	ListWANInterfaces(ctx context.Context) ([]WANInterfaceInfo, error)
 
+	// ListBindableInterfaces returns interfaces a user can bind a direct
+	// outbound to (all interfaces minus auto-managed AWG/WG ones).
+	ListBindableInterfaces(ctx context.Context) ([]WANInterfaceInfo, error)
+
 	SetRouteFinal(ctx context.Context, tag string) error
 
 	ListRules(ctx context.Context) ([]Rule, error)
@@ -131,6 +135,13 @@ type WANInterfaceLister interface {
 	ListWAN(ctx context.Context) ([]WANInterfaceInfo, error)
 }
 
+// BindableInterfaceLister enumerates router interfaces a user can bind a
+// direct outbound to (all router interfaces minus our own and the
+// awgoutbounds auto-managed set). Optional dep; nil = no existence check.
+type BindableInterfaceLister interface {
+	ListBindable(ctx context.Context) ([]WANInterfaceInfo, error)
+}
+
 // PolicyInfo is the public projection of one NDMS access policy that
 // the router UI consumes for the policy selector.
 type PolicyInfo struct {
@@ -220,6 +231,10 @@ type Deps struct {
 	// slice (UI shows just the "auto" option). Production wiring in
 	// cmd/awg-manager bridges this to ndmsQueries.Interfaces.ListWAN.
 	WANInterfaces WANInterfaceLister
+	// BindableInterfaces enumerates interfaces a user can bind a direct
+	// outbound to. Optional — when nil, ListBindableInterfaces returns an
+	// empty slice and bind_interface existence is not enforced.
+	BindableInterfaces BindableInterfaceLister
 	// NetfilterPreflight is an optional override for the module-load /
 	// target-availability check that Enable and reconcileInstalled both
 	// call before every Install. When nil, prepareNetfilter runs the
@@ -596,7 +611,7 @@ func (s *ServiceImpl) Enable(ctx context.Context) error {
 		return err
 	}
 	cfg.Inbounds = ensureTProxyInbound(cfg.Inbounds)
-	cfg.Outbounds = stripLegacyAWGDirect(cfg.Outbounds)
+	cfg.Outbounds = stripAutoManagedDirect(cfg.Outbounds)
 	cfg.EnsureSystemRules(sr.SnifferEnabled)
 	// Settings was already loaded above; revalidate here in case the
 	// store is corrupted or hand-edited around a schema migration. We
@@ -1357,10 +1372,20 @@ func (s *ServiceImpl) ListCompositeOutbounds(ctx context.Context) ([]CompositeOu
 }
 
 func (s *ServiceImpl) AddCompositeOutbound(ctx context.Context, o Outbound) error {
+	if strings.EqualFold(o.Type, "direct") {
+		if err := s.validateBindInterface(ctx, o.BindInterface); err != nil {
+			return err
+		}
+	}
 	return s.withConfig(ctx, "outbounds", func(c *RouterConfig) error { return c.AddCompositeOutbound(o) })
 }
 
 func (s *ServiceImpl) UpdateCompositeOutbound(ctx context.Context, tag string, o Outbound) error {
+	if strings.EqualFold(o.Type, "direct") {
+		if err := s.validateBindInterface(ctx, o.BindInterface); err != nil {
+			return err
+		}
+	}
 	return s.withConfig(ctx, "outbounds", func(c *RouterConfig) error { return c.UpdateCompositeOutbound(tag, o) })
 }
 
@@ -1444,6 +1469,33 @@ func (s *ServiceImpl) ListWANInterfaces(ctx context.Context) ([]WANInterfaceInfo
 		return []WANInterfaceInfo{}, nil
 	}
 	return s.deps.WANInterfaces.ListWAN(ctx)
+}
+
+// ListBindableInterfaces returns interfaces a user can bind a direct
+// outbound to. Empty when no lister is wired.
+func (s *ServiceImpl) ListBindableInterfaces(ctx context.Context) ([]WANInterfaceInfo, error) {
+	if s.deps.BindableInterfaces == nil {
+		return []WANInterfaceInfo{}, nil
+	}
+	return s.deps.BindableInterfaces.ListBindable(ctx)
+}
+
+// validateBindInterface ensures name refers to a bindable interface. With
+// no lister wired (tests / minimal deployments) it is permissive.
+func (s *ServiceImpl) validateBindInterface(ctx context.Context, name string) error {
+	if s.deps.BindableInterfaces == nil {
+		return nil
+	}
+	ifaces, err := s.deps.BindableInterfaces.ListBindable(ctx)
+	if err != nil {
+		return err
+	}
+	for _, i := range ifaces {
+		if i.Name == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("bind_interface %q is not a selectable interface", name)
 }
 
 func (s *ServiceImpl) computeIssues(cfg *RouterConfig) []Issue {

@@ -211,7 +211,8 @@ type SingboxRouterWANInterfaceDTO struct {
 }
 
 // SingboxRouterWANInterfacesListResponse is the envelope for
-// GET /singbox/router/wan-interfaces.
+// GET /singbox/router/wan-interfaces and GET /singbox/router/bindable-interfaces.
+// For the bindable-interfaces endpoint, id and priority are always zero (only name, label, up are populated).
 type SingboxRouterWANInterfacesListResponse struct {
 	Success bool                           `json:"success" example:"true"`
 	Data    []SingboxRouterWANInterfaceDTO `json:"data"`
@@ -910,6 +911,32 @@ func (h *SingboxRouterHandler) ListWANInterfaces(w http.ResponseWriter, r *http.
 		return
 	}
 	ifaces, err := h.svc.ListWANInterfaces(r.Context())
+	if err != nil {
+		response.InternalError(w, err.Error())
+		return
+	}
+	if ifaces == nil {
+		ifaces = []router.WANInterfaceInfo{}
+	}
+	response.Success(w, ifaces)
+}
+
+// ListBindableInterfaces returns interfaces a user can bind a direct outbound to.
+//
+//	@Summary		List bindable interfaces for direct outbounds
+//	@Description	Returns router interfaces (minus our own and AWG/WG auto-covered) that a direct outbound can bind to. Fields id and priority are not populated for this endpoint (only name, label, up are meaningful).
+//	@Tags			singbox-router
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Success		200	{object}	SingboxRouterWANInterfacesListResponse
+//	@Failure		500	{object}	APIErrorEnvelope
+//	@Router			/singbox/router/bindable-interfaces [get]
+func (h *SingboxRouterHandler) ListBindableInterfaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		response.MethodNotAllowed(w)
+		return
+	}
+	ifaces, err := h.svc.ListBindableInterfaces(r.Context())
 	if err != nil {
 		response.InternalError(w, err.Error())
 		return

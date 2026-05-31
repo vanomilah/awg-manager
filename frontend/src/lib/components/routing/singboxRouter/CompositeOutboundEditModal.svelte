@@ -1,10 +1,11 @@
 <script lang="ts">
 	import Modal from '$lib/components/ui/Modal.svelte';
 	import { Button, Dropdown, type DropdownOption } from '$lib/components/ui';
-	import type { SingboxRouterOutbound } from '$lib/types';
+	import type { SingboxRouterOutbound, SingboxRouterWANInterface } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
 	import { resolveMemberLabel } from '$lib/utils/memberLabel';
+	import { api } from '$lib/api/client';
 
 	// Only urltest and selector are offered for new groups — `loadbalance`
 	// was removed in sing-box 1.13+ and FATALs on startup if present. The
@@ -23,8 +24,8 @@
 	let { outbound, outboundOptions, onClose, onSave }: Props = $props();
 
 	// svelte-ignore state_referenced_locally
-	let type: 'urltest' | 'selector' = $state(
-		outbound?.type === 'selector' ? 'selector' : 'urltest'
+	let type: 'urltest' | 'selector' | 'direct' = $state(
+		outbound?.type === 'selector' ? 'selector' : outbound?.type === 'direct' ? 'direct' : 'urltest'
 	);
 	// svelte-ignore state_referenced_locally
 	let tag = $state(outbound?.tag ?? '');
@@ -38,30 +39,45 @@
 	let tolerance = $state(outbound?.tolerance ?? 50);
 	// svelte-ignore state_referenced_locally
 	let defaultOutbound = $state(outbound?.default ?? '');
+	// svelte-ignore state_referenced_locally
+	let bindInterface = $state(outbound?.bind_interface ?? '');
+	let bindables = $state<SingboxRouterWANInterface[]>([]);
+	let bindablesLoading = $state(true);
+	$effect(() => {
+		void api.singboxRouterListBindableInterfaces()
+			.then((l) => { bindables = l; })
+			.catch(() => { bindables = []; })
+			.finally(() => { bindablesLoading = false; });
+	});
+	const bindableOptions = $derived<DropdownOption[]>(
+		bindables.map((i) => ({ value: i.name, label: `${i.label} · ${i.name}${i.up ? '' : ' (down)'}` }))
+	);
 
 	let busy = $state(false);
 	let error = $state('');
 	let memberPicker = $state('');
 
 	// Snapshot initial state for isDirty detection
-	let initialType: 'urltest' | 'selector' = $state('urltest');
+	let initialType: 'urltest' | 'selector' | 'direct' = $state('urltest');
 	let initialTag = $state('');
 	let initialMembers = $state<string[]>([]);
 	let initialUrl = $state('https://www.gstatic.com/generate_204');
 	let initialInterval = $state('3m');
 	let initialTolerance = $state(50);
 	let initialDefaultOutbound = $state('');
+	let initialBind = $state('');
 
 	// Initialize snapshot when modal opens
 	$effect(() => {
 		if (outbound) {
-			initialType = outbound.type === 'selector' ? 'selector' : 'urltest';
+			initialType = outbound.type === 'selector' ? 'selector' : outbound.type === 'direct' ? 'direct' : 'urltest';
 			initialTag = outbound.tag;
 			initialMembers = [...(outbound.outbounds ?? [])];
 			initialUrl = outbound.url ?? 'https://www.gstatic.com/generate_204';
 			initialInterval = outbound.interval ?? '3m';
 			initialTolerance = outbound.tolerance ?? 50;
 			initialDefaultOutbound = outbound.default ?? '';
+			initialBind = outbound.bind_interface ?? '';
 		} else {
 			initialType = 'urltest';
 			initialTag = '';
@@ -70,6 +86,7 @@
 			initialInterval = '3m';
 			initialTolerance = 50;
 			initialDefaultOutbound = '';
+			initialBind = '';
 		}
 	});
 
@@ -81,7 +98,8 @@
 			url !== initialUrl ||
 			interval !== initialInterval ||
 			tolerance !== initialTolerance ||
-			defaultOutbound !== initialDefaultOutbound
+			defaultOutbound !== initialDefaultOutbound ||
+			bindInterface !== initialBind
 		);
 	});
 
@@ -128,23 +146,33 @@
 				busy = false;
 				return;
 			}
-			if (members.length < 2) {
-				error = 'Нужно минимум 2 члена';
-				busy = false;
-				return;
-			}
 
-			const built: SingboxRouterOutbound = {
-				type,
-				tag: tag.trim(),
-				outbounds: [...members],
-			};
-			if (type === 'urltest') {
-				built.url = url;
-				built.interval = interval;
-				built.tolerance = tolerance;
+			let built: SingboxRouterOutbound;
+			if (type === 'direct') {
+				if (!bindInterface) {
+					error = 'Выберите интерфейс';
+					busy = false;
+					return;
+				}
+				built = { type: 'direct', tag: tag.trim(), bind_interface: bindInterface };
 			} else {
-				built.default = defaultOutbound || members[0];
+				if (members.length < 2) {
+					error = 'Нужно минимум 2 члена';
+					busy = false;
+					return;
+				}
+				built = {
+					type,
+					tag: tag.trim(),
+					outbounds: [...members],
+				};
+				if (type === 'urltest') {
+					built.url = url;
+					built.interval = interval;
+					built.tolerance = tolerance;
+				} else {
+					built.default = defaultOutbound || members[0];
+				}
 			}
 
 			await onSave(built);
@@ -156,9 +184,11 @@
 	}
 
 	const typeDescription = $derived(
-		type === 'urltest'
-			? 'Периодически пингует каждого члена и автоматически направляет через самого быстрого.'
-			: 'Ручное переключение через Clash API. Новые подключения идут через выбранный default.'
+		type === 'direct'
+			? 'Прямое соединение через выбранный интерфейс (IPSec/IKEv2/др. VPN). Трафик правила пойдёт через этот интерфейс.'
+			: type === 'urltest'
+				? 'Периодически пингует каждого члена и автоматически направляет через самого быстрого.'
+				: 'Ручное переключение через Clash API. Новые подключения идут через выбранный default.'
 	);
 </script>
 
@@ -166,8 +196,9 @@
 	<div class="form">
 		<div class="section-label">Тип</div>
 		<div class="segment">
-			<button class:active={type === 'urltest'} onclick={() => (type = 'urltest')} type="button">URLTest</button>
-			<button class:active={type === 'selector'} onclick={() => (type = 'selector')} type="button">Selector</button>
+			<button class:active={type === 'urltest'} onclick={() => (type = 'urltest')} type="button" disabled={!!outbound && outbound.type === 'direct'}>URLTest</button>
+			<button class:active={type === 'selector'} onclick={() => (type = 'selector')} type="button" disabled={!!outbound && outbound.type === 'direct'}>Selector</button>
+			<button class:active={type === 'direct'} onclick={() => (type = 'direct')} type="button" disabled={!!outbound && outbound.type !== 'direct'}>Интерфейс</button>
 		</div>
 		<div class="type-hint">{typeDescription}</div>
 
@@ -176,63 +207,78 @@
 			<input bind:value={tag} placeholder="fast-de" />
 		</label>
 
-		<div class="field">
-			<div class="lbl">Members (минимум 2)</div>
-			<div class="member-chips" class:empty={members.length === 0}>
-				{#if members.length === 0}
-					<span class="chips-placeholder">Участники не выбраны</span>
-				{:else}
-					{#each members as m (m)}
-						<span class="member-chip" title={m}>
-							<span class="member-chip-label">{memberLabel(m)}</span>
-							<button
-								type="button"
-								class="member-chip-remove"
-								aria-label={`Удалить ${m}`}
-								title="Удалить"
-								onclick={() => removeMember(m)}
-							>
-								<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-									<line x1="18" y1="6" x2="6" y2="18" />
-									<line x1="6" y1="6" x2="18" y2="18" />
-								</svg>
-							</button>
-						</span>
-					{/each}
-				{/if}
-			</div>
-			<Dropdown
-				value={memberPicker}
-				options={memberDropdownOptions}
-				placeholder="Добавить участника"
-				onchange={addMember}
-				fullWidth
-			/>
-		</div>
-
-		{#if type === 'urltest'}
-			<label class="field">
-				<div class="lbl">Test URL</div>
-				<input bind:value={url} />
-			</label>
-			<div class="row2">
-				<label class="field">
-					<div class="lbl">Interval</div>
-					<input bind:value={interval} placeholder="3m" />
-				</label>
-				<label class="field">
-					<div class="lbl">Tolerance (ms)</div>
-					<input type="number" bind:value={tolerance} />
-				</label>
-			</div>
-		{:else}
+		{#if type !== 'direct'}
 			<div class="field">
-				<div class="lbl">Default (один из members)</div>
+				<div class="lbl">Members (минимум 2)</div>
+				<div class="member-chips" class:empty={members.length === 0}>
+					{#if members.length === 0}
+						<span class="chips-placeholder">Участники не выбраны</span>
+					{:else}
+						{#each members as m (m)}
+							<span class="member-chip" title={m}>
+								<span class="member-chip-label">{memberLabel(m)}</span>
+								<button
+									type="button"
+									class="member-chip-remove"
+									aria-label={`Удалить ${m}`}
+									title="Удалить"
+									onclick={() => removeMember(m)}
+								>
+									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+										<line x1="18" y1="6" x2="6" y2="18" />
+										<line x1="6" y1="6" x2="18" y2="18" />
+									</svg>
+								</button>
+							</span>
+						{/each}
+					{/if}
+				</div>
 				<Dropdown
-					bind:value={defaultOutbound}
-					options={defaultOptions}
-					placeholder={members.length === 0 ? 'Сначала добавьте участников' : '— выбрать —'}
-					disabled={members.length === 0}
+					value={memberPicker}
+					options={memberDropdownOptions}
+					placeholder="Добавить участника"
+					onchange={addMember}
+					fullWidth
+				/>
+			</div>
+
+			{#if type === 'urltest'}
+				<label class="field">
+					<div class="lbl">Test URL</div>
+					<input bind:value={url} />
+				</label>
+				<div class="row2">
+					<label class="field">
+						<div class="lbl">Interval</div>
+						<input bind:value={interval} placeholder="3m" />
+					</label>
+					<label class="field">
+						<div class="lbl">Tolerance (ms)</div>
+						<input type="number" bind:value={tolerance} />
+					</label>
+				</div>
+			{:else}
+				<div class="field">
+					<div class="lbl">Default (один из members)</div>
+					<Dropdown
+						bind:value={defaultOutbound}
+						options={defaultOptions}
+						placeholder={members.length === 0 ? 'Сначала добавьте участников' : '— выбрать —'}
+						disabled={members.length === 0}
+						fullWidth
+					/>
+				</div>
+			{/if}
+		{/if}
+
+		{#if type === 'direct'}
+			<div class="field">
+				<div class="lbl">Интерфейс</div>
+				<Dropdown
+					bind:value={bindInterface}
+					options={bindableOptions}
+					placeholder={bindablesLoading ? 'Загрузка интерфейсов…' : bindables.length === 0 ? 'Нет доступных интерфейсов' : '— выбрать интерфейс —'}
+					disabled={bindablesLoading || bindables.length === 0}
 					fullWidth
 				/>
 			</div>
