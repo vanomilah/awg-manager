@@ -240,31 +240,27 @@
 			<span class="run-pill" class:run-on={tunnel.running === true}>{tunnel.running === true ? 'running' : 'stopped'}</span>
 		</div>
 		<div class="list-cell list-cell-traffic" data-label="Трафик">
-			<div class="traffic-row-list">
-				<div
-					role="button"
-					tabindex="0"
-					class="traffic-mini-click"
-					onclick={() => ondetail?.(tunnel.tag)}
-					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
-							ondetail?.(tunnel.tag);
-						}
-					}}
-					title="Открыть детальный график"
-				>
-					<TrafficSparkline
-						rxData={trafficSparkSeries.rx}
-						txData={trafficSparkSeries.tx}
-						width={84}
-						height={22}
-					/>
-				</div>
-				<div class="traffic-mini-col mono">
-					<span class="traffic-rate rx">↓ {formatBytes(traffic?.download ?? 0)}</span>
-					<span class="traffic-rate tx">↑ {formatBytes(traffic?.upload ?? 0)}</span>
-				</div>
+			<div
+				role="button"
+				tabindex="0"
+				class="traffic-row-list traffic-row-list--stack mono"
+				onclick={() => ondetail?.(tunnel.tag)}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' || e.key === ' ') {
+						e.preventDefault();
+						ondetail?.(tunnel.tag);
+					}
+				}}
+				title="Открыть детальный график"
+			>
+				<span class="traffic-rate rx">↓ {formatBytes(traffic?.download ?? 0)}</span>
+				<TrafficSparkline
+					rxData={trafficSparkSeries.rx}
+					txData={trafficSparkSeries.tx}
+					responsive
+					height={18}
+				/>
+				<span class="traffic-rate tx">↑ {formatBytes(traffic?.upload ?? 0)}</span>
 			</div>
 		</div>
 		<div class="list-cell list-cell-ping-mini" data-label="Ping">
@@ -1383,10 +1379,66 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+
+	.sbx-tunnel-list-row .traffic-row-list {
+		display: flex;
+		min-width: 0;
+		width: 100%;
+	}
+
+	.sbx-tunnel-list-row .traffic-row-list--stack {
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0.05rem;
+		border-radius: 4px;
+		cursor: pointer;
+		font-size: var(--sbx-card-note);
+		line-height: 1.1;
+		transition: background var(--t-fast) ease;
+	}
+
+	.sbx-tunnel-list-row .traffic-row-list--stack :global(svg.responsive) {
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+		flex: 1 1 auto;
+	}
+
+	.sbx-tunnel-list-row .traffic-row-list--stack:hover {
+		background: rgba(96, 165, 250, 0.06);
+	}
+
+	.sbx-tunnel-list-row .traffic-row-list--stack:focus-visible {
+		outline: 1px solid var(--color-accent, #58a6ff);
+		outline-offset: 1px;
+	}
 	.badges-inline {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.25rem;
+	}
+
+	.sbx-tunnel-list-row .list-cell-badges {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		align-self: stretch;
+	}
+
+	.sbx-tunnel-list-row .badges-inline {
+		display: inline-flex;
+		flex-direction: column;
+		flex-wrap: nowrap;
+		align-items: center;
+		justify-content: center;
+		gap: 0.25rem;
+		min-width: 0;
+	}
+
+	.sbx-tunnel-list-row .badges-inline .badge {
+		width: max-content;
+		max-width: 100%;
+		text-align: center;
 	}
 	.server-line {
 		display: flex;

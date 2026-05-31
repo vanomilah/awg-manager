@@ -2429,7 +2429,14 @@
 
 	.awg-list-table {
 		/* Keep AWG rows compact: cells ellipsize instead of stretching the scroll track to max-content. */
-		--awg-list-min-width: 900px;
+		--awg-list-min-width: 960px;
+		--awg-list-columns:
+			36px
+			minmax(190px, 1.05fr)
+			minmax(155px, 0.85fr)
+			minmax(145px, 0.8fr)
+			minmax(260px, 2.2fr)
+			minmax(82px, max-content);
 		border: 1px solid var(--color-border);
 		border-radius: 12px;
 		background: var(--color-bg-secondary);
@@ -2439,30 +2446,33 @@
 	}
 
 	.singbox-tunnel-list-table {
-		--awg-list-min-width: 980px;
+		--awg-list-min-width: 1100px;
+		--sbx-tunnel-list-columns:
+			128px
+			minmax(170px, 0.95fr)
+			92px
+			minmax(145px, 0.72fr)
+			92px
+			minmax(260px, 2.2fr)
+			96px
+			minmax(92px, max-content);
 	}
 
 	.singbox-sub-list-table {
-		--awg-list-min-width: 820px;
+		--awg-list-min-width: 1040px;
 		--sbx-sub-list-columns:
-			82px
-			minmax(155px, 1fr)
+			150px
+			minmax(150px, 0.9fr)
 			72px
-			minmax(150px, 0.95fr)
-			minmax(170px, 1.15fr)
-			90px
-			86px;
+			minmax(135px, 0.72fr)
+			minmax(0, 1fr)
+			88px
+			190px;
 	}
 
 	.awg-list-row {
 		display: grid;
-		grid-template-columns:
-			36px
-			minmax(205px, 1.35fr)
-			minmax(150px, 0.95fr)
-			minmax(140px, 0.8fr)
-			minmax(138px, 0.75fr)
-			minmax(72px, max-content);
+		grid-template-columns: var(--awg-list-columns);
 		gap: 8px;
 		align-items: center;
 		padding: 0.75rem 0.75rem;
@@ -2503,17 +2513,22 @@
 	}
 
 	.sbx-sub-list-head-actions {
-		text-align: center;
+		text-align: left;
+		padding-left: 1rem;
+	}
+
+	.singbox-sub-list-table .sbx-sub-list-row--head > span:first-child {
+		padding-left: 0.75rem;
 	}
 
 	/* Subscription list rows are child components; the parent table owns the column contract. */
 	:global(.singbox-sub-list-table .sbx-sub-active-row) {
 		display: grid !important;
 		grid-template-columns: var(--sbx-sub-list-columns) !important;
-		column-gap: 0.625rem !important;
-		align-items: center;
+		column-gap: 0.75rem !important;
+		align-items: center !important;
 		min-width: max(100%, var(--awg-list-min-width, 0px)) !important;
-		box-sizing: border-box;
+		box-sizing: border-box !important;
 	}
 
 	:global(.singbox-sub-list-table .sub-active-list-group),
@@ -2530,6 +2545,36 @@
 	:global(.singbox-sub-list-table .lc-traffic) {
 		align-items: stretch;
 		justify-content: stretch;
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-list-table .list-cell-traffic) {
+		display: flex;
+		align-items: stretch;
+		justify-content: stretch;
+		min-width: 0;
+		width: 100%;
+	}
+
+	:global(.singbox-tunnel-list-table .list-cell-delay) {
+		justify-content: flex-start !important;
+		min-width: 0 !important;
+		padding-left: 0.75rem !important;
+		padding-right: 1rem !important;
+	}
+
+	:global(.singbox-tunnel-list-table .traffic-row-list) {
+		width: 100%;
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-list-table .traffic-mini-click) {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-list-table .traffic-mini-click svg) {
+		width: 100%;
 		min-width: 0;
 	}
 
@@ -2551,8 +2596,19 @@
 		max-width: 96px;
 	}
 
+	:global(.singbox-sub-list-table .lc-delay) {
+		justify-content: flex-start !important;
+		min-width: 0 !important;
+		padding-left: 0.75rem !important;
+		padding-right: 1rem !important;
+	}
+
 	:global(.singbox-sub-list-table .lc-actions) {
-		justify-content: center;
+		justify-content: flex-start !important;
+		gap: 0.75rem !important;
+		min-width: 0 !important;
+		padding-left: 1rem !important;
+		padding-right: 0.5rem !important;
 	}
 
 	:global(.singbox-sub-list-table .sbx-sub-list-row--head > span:nth-child(6)),
@@ -2975,36 +3031,58 @@
 
 	@media (max-width: 1280px) {
 		.awg-list-table:not(.singbox-tunnel-list-table):not(.singbox-sub-list-table) {
-			--awg-list-min-width: 860px;
+			--awg-list-min-width: 900px;
+			--awg-list-columns:
+				34px
+				minmax(180px, 1fr)
+				minmax(140px, 0.78fr)
+				minmax(132px, 0.72fr)
+				minmax(240px, 2fr)
+				minmax(72px, max-content);
 		}
 
-		.awg-list-row {
-			grid-template-columns:
-				34px
-				minmax(190px, 1.25fr)
-				minmax(140px, 0.9fr)
-				minmax(132px, 0.78fr)
-				minmax(128px, 0.7fr)
-				minmax(72px, max-content);
-			gap: 8px;
+		.singbox-tunnel-list-table {
+			--awg-list-min-width: 1040px;
+			--sbx-tunnel-list-columns:
+				120px
+				minmax(160px, 0.9fr)
+				88px
+				minmax(136px, 0.66fr)
+				86px
+				minmax(240px, 2fr)
+				90px
+				minmax(88px, max-content);
 		}
 	}
 
 	@media (max-width: 1120px) {
 		.awg-list-table:not(.singbox-tunnel-list-table):not(.singbox-sub-list-table) {
-			--awg-list-min-width: 820px;
+			--awg-list-min-width: 860px;
+			--awg-list-columns:
+				32px
+				minmax(168px, 0.95fr)
+				minmax(128px, 0.72fr)
+				minmax(122px, 0.68fr)
+				minmax(220px, 1.9fr)
+				minmax(70px, max-content);
+			padding: 0.75rem 0.8125rem;
+		}
+
+		.singbox-tunnel-list-table {
+			--awg-list-min-width: 980px;
+			--sbx-tunnel-list-columns:
+				112px
+				minmax(150px, 0.86fr)
+				84px
+				minmax(126px, 0.62fr)
+				80px
+				minmax(220px, 1.85fr)
+				86px
+				minmax(84px, max-content);
 		}
 
 		.awg-list-row {
-			grid-template-columns:
-				32px
-				minmax(178px, 1.2fr)
-				minmax(132px, 0.88fr)
-				minmax(124px, 0.74fr)
-				minmax(120px, 0.68fr)
-				minmax(70px, max-content);
 			padding: 0.75rem 0.8125rem;
-			gap: 8px;
 		}
 
 		.awg-list-name-button,
@@ -3022,6 +3100,76 @@
 			padding: 0.3125rem 0.4375rem;
 			font-size: 0.6875rem;
 		}
+	}
+
+	:global(html[data-layout-compact='true']) .awg-list-table:not(.singbox-tunnel-list-table):not(.singbox-sub-list-table) {
+		--awg-list-min-width: 0px;
+		--awg-list-columns:
+			28px
+			minmax(150px, 1fr)
+			minmax(120px, 0.78fr)
+			minmax(112px, 0.68fr)
+			minmax(120px, 1.15fr)
+			minmax(64px, max-content);
+	}
+
+	:global(html[data-layout-compact='true']) .singbox-tunnel-list-table {
+		--awg-list-min-width: 0px;
+		--sbx-tunnel-list-columns:
+			72px
+			minmax(150px, 1fr)
+			76px
+			minmax(112px, 0.68fr)
+			78px
+			minmax(135px, 1.25fr)
+			72px
+			minmax(64px, max-content);
+	}
+
+	:global(html[data-layout-compact='true']) .singbox-sub-list-table {
+		--awg-list-min-width: 0px;
+		--sbx-sub-list-columns:
+			72px
+			minmax(145px, 1fr)
+			64px
+			minmax(118px, 0.72fr)
+			minmax(135px, 1.2fr)
+			72px
+			112px;
+	}
+
+	:global(html[data-layout-compact='true']) .awg-list-row,
+	:global(html[data-layout-compact='true']) .singbox-tunnel-list-table :global(.sbx-tunnel-list-row),
+	:global(html[data-layout-compact='true']) :global(.singbox-sub-list-table .sbx-sub-active-row) {
+		column-gap: 0.5rem !important;
+		padding-left: 0.625rem !important;
+		padding-right: 0.625rem !important;
+		min-width: 100% !important;
+	}
+
+	:global(html[data-layout-compact='true']) :global(.singbox-sub-list-table .lc-delay),
+	:global(html[data-layout-compact='true']) :global(.singbox-tunnel-list-table .list-cell-delay) {
+		justify-content: flex-start !important;
+		padding-left: 0 !important;
+		padding-right: 0.25rem !important;
+	}
+
+	:global(html[data-layout-compact='true']) .awg-list-cell-rate,
+	:global(html[data-layout-compact='true']) .awg-rate-button,
+	:global(html[data-layout-compact='true']) .awg-list-rate-stack,
+	:global(html[data-layout-compact='true']) :global(.singbox-tunnel-list-table .list-cell-traffic),
+	:global(html[data-layout-compact='true']) :global(.singbox-tunnel-list-table .traffic-row-list),
+	:global(html[data-layout-compact='true']) :global(.singbox-sub-list-table .lc-traffic),
+	:global(html[data-layout-compact='true']) :global(.singbox-sub-list-table .traffic-row-list--stack) {
+		min-width: 0 !important;
+		width: 100% !important;
+	}
+
+	:global(html[data-layout-compact='true']) :global(.singbox-sub-list-table .lc-actions) {
+		justify-content: flex-start !important;
+		gap: 0.375rem !important;
+		padding-left: 0.25rem !important;
+		padding-right: 0 !important;
 	}
 
 	@media (max-width: 760px) {
@@ -3398,25 +3546,19 @@
 
 	.singbox-tunnel-list-table :global(.sbx-tunnel-list-row) {
 		display: grid;
-		grid-template-columns:
-			minmax(80px, 80px)
-			minmax(0, 1.2fr)
-			minmax(0, 1fr)
-			minmax(132px, 1.1fr)
-			minmax(96px, 0.85fr)
-			minmax(150px, 1.1fr)
-			minmax(80px, 80px)
-			minmax(70px, 0.7fr);
-		gap: 0.75rem 1rem;
+		grid-template-columns: var(--sbx-tunnel-list-columns);
+		column-gap: 0.625rem;
 		align-items: center;
 		padding: 0.75rem 1rem;
 		border-bottom: 1px solid var(--color-border);
-		min-width: max(100%, max(var(--awg-list-min-width, 0px), max-content));
+		min-width: max(100%, var(--awg-list-min-width, 0px));
+		box-sizing: border-box;
 	}
 	.singbox-tunnel-list-table :global(.sbx-tunnel-list-row:last-child) {
 		border-bottom: none;
 	}
 	.singbox-tunnel-list-table .sbx-tunnel-list-row--head {
+		grid-template-columns: var(--sbx-tunnel-list-columns);
 		background: var(--color-bg-tertiary);
 		font-size: 0.6875rem;
 		font-weight: 700;
@@ -3432,15 +3574,15 @@
 
 	.singbox-sub-list-table {
 		margin-bottom: 1.25rem;
-		--awg-list-min-width: 760px;
+		--awg-list-min-width: 1040px;
 		--sbx-sub-list-columns:
+			150px
+			minmax(150px, 0.9fr)
 			72px
-			minmax(150px, 210px)
-			62px
-			minmax(126px, 170px)
-			minmax(240px, 1fr)
-			84px
-			76px;
+			minmax(135px, 0.72fr)
+			minmax(0, 1fr)
+			88px
+			190px;
 	}
 	.singbox-sub-list-table .sbx-sub-list-row--head {
 		display: grid;
@@ -3459,7 +3601,12 @@
 		box-sizing: border-box;
 	}
 	.sbx-sub-list-head-actions {
-		text-align: center;
+		text-align: left;
+		padding-left: 1rem;
+	}
+
+	.singbox-sub-list-table .sbx-sub-list-row--head > span:first-child {
+		padding-left: 0.75rem;
 	}
 
 	/* Rows are rendered by child components; keep the final list contract here,
@@ -3467,10 +3614,10 @@
 	.singbox-sub-list-table :global(.sbx-sub-active-row) {
 		display: grid !important;
 		grid-template-columns: var(--sbx-sub-list-columns) !important;
-		column-gap: 0.5rem !important;
-		align-items: center;
+		column-gap: 0.75rem !important;
+		align-items: center !important;
 		padding-inline: 0.75rem !important;
-		min-width: max(100%, var(--awg-list-min-width, 760px)) !important;
+		min-width: max(100%, var(--awg-list-min-width, 0px)) !important;
 		box-sizing: border-box;
 	}
 	.singbox-sub-list-table :global(.sub-active-list-group),
@@ -3497,9 +3644,23 @@
 		width: 100%;
 		min-width: 0;
 	}
-	.singbox-sub-list-table :global(.lc-ping-mini),
-	.singbox-sub-list-table :global(.lc-actions) {
+	.singbox-sub-list-table :global(.lc-ping-mini) {
 		justify-content: center;
+	}
+
+	.singbox-sub-list-table :global(.lc-delay) {
+		justify-content: flex-start !important;
+		min-width: 0 !important;
+		padding-left: 0.75rem !important;
+		padding-right: 1rem !important;
+	}
+
+	.singbox-sub-list-table :global(.lc-actions) {
+		justify-content: flex-start !important;
+		gap: 0.75rem !important;
+		min-width: 0 !important;
+		padding-left: 1rem !important;
+		padding-right: 0.5rem !important;
 	}
 
 	@media (max-width: 700px) {
