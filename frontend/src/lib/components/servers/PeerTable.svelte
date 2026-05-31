@@ -3,6 +3,7 @@
 	import { formatRelativeTime, formatBytes } from '$lib/utils/format';
 	import { IconButton } from '$lib/components/ui';
 	import { notifications } from '$lib/stores/notifications';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	interface Props {
 		peers: WireguardServerPeer[];
@@ -21,11 +22,12 @@
 	}
 
 	function peerIP(peer: WireguardServerPeer): string {
-		return (
+		const raw =
 			peer.allowedIPs?.find((ip) => ip.includes('/32')) ||
 			peer.allowedIPs?.[0] ||
-			'-'
-		);
+			'-';
+		// Убираем маску одиночного хоста (/32, /128) — показываем и копируем чистый IP.
+		return raw.replace(/\/(32|128)$/, '');
 	}
 
 	function splitEndpoint(endpoint: string): { host: string; port?: string } {
@@ -53,14 +55,9 @@
 			notifications.warning(`${label} отсутствует`, { duration: 2000 });
 			return;
 		}
-		if (!navigator?.clipboard?.writeText) {
-			notifications.error(`Не удалось скопировать ${label.toLowerCase()}`);
-			return;
-		}
-		try {
-			await navigator.clipboard.writeText(value);
+		if (await copyToClipboard(value)) {
 			notifications.success(`${label} скопирован: ${value}`, { duration: 2000 });
-		} catch {
+		} else {
 			notifications.error(`Не удалось скопировать ${label.toLowerCase()}`);
 		}
 	}

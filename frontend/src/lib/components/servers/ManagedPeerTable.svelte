@@ -3,6 +3,7 @@
 	import { Toggle } from '$lib/components/ui';
 	import { formatBytes, formatRelativeTime } from '$lib/utils/format';
 	import { notifications } from '$lib/stores/notifications';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 
 	interface Props {
 		peers: ManagedPeer[];
@@ -64,14 +65,9 @@
 			notifications.warning(`${label} отсутствует`, { duration: 2000 });
 			return;
 		}
-		if (!navigator?.clipboard?.writeText) {
-			notifications.error(`Не удалось скопировать ${label.toLowerCase()}`);
-			return;
-		}
-		try {
-			await navigator.clipboard.writeText(value);
+		if (await copyToClipboard(value)) {
 			notifications.success(`${label} скопирован: ${value}`, { duration: 2000 });
-		} catch {
+		} else {
 			notifications.error(`Не удалось скопировать ${label.toLowerCase()}`);
 		}
 	}
