@@ -224,7 +224,11 @@ func tryResolveEndpoint(endpoint string) string {
 // stopCh allows early exit when StopMonitoring is called during link toggle,
 // preventing the HTTP handler from blocking for up to 30 seconds.
 func (s *Service) waitHandshake(ifaceName string, stopCh <-chan struct{}) bool {
-	deadline := time.After(handshakeTimeout)
+	timeout := s.handshakeTimeout
+	if timeout <= 0 {
+		timeout = handshakeTimeout
+	}
+	deadline := time.After(timeout)
 	poll := time.NewTicker(handshakePollFreq)
 	defer poll.Stop()
 

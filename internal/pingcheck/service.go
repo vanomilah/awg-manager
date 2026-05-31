@@ -36,6 +36,10 @@ type Service struct {
 	stopCh    chan struct{}
 	ctx       context.Context
 	cancel    context.CancelFunc
+
+	// handshakeTimeout controls how long waitHandshake waits for a fresh
+	// handshake after link toggle before considering recovery failed.
+	handshakeTimeout time.Duration
 }
 
 // tunnelMonitor tracks monitoring state for a single tunnel.
@@ -73,6 +77,7 @@ func NewService(
 		appLog:    logging.NewScopedLogger(appLogger, logging.GroupTunnel, logging.SubPingcheck),
 		monitors:  make(map[string]*tunnelMonitor),
 		logBuffer: NewLogBuffer(),
+		handshakeTimeout: handshakeTimeout,
 	}
 }
 
