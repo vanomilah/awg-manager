@@ -5,7 +5,7 @@
 <script lang="ts">
   import type { SingboxRouterDNSServer, SingboxRouterDNSRule } from '$lib/types';
   import { Badge, Button } from '$lib/components/ui';
-  import { ArrowRight } from 'lucide-svelte';
+  import { ArrowRight, Edit3 } from 'lucide-svelte';
 
   interface Props {
     servers: SingboxRouterDNSServer[];
@@ -67,11 +67,30 @@
   {#if rules.length > 0}
     <div class="rules">
       {#each rules as r, i (i)}
-        <button type="button" class="rule-row" onclick={() => onEditRule(i)}>
-          <span class="rule-matchers">{matcherSummary(r)}</span>
-          <ArrowRight size={11} color="var(--text-muted)" />
-          <span class="rule-server">{r.server ?? '—'}</span>
-        </button>
+        <div class="rule-row mobile-row">
+          <button
+            type="button"
+            class="rule-main mobile-row-main"
+            title={`Открыть DNS-правило #${i}`}
+            aria-label={`Открыть DNS-правило ${i}`}
+            onclick={() => onEditRule(i)}
+          >
+            <span class="rule-matchers">{matcherSummary(r)}</span>
+            <ArrowRight size={11} color="var(--text-muted)" />
+            <span class="rule-server">{r.server ?? '—'}</span>
+          </button>
+          <div class="mobile-row-actions">
+            <button
+              type="button"
+              class="route-action-btn"
+              title={`Редактировать DNS-правило #${i}`}
+              aria-label={`Редактировать DNS-правило ${i}`}
+              onclick={() => onEditRule(i)}
+            >
+              <Edit3 size={12} />
+            </button>
+          </div>
+        </div>
       {/each}
     </div>
   {:else}
@@ -88,7 +107,7 @@
     display: flex;
     flex-direction: column;
   }
-  .row, .rule-row {
+  .row {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -102,7 +121,7 @@
     width: 100%;
     text-align: left;
   }
-  .row:hover, .rule-row:hover {
+  .row:hover {
     background: var(--bg-tertiary);
   }
   .dot {
@@ -148,21 +167,135 @@
   .rule-row {
     font-family: var(--font-mono);
     font-size: 11.5px;
+    --route-action-color: var(--accent);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 40px;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .rule-main {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .rule-main:hover {
+    background: var(--bg-tertiary);
   }
   .rule-matchers {
     color: var(--text-secondary);
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .rule-server {
     color: var(--accent);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-row-actions {
+    width: 40px;
+    min-width: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    justify-self: end;
+  }
+
+  .route-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    min-width: 32px;
+    height: 18px;
+    padding: 0;
+    border-radius: 9px;
+    border: 1px solid color-mix(in srgb, var(--route-action-color, var(--accent)) 50%, transparent);
+    background: color-mix(in srgb, var(--route-action-color, var(--accent)) 8%, transparent);
+    color: color-mix(in srgb, var(--route-action-color, var(--accent)) 58%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--route-action-color, var(--accent)) 18%, transparent);
+    cursor: pointer;
+    transition:
+      color 0.16s ease,
+      border-color 0.16s ease,
+      background 0.16s ease,
+      box-shadow 0.16s ease,
+      transform 0.12s ease;
+  }
+
+  .route-action-btn :global(svg) {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+  }
+
+  .route-action-btn:hover:not(:disabled) {
+    color: var(--route-action-color, var(--accent));
+    border-color: color-mix(in srgb, var(--route-action-color, var(--accent)) 80%, transparent);
+    background: color-mix(in srgb, var(--route-action-color, var(--accent)) 16%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--route-action-color, var(--accent)) 34%, transparent);
+  }
+
+  .route-action-btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+
+  .route-action-btn:focus-visible {
+    outline: 1px solid color-mix(in srgb, var(--route-action-color, var(--accent)) 90%, transparent);
+    outline-offset: 2px;
+  }
+
+  .route-action-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    box-shadow: none;
   }
   .empty {
     padding: 14px;
     color: var(--text-muted);
     text-align: center;
     font-size: 12px;
+  }
+
+  @media (max-width: 720px) {
+    .mobile-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 40px;
+      align-items: center;
+      gap: 0.625rem;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .mobile-row-main {
+      min-width: 0;
+      max-width: 100%;
+    }
+
+    .mobile-row-actions {
+      flex-direction: column;
+      gap: 0.375rem;
+      align-self: center;
+    }
   }
 </style>

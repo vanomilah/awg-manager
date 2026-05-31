@@ -51,14 +51,26 @@
 				{/if}
 			</div>
 			<div class="policy-actions">
-				<button class="action-btn edit" title="Изменить" onclick={() => onedit(policy.name)}>
+				<button
+					type="button"
+					class="action-btn edit"
+					title={isHrPolicy
+						? `Открыть HydraRoute-политику «${policy.description || policy.name}»`
+						: `Изменить политику «${policy.description || policy.name}»`}
+					onclick={() => onedit(policy.name)}
+				>
 					<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
 						<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
 					</svg>
 				</button>
 				{#if !isHrPolicy}
-				<button class="action-btn danger" title="Удалить" onclick={() => ondelete(policy.name)}>
+				<button
+					type="button"
+					class="action-btn danger"
+					title={`Удалить политику «${policy.description || policy.name}»`}
+					onclick={() => ondelete(policy.name)}
+				>
 					<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 						<polyline points="3 6 5 6 21 6"/>
 						<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -86,6 +98,7 @@
 		align-items: flex-start;
 		gap: 12px;
 		transition: border-color 0.15s;
+		--route-action-color: var(--text-muted);
 	}
 
 	.policy-card:hover {
@@ -145,6 +158,7 @@
 
 	.policy-card-hr {
 		border-color: rgba(245, 158, 11, 0.35);
+		--route-action-color: var(--warning);
 	}
 
 	.policy-ifaces {
@@ -165,28 +179,57 @@
 
 	.policy-actions {
 		display: flex;
-		gap: 4px;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
 		flex-shrink: 0;
 		align-self: center;
 	}
 
 	.action-btn {
-		display: flex;
-		padding: 5px;
-		background: none;
-		border: none;
-		color: var(--border-hover);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		min-width: 32px;
+		height: 18px;
+		padding: 0;
+		border-radius: 9px;
+		border: 1px solid color-mix(in srgb, var(--route-action-color) 50%, transparent);
+		background: color-mix(in srgb, var(--route-action-color) 8%, transparent);
+		color: color-mix(in srgb, var(--route-action-color) 58%, transparent);
+		box-shadow: 0 0 8px color-mix(in srgb, var(--route-action-color) 18%, transparent);
 		cursor: pointer;
-		border-radius: 4px;
-		transition: color 0.15s;
+		transition:
+			color 0.16s ease,
+			border-color 0.16s ease,
+			background 0.16s ease,
+			box-shadow 0.16s ease,
+			transform 0.12s ease;
 	}
 
 	.action-btn:hover {
-		color: var(--accent);
+		color: var(--route-action-color);
+		border-color: color-mix(in srgb, var(--route-action-color) 80%, transparent);
+		background: color-mix(in srgb, var(--route-action-color) 16%, transparent);
+		box-shadow: 0 0 10px color-mix(in srgb, var(--route-action-color) 34%, transparent);
+	}
+
+	.action-btn:active {
+		transform: translateY(1px);
+	}
+
+	.action-btn:focus-visible {
+		outline: 1px solid color-mix(in srgb, var(--route-action-color) 90%, transparent);
+		outline-offset: 2px;
 	}
 
 	.action-btn.danger:hover {
 		color: var(--error);
+		border-color: color-mix(in srgb, var(--error) 80%, transparent);
+		background: color-mix(in srgb, var(--error) 14%, transparent);
+		box-shadow: 0 0 10px color-mix(in srgb, var(--error) 30%, transparent);
 	}
 
 	.select-cell {

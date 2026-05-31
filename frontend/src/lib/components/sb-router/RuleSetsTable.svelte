@@ -72,10 +72,22 @@
         <div class="source" title={sourceFor(rs)}>{sourceFor(rs)}</div>
         <div class="detour">{rs.download_detour ?? '—'}</div>
         <div class="actions-col actions">
-          <button type="button" class="icon-btn" title="Редактировать" onclick={() => onEdit(rs.tag)}>
+          <button
+            type="button"
+            class="route-action-btn"
+            title={`Редактировать набор правил «${rs.tag}»`}
+            aria-label={`Редактировать набор правил ${rs.tag}`}
+            onclick={() => onEdit(rs.tag)}
+          >
             <Edit3 size={12} />
           </button>
-          <button type="button" class="icon-btn danger" title="Удалить" onclick={() => onDelete(rs.tag)}>
+          <button
+            type="button"
+            class="route-action-btn danger"
+            title={`Удалить набор правил «${rs.tag}»`}
+            aria-label={`Удалить набор правил ${rs.tag}`}
+            onclick={() => onDelete(rs.tag)}
+          >
             <Trash2 size={12} />
           </button>
         </div>
@@ -169,6 +181,7 @@
   .row {
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     font-size: 12.5px;
+    --route-action-color: var(--accent);
   }
   .tag {
     font-family: var(--font-mono);
@@ -202,21 +215,62 @@
     justify-content: flex-end;
     gap: 2px;
   }
-  .icon-btn {
-    background: transparent;
-    border: 0;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 4px;
-    border-radius: var(--radius-sm);
+
+  .route-action-btn {
     display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    min-width: 32px;
+    height: 18px;
+    padding: 0;
+    border-radius: 9px;
+    border: 1px solid color-mix(in srgb, var(--route-action-color) 50%, transparent);
+    background: color-mix(in srgb, var(--route-action-color) 8%, transparent);
+    color: color-mix(in srgb, var(--route-action-color) 58%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--route-action-color) 18%, transparent);
+    cursor: pointer;
+    transition:
+      color 0.16s ease,
+      border-color 0.16s ease,
+      background 0.16s ease,
+      box-shadow 0.16s ease,
+      transform 0.12s ease;
   }
-  .icon-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
+
+  .route-action-btn :global(svg) {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
   }
-  .icon-btn.danger:hover {
+
+  .route-action-btn:hover {
+    color: var(--route-action-color);
+    border-color: color-mix(in srgb, var(--route-action-color) 80%, transparent);
+    background: color-mix(in srgb, var(--route-action-color) 16%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--route-action-color) 34%, transparent);
+  }
+
+  .route-action-btn:active {
+    transform: translateY(1px);
+  }
+
+  .route-action-btn:focus-visible {
+    outline: 1px solid color-mix(in srgb, var(--route-action-color) 90%, transparent);
+    outline-offset: 2px;
+  }
+
+  .route-action-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  .route-action-btn.danger:hover {
     color: var(--color-error, #dc2626);
+    border-color: color-mix(in srgb, var(--color-error, #dc2626) 80%, transparent);
+    background: color-mix(in srgb, var(--color-error, #dc2626) 14%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--color-error, #dc2626) 30%, transparent);
   }
   .empty {
     padding: 14px;
@@ -224,12 +278,115 @@
     text-align: center;
     font-size: 12px;
   }
-  @media (max-width: 768px) {
-    .table {
-      overflow-x: auto;
+  @media (max-width: 720px) {
+    .wrap {
+      gap: 0.625rem;
     }
-    .header, .row {
-      min-width: 600px;
+
+    .segment-row {
+      border-bottom: 0;
+      background: transparent;
+    }
+
+    .seg {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--bg-tertiary);
+    }
+
+    .chip {
+      justify-content: center;
+      padding-inline: 0.35rem;
+      min-width: 0;
+    }
+
+    .table {
+      border: 0;
+      background: transparent;
+      overflow: visible;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.875rem;
+    }
+
+    .header {
+      display: none;
+    }
+
+    .row {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 36px;
+      grid-template-areas:
+        "tag type"
+        "source edit"
+        "detour delete";
+      align-items: center;
+      gap: 0.625rem;
+      padding: 0.875rem 1rem;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--bg-secondary);
+      overflow: hidden;
+    }
+
+    .row > div:nth-child(1) { grid-area: tag; }
+    .row > div:nth-child(2) { grid-area: type; justify-self: end; }
+    .row > div:nth-child(3) { grid-area: source; }
+    .row > div:nth-child(4) { grid-area: detour; }
+    .row > div:nth-child(5) { display: contents; }
+
+    .row > div:nth-child(5) .route-action-btn:first-child {
+      grid-area: edit;
+      justify-self: end;
+    }
+
+    .row > div:nth-child(5) .route-action-btn.danger {
+      grid-area: delete;
+      justify-self: end;
+    }
+
+    .tag {
+      font-size: 0.95rem;
+      line-height: 1.25;
+      white-space: normal;
+      overflow: visible;
+      text-overflow: initial;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .source,
+    .detour {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      white-space: normal;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      padding: 0.625rem 0.75rem;
+      border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--bg-primary) 45%, transparent);
+      justify-self: stretch;
+      text-align: left;
+    }
+
+    .actions {
+      display: contents;
+    }
+
+    .actions-col {
+      text-align: left;
     }
   }
   /* Bare mode для embed внутри SidePanel — parent даёт chrome */

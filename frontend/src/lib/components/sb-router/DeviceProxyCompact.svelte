@@ -103,10 +103,10 @@
     <div class="proxy-list">
       {#each instances as in_ (in_.id)}
         {@const outboundLabel = outboundLabelFor(in_)}
-        <div class="proxy-row">
+        <div class="proxy-row mobile-row">
           <button
             type="button"
-            class="proxy-click"
+            class="proxy-click mobile-row-main"
             class:clickable={!!onSelect}
             onclick={() => onSelect?.(in_)}
             disabled={!onSelect}
@@ -129,9 +129,17 @@
             </div>
           </button>
           {#if onDelete && in_.id !== 'default'}
-            <button type="button" class="del-btn" onclick={() => onDelete(in_)} aria-label="Удалить inbound" title="Удалить">
-              <Trash2 size={14} />
-            </button>
+            <div class="mobile-row-actions">
+              <button
+                type="button"
+                class="route-action-btn danger"
+                onclick={() => onDelete(in_)}
+                aria-label={`Удалить inbound ${in_.name || in_.id}`}
+                title={`Удалить inbound «${in_.name || in_.id}»`}
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
           {/if}
         </div>
       {/each}
@@ -172,9 +180,10 @@
   }
   .proxy-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 40px;
     align-items: center;
     gap: 8px;
+    --route-action-color: var(--accent);
   }
   .proxy-click {
     width: 100%;
@@ -197,21 +206,51 @@
     background: var(--bg-tertiary);
     border-radius: var(--radius-sm);
   }
-  .del-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    padding: 5px;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
+  .route-action-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 32px;
+    min-width: 32px;
+    height: 18px;
+    padding: 0;
+    border-radius: 9px;
+    border: 1px solid color-mix(in srgb, var(--route-action-color, var(--accent)) 50%, transparent);
+    background: color-mix(in srgb, var(--route-action-color, var(--accent)) 8%, transparent);
+    color: color-mix(in srgb, var(--route-action-color, var(--accent)) 58%, transparent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--route-action-color, var(--accent)) 18%, transparent);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition:
+      color 0.16s ease,
+      border-color 0.16s ease,
+      background 0.16s ease,
+      box-shadow 0.16s ease,
+      transform 0.12s ease;
+  }
+  .route-action-btn :global(svg) {
+    width: 13px;
+    height: 13px;
     flex-shrink: 0;
   }
-  .del-btn:hover {
+  .route-action-btn:hover:not(:disabled) {
+    color: var(--route-action-color, var(--accent));
+    border-color: color-mix(in srgb, var(--route-action-color, var(--accent)) 80%, transparent);
+    background: color-mix(in srgb, var(--route-action-color, var(--accent)) 16%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--route-action-color, var(--accent)) 34%, transparent);
+  }
+  .route-action-btn.danger:hover:not(:disabled) {
     color: var(--color-danger, #ef4444);
-    border-color: var(--color-danger, #ef4444);
+    border-color: color-mix(in srgb, var(--color-danger, #ef4444) 80%, transparent);
+    background: color-mix(in srgb, var(--color-danger, #ef4444) 14%, transparent);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--color-danger, #ef4444) 30%, transparent);
+  }
+  .route-action-btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .route-action-btn:focus-visible {
+    outline: 1px solid color-mix(in srgb, var(--route-action-color, var(--accent)) 90%, transparent);
+    outline-offset: 2px;
   }
   .ty {
     font-size: 11px;
@@ -266,6 +305,19 @@
     font-family: var(--font-mono);
     color: var(--text-secondary);
   }
+
+  .mobile-row-actions {
+    width: 40px;
+    min-width: 40px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    justify-self: end;
+    align-self: center;
+  }
+
   @media (max-width: 768px) {
     .panel {
       flex-direction: column;
@@ -273,6 +325,20 @@
     }
     .sub {
       gap: 4px;
+    }
+
+    .mobile-row {
+      grid-template-columns: minmax(0, 1fr) 40px;
+      min-width: 0;
+    }
+
+    .mobile-row-main,
+    .proxy-click,
+    .proxy-info,
+    .proxy-main,
+    .proxy-sub {
+      min-width: 0;
+      max-width: 100%;
     }
   }
   /* Bare mode для embed внутри SidePanel — без double chrome */

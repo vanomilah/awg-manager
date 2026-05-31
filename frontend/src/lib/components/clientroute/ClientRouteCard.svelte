@@ -14,7 +14,7 @@
 		onselect?: () => void;
 	}
 
-	let {
+let {
 		route,
 		tunnelName,
 		ontoggle,
@@ -23,8 +23,10 @@
 		toggleLoading = false,
 		selectable = false,
 		selected = false,
-		onselect
-	}: Props = $props();
+	onselect
+}: Props = $props();
+
+let clientLabel = $derived(route.clientHostname || route.clientIp);
 </script>
 
 <div
@@ -73,13 +75,23 @@
 			loading={toggleLoading}
 			size="sm"
 		/>
-		<button class="action-btn" title="Изменить" onclick={() => onedit()}>
+		<button
+			type="button"
+			class="action-btn"
+			title={`Изменить VPN-маршрут устройства «${clientLabel}»`}
+			onclick={() => onedit()}
+		>
 			<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
 				<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
 			</svg>
 		</button>
-		<button class="action-btn danger" title="Удалить" onclick={() => ondelete()}>
+		<button
+			type="button"
+			class="action-btn danger"
+			title={`Удалить VPN-маршрут устройства «${clientLabel}»`}
+			onclick={() => ondelete()}
+		>
 			<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				<polyline points="3 6 5 6 21 6"/>
 				<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
@@ -97,10 +109,12 @@
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		transition: border-color 0.2s;
+		--route-action-color: var(--text-muted);
 	}
 
 	.dns-card.enabled {
 		border: 2px solid var(--success);
+		--route-action-color: var(--success);
 	}
 
 	.dns-card.selected {
@@ -171,22 +185,48 @@
 	}
 
 	.action-btn {
-		display: flex;
-		padding: 2px;
-		background: none;
-		border: none;
-		color: var(--border-hover);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 32px;
+		min-width: 32px;
+		height: 18px;
+		padding: 0;
+		border-radius: 9px;
+		border: 1px solid color-mix(in srgb, var(--route-action-color) 50%, transparent);
+		background: color-mix(in srgb, var(--route-action-color) 8%, transparent);
+		color: color-mix(in srgb, var(--route-action-color) 58%, transparent);
+		box-shadow: 0 0 8px color-mix(in srgb, var(--route-action-color) 18%, transparent);
 		cursor: pointer;
-		border-radius: 4px;
-		transition: color 0.15s;
+		transition:
+			color 0.16s ease,
+			border-color 0.16s ease,
+			background 0.16s ease,
+			box-shadow 0.16s ease,
+			transform 0.12s ease;
 	}
 
 	.action-btn:hover {
-		color: var(--accent);
+		color: var(--route-action-color);
+		border-color: color-mix(in srgb, var(--route-action-color) 80%, transparent);
+		background: color-mix(in srgb, var(--route-action-color) 16%, transparent);
+		box-shadow: 0 0 10px color-mix(in srgb, var(--route-action-color) 34%, transparent);
+	}
+
+	.action-btn:active {
+		transform: translateY(1px);
+	}
+
+	.action-btn:focus-visible {
+		outline: 1px solid color-mix(in srgb, var(--route-action-color) 90%, transparent);
+		outline-offset: 2px;
 	}
 
 	.action-btn.danger:hover {
 		color: var(--error);
+		border-color: color-mix(in srgb, var(--error) 80%, transparent);
+		background: color-mix(in srgb, var(--error) 14%, transparent);
+		box-shadow: 0 0 10px color-mix(in srgb, var(--error) 30%, transparent);
 	}
 
 	.led {
