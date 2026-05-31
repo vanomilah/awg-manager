@@ -18,20 +18,16 @@
     index: number;
     onDelete?: () => void;
     onEdit?: () => void;
-    onHandlePointerDown?: (event: PointerEvent) => void;
+    onDragHandlePointerDown?: (event: PointerEvent) => void;
     dragging?: boolean;
-    dragOverBefore?: boolean;
-    dragOverAfter?: boolean;
   }
   let {
     card,
     index,
     onDelete,
     onEdit,
-    onHandlePointerDown,
+    onDragHandlePointerDown,
     dragging = false,
-    dragOverBefore = false,
-    dragOverAfter = false,
   }: Props = $props();
 
   const MAX_CHIPS = 4;
@@ -59,7 +55,7 @@
   }
 </script>
 
-<div class="card-wrap" class:drag-over-before={dragOverBefore} class:drag-over-after={dragOverAfter}>
+<div class="card-wrap">
 <div class="card" class:is-system={card.isSystem} class:dragging>
   <!-- Order number -->
   <div class="order">{orderStr}</div>
@@ -71,7 +67,7 @@
         class="drag-handle"
         aria-label={`Перетащить правило #${orderStr}`}
         title={`Перетащить правило #${orderStr}`}
-        onpointerdown={onHandlePointerDown}
+        onpointerdown={onDragHandlePointerDown}
       >
         <GripVertical size={16} />
       </button>
@@ -149,23 +145,6 @@
   .card-wrap {
     position: relative;
   }
-  .card-wrap::before,
-  .card-wrap::after {
-    content: '';
-    position: absolute;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: transparent;
-    pointer-events: none;
-    transition: background var(--t-fast);
-  }
-  .card-wrap::before { top: -3px; }
-  .card-wrap::after { bottom: -3px; }
-  .card-wrap.drag-over-before::before,
-  .card-wrap.drag-over-after::after {
-    background: color-mix(in srgb, var(--accent) 75%, transparent);
-  }
   .card {
     display: grid;
     grid-template-columns: 28px 28px minmax(0, 1fr) auto auto;
@@ -184,7 +163,6 @@
     opacity: 0.82;
     transform: translateY(-1px);
   }
-
   .order {
     font-family: var(--font-mono);
     font-size: 12px;
