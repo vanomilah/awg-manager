@@ -6,7 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Button, Badge } from '$lib/components/ui';
-  import { ChevronRight, X } from 'lucide-svelte';
+  import { ChevronRight, Trash2 } from 'lucide-svelte';
   import { api } from '$lib/api/client';
   import type {
     DeviceProxyRuntime,
@@ -130,7 +130,7 @@
           </button>
           {#if onDelete && in_.id !== 'default'}
             <button type="button" class="del-btn" onclick={() => onDelete(in_)} aria-label="Удалить inbound" title="Удалить">
-              <X size={14} />
+              <Trash2 size={14} />
             </button>
           {/if}
         </div>

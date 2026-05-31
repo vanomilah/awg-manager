@@ -2,6 +2,7 @@
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { Button, ConfirmModal } from '$lib/components/ui';
+	import { Trash2 } from 'lucide-svelte';
 	import CreateIcon from '$lib/components/ui/icons/CreateIcon.svelte';
 	import type { SingboxRouterDNSRewrite } from '$lib/types';
 	import DNSRewriteEditModal from './DNSRewriteEditModal.svelte';
@@ -71,7 +72,7 @@
 				<span class="arrow">→</span>
 				<span class="ips mono">{rw.ips.join(', ')}</span>
 				<button class="icon-btn" onclick={() => (editIndex = i)} aria-label="Редактировать">✎</button>
-				<button class="icon-btn danger" onclick={() => requestDelete(i)} aria-label="Удалить">✕</button>
+				<button class="icon-btn danger" onclick={() => requestDelete(i)} aria-label="Удалить" title="Удалить"><Trash2 size={14} /></button>
 			</div>
 		{/each}
 	</div>
@@ -172,6 +173,9 @@
 		white-space: nowrap;
 	}
 	.icon-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		background: transparent;
 		border: none;
 		color: var(--muted-text);
