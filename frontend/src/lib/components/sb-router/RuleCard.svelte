@@ -10,26 +10,75 @@
   import MatcherChip from './MatcherChip.svelte';
   import OutboundTile from './OutboundTile.svelte';
   import { Badge } from '$lib/components/ui';
-  import { X } from 'lucide-svelte';
+  import { Edit3, GripVertical, X } from 'lucide-svelte';
 
   interface Props {
     card: RuleCardData;
     /** 0-based index — отображается как 01/02/... */
     index: number;
     onDelete?: () => void;
+    onEdit?: () => void;
+    onHandlePointerDown?: (event: PointerEvent) => void;
+    dragging?: boolean;
+    dragOverBefore?: boolean;
+    dragOverAfter?: boolean;
   }
-  let { card, index, onDelete }: Props = $props();
+  let {
+    card,
+    index,
+    onDelete,
+    onEdit,
+    onHandlePointerDown,
+    dragging = false,
+    dragOverBefore = false,
+    dragOverAfter = false,
+  }: Props = $props();
 
   const MAX_CHIPS = 4;
   let visibleChips = $derived(card.matchers.slice(0, MAX_CHIPS));
   let hiddenCount = $derived(Math.max(0, card.matchers.length - MAX_CHIPS));
   let orderStr = $derived(String(index + 1).padStart(2, '0'));
   let useServiceTile = $derived(!card.isSystem);
+  let editTip = $derived(actionTooltip('edit', card, index));
+  let deleteTip = $derived(actionTooltip('delete', card, index));
+
+  function outboundLabel(cardData: RuleCardData): string {
+    if (cardData.action === 'block' || cardData.outbound.kind === 'block') return 'Заблокировать';
+    if (cardData.outbound.kind === 'direct') return 'Напрямую';
+    return cardData.outbound.label;
+  }
+
+  function ruleActionTarget(cardData: RuleCardData, idx: number): string {
+    const n = String(idx + 1).padStart(2, '0');
+    return `правило #${n}: ${cardData.title} → ${outboundLabel(cardData)}`;
+  }
+
+  function actionTooltip(action: 'edit' | 'delete', cardData: RuleCardData, idx: number): string {
+    const prefix = action === 'edit' ? 'Редактировать' : 'Удалить';
+    return `${prefix} ${ruleActionTarget(cardData, idx)}`;
+  }
 </script>
 
-<div class="card" class:is-system={card.isSystem}>
+<div class="card-wrap" class:drag-over-before={dragOverBefore} class:drag-over-after={dragOverAfter}>
+<div class="card" class:is-system={card.isSystem} class:dragging>
   <!-- Order number -->
   <div class="order">{orderStr}</div>
+
+  <div class="handle-slot">
+    {#if !card.isSystem}
+      <button
+        type="button"
+        class="drag-handle"
+        aria-label={`Перетащить правило #${orderStr}`}
+        title={`Перетащить правило #${orderStr}`}
+        onpointerdown={onHandlePointerDown}
+      >
+        <GripVertical size={14} />
+      </button>
+    {:else}
+      <div class="handle-disabled" aria-hidden="true"></div>
+    {/if}
+  </div>
 
   <!-- Service tile or generic icon-tile + matchers -->
   <div class="main">
@@ -77,19 +126,49 @@
     <div class="right-slot">
       <Badge variant="muted" size="sm">система</Badge>
     </div>
-  {:else if onDelete}
+  {:else if onDelete || onEdit}
     <div class="right-slot">
-      <button type="button" class="del-btn" onclick={onDelete} aria-label="Удалить правило" title="Удалить">
-        <X size={14} />
-      </button>
+      {#if onEdit}
+        <span class="action-tip" data-tip={editTip}>
+          <button type="button" class="edit-btn" onclick={onEdit} aria-label={editTip} title={editTip}>
+            <Edit3 size={14} />
+          </button>
+        </span>
+      {/if}
+      <span class="action-tip" data-tip={deleteTip}>
+        <button type="button" class="del-btn" onclick={onDelete} aria-label={deleteTip} title={deleteTip}>
+          <X size={14} />
+        </button>
+      </span>
     </div>
   {/if}
 </div>
+</div>
 
 <style>
+  .card-wrap {
+    position: relative;
+  }
+  .card-wrap::before,
+  .card-wrap::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: transparent;
+    pointer-events: none;
+    transition: background var(--t-fast);
+  }
+  .card-wrap::before { top: -3px; }
+  .card-wrap::after { bottom: -3px; }
+  .card-wrap.drag-over-before::before,
+  .card-wrap.drag-over-after::after {
+    background: color-mix(in srgb, var(--accent) 75%, transparent);
+  }
   .card {
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr) auto auto;
+    grid-template-columns: 28px 28px minmax(0, 1fr) auto auto;
     gap: 12px;
     align-items: center;
     padding: 10px 14px;
@@ -99,6 +178,12 @@
     transition: border-color var(--t-fast);
   }
   .card:hover { border-color: var(--border-hover); }
+  .card.dragging {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+    opacity: 0.82;
+    transform: translateY(-1px);
+  }
 
   .order {
     font-family: var(--font-mono);
@@ -109,6 +194,38 @@
   }
   .is-system .order { color: var(--text-muted); }
 
+  .handle-slot {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .drag-handle {
+    width: 26px;
+    min-width: 26px;
+    height: 22px;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    cursor: grab;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+  }
+  .drag-handle:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+  }
+  .drag-handle:active { cursor: grabbing; }
+  .handle-disabled {
+    width: 26px;
+    height: 22px;
+    border-radius: 7px;
+    border: 1px dashed var(--border);
+    opacity: 0.35;
+  }
   .main {
     display: flex;
     align-items: center;
@@ -180,9 +297,37 @@
 
   .right-slot {
     display: flex;
-    gap: 2px;
+    gap: 4px;
+    flex-shrink: 0;
+    overflow: visible;
+    position: relative;
+  }
+  .action-tip {
+    position: relative;
+    display: inline-flex;
+  }
+  .action-tip:hover::after,
+  .action-tip:focus-within::after {
+    content: attr(data-tip);
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    width: max-content;
+    max-width: 320px;
+    white-space: normal;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text-primary);
+    background: color-mix(in srgb, var(--bg-tertiary) 90%, var(--bg-secondary));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+    padding: 6px 8px;
+    z-index: 10;
+    pointer-events: none;
   }
 
+  .edit-btn,
   .del-btn {
     background: transparent;
     border: 1px solid var(--border);
@@ -193,6 +338,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+  .edit-btn:hover {
+    color: var(--accent);
+    border-color: var(--accent);
   }
   .del-btn:hover {
     color: var(--color-danger, #ef4444);
@@ -211,16 +360,17 @@
      * span all columns on row 2.
      */
     .card {
-      grid-template-columns: 28px minmax(0, 1fr) auto;
+      grid-template-columns: 28px 28px minmax(0, 1fr) auto;
       grid-template-rows: auto auto;
       grid-template-areas:
-        "order main right"
-        "action action action";
+        "order handle main right"
+        "action action action action";
       row-gap: 0;
       column-gap: 10px;
     }
 
     .order     { grid-area: order; align-self: start; padding-top: 4px; }
+    .handle-slot { grid-area: handle; align-self: start; }
     .main      { grid-area: main; flex-wrap: wrap; align-items: flex-start; gap: 8px; }
     .right-slot { grid-area: right; align-self: start; padding-top: 2px; }
 
