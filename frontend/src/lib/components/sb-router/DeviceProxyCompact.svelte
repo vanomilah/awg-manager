@@ -6,7 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { Button, Badge } from '$lib/components/ui';
-  import { ChevronRight } from 'lucide-svelte';
+  import { ChevronRight, X } from 'lucide-svelte';
   import { api } from '$lib/api/client';
   import type {
     DeviceProxyRuntime,
@@ -23,9 +23,10 @@
     onConfigure?: () => void;
     bare?: boolean;
     onSelect?: (in_: DeviceProxyInstance) => void;
+    onDelete?: (in_: DeviceProxyInstance) => void;
   }
 
-  let { onConfigure, bare = false, onSelect }: Props = $props();
+  let { onConfigure, bare = false, onSelect, onDelete }: Props = $props();
 
   type RuntimeById = Record<string, DeviceProxyRuntime>;
 
@@ -102,30 +103,37 @@
     <div class="proxy-list">
       {#each instances as in_ (in_.id)}
         {@const outboundLabel = outboundLabelFor(in_)}
-        <button
-          type="button"
-          class="proxy-row"
-          class:clickable={!!onSelect}
-          onclick={() => onSelect?.(in_)}
-          disabled={!onSelect}
-        >
-          <span class="dot" data-tone={toneFor(in_)}></span>
-          <div class="proxy-info">
-            <div class="proxy-main">
-              <span class="ty">mixed</span>
-              <span class="mono">{listenLabelFor(in_)}</span>
-              {#if isInstanceActive(in_)}
-                <Badge variant="success" size="sm" mono>active</Badge>
-              {:else}
-                <Badge variant="muted" size="sm" mono>выкл</Badge>
-              {/if}
+        <div class="proxy-row">
+          <button
+            type="button"
+            class="proxy-click"
+            class:clickable={!!onSelect}
+            onclick={() => onSelect?.(in_)}
+            disabled={!onSelect}
+          >
+            <span class="dot" data-tone={toneFor(in_)}></span>
+            <div class="proxy-info">
+              <div class="proxy-main">
+                <span class="ty">mixed</span>
+                <span class="mono">{listenLabelFor(in_)}</span>
+                {#if isInstanceActive(in_)}
+                  <Badge variant="success" size="sm" mono>active</Badge>
+                {:else}
+                  <Badge variant="muted" size="sm" mono>выкл</Badge>
+                {/if}
+              </div>
+              <div class="proxy-sub">
+                <span class="arrow">→</span>
+                <Badge variant={outboundVariantFor(outboundLabel)} size="sm" mono>{outboundLabel}</Badge>
+              </div>
             </div>
-            <div class="proxy-sub">
-              <span class="arrow">→</span>
-              <Badge variant={outboundVariantFor(outboundLabel)} size="sm" mono>{outboundLabel}</Badge>
-            </div>
-          </div>
-        </button>
+          </button>
+          {#if onDelete && in_.id !== 'default'}
+            <button type="button" class="del-btn" onclick={() => onDelete(in_)} aria-label="Удалить inbound" title="Удалить">
+              <X size={14} />
+            </button>
+          {/if}
+        </div>
       {/each}
     </div>
   {:else if loadError}
@@ -162,7 +170,13 @@
     display: flex;
     flex-direction: column;
   }
-  button.proxy-row {
+  .proxy-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .proxy-click {
     width: 100%;
     text-align: left;
     background: transparent;
@@ -176,12 +190,28 @@
     gap: 14px;
     padding: 0;
   }
-  button.proxy-row.clickable {
+  .proxy-click.clickable {
     cursor: pointer;
   }
-  button.proxy-row.clickable:hover {
+  .proxy-click.clickable:hover {
     background: var(--bg-tertiary);
     border-radius: var(--radius-sm);
+  }
+  .del-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 5px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .del-btn:hover {
+    color: var(--color-danger, #ef4444);
+    border-color: var(--color-danger, #ef4444);
   }
   .ty {
     font-size: 11px;

@@ -102,6 +102,18 @@
     inboundDrawerOpen = false;
     dpReloadKey += 1;
   }
+  async function deleteInbound(in_: DeviceProxyInstance) {
+    if (in_.id === 'default') return;
+    if (!confirm(`Удалить inbound «${in_.name || in_.id}»?`)) return;
+    try {
+      await api.deleteDeviceProxyInstance(in_.id);
+      notifications.success('Inbound удалён');
+      dpReloadKey += 1;
+      await loadActiveProxyCount();
+    } catch (e) {
+      notifications.error(`Не удалось удалить: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   onMount(() => {
     void singboxRouterStore.loadAll();
@@ -355,7 +367,7 @@
         onAction={addInbound}
       >
         {#key dpReloadKey}
-          <DeviceProxyCompact bare onSelect={openInbound} />
+          <DeviceProxyCompact bare onSelect={openInbound} onDelete={deleteInbound} />
         {/key}
       </SidePanel>
     </div>
