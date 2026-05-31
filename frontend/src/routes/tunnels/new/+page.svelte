@@ -280,7 +280,7 @@
 			>
 				<input
 					type="file"
-					accept=".conf"
+					accept=".conf,text/plain,application/octet-stream"
 					bind:this={fileInput}
 					onchange={handleFileSelect}
 					style="display: none"

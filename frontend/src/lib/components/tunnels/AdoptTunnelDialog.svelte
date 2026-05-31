@@ -88,7 +88,7 @@
 			<input
 				type="file"
 				id="config-file"
-				accept=".conf"
+				accept=".conf,text/plain,application/octet-stream"
 				onchange={handleFileSelect}
 			/>
 		</div>
