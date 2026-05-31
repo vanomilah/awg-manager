@@ -52,6 +52,7 @@
   .circle {
     width: 24px;
     height: 24px;
+    flex-shrink: 0;
     border-radius: 50%;
     background: var(--bg-tertiary);
     color: var(--text-secondary);

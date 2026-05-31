@@ -43,6 +43,7 @@
   .bullet {
     width: 22px;
     height: 22px;
+    flex-shrink: 0;
     border-radius: 50%;
     background: var(--bg-tertiary);
     color: var(--text-muted);
