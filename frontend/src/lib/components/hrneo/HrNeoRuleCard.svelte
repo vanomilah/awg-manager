@@ -7,9 +7,10 @@
 		broken?: boolean;
 		onedit: () => void;
 		ondelete: () => void;
+		onicon?: () => void;
 	}
 
-	let { rule, broken = false, onedit, ondelete }: Props = $props();
+	let { rule, broken = false, onedit, ondelete, onicon }: Props = $props();
 
 	let counts = $derived.by(() => {
 		const domains = rule.domains ?? [];
@@ -24,7 +25,19 @@
 
 <div class="hr-card" class:broken>
 	<div class="card-main">
-		<ServiceIcon name={rule.name} iconUrl={rule.iconUrl} size={36} />
+		{#if onicon}
+			<button
+				class="icon-btn"
+				type="button"
+				onclick={() => onicon()}
+				aria-label="Сменить иконку"
+				title="Сменить иконку"
+			>
+				<ServiceIcon name={rule.name} iconUrl={rule.iconUrl} size={36} />
+			</button>
+		{:else}
+			<ServiceIcon name={rule.name} iconUrl={rule.iconUrl} size={36} />
+		{/if}
 		<div class="card-info">
 			<div class="card-title">
 				<span class="led" class:led-green={!broken} class:led-red={broken}></span>
@@ -153,5 +166,27 @@
 		gap: 4px;
 		align-items: center;
 		flex-shrink: 0;
+	}
+
+	.icon-btn {
+		padding: 0;
+		background: none;
+		border: 1px solid transparent;
+		border-radius: 7px;
+		cursor: pointer;
+		transition: border-color 0.15s;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
+	}
+
+	.icon-btn:hover {
+		border-color: var(--border-hover);
+	}
+
+	.icon-btn:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
 	}
 </style>

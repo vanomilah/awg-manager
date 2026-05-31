@@ -113,8 +113,8 @@ let clientLabel = $derived(route.clientHostname || route.clientIp);
 		transition: border-color 0.2s;
 	}
 
-	.dns-card.enabled {
-		border: 2px solid var(--success);
+	.dns-card:hover {
+		border-color: var(--border-hover);
 	}
 
 	.dns-card.selected {
@@ -122,7 +122,7 @@ let clientLabel = $derived(route.clientHostname || route.clientIp);
 	}
 
 	.dns-card:not(.enabled) {
-		opacity: 0.5;
+		opacity: 0.4;
 	}
 
 	.card-main {

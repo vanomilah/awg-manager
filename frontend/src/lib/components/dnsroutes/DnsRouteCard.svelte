@@ -216,12 +216,12 @@
 		transition: border-color 0.2s;
 	}
 
-	.dns-card.enabled {
-		border: 2px solid var(--success);
+	.dns-card:hover {
+		border-color: var(--border-hover);
 	}
 
 	.dns-card:not(.enabled) {
-		opacity: 0.5;
+		opacity: 0.4;
 	}
 
 	.dns-card.selected {
@@ -363,7 +363,7 @@
 		padding: 0;
 		background: none;
 		border: 1px solid transparent;
-		border-radius: 8px;
+		border-radius: 7px;
 		cursor: pointer;
 		transition: border-color 0.15s;
 		display: flex;
