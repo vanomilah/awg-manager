@@ -24,6 +24,7 @@
   const rules = singboxRouterStore.rules;
   const ruleSets = singboxRouterStore.ruleSets;
   const outbounds = singboxRouterStore.outbounds;
+  const presets = singboxRouterStore.presets;
   const options = singboxRouterStore.options;
 
   const rowElements = new Map<string, HTMLElement>();
@@ -39,7 +40,7 @@
   });
 
   let cards: RuleCardData[] = $derived.by(() =>
-    $rules.map((r, i) => singboxRuleToCard(r, i, $outbounds, rulesetLabels)),
+    $rules.map((r, i) => singboxRuleToCard(r, i, $outbounds, rulesetLabels, $presets)),
   );
 
   let dragState = $state<null | {
