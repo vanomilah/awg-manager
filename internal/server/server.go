@@ -1181,6 +1181,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/singbox/subscriptions/active-now", guarded(sh.ActiveNow))
 		mux.HandleFunc("/api/singbox/subscriptions/get-stream", guarded(sh.GetStream))
 		mux.HandleFunc("/api/singbox/subscriptions/orphans/delete", guarded(sh.OrphansDelete))
+		mux.HandleFunc("/api/singbox/subscriptions/rejected/to-info", guarded(sh.RejectedToInfo))
+		mux.HandleFunc("/api/singbox/subscriptions/info/remove", guarded(sh.InfoRemove))
 		mux.HandleFunc("/api/singbox/subscriptions/members/add", guarded(sh.AddMember))
 		mux.HandleFunc("/api/singbox/subscriptions/members/remove", guarded(sh.RemoveMember))
 	}

@@ -2135,6 +2135,20 @@ class ApiClient {
 		);
 	}
 
+	async moveSubscriptionRejectedToInfo(id: string, memberTag: string): Promise<Subscription> {
+		return this.request<Subscription>(
+			`/singbox/subscriptions/rejected/to-info?id=${encodeURIComponent(id)}`,
+			{ method: 'POST', body: JSON.stringify({ memberTag }) },
+		);
+	}
+
+	async removeSubscriptionInfoItem(id: string, itemId: string): Promise<Subscription> {
+		return this.request<Subscription>(
+			`/singbox/subscriptions/info/remove?id=${encodeURIComponent(id)}`,
+			{ method: 'POST', body: JSON.stringify({ itemId }) },
+		);
+	}
+
 	async deleteSubscriptionOrphans(id: string): Promise<void> {
 		await this.request(
 			`/singbox/subscriptions/orphans/delete?id=${encodeURIComponent(id)}`,

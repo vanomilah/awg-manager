@@ -1643,6 +1643,22 @@ export const DEFAULT_SUBSCRIPTION_URLTEST: SubscriptionURLTest = {
 	toleranceMs: 50,
 };
 
+export interface SubscriptionInfoItem {
+	id: string;
+	label: string;
+	tag?: string;
+	source?: 'auto' | 'user' | string;
+}
+
+export interface SubscriptionRejectedMember {
+	tag?: string;
+	label?: string;
+	protocol?: string;
+	server?: string;
+	port?: number;
+	reason: string;
+}
+
 export interface Subscription {
 	id: string;
 	label: string;
@@ -1659,6 +1675,8 @@ export interface Subscription {
 	memberTags: string[];
 	members: SubscriptionMember[];
 	orphanTags: string[];
+	rejectedMembers?: SubscriptionRejectedMember[];
+	infoItems?: SubscriptionInfoItem[];
 	activeMember: string;
 	enabled: boolean;
 	mode: SubscriptionMode;

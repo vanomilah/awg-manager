@@ -96,6 +96,8 @@
 				members: [],
 				memberTags: [],
 				orphanTags: [],
+				rejectedMembers: meta.rejectedMembers ?? [],
+				infoItems: meta.infoItems ?? [],
 				activeMember: '',
 			} as Subscription;
 			progressTotal = meta.total ?? 0;
@@ -114,6 +116,8 @@
 				const data = JSON.parse((e as MessageEvent).data);
 				subscription.orphanTags = data.orphanTags ?? [];
 				subscription.activeMember = data.activeMember ?? '';
+				subscription.rejectedMembers = data.rejectedMembers ?? subscription.rejectedMembers ?? [];
+				subscription.infoItems = data.infoItems ?? subscription.infoItems ?? [];
 			}
 			streamDone = true;
 			loading = false;

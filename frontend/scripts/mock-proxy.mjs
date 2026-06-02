@@ -1391,6 +1391,38 @@ let mockSubscriptions = [
 			{ tag: 'sub-demo0001-22334455', protocol: 'trojan', server: 'fi03.demo.example', port: 443, transport: 'tcp', security: 'tls' },
 		],
 		orphanTags: [],
+		infoItems: [
+			{
+				id: 'sub-demo0001-banner-days',
+				label: '📆 Осталось: 8 дней',
+				tag: 'sub-demo0001-banner-days',
+				source: 'auto',
+			},
+			{
+				id: 'sub-demo0001-banner-traffic',
+				label: '⏳ Трафик: 42.5 GB / 100 GB',
+				tag: 'sub-demo0001-banner-traffic',
+				source: 'auto',
+			},
+		],
+		rejectedMembers: [
+			{
+				tag: 'sub-demo0001-invalid-uuid',
+				label: 'service-line (bad uuid)',
+				protocol: 'vless',
+				server: 'localhost',
+				port: 80,
+				reason: 'invalid uuid format',
+			},
+			{
+				tag: 'sub-demo0001-dead-reality',
+				label: 'DE backup (reality без uTLS)',
+				protocol: 'vless',
+				server: 'de-backup.demo.example',
+				port: 443,
+				reason: 'reality requires utls block',
+			},
+		],
 		activeMember: 'sub-demo0001-aabbccdd',
 		enabled: true,
 	},
@@ -1612,6 +1644,8 @@ function toMockSubscriptionDTO(sub) {
 		memberTags: sub.memberTags ?? [],
 		members: sub.members ?? [],
 		orphanTags: sub.orphanTags ?? [],
+		rejectedMembers: sub.rejectedMembers ?? [],
+		infoItems: sub.infoItems ?? [],
 	};
 	if (mode === 'urltest' && sub.urlTest) dto.urlTest = sub.urlTest;
 	return dto;
@@ -1647,9 +1681,48 @@ function newSub(input) {
 			security: 'tls',
 		})),
 		orphanTags: [],
+		rejectedMembers: [],
+		infoItems: [],
 		activeMember: `sub-${shortID}-aaaa`,
 		enabled: input.enabled,
 	};
+}
+
+const MAX_MOCK_INFO_ITEMS = 4;
+
+function moveMockRejectedToInfo(sub, memberTag) {
+	const tag = String(memberTag || '').trim();
+	if (!tag) return { error: { status: 400, code: 'MISSING_MEMBER_TAG', message: 'memberTag required' } };
+	const rejected = sub.rejectedMembers ?? [];
+	const idx = rejected.findIndex((r) => r.tag === tag);
+	if (idx < 0) {
+		return { error: { status: 404, code: 'REJECTED_NOT_FOUND', message: 'rejected member not found' } };
+	}
+	const info = [...(sub.infoItems ?? [])];
+	if (info.length >= MAX_MOCK_INFO_ITEMS) {
+		return {
+			error: {
+				status: 409,
+				code: 'INFO_ITEMS_FULL',
+				message: 'subscription: info block is full (max 4 items)',
+			},
+		};
+	}
+	const r = rejected[idx];
+	const id = tag || `info-${(r.label || 'item').slice(0, 24)}`;
+	if (info.some((it) => it.id === id)) {
+		sub.rejectedMembers = rejected.filter((_, i) => i !== idx);
+		return { ok: true };
+	}
+	info.push({
+		id,
+		label: r.label || tag,
+		tag: r.tag || tag,
+		source: 'auto',
+	});
+	sub.infoItems = info;
+	sub.rejectedMembers = rejected.filter((_, i) => i !== idx);
+	return { ok: true };
 }
 
 // ── Wizard mock state ──────────────────────────────────────────
@@ -4253,6 +4326,8 @@ const server = http.createServer(async (req, res) => {
 			mode: sub.mode ?? 'selector',
 			urlTest: sub.urlTest,
 			total: (sub.members ?? []).length,
+			rejectedMembers: sub.rejectedMembers ?? [],
+			infoItems: sub.infoItems ?? [],
 		};
 		res.write(`event: meta\ndata: ${JSON.stringify(meta)}\n\n`);
 
@@ -4262,6 +4337,8 @@ const server = http.createServer(async (req, res) => {
 			if (i >= members.length) {
 				const done = {
 					orphanTags: sub.orphanTags ?? [],
+					rejectedMembers: sub.rejectedMembers ?? [],
+					infoItems: sub.infoItems ?? [],
 					activeMember: sub.activeMember ?? '',
 				};
 				res.write(`event: done\ndata: ${JSON.stringify(done)}\n\n`);
@@ -4338,6 +4415,81 @@ const server = http.createServer(async (req, res) => {
 			now = sub.memberTags[idx];
 		}
 		send(res, 200, { success: true, data: { now } });
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/subscriptions/rejected/to-info') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const body = JSON.parse(raw || '{}');
+				const id = new URL(req.url, 'http://x').searchParams.get('id');
+				const sub = mockSubscriptions.find((s) => s.id === id);
+				if (!sub) {
+					send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'no such id' } });
+					return;
+				}
+				const result = moveMockRejectedToInfo(sub, body.memberTag);
+				if (result.error) {
+					send(res, result.error.status, {
+						success: false,
+						error: { code: result.error.code, message: result.error.message },
+					});
+					return;
+				}
+				send(res, 200, { success: true, data: toMockSubscriptionDTO(sub) });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/subscriptions/info/remove') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const body = JSON.parse(raw || '{}');
+				const id = new URL(req.url, 'http://x').searchParams.get('id');
+				const sub = mockSubscriptions.find((s) => s.id === id);
+				if (!sub) {
+					send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'no such id' } });
+					return;
+				}
+				const itemId = String(body.itemId || '').trim();
+				const items = sub.infoItems ?? [];
+				const idx = items.findIndex((it) => it.id === itemId);
+				if (idx < 0) {
+					send(res, 404, {
+						success: false,
+						error: { code: 'INFO_ITEM_NOT_FOUND', message: 'info item not found' },
+					});
+					return;
+				}
+				const removed = items[idx];
+				const removedId = removed.id;
+				sub.infoItems = items.filter((_, i) => i !== idx);
+				const dismissed = new Set(sub.dismissedInfoIds ?? []);
+				if (removedId) dismissed.add(removedId);
+				sub.dismissedInfoIds = [...dismissed];
+				const rejected = sub.rejectedMembers ?? [];
+				const r = {
+					tag: removed.tag || '',
+					label: removed.label || removedId,
+					reason: 'убрано из информации провайдера',
+				};
+				const key = r.tag ? `tag:${r.tag}` : `label:${r.label}`;
+				if (!rejected.some((x) => (x.tag ? `tag:${x.tag}` : `label:${x.label}`) === key)) {
+					rejected.push(r);
+				}
+				sub.rejectedMembers = rejected;
+				send(res, 200, { success: true, data: toMockSubscriptionDTO(sub) });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
 		return;
 	}
 
