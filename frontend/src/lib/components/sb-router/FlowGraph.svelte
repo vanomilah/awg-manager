@@ -3,6 +3,7 @@
   выход по умолчанию (Напрямую) и туннельный выход, DNS показан по каждой ветке.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { api } from '$lib/api/client';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
   import { singboxStatus } from '$lib/stores/singbox';
@@ -10,14 +11,9 @@
   import { openDrawer } from './drawerStore';
   import { openSourceDrawer } from './sourceDrawerStore';
   import { deriveRoutingSummary } from './flowData';
-  import {
-    bindLiveConnectionsStore,
-    liveConnectionsTraffic,
-  } from './liveConnectionsStore';
+  import { liveConnectionsTraffic } from './liveConnectionsStore';
   import { pluralize, RULE_WORDS, TUNNEL_WORDS, DEVICE_WORDS } from '$lib/utils/pluralize';
   import type { RouterPolicy } from '$lib/types';
-
-  bindLiveConnectionsStore();
 
   const status = singboxRouterStore.status;
   const rulesStore = singboxRouterStore.rules;
@@ -42,8 +38,7 @@
   let routeFinal = $derived(s?.final ?? 'direct');
   let policyName = $derived((s?.policyName ?? '').trim());
 
-  $effect(() => {
-    policyName;
+  onMount(() => {
     void loadPolicies();
   });
 

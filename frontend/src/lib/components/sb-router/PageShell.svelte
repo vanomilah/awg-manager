@@ -3,8 +3,10 @@
 </script>
 
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { FileJson, Search, Settings } from 'lucide-svelte';
   import { mode, setMode, type RouterMode } from './modeStore';
+  import { bindLiveConnectionsStore } from './liveConnectionsStore';
   import { openDrawer } from './drawerStore';
   import StatusDrawer from './StatusDrawer.svelte';
   import SourceDrawer from './SourceDrawer.svelte';
@@ -23,6 +25,10 @@
 
   let { subtitle, onOpenInspector, onOpenJson, children }: Props = $props();
   let currentMode = $derived($mode);
+
+  onMount(() => {
+    bindLiveConnectionsStore();
+  });
 
   function selectMode(next: RouterMode) {
     setMode(next);

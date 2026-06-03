@@ -7,13 +7,7 @@
   import { goto } from '$app/navigation';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
   import { pluralize, CONNECTION_WORDS } from '$lib/utils/pluralize';
-  import {
-    bindLiveConnectionsStore,
-    liveConnectionsSnapshot,
-    liveConnectionsWsStatus,
-  } from './liveConnectionsStore';
-
-  bindLiveConnectionsStore();
+  import { liveConnectionsSnapshot, liveConnectionsWsStatus } from './liveConnectionsStore';
 
   const status = singboxRouterStore.status;
   let engineOn = $derived($status?.enabled ?? false);
