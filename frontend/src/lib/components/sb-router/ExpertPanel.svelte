@@ -249,7 +249,7 @@
     {
       label: 'Движок',
       value: $storeStatus?.enabled ? 'ON' : 'OFF',
-      tone: $storeStatus?.enabled ? 'success' : 'muted',
+      tone: $storeStatus?.enabled ? 'success' : 'error',
     },
     { label: pluralForm($storeRules.length, RULE_WORDS), value: String($storeRules.length) },
     { label: 'Rule-sets', value: String($storeRuleSets.length) },

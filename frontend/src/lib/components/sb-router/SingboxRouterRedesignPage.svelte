@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
   import { ArrowLeft } from 'lucide-svelte';
+  import { LoadingSpinner } from '$lib/components/layout';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
   import { DeviceProxySubTab, StagingBanner, EngineSubTab, PresetsSubTab, RouteInspector, JsonConfigDrawer } from '$lib/components/singbox-routing';
   import { ConnectionsSubTab } from '$lib/components/routing/singboxRouter';
@@ -21,9 +23,13 @@
   let activeSingboxSub = $derived($page.url.searchParams.get('sub'));
   let inspectorOpen = $state(false);
   let jsonOpen = $state(false);
-  const singboxRouterStatus = singboxRouterStore.status;
   const singboxRulesStore = singboxRouterStore.rules;
+  const singboxInitialized = singboxRouterStore.initialized;
   let singboxRulesCount = $derived($singboxRulesStore.length);
+
+  onMount(() => {
+    void singboxRouterStore.loadAll();
+  });
 
   // Активен ли отдельный sub-вид (рендерится на всю страницу) — для кнопки «Назад».
   let inSubView = $derived(
@@ -67,7 +73,9 @@
       <AddWizardPanel />
     {:else if $traceOpen}
       <TracePanel />
-    {:else if !($singboxRouterStatus?.enabled ?? false) || singboxRulesCount === 0}
+    {:else if !$singboxInitialized}
+      <div class="boot-loading"><LoadingSpinner size="sm" /></div>
+    {:else if singboxRulesCount === 0}
       <EmptyState />
     {:else}
       <FlowGraph />
@@ -99,5 +107,11 @@
   .sub-back:hover {
     color: var(--text-primary);
     border-color: var(--border-hover, var(--accent-line));
+  }
+
+  .boot-loading {
+    display: flex;
+    justify-content: center;
+    padding: 48px 0;
   }
 </style>

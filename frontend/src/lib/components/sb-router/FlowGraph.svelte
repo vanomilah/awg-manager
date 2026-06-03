@@ -98,7 +98,7 @@
 
     <div class="arrow">›</div>
 
-    <button type="button" class="node engine" class:glow={engineOn} onclick={openDrawer} aria-label="Настройки движка sing-box">
+    <button type="button" class="node engine" class:glow={engineOn} class:offline={!engineOn} onclick={openDrawer} aria-label="Настройки движка sing-box">
       <div class="cap acc">Движок sing-box</div>
       <div class="node-sub light">{engineSub}</div>
       <div class="node-sub">
@@ -161,6 +161,12 @@
   button.node.source:hover { background: color-mix(in srgb, var(--accent) 4%, var(--bg-primary)); }
   .node.engine { border-color: var(--accent-line); }
   .node.engine.glow { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .node.engine.offline {
+    border-color: var(--color-error, #dc2626);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-error, #dc2626) 20%, transparent);
+  }
+  .node.engine.offline .cap.acc { color: var(--color-error, #dc2626); }
+  .node.engine.offline:hover { border-color: var(--color-error, #dc2626); }
   .cap { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted); }
   .cap.acc { color: var(--accent); font-weight: 600; }
   .node-title { margin-top: 4px; font-weight: 600; }
