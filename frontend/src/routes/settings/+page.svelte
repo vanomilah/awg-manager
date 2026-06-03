@@ -45,8 +45,10 @@
 	import { usageLevel } from "$lib/stores/settings";
 	import { waitForBackendRestart } from "$lib/restartRecovery";
 	import { hasDevelopChannelQuizPassed } from "$lib/utils/developChannelGate";
+	import { developFeedbackFabVisible } from "$lib/stores/developFeedbackFab";
 
 	const expandUsageLevel = $derived($page.url.searchParams.has('mode'));
+	const highlightFeedbackFab = $derived($page.url.searchParams.has('feedbackFab'));
 
 	let systemInfo: SystemInfo | null = $state(null);
 	let settings = $state<Settings | null>(null);
@@ -251,6 +253,14 @@
 		window.requestAnimationFrame(() => {
 			const target = document.getElementById("downloads");
 			target?.scrollIntoView({ behavior: "smooth", block: "start" });
+		});
+	}
+
+	function scrollToFeedbackFabSetting() {
+		if (typeof window === "undefined") return;
+		if (!highlightFeedbackFab) return;
+		window.requestAnimationFrame(() => {
+			document.getElementById("feedback-fab")?.scrollIntoView({ behavior: "smooth", block: "center" });
 		});
 	}
 
@@ -594,12 +604,25 @@ onMount(() => {
 		await fetchSystemInfo(false);
 	}
 
+	let feedbackFabScrolled = $state(false);
+
 	afterNavigate(async ({ to, from }) => {
 		if (!to?.url || to.url.pathname !== "/settings") return;
 		if (!from?.url || from.url.pathname !== "/settings") {
 			await fetchSystemInfo(true);
 		}
 		scrollToSettingsHashTarget();
+		scrollToFeedbackFabSetting();
+	});
+
+	$effect(() => {
+		if (!highlightFeedbackFab) {
+			feedbackFabScrolled = false;
+			return;
+		}
+		if (loading || !settings || feedbackFabScrolled) return;
+		feedbackFabScrolled = true;
+		scrollToFeedbackFabSetting();
 	});
 </script>
 
@@ -754,7 +777,11 @@ onMount(() => {
 				</div>
 
 				{#if $usageLevel === "expert"}
-				<div class="card">
+				<div
+					id="feedback-fab"
+					class="card settings-highlight-target"
+					class:highlighted={highlightFeedbackFab}
+				>
 					<div class="section-label">Расширенные</div>
 					<div class="setting-row api-key-setting">
 						<div class="flex flex-col gap-1">
@@ -782,6 +809,21 @@ onMount(() => {
 							</div>
 						</div>
 					</div>
+					{#if settings.updates.channel === 'develop'}
+					<div class="setting-row toggle-inline-row">
+						<div class="flex flex-col gap-1">
+							<span class="font-medium">Кнопка обратной связи</span>
+							<span class="setting-description">
+								Плавающая кнопка «!» в правом нижнем углу на канале разработки.
+								Помогает быстро сообщить об ошибке или предложить улучшение.
+							</span>
+						</div>
+						<Toggle
+							checked={$developFeedbackFabVisible}
+							onchange={(v) => developFeedbackFabVisible.set(v)}
+						/>
+					</div>
+					{/if}
 					{#if singboxInstalled && showSingboxIntegration}
 						<div class="setting-row toggle-inline-row">
 							<div class="flex flex-col gap-1">
@@ -1200,5 +1242,19 @@ onMount(() => {
 	.channel-option:disabled {
 		opacity: 0.6;
 		cursor: default;
+	}
+
+	.settings-highlight-target.highlighted {
+		animation: settings-target-glow 2.8s ease-out forwards;
+	}
+
+	@keyframes settings-target-glow {
+		0%   { box-shadow: none; }
+		12%  { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 55%, transparent), 0 0 18px 2px color-mix(in srgb, var(--color-accent) 22%, transparent); }
+		30%  { box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent); }
+		48%  { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 40%, transparent), 0 0 14px 2px color-mix(in srgb, var(--color-accent) 15%, transparent); }
+		65%  { box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 15%, transparent); }
+		82%  { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 22%, transparent), 0 0 8px 1px color-mix(in srgb, var(--color-accent) 10%, transparent); }
+		100% { box-shadow: none; }
 	}
 </style>

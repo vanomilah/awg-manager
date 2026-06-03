@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { Button, Modal } from '$lib/components/ui';
 	import { diagnosticsStore } from '$lib/stores/diagnostics';
+	import { developFeedbackIncidentPending } from '$lib/stores/developFeedbackIncident';
 	import type { DiagnosticsTargetSeed } from '$lib/stores/diagnostics';
 	import { notifications } from '$lib/stores/notifications';
 	import type { DiagEvent } from '$lib/types';
@@ -18,6 +19,7 @@
 		type TargetSummary,
 	} from '$lib/types';
 	import type { GroupLed } from '$lib/components/diagnostics/ChecksGroup.svelte';
+	import { buildGitHubIssueUrl } from '$lib/utils/githubFeedback';
 
 	interface Props {
 		tunnels: DiagnosticsTargetSeed[];
@@ -25,13 +27,13 @@
 
 	let { tunnels }: Props = $props();
 
-	const GITHUB_NEW_ISSUE_URL = 'https://github.com/hoaxisr/awg-manager/issues/new';
 	const DIAGNOSTICS_REPORT_FILENAME = 'diagnostics.json';
 
 	let includeRestart = $state(false);
 	let downloadingReport = $state(false);
 	let creatingIncident = $state(false);
 	let incidentModalOpen = $state(false);
+	let awaitingIncidentModal = $state(false);
 	let eventSource: EventSource | null = null;
 
 	// Hide stopped tunnels — diagnostics only run on running ones.
@@ -191,6 +193,21 @@
 		incidentModalOpen = true;
 	}
 
+	$effect(() => {
+		if (!$developFeedbackIncidentPending) return;
+		developFeedbackIncidentPending.set(false);
+		awaitingIncidentModal = true;
+		if (!running) {
+			start();
+		}
+	});
+
+	$effect(() => {
+		if (!awaitingIncidentModal || running) return;
+		awaitingIncidentModal = false;
+		openIncidentModal();
+	});
+
 	function buildIncidentIssueBody(): string {
 		const pagePath = typeof window !== 'undefined'
 			? `${window.location.pathname}${window.location.search}${window.location.hash}`
@@ -214,13 +231,6 @@
 			'',
 			'Это публичный issue. Не прикладывайте приватные ключи, пароли, токены, реальные адреса и домены, если не хотите их раскрывать.',
 		].join('\n');
-	}
-
-	function buildGitHubIssueUrl(body: string): string {
-		const url = new URL(GITHUB_NEW_ISSUE_URL);
-		url.searchParams.set('title', 'Инцидент AWG Manager');
-		url.searchParams.set('body', body);
-		return url.toString();
 	}
 
 	async function copyText(text: string): Promise<boolean> {
@@ -277,7 +287,7 @@
 			} else {
 				notifications.warning('Отчёт скачан. Текст issue не удалось скопировать автоматически.');
 			}
-			const url = buildGitHubIssueUrl(body);
+			const url = buildGitHubIssueUrl('Инцидент AWG Manager', body);
 			if (issueWindow) {
 				issueWindow.location.href = url;
 			} else if (typeof window !== 'undefined') {
@@ -363,7 +373,7 @@
 			</p>
 			<p>
 				Будет скачан диагностический отчёт. Проверьте файл перед публикацией и
-				прикрепите его к issue вручную.
+				<strong>прикрепите его к issue вручную</strong>.
 			</p>
 			<p class="incident-warning">
 				Не публикуйте приватные ключи, пароли, токены, реальные адреса и домены,

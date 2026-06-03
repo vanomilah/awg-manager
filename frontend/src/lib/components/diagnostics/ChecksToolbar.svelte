@@ -58,7 +58,7 @@
 		⤓ Отчёт
 	</Button>
 	<Button
-		variant="secondary"
+		variant="outline-danger"
 		onclick={onCreateIncident}
 		disabled={running || downloadingReport || creatingIncident}
 		loading={creatingIncident}

@@ -160,6 +160,7 @@
   --z-sticky-secondary: 50; /* TunnelEditHeader sub-sticky under AppHeader */
   --z-page-overlay: 60;     /* tab dropdowns, popovers, member-pickers */
   --z-sticky-header: 80;    /* AppHeader sticky bar */
+  --z-fab: 95;              /* floating action buttons (below drawers) */
   --z-drawer-backdrop: 90;  /* hamburger / drawer dimming layer */
   --z-drawer: 100;          /* hamburger panel, SideDrawer panel */
   --z-full-overlay: 150;    /* full-screen blocking screens (e.g. kernel-unavailable) */

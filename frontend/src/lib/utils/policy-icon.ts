@@ -1,4 +1,3 @@
-import type { Component } from 'svelte';
 import {
 	Shuffle,
 	Home,
@@ -39,7 +38,9 @@ export type PolicyIconId =
 	| 'wifi'
 	| 'parents';
 
-export const POLICY_ICON_COMPONENTS: Record<PolicyIconId, Component> = {
+type PolicyIconComponent = typeof Shuffle;
+
+export const POLICY_ICON_COMPONENTS: Record<PolicyIconId, PolicyIconComponent> = {
 	shuffle: Shuffle,
 	home: Home,
 	shield: Shield,
@@ -166,6 +167,6 @@ export function resolvePolicyIcon(
 	return 'shuffle';
 }
 
-export function getPolicyIconComponent(id: PolicyIconId): Component {
+export function getPolicyIconComponent(id: PolicyIconId): PolicyIconComponent {
 	return POLICY_ICON_COMPONENTS[id];
 }
