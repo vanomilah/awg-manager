@@ -242,20 +242,32 @@ func (a *OperatorAdapter) AddInbound(tag string, jsonBody []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	for _, v := range a.cfg.Inbounds {
-		ib, ok := v.(map[string]any)
-		if !ok {
-			continue
-		}
-		if t, _ := ib["tag"].(string); t == tag {
-			return nil // already present
-		}
-	}
 	var ib map[string]any
 	if err := json.Unmarshal(jsonBody, &ib); err != nil {
 		return fmt.Errorf("subscription adapter: AddInbound %q: bad json: %w", tag, err)
 	}
 	ib["tag"] = tag
+	newPort, hasPort := toAnyInt(ib["listen_port"])
+
+	for _, v := range a.cfg.Inbounds {
+		existing, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		if t, _ := existing["tag"].(string); t == tag {
+			return nil // already present (same tag) — idempotent
+		}
+		// Defense-in-depth (issue #287): reject a second inbound on a
+		// listen_port already taken by a different tag. Two subscription
+		// inbounds on one port make the merged config structurally invalid,
+		// which the flush's index-based outbound-drop cannot repair.
+		if hasPort {
+			if p, ok := toAnyInt(existing["listen_port"]); ok && p == newPort {
+				et, _ := existing["tag"].(string)
+				return fmt.Errorf("subscription adapter: AddInbound %q: listen_port %d already used by inbound %q", tag, newPort, et)
+			}
+		}
+	}
 	a.cfg.Inbounds = append(a.cfg.Inbounds, ib)
 	return a.flush()
 }

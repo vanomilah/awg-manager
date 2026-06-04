@@ -49,9 +49,15 @@ type ConfigMutator interface {
 
 // Service is the subscription business-logic facade.
 type Service struct {
-	store     *Store
-	mutator   ConfigMutator
-	muById    sync.Map // map[string]*sync.Mutex
+	store   *Store
+	mutator ConfigMutator
+	muById  sync.Map // map[string]*sync.Mutex
+	// createMu serializes Create across all subscriptions. Allocation
+	// (AllocListenPort / AllocProxyIndex) scans the slot without reserving,
+	// so two concurrent Creates would hand out the same listen_port / ProxyN
+	// — the documented "subscriptions are created one at a time" invariant
+	// (issue #287). This lock enforces it.
+	createMu  sync.Mutex
 	fetchOpts FetchOpts
 	log       *logging.ScopedLogger // nil-safe; sing-box journal (runtime)
 	appLog    *logging.ScopedLogger // nil-safe; app journal (subscription partition)
@@ -119,6 +125,13 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, er
 	case in.URL != "" && in.Inline != "":
 		return nil, errors.New("subscription: URL and inline content are mutually exclusive")
 	}
+	// Serialize the whole Create: allocation scans-without-reserve, so two
+	// concurrent Creates must not interleave between allocate and commit
+	// (issue #287). Per-subscription locks below don't help — each Create has
+	// a fresh random ID, hence a distinct lock.
+	s.createMu.Lock()
+	defer s.createMu.Unlock()
+
 	sub, err := s.store.Create(in)
 	if err != nil {
 		s.logWarn("subscription-create", in.Label, "failed to create store row: "+err.Error())
@@ -159,6 +172,15 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, er
 	}
 
 	if _, err := s.refreshLocked(ctx, sub.ID); err != nil {
+		// refreshLocked commits to the slot incrementally (each AddOutbound
+		// flushes + persists), so a mid-failure may have already written
+		// member outbounds / selector / inbound / route to
+		// 40-subscriptions.json. Purge them — otherwise they linger as
+		// orphans referencing a subscription that is about to be deleted,
+		// and (issue #287) break every later flush. Reads the live slot via
+		// DeclaredOutboundTags since the store's MemberTags are not written
+		// on a failed refresh.
+		s.purgeCreatedSlotEntries(sub)
 		// EnsureProxy succeeded above — the NDMS Proxy interface is now
 		// live in the router. We must roll it back before dropping the
 		// storage row; otherwise every failed Create leaks a ProxyN that
@@ -166,6 +188,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, er
 		// the RemoveProxy error: the storage row is going away regardless,
 		// and a stranded ProxyN is recoverable via Settings → cleanup.
 		_ = s.mutator.RemoveProxy(ctx, proxyIdx)
+		_ = s.mutator.Reload(ctx)
 		s.store.Delete(sub.ID)
 		s.logWarn("subscription-create", sub.ID, "initial refresh failed: "+err.Error())
 		return nil, fmt.Errorf("subscription: initial fetch failed: %w", err)
@@ -359,6 +382,25 @@ func filterDeclaredMembers(members []MemberInfo, declared map[string]bool) (kept
 		}
 	}
 	return kept, dropped
+}
+
+// purgeCreatedSlotEntries removes everything a partial Create committed to the
+// subscription slot: member outbounds (enumerated from the live slot by the
+// subscription's tag prefix), the selector, the mixed inbound and the route
+// rule. Used to roll back a failed Create so it cannot leave orphans in
+// 40-subscriptions.json (issue #287). Reads the actual slot via
+// DeclaredOutboundTags rather than the store, because the store's MemberTags
+// are not written when refreshLocked fails mid-commit. The caller is
+// responsible for the subsequent Reload.
+func (s *Service) purgeCreatedSlotEntries(sub *Subscription) {
+	memberPrefix := sub.SelectorTag + "-" // "sub-<short>-"
+	for _, tag := range s.mutator.DeclaredOutboundTags() {
+		if tag == sub.SelectorTag || strings.HasPrefix(tag, memberPrefix) {
+			s.mutator.RemoveOutbound(tag)
+		}
+	}
+	s.mutator.RemoveInbound(sub.InboundTag)
+	s.mutator.RemoveRouteRule(sub.InboundTag, sub.SelectorTag)
 }
 
 // applyDiff commits the diff to sing-box config. Selector + mixed inbound +
