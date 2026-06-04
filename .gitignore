@@ -89,3 +89,5 @@ scripts/diag/
 
 # stray binary from `go build ./...` (tools/genpresets main)
 /genpresets
+/internal/presets/decompiled/
+/build/tools/

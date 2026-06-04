@@ -28,6 +28,7 @@
   presetFilter={singboxRouterCatalogPresetFilter}
   footer="none"
   multiple
+  warnLargeDnsLists={false}
   markExisting={false}
   {initialSelectedIds}
   onclose={handleClose}

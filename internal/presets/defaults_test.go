@@ -56,6 +56,23 @@ func TestDefaultsCatalogInvariants(t *testing.T) {
 			t.Errorf("expected id %q present", need)
 		}
 	}
+	// singbox-only presets (except rkn) get DNS from vernette/rulesets/raw where lists exist.
+	for _, id := range []string{"unavailable-in-russia", "meta", "category-games", "category-media", "google-play"} {
+		var found *Preset
+		for i := range ps {
+			if ps[i].ID == id {
+				found = &ps[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("expected id %q present", id)
+			continue
+		}
+		if found.Engines.DNS == nil {
+			t.Errorf("preset %q: expected dns engine from vernette/raw", id)
+		}
+	}
 	// russian-services is DNS-only (no .srs).
 	for _, p := range ps {
 		if p.ID == "russian-services" {

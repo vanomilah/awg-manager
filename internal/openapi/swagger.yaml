@@ -3210,6 +3210,13 @@ definitions:
       category:
         example: social
         type: string
+      covers:
+        example:
+        - instagram
+        - whatsapp
+        items:
+          type: string
+        type: array
       featured:
         example: true
         type: boolean
@@ -4927,6 +4934,11 @@ definitions:
       category:
         description: social|media|ai|developer|cloud|gaming|block (free string)
         type: string
+      covers:
+        description: preset ids included in this composite list
+        items:
+          type: string
+        type: array
       engines:
         $ref: '#/definitions/presets.Engines'
       featured:

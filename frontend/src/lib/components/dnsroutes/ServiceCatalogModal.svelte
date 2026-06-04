@@ -4,7 +4,11 @@
     import { presetCatalog, presetCatalogLoaded, loadPresetCatalog } from '$lib/stores/presets';
     import { buildRoutingTunnelDropdownOptions } from '$lib/utils/routingTunnelOptions';
     import { pluralize, SERVICE_WORDS } from '$lib/utils/pluralize';
-    import { dnsRouteCatalogPresetFilter } from '$lib/utils/catalog-preset';
+    import {
+        catalogPresetCardNotice,
+        dnsRouteCatalogPresetFilter,
+        presetDnsLargeListRisk,
+    } from '$lib/utils/catalog-preset';
     import type { RoutingTunnel, CatalogPreset } from '$lib/types';
     import DownloadRouteNote from '$lib/components/downloads/DownloadRouteNote.svelte';
     import { Search } from 'lucide-svelte';
@@ -27,6 +31,8 @@
         multiple?: boolean;
         /** Pre-select when opening (e.g. sing-box router wizard). */
         initialSelectedIds?: string[];
+        /** NDMS / HR Neo: red warning on presets with large DNS lists. */
+        warnLargeDnsLists?: boolean;
         confirmLabel?: string;
         submitting?: boolean;
         onclose: () => void;
@@ -52,6 +58,7 @@
         hydrarouteInstalled = false,
         multiple = true,
         initialSelectedIds = [],
+        warnLargeDnsLists = true,
         confirmLabel,
         submitting = false,
         onclose,
@@ -130,8 +137,20 @@
     );
 
     const selectedWithNotices = $derived(
-        sortedPresets.filter((p) => selected.has(p.id) && p.notice),
+        sortedPresets.filter(
+            (p) =>
+                selected.has(p.id) &&
+                (p.notice || (warnLargeDnsLists && presetDnsLargeListRisk(p))),
+        ),
     );
+
+    function noticeText(preset: CatalogPreset): string {
+        return catalogPresetCardNotice(preset, warnLargeDnsLists) ?? '';
+    }
+
+    function noticeIsLargeList(preset: CatalogPreset): boolean {
+        return warnLargeDnsLists && presetDnsLargeListRisk(preset);
+    }
 
     const primaryLabel = $derived.by(() => {
         if (confirmLabel) return confirmLabel;
@@ -253,12 +272,14 @@
                     {#each filteredPresets as preset (preset.id)}
                         {@const added = isAdded(preset)}
                         {@const isSelected = selected.has(preset.id)}
+                        {@const largeDnsWarn = noticeIsLargeList(preset)}
+                        {@const cardNotice = noticeText(preset)}
                         <button
                             type="button"
                             class="preset-card"
                             class:selected={isSelected}
                             class:added
-                            title={preset.notice || undefined}
+                            title={cardNotice || undefined}
                             onclick={() => {
                                 if (!added) toggle(preset.id);
                             }}
@@ -269,8 +290,13 @@
                             {:else if added}
                                 <span class="preset-badge">добавлено</span>
                             {/if}
-                            {#if preset.notice}
-                                <span class="preset-notice-mark" aria-label="warning">⚠</span>
+                            {#if largeDnsWarn}
+                                <span
+                                    class="preset-notice-mark preset-notice-mark-danger"
+                                    aria-label="большой DNS-список"
+                                >⚠</span>
+                            {:else if preset.notice}
+                                <span class="preset-notice-mark" aria-label="примечание">⚠</span>
                             {/if}
                             <ServiceIcon name={preset.name} iconSlug={preset.iconSlug} size={40} />
                             <span class="preset-name">{preset.name}</span>
@@ -285,11 +311,12 @@
                 {#if selectedWithNotices.length > 0}
                     <div class="notices-panel">
                         {#each selectedWithNotices as p (p.id)}
-                            <div class="notice-entry">
-                                <span class="notice-icon">⚠</span>
+                            {@const largeDns = noticeIsLargeList(p)}
+                            <div class="notice-entry" class:notice-entry-danger={largeDns}>
+                                <span class="notice-icon" class:notice-icon-danger={largeDns}>⚠</span>
                                 <div class="notice-body">
                                     <strong class="notice-title">{p.name}</strong>
-                                    <span class="notice-text">{p.notice}</span>
+                                    <span class="notice-text notice-text-multiline">{noticeText(p)}</span>
                                 </div>
                             </div>
                         {/each}
@@ -534,6 +561,10 @@
         line-height: 1;
     }
 
+    .preset-notice-mark-danger {
+        color: var(--color-error, #ef4444);
+    }
+
     .preset-name {
         flex: 1;
         display: flex;
@@ -621,6 +652,24 @@
 
     .notice-text {
         color: var(--color-text-secondary);
+    }
+
+    .notice-text-multiline {
+        white-space: pre-line;
+    }
+
+    .notice-entry-danger .notice-title,
+    .notice-entry-danger .notice-text {
+        color: var(--color-error, #ef4444);
+    }
+
+    .notice-icon-danger {
+        color: var(--color-error, #ef4444);
+    }
+
+    .notices-panel:has(.notice-entry-danger) {
+        background: rgba(239, 68, 68, 0.08);
+        border-color: rgba(239, 68, 68, 0.28);
     }
 
     @media (max-width: 640px) {
