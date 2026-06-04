@@ -1,7 +1,7 @@
 <script lang="ts">
     import { Modal, Button, Dropdown } from '$lib/components/ui';
     import { ServiceIcon } from '$lib/components/dnsroutes';
-    import { dnsPresets, presetCatalogLoaded } from '$lib/stores/presets';
+    import { dnsPresets, presetCatalogLoaded, loadPresetCatalog } from '$lib/stores/presets';
     import { buildRoutingTunnelDropdownOptions } from '$lib/utils/routingTunnelOptions';
     import type { RoutingTunnel, CatalogPreset } from '$lib/types';
     import DownloadRouteNote from '$lib/components/downloads/DownloadRouteNote.svelte';
@@ -49,6 +49,10 @@
             creating = false;
         }
         wasOpen = open;
+    });
+
+    $effect(() => {
+        if (open) void loadPresetCatalog();
     });
 
     function isAdded(preset: CatalogPreset): boolean {

@@ -259,6 +259,7 @@
 			// every active polling store. Inactive stores auto-refetch on
 			// their next subscribe via invalidate()'s mark-stale branch.
 			invalidateAll();
+			void loadPresetCatalog(true);
 			wasOffline = false;
 		}
 	});
@@ -291,6 +292,14 @@
 	$effect(() => {
 		if ($isAuthenticated && get(settingsStore) === null) {
 			void reloadSettings();
+		}
+	});
+
+	// Preset catalog needs an authenticated session; onMount alone races login
+	// and a cold backend — DnsRoutePresetModal would show "Каталог пуст" until F5.
+	$effect(() => {
+		if ($isAuthenticated) {
+			void loadPresetCatalog();
 		}
 	});
 
@@ -331,7 +340,6 @@
 		compactLayout.init();
 		serviceLetterIcons.init();
 		await auth.checkStatus();
-		loadPresetCatalog();
 	});
 
 	onDestroy(() => {

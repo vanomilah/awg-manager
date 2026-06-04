@@ -10,19 +10,33 @@ export const presetCatalog = writable<CatalogPreset[]>([]);
 export const presetCatalogLoaded = writable(false);
 
 let loaded = false;
+let inflight: Promise<void> | null = null;
 
-/** Loads the catalog once (idempotent). Non-fatal on error — leaves it empty. */
+/** Loads the catalog once (idempotent). Non-fatal on error — keeps "not loaded" until success. */
 export async function loadPresetCatalog(force = false): Promise<void> {
 	if (loaded && !force) return;
-	try {
-		const payload = await api.listPresets();
-		presetCatalog.set(Array.isArray(payload?.presets) ? payload.presets : []);
-		loaded = true;
-	} catch (e) {
-		console.error('failed to load preset catalog', e);
-	} finally {
-		presetCatalogLoaded.set(true);
-	}
+	if (inflight) return inflight;
+
+	inflight = (async () => {
+		if (!loaded) {
+			presetCatalogLoaded.set(false);
+		}
+		try {
+			const payload = await api.listPresets();
+			presetCatalog.set(Array.isArray(payload?.presets) ? payload.presets : []);
+			loaded = true;
+			presetCatalogLoaded.set(true);
+		} catch (e) {
+			console.error('failed to load preset catalog', e);
+			if (!loaded) {
+				presetCatalogLoaded.set(false);
+			}
+		}
+	})().finally(() => {
+		inflight = null;
+	});
+
+	return inflight;
 }
 
 /** DNS-capable presets, for the DNS-route / HrNeo pickers. */

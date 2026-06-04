@@ -53,12 +53,20 @@ import { dirname, resolve } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PRESETS_PATH = resolve(__dirname, 'mock-data/presets-snapshot.json');
+const UNIFIED_PRESETS_PATH = resolve(__dirname, '../../internal/presets/defaults.json');
 let presetsCache = null;
+let unifiedPresetsCache = null;
 async function getPresets() {
 	if (!presetsCache) {
 		presetsCache = JSON.parse(await readFile(PRESETS_PATH, 'utf8'));
 	}
 	return presetsCache;
+}
+async function getUnifiedPresets() {
+	if (!unifiedPresetsCache) {
+		unifiedPresetsCache = JSON.parse(await readFile(UNIFIED_PRESETS_PATH, 'utf8'));
+	}
+	return unifiedPresetsCache;
 }
 
 const UPSTREAM = process.env.UPSTREAM ?? 'http://127.0.0.1:8080';
@@ -3790,6 +3798,12 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	// === Wizard mock overrides ===
+
+	if (req.method === 'GET' && path === '/presets') {
+		const presets = await getUnifiedPresets();
+		send(res, 200, { success: true, data: { presets } });
+		return;
+	}
 
 	if (req.method === 'GET' && path === '/singbox/router/presets/list') {
 		send(res, 200, { success: true, data: mockSingboxPresets });

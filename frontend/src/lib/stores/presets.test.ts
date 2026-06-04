@@ -36,11 +36,11 @@ describe('loadPresetCatalog', () => {
 		expect(get(presetCatalogLoaded)).toBe(true);
 	});
 
-	it('swallows errors (non-fatal) but still marks loaded', async () => {
+	it('swallows errors (non-fatal) and leaves catalog not loaded for retry', async () => {
 		vi.mocked(api.listPresets).mockRejectedValueOnce(new Error('boom'));
 		await loadPresetCatalog(true);
 		expect(get(presetCatalog)).toEqual([]);
-		expect(get(presetCatalogLoaded)).toBe(true);
+		expect(get(presetCatalogLoaded)).toBe(false);
 	});
 
 	it('treats an undefined payload as an empty catalog', async () => {
