@@ -104,9 +104,11 @@ func ApplyPresetToConfig(cfg *RouterConfig, p Preset, outboundTag string) error 
 		}
 		if pr.ActionTarget == "tunnel" {
 			if outboundTag == "" {
-				return fmt.Errorf("preset %q: outbound required for tunnel target", p.ID)
+				// Empty outbound is the UI "block" signal — override tunnel to reject.
+				rule.Action = "reject"
+			} else {
+				rule.Outbound = outboundTag
 			}
-			rule.Outbound = outboundTag
 		} else if pr.ActionTarget == "direct" {
 			rule.Outbound = "direct"
 		}

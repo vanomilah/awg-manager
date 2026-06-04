@@ -90,10 +90,15 @@ func TestApplyPresetBackwardCompat(t *testing.T) {
 	}
 }
 
-func TestApplyPresetTunnelRequiresOutbound(t *testing.T) {
+func TestApplyPresetTunnelBlockOverride(t *testing.T) {
 	yt, _ := findRouterPreset(testCatalog(t), "youtube")
-	if err := ApplyPresetToConfig(&RouterConfig{}, yt, ""); err == nil {
-		t.Error("tunnel preset without outbound must error")
+	cfg := &RouterConfig{}
+	if err := ApplyPresetToConfig(cfg, yt, ""); err != nil {
+		t.Fatalf("tunnel preset with empty outbound (block) should succeed: %v", err)
+	}
+	if len(cfg.Route.Rules) != 1 || cfg.Route.Rules[0].Action != "reject" ||
+		cfg.Route.Rules[0].Outbound != "" || cfg.Route.Rules[0].RuleSet[0] != "geosite-youtube" {
+		t.Fatalf("block override rule: %+v", cfg.Route.Rules)
 	}
 }
 
