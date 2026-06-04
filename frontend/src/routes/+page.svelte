@@ -1445,8 +1445,11 @@
 	});
 
 	let awgListModeRowsCount = $derived(sortedFilteredAwgList.length + sortedFilteredSystemList.length + sortedFilteredExternalList.length);
+	let awgListModeSourceRowsCount = $derived(awgList.length + visibleSystemList.length + externalList.length);
 	let singboxTunnelsListModeRowsCount = $derived(sortedFilteredSingboxTunnels.length);
+	let singboxTunnelsListModeSourceRowsCount = $derived(singboxTunnelsList.length);
 	let singboxSubscriptionsListModeRowsCount = $derived(sortedFilteredSubscriptionsActiveCards.length + sortedFilteredSubscriptionsListRows.length);
+	let singboxSubscriptionsListModeSourceRowsCount = $derived(subscriptionsActiveCards.length + subscriptionsListRows.length);
 
 
 </script>
@@ -1612,7 +1615,7 @@
 					<StoreStatusBadge store={tunnels} />
 				</div>
 				<div class="toolbar-actions">
-					{#if awgEffectiveViewMode === 'list' && awgListModeRowsCount >= 5}
+					{#if awgEffectiveViewMode === 'list' && awgListModeSourceRowsCount >= 5}
 						<div class="tunnel-toolbar-search">
 							<TunnelTableSortControls
 								searchQuery={awgListSearchQuery}
@@ -2116,6 +2119,11 @@
 							</div>
 						{/each}
 					{/if}
+					{#if awgListSearchQuery.trim() && awgListModeRowsCount === 0}
+						<div class="awg-list-row awg-list-row--section">
+							<div class="awg-list-section-title">Ничего не найдено</div>
+						</div>
+					{/if}
 					</div>
 				</div>
 			{:else}
@@ -2185,7 +2193,7 @@
 							{pluralForm(subscriptionsList.length, SUBSCRIPTION_WORDS)}
 						</span>
 						<div class="toolbar-actions">
-							{#if singboxSubscriptionsEffectiveLayout === 'list' && singboxSubscriptionsListModeRowsCount >= 5}
+							{#if singboxSubscriptionsEffectiveLayout === 'list' && singboxSubscriptionsListModeSourceRowsCount >= 5}
 								<div class="tunnel-toolbar-search">
 									<TunnelTableSortControls
 										searchQuery={singboxSubscriptionsSearchQuery}
@@ -2332,6 +2340,11 @@
 									/>
 								{/each}
 							{/if}
+							{#if singboxSubscriptionsSearchQuery.trim() && singboxSubscriptionsListModeRowsCount === 0}
+								<tr class="tunnel-empty-row">
+									<td colspan="7">Ничего не найдено</td>
+								</tr>
+							{/if}
 								</tbody>
 							</table>
 						</div>
@@ -2389,7 +2402,7 @@
 						{pluralForm(singboxTunnelsList.length, TUNNEL_WORDS)}
 					</span>
 					<div class="toolbar-actions">
-						{#if singboxTunnelsEffectiveLayout === 'list' && singboxTunnelsListModeRowsCount >= 5}
+						{#if singboxTunnelsEffectiveLayout === 'list' && singboxTunnelsListModeSourceRowsCount >= 5}
 							<div class="tunnel-toolbar-search">
 								<TunnelTableSortControls
 									searchQuery={singboxTunnelsSearchQuery}
@@ -2553,6 +2566,11 @@
 								ondetail={(tag) => openSingboxDetail(tag)}
 							/>
 						{/each}
+						{#if singboxTunnelsSearchQuery.trim() && singboxTunnelsListModeRowsCount === 0}
+							<tr class="tunnel-empty-row">
+								<td colspan="7">Ничего не найдено</td>
+							</tr>
+						{/if}
 							</tbody>
 						</table>
 					</div>
@@ -2896,11 +2914,12 @@
 	}
 
 	.awg-list-row--head {
-		padding-top: 0.75rem;
-		padding-bottom: 0.75rem;
+		padding-top: 0.65rem;
+		padding-bottom: 0.65rem;
 		background: var(--color-bg-tertiary);
 		font-size: 0.6875rem;
 		font-weight: 700;
+		line-height: 1.2;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--color-text-muted);
@@ -3820,13 +3839,13 @@
 		table-layout: fixed;
 	}
 
-	:global(.singbox-tunnel-table col.col-delay) { width: 88px; }
-	:global(.singbox-tunnel-table col.col-name) { width: 250px; }
-	:global(.singbox-tunnel-table col.col-protocol) { width: 104px; }
-	:global(.singbox-tunnel-table col.col-run) { width: 92px; }
+	:global(.singbox-tunnel-table col.col-delay) { width: 82px; }
+	:global(.singbox-tunnel-table col.col-name) { width: clamp(270px, 31%, 340px); }
+	:global(.singbox-tunnel-table col.col-protocol) { width: 96px; }
+	:global(.singbox-tunnel-table col.col-run) { width: 86px; }
 	:global(.singbox-tunnel-table col.col-traffic) { width: auto; }
-	:global(.singbox-tunnel-table col.col-ping) { width: 86px; }
-	:global(.singbox-tunnel-table col.col-actions) { width: 82px; }
+	:global(.singbox-tunnel-table col.col-ping) { width: 82px; }
+	:global(.singbox-tunnel-table col.col-actions) { width: 72px; }
 
 	:global(.singbox-tunnel-table th) {
 		background: transparent;
@@ -3850,12 +3869,12 @@
 
 	:global(.singbox-tunnel-table th .sort-header-btn.active),
 	:global(.singbox-sub-table th .sort-header-btn.active) {
-		color: var(--color-text-primary);
+		color: var(--accent, var(--color-accent));
 	}
 
 	:global(.singbox-tunnel-table th .sort-header-btn.active .sort-indicator),
 	:global(.singbox-sub-table th .sort-header-btn.active .sort-indicator) {
-		color: var(--color-accent);
+		color: inherit;
 	}
 
 	:global(.singbox-tunnel-table th),
@@ -3911,7 +3930,7 @@
 
 	:global(.singbox-tunnel-table th),
 	:global(.singbox-sub-table th) {
-		background: transparent;
+		background: var(--color-bg-tertiary);
 		color: var(--color-text-muted);
 		font-size: 0.6875rem;
 		font-weight: 700;
@@ -3934,6 +3953,13 @@
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
 		color: var(--color-text-muted);
+	}
+
+	:global(.tunnel-empty-row td) {
+		padding: 1rem;
+		text-align: center;
+		color: var(--color-text-muted);
+		background: var(--color-bg-secondary);
 	}
 
 	:global(.singbox-tunnel-table .sbx-tunnel-list-row) {
@@ -3965,9 +3991,60 @@
 		text-align: right;
 	}
 
+	:global(.singbox-tunnel-table .list-cell-name) {
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-table .list-title-row),
+	:global(.singbox-tunnel-table .list-sub),
+	:global(.singbox-tunnel-table .list-server-line) {
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	:global(.singbox-tunnel-table .name-btn),
+	:global(.singbox-tunnel-table .list-sub),
+	:global(.singbox-tunnel-table .list-server-host) {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	:global(.singbox-tunnel-table .list-cell-traffic) {
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-table .traffic-row-list),
+	:global(.singbox-tunnel-table .traffic-mini-click) {
+		width: 100%;
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-table .traffic-mini-click svg) {
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+	}
+
+	:global(.singbox-tunnel-table .list-cell-ping-mini) {
+		text-align: center;
+	}
+
+	:global(.singbox-tunnel-table .list-cell-ping-mini .spark-mini) {
+		width: 78px;
+		max-width: 78px;
+		margin-inline: auto;
+	}
+
 	:global(.singbox-tunnel-table .list-actions) {
 		justify-content: flex-end;
-		gap: 0.3rem;
+		gap: 0.25rem;
+	}
+
+	:global(.singbox-tunnel-table .list-actions .action-btn) {
+		width: 28px;
+		height: 28px;
+		padding: 0;
 	}
 
 	:global(.singbox-sub-table .lc-delay),
