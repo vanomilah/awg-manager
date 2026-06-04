@@ -109,8 +109,9 @@ func nameFromHRID(id string) string {
 func isHRID(id string) bool { return strings.HasPrefix(id, hrIDPrefix) }
 
 // hrRuleToDomainList converts the HR-file-native shape into the DomainList
-// contract shared with NDMS. Subscriptions/enabled/dedup don't exist at this
-// layer — HR rules are always "active" by virtue of being in the file.
+// contract shared with NDMS. Subscriptions/dedup don't exist at this layer.
+// Enabled reflects whether the rule's content lines are commented with '#'
+// in domain.conf / ip.list.
 func hrRuleToDomainList(r hydraroute.HRRule, policySet map[string]bool) DomainList {
 	domains := append([]string(nil), r.Domains...)
 	domains = append(domains, r.Subnets...)
@@ -122,7 +123,7 @@ func hrRuleToDomainList(r hydraroute.HRRule, policySet map[string]bool) DomainLi
 		Subnets:       r.Subnets,
 		ManualDomains: domains,
 		Backend:       "hydraroute",
-		Enabled:       true,
+		Enabled:       !r.Disabled,
 	}
 	if policySet[r.Target] {
 		dl.HRRouteMode = "policy"

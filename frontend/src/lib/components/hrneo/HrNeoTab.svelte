@@ -97,6 +97,50 @@
 	let oversizedInstalled = $state<boolean>(false);
 	let pendingOversizedRefresh: ReturnType<typeof setTimeout> | null = null;
 
+	/** Debounce HR Neo restarts when toggling several rules quickly. */
+	const HR_TOGGLE_DEBOUNCE_MS = 600;
+	let optimisticEnabled = $state<Record<string, boolean>>({});
+	let pendingToggleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	let hrToggleLoadingId = $state<string | null>(null);
+
+	function ruleForCard(rule: DnsRoute): DnsRoute {
+		if (rule.id in optimisticEnabled) {
+			return { ...rule, enabled: optimisticEnabled[rule.id] };
+		}
+		return rule;
+	}
+
+	function scheduleHrRuleToggle(rule: DnsRoute, enabled: boolean) {
+		optimisticEnabled = { ...optimisticEnabled, [rule.id]: enabled };
+		const prev = pendingToggleTimers.get(rule.id);
+		if (prev) clearTimeout(prev);
+		pendingToggleTimers.set(
+			rule.id,
+			setTimeout(() => {
+				pendingToggleTimers.delete(rule.id);
+				void flushHrRuleToggle(rule.id, enabled);
+			}, HR_TOGGLE_DEBOUNCE_MS),
+		);
+	}
+
+	async function flushHrRuleToggle(id: string, enabled: boolean) {
+		hrToggleLoadingId = id;
+		try {
+			const fresh = await api.setDnsRouteEnabled(id, enabled);
+			dnsRoutesStore.applyMutationResponse(fresh);
+			const next = { ...optimisticEnabled };
+			delete next[id];
+			optimisticEnabled = next;
+		} catch (e: unknown) {
+			const next = { ...optimisticEnabled };
+			delete next[id];
+			optimisticEnabled = next;
+			notifications.error(e instanceof Error ? e.message : String(e));
+		} finally {
+			hrToggleLoadingId = null;
+		}
+	}
+
 	async function loadOversized() {
 		try {
 			const resp = await api.getHydraRouteOversizedTags();
@@ -125,6 +169,8 @@
 
 	$effect(() => () => {
 		if (pendingOversizedRefresh) clearTimeout(pendingOversizedRefresh);
+		for (const t of pendingToggleTimers.values()) clearTimeout(t);
+		pendingToggleTimers.clear();
 	});
 
 	function targetOf(r: DnsRoute): { name: string; kind: 'policy' | 'interface' } | null {
@@ -410,6 +456,9 @@
 					target={selection.name}
 					targetKind={selectedTargetEntry.kind}
 					rules={rulesOfSelected}
+					displayRule={ruleForCard}
+					toggleLoadingId={hrToggleLoadingId}
+					ontogglerule={scheduleHrRuleToggle}
 					oncatalog={openCatalogForTarget}
 					onmanual={() => openNewRuleForSelectedTarget(null)}
 					oneditrule={openEditRule}
@@ -456,6 +505,9 @@
 							target={t.name}
 							targetKind={t.kind}
 							rules={hrRules.filter((r) => targetOf(r)?.name === t.name)}
+							displayRule={ruleForCard}
+							toggleLoadingId={hrToggleLoadingId}
+							ontogglerule={scheduleHrRuleToggle}
 							oncatalog={() => {
 								selection = { type: 'target', name: t.name };
 								openCatalogForTarget();

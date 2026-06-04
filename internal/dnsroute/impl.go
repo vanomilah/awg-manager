@@ -684,6 +684,21 @@ func (s *ServiceImpl) SetEnabled(ctx context.Context, id string, enabled bool) e
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
+	if isHRID(id) {
+		if !s.hrReady() {
+			return fmt.Errorf("HydraRoute Neo is not installed")
+		}
+		name := nameFromHRID(id)
+		if name == "" {
+			return fmt.Errorf("invalid HR rule id %q", id)
+		}
+		if err := s.hydra.SetRuleEnabled(name, enabled); err != nil {
+			return err
+		}
+		s.logInfo("set-enabled", id, fmt.Sprintf("enabled=%v name=%q backend=hydraroute", enabled, name))
+		return nil
+	}
+
 	data := s.store.GetCached()
 	if data == nil {
 		return fmt.Errorf("store not loaded")

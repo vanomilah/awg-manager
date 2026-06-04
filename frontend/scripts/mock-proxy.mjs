@@ -96,7 +96,16 @@ const MOCK_CAPABILITY_GROUPS = Object.freeze([
 	{
 		id: 'routing',
 		label: 'AWG, sing-box router, DNS/rules/rulesets, policies',
-		endpoints: ['GET /tunnels/all', 'GET /singbox/router/status', 'GET /singbox/router/proxies/list'],
+		endpoints: [
+			'GET /tunnels/all',
+			'GET /routing/dns-routes',
+			'POST /dns-routes/set-enabled',
+			'POST /dns-routes/create',
+			'POST /dns-routes/update',
+			'POST /dns-routes/delete',
+			'GET /singbox/router/status',
+			'GET /singbox/router/proxies/list',
+		],
 	},
 	{
 		id: 'subscriptions',
@@ -2114,11 +2123,12 @@ const mockRoutingDnsRoutes = [
 		createdAt: '2026-05-06T14:00:00Z',
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
+	// HydraRoute Neo — ids match production (`hr:RuleName`), files are SoT on device.
 	{
-		id: 'hrneo-geo-youtube',
-		name: 'HR GEO YouTube',
-		domains: ['youtube.com'],
-		manualDomains: ['youtube.com'],
+		id: 'hr:Youtube',
+		name: 'Youtube',
+		domains: ['youtube.com', 'ytimg.com'],
+		manualDomains: ['youtube.com', 'ytimg.com'],
 		hrRouteMode: 'policy',
 		hrPolicyName: 'HydraRoute',
 		routes: [mockAwgRoute('awg-demo-1')],
@@ -2128,49 +2138,48 @@ const mockRoutingDnsRoutes = [
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-discord',
-		name: 'HR GEO Discord',
-		domains: ['discord.com'],
-		manualDomains: ['discord.com'],
+		id: 'hr:Netflix',
+		name: 'Netflix',
+		domains: ['netflix.com'],
+		manualDomains: ['netflix.com'],
 		hrRouteMode: 'policy',
 		hrPolicyName: 'HydraRoute',
 		routes: [mockAwgRoute('awg-demo-2')],
-		enabled: true,
+		enabled: false,
 		backend: 'hydraroute',
 		createdAt: '2026-05-08T10:00:00Z',
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-openai',
-		name: 'HR GEO OpenAI',
-		domains: ['openai.com'],
-		manualDomains: ['openai.com'],
-		hrRouteMode: 'policy',
-		hrPolicyName: 'HydraRoute',
-		routes: [mockAwgRoute('awg-demo-2')],
+		id: 'hr:Discord',
+		name: 'Discord',
+		domains: ['discord.com', 'discord.gg'],
+		manualDomains: ['discord.com', 'discord.gg'],
+		hrRouteMode: 'interface',
+		routes: [{ interface: 'awg0', tunnelId: 'awg-demo-1', fallback: 'auto' }],
 		enabled: true,
 		backend: 'hydraroute',
 		createdAt: '2026-05-09T10:00:00Z',
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-github',
-		name: 'HR GEO GitHub',
-		domains: ['github.com'],
-		manualDomains: ['github.com'],
+		id: 'hr:OpenAI',
+		name: 'OpenAI',
+		domains: ['openai.com', 'chatgpt.com'],
+		manualDomains: ['openai.com', 'chatgpt.com'],
 		hrRouteMode: 'policy',
 		hrPolicyName: 'HydraRoute',
-		routes: [mockAwgRoute('awg-demo-1')],
+		routes: [mockAwgRoute('awg-demo-2')],
 		enabled: true,
 		backend: 'hydraroute',
 		createdAt: '2026-05-10T10:00:00Z',
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-twitch',
-		name: 'HR GEO Twitch',
-		domains: ['twitch.tv'],
-		manualDomains: ['twitch.tv'],
+		id: 'hr:Константинопольские',
+		name: 'Константинопольские сервисы',
+		domains: ['example-long-name.local'],
+		manualDomains: ['example-long-name.local'],
 		hrRouteMode: 'policy',
 		hrPolicyName: 'HydraRoute',
 		routes: [mockAwgRoute('awg-demo-1')],
@@ -2180,39 +2189,38 @@ const mockRoutingDnsRoutes = [
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-google',
-		name: 'HR GEO Google',
-		domains: ['google.com'],
-		manualDomains: ['google.com'],
-		hrRouteMode: 'policy',
-		hrPolicyName: 'HydraRoute',
-		routes: [mockAwgRoute('awg-demo-1')],
+		id: 'hr:Telegram',
+		name: 'Telegram',
+		domains: ['telegram.org', 't.me'],
+		subnets: ['91.108.4.0/22'],
+		manualDomains: ['telegram.org', 't.me', '91.108.4.0/22'],
+		hrRouteMode: 'interface',
+		routes: [{ interface: 'OpkgTun0', tunnelId: 'awg-demo-2', fallback: 'auto' }],
 		enabled: true,
 		backend: 'hydraroute',
 		createdAt: '2026-05-12T10:00:00Z',
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-telegram',
-		name: 'HR GEO Telegram',
-		domains: ['telegram.org'],
-		manualDomains: ['telegram.org'],
+		id: 'hr:GitHub',
+		name: 'GitHub',
+		domains: ['github.com'],
+		manualDomains: ['github.com'],
 		hrRouteMode: 'policy',
 		hrPolicyName: 'HydraRoute',
-		routes: [mockAwgRoute('awg-demo-2')],
+		routes: [mockAwgRoute('awg-demo-1')],
 		enabled: true,
 		backend: 'hydraroute',
 		createdAt: '2026-05-13T10:00:00Z',
 		updatedAt: '2026-05-14T20:00:00Z',
 	},
 	{
-		id: 'hrneo-geo-netflix',
-		name: 'HR GEO Netflix',
-		domains: ['netflix.com'],
-		manualDomains: ['netflix.com'],
-		hrRouteMode: 'policy',
-		hrPolicyName: 'HydraRoute',
-		routes: [mockAwgRoute('awg-demo-2')],
+		id: 'hr:Twitch',
+		name: 'Twitch',
+		domains: ['twitch.tv'],
+		manualDomains: ['twitch.tv'],
+		hrRouteMode: 'interface',
+		routes: [{ interface: 'OpkgTun0', tunnelId: 'awg-demo-2', fallback: 'auto' }],
 		enabled: true,
 		backend: 'hydraroute',
 		createdAt: '2026-05-14T10:00:00Z',
@@ -2650,6 +2658,32 @@ function awgRouteInterface(id) {
 
 function mockAwgRoute(id, fallback = 'auto') {
 	return { interface: awgRouteInterface(id), tunnelId: id, fallback };
+}
+
+function findMockDnsRoute(id) {
+	const idx = mockRoutingDnsRoutes.findIndex((r) => r.id === id);
+	if (idx < 0) return null;
+	return { idx, route: mockRoutingDnsRoutes[idx] };
+}
+
+function touchMockDnsRoute(route) {
+	route.updatedAt = new Date().toISOString();
+}
+
+function mergeMockDnsRoute(route, patch) {
+	if (patch.name != null) route.name = patch.name;
+	if (patch.domains != null) route.domains = patch.domains;
+	if (patch.subnets != null) route.subnets = patch.subnets;
+	if (patch.manualDomains != null) route.manualDomains = patch.manualDomains;
+	if (patch.routes != null) route.routes = patch.routes;
+	if (patch.enabled != null) route.enabled = patch.enabled !== false;
+	if (patch.backend != null) route.backend = patch.backend;
+	if (patch.hrRouteMode != null) route.hrRouteMode = patch.hrRouteMode;
+	if (patch.hrPolicyName != null) route.hrPolicyName = patch.hrPolicyName;
+	if (patch.hrPolicyInterfaces != null) route.hrPolicyInterfaces = patch.hrPolicyInterfaces;
+	if (patch.iconUrl != null) route.iconUrl = patch.iconUrl;
+	touchMockDnsRoute(route);
+	return route;
 }
 
 function mockPolicyInterfaceRef(id, order = 0) {
@@ -3832,6 +3866,113 @@ const server = http.createServer(async (req, res) => {
 
 	if (req.method === 'GET' && path === '/routing/dns-routes') {
 		send(res, 200, { success: true, data: mockRoutingDnsRoutes });
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/dns-routes/list') {
+		sendData(res, mockRoutingDnsRoutes);
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/dns-routes/set-enabled') {
+		try {
+			const id = new URL(req.url, 'http://local').searchParams.get('id');
+			const body = await readJsonBody(req);
+			const found = findMockDnsRoute(id);
+			if (!found) {
+				send(res, 400, {
+					success: false,
+					error: { code: 'DNS_ROUTE_SET_ENABLED_ERROR', message: `dns route list ${JSON.stringify(id)} not found` },
+				});
+				return;
+			}
+			found.route.enabled = body.enabled !== false;
+			touchMockDnsRoute(found.route);
+			sendData(res, mockRoutingDnsRoutes);
+		} catch (e) {
+			sendInvalidRequest(res, e);
+		}
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/dns-routes/update') {
+		try {
+			const id = new URL(req.url, 'http://local').searchParams.get('id');
+			const body = await readJsonBody(req);
+			const found = findMockDnsRoute(id);
+			if (!found) {
+				send(res, 400, {
+					success: false,
+					error: { code: 'DNS_ROUTE_UPDATE_ERROR', message: `dns route list ${JSON.stringify(id)} not found` },
+				});
+				return;
+			}
+			const updated = mergeMockDnsRoute(found.route, body);
+			sendData(res, updated);
+		} catch (e) {
+			sendInvalidRequest(res, e);
+		}
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/dns-routes/delete') {
+		try {
+			const id = new URL(req.url, 'http://local').searchParams.get('id');
+			const found = findMockDnsRoute(id);
+			if (!found) {
+				send(res, 400, {
+					success: false,
+					error: { code: 'DNS_ROUTE_DELETE_ERROR', message: `dns route list ${JSON.stringify(id)} not found` },
+				});
+				return;
+			}
+			mockRoutingDnsRoutes.splice(found.idx, 1);
+			sendData(res, mockRoutingDnsRoutes);
+		} catch (e) {
+			sendInvalidRequest(res, e);
+		}
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/dns-routes/create') {
+		try {
+			const body = await readJsonBody(req);
+			const name = String(body.name || '').trim();
+			if (!name) {
+				sendInvalidRequest(res, 'name is required');
+				return;
+			}
+			const isHR = body.backend === 'hydraroute' || body.hrRouteMode;
+			const id = isHR ? `hr:${name}` : `dns-${name.toLowerCase().replace(/\s+/g, '-')}`;
+			if (findMockDnsRoute(id)) {
+				send(res, 400, {
+					success: false,
+					error: { code: 'DNS_ROUTE_CREATE_ERROR', message: `dns route list ${JSON.stringify(id)} already exists` },
+				});
+				return;
+			}
+			const now = new Date().toISOString();
+			const created = {
+				id,
+				name,
+				domains: body.domains ?? body.manualDomains ?? [],
+				subnets: body.subnets ?? [],
+				manualDomains: body.manualDomains ?? body.domains ?? [],
+				routes: body.routes ?? [],
+				enabled: body.enabled !== false,
+				backend: isHR ? 'hydraroute' : body.backend,
+				hrRouteMode: body.hrRouteMode,
+				hrPolicyName: body.hrPolicyName,
+				hrPolicyInterfaces: body.hrPolicyInterfaces,
+				iconUrl: body.iconUrl,
+				createdAt: now,
+				updatedAt: now,
+			};
+			mockRoutingDnsRoutes.push(created);
+			sendData(res, created);
+		} catch (e) {
+			sendInvalidRequest(res, e);
+		}
 		return;
 	}
 
