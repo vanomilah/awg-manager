@@ -164,6 +164,13 @@ func (s *GeoDataStore) Download(fileType, rawURL string) (*GeoFileEntry, error) 
 // DownloadWithClient fetches a .dat file from rawURL using the provided
 // client (or direct client when nil), validates it, and tracks it.
 func (s *GeoDataStore) DownloadWithClient(ctx context.Context, fileType, rawURL string, client *http.Client) (*GeoFileEntry, error) {
+	return s.DownloadWithClientVia(ctx, fileType, rawURL, client, "")
+}
+
+// DownloadWithClientVia is DownloadWithClient plus a UI-visible route label
+// for app logging. The caller is responsible for passing the route used by
+// the provided HTTP client.
+func (s *GeoDataStore) DownloadWithClientVia(ctx context.Context, fileType, rawURL string, client *http.Client, routeLabel string) (*GeoFileEntry, error) {
 	if fileType != "geosite" && fileType != "geoip" {
 		return nil, fmt.Errorf("invalid file type %q: must be geosite or geoip", fileType)
 	}
@@ -280,6 +287,7 @@ func (s *GeoDataStore) DownloadWithClient(ctx context.Context, fileType, rawURL 
 	s.mu.Unlock()
 
 	report("done", size, size, "")
+	s.logInfo("download-url", rawURL, fmt.Sprintf("Загрузка geo-data через %s: %s", normalizeRouteLabel(routeLabel), rawURL))
 	s.logInfo("download", rawURL, fmt.Sprintf("%s downloaded: %d bytes, %d tags", fileType, size, tagCount))
 	return &entry, nil
 }
@@ -369,6 +377,13 @@ func (s *GeoDataStore) Update(path string) (*GeoFileEntry, error) {
 // UpdateWithClient re-downloads a tracked geo file via the provided client
 // (or direct client when nil).
 func (s *GeoDataStore) UpdateWithClient(ctx context.Context, path string, client *http.Client) (*GeoFileEntry, error) {
+	return s.UpdateWithClientVia(ctx, path, client, "")
+}
+
+// UpdateWithClientVia is UpdateWithClient plus a UI-visible route label
+// for app logging. The caller is responsible for passing the route used by
+// the provided HTTP client.
+func (s *GeoDataStore) UpdateWithClientVia(ctx context.Context, path string, client *http.Client, routeLabel string) (*GeoFileEntry, error) {
 	path = filepath.Clean(path)
 	if !s.isManagedPath(path) {
 		return nil, fmt.Errorf("path outside managed geo directories")
@@ -518,6 +533,7 @@ func (s *GeoDataStore) UpdateWithClient(ctx context.Context, path string, client
 	if progress != nil {
 		progress(sourceURL, entry.Type, "done", size, size, "")
 	}
+	s.logInfo("update-url", sourceURL, fmt.Sprintf("Обновление geo-data через %s: %s", normalizeRouteLabel(routeLabel), sourceURL))
 	return &updated, nil
 }
 
@@ -567,6 +583,13 @@ func (s *GeoDataStore) UpdateAll() (int, error) {
 // UpdateAllWithClient refreshes all tracked geo files via the provided client
 // (or direct client when nil).
 func (s *GeoDataStore) UpdateAllWithClient(ctx context.Context, client *http.Client) (int, error) {
+	return s.UpdateAllWithClientVia(ctx, client, "")
+}
+
+// UpdateAllWithClientVia is UpdateAllWithClient plus a UI-visible route label
+// for app logging. The caller is responsible for passing the route used by
+// the provided HTTP client.
+func (s *GeoDataStore) UpdateAllWithClientVia(ctx context.Context, client *http.Client, routeLabel string) (int, error) {
 	// Collect paths outside the lock so Update can re-acquire it.
 	s.mu.RLock()
 	var paths []string
@@ -581,7 +604,7 @@ func (s *GeoDataStore) UpdateAllWithClient(ctx context.Context, client *http.Cli
 	updated := 0
 	var errs []string
 	for _, path := range paths {
-		if _, err := s.UpdateWithClient(ctx, path, client); err != nil {
+		if _, err := s.UpdateWithClientVia(ctx, path, client, routeLabel); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", path, err))
 			continue
 		}
@@ -592,6 +615,14 @@ func (s *GeoDataStore) UpdateAllWithClient(ctx context.Context, client *http.Cli
 		return updated, fmt.Errorf("update errors: %s", strings.Join(errs, "; "))
 	}
 	return updated, nil
+}
+
+func normalizeRouteLabel(routeLabel string) string {
+	routeLabel = strings.TrimSpace(routeLabel)
+	if routeLabel == "" {
+		return "direct"
+	}
+	return routeLabel
 }
 
 // GetTags returns the tag list for the given file path, using the cache.

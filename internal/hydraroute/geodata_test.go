@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/hoaxisr/awg-manager/internal/logging"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -18,10 +20,75 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
 
+type recordingAppLogger struct {
+	entries []logging.LogEntry
+}
+
+func (r *recordingAppLogger) AppLog(level logging.Level, group, subgroup, action, target, message string) {
+	r.entries = append(r.entries, logging.LogEntry{
+		Level:    string(level),
+		Group:    group,
+		Subgroup: subgroup,
+		Action:   action,
+		Target:   target,
+		Message:  message,
+	})
+}
+
 func newTestGeoStore(t *testing.T) *GeoDataStore {
 	t.Helper()
 	tmp := t.TempDir()
 	return NewGeoDataStore(tmp)
+}
+
+func TestGeoDataStore_LogsDownloadAndUpdateRouteURLs(t *testing.T) {
+	store := newTestGeoStore(t)
+	rec := &recordingAppLogger{}
+	store.SetAppLogger(rec)
+
+	dat := buildGeoDAT([][]byte{buildGeoEntry(1, "GOOGLE", 2, 1)})
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(dat)),
+				Request:    r,
+			}, nil
+		}),
+	}
+
+	entry, err := store.DownloadWithClientVia(context.Background(), "geosite", "https://example.com/geosite.dat", client, "RelayCH (AWG)")
+	if err != nil {
+		t.Fatalf("DownloadWithClientVia: %v", err)
+	}
+	if _, err := store.UpdateWithClientVia(context.Background(), entry.Path, client, "RelayCH (AWG)"); err != nil {
+		t.Fatalf("UpdateWithClientVia: %v", err)
+	}
+
+	wantMessages := []string{
+		"Загрузка geo-data через RelayCH (AWG): https://example.com/geosite.dat",
+		"Обновление geo-data через RelayCH (AWG): https://example.com/geosite.dat",
+	}
+	var got []string
+	for _, e := range rec.entries {
+		if e.Action != "download-url" && e.Action != "update-url" {
+			continue
+		}
+		if e.Group != logging.GroupRouting || e.Subgroup != logging.SubHrNeo {
+			t.Fatalf("scope = %s/%s, want routing/hrneo", e.Group, e.Subgroup)
+		}
+		got = append(got, e.Message)
+	}
+	if len(got) != len(wantMessages) {
+		t.Fatalf("route log messages = %d, want %d: %+v", len(got), len(wantMessages), got)
+	}
+	for i, want := range wantMessages {
+		if got[i] != want {
+			t.Fatalf("route log[%d] = %q, want %q", i, got[i], want)
+		}
+	}
 }
 
 func TestAdoptExternalFiles_AddsUnknownFiles(t *testing.T) {

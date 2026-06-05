@@ -385,17 +385,8 @@
 		<div class="route-status route-status-warn">
 			Через: <strong>{downloadRouteLabel}</strong>. Не удалось обновить список маршрутов, используется последний известный список: {routeSettingsWarning}
 		</div>
-		{:else}
-			<div class="route-status route-status-live">
-			Загрузка и обновления через: <strong>{downloadRouteLabel}</strong>.
-			Изменяется в <a href="/settings?highlight=downloads#downloads" data-sveltekit-reload>Настройки → Загрузки и обновления</a>.
-		</div>
 	{/if}
-	{#if activeDownload}
-		<div class="route-status route-status-live">
-			Текущая операция через <strong>{activeDownload.routeLabel}</strong>
-		</div>
-	{:else if lastDownload}
+	{#if !activeDownload && lastDownload}
 		<div class="route-status {lastDownload.ok ? 'route-status-ok' : 'route-status-error'}">
 			{lastDownload.ok ? 'Последняя операция успешна' : 'Последняя операция завершилась ошибкой'}:
 			{lastDownload.action} ({lastDownload.routeLabel}){#if lastDownload.message}
@@ -814,13 +805,6 @@
 		background: rgba(122, 162, 247, 0.1);
 		color: var(--text-primary);
 		border-left: 3px solid var(--accent);
-	}
-	.route-status a {
-		color: var(--accent);
-		text-decoration: none;
-	}
-	.route-status a:hover {
-		text-decoration: underline;
 	}
 
 	.route-status-ok {
