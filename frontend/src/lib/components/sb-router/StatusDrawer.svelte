@@ -62,7 +62,7 @@
     return `Трафик идёт через ${pluralize(n, RULE_WORDS)}`;
   });
 
-  let engineState = $derived<'off' | 'warn' | 'on'>(() => {
+  let engineState = $derived.by<'off' | 'warn' | 'on'>(() => {
     if (!engineEnabled) return 'off';
     if (!engineActive) return 'warn';
     return 'on';

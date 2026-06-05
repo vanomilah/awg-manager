@@ -241,7 +241,28 @@
       min-width: 0;
     }
     .header-actions {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      align-items: stretch;
+      gap: 0.5rem;
       width: 100%;
+      min-width: 0;
+    }
+
+    .header-actions .icon-btn {
+      width: 100%;
+      min-width: 0;
+      max-width: 100%;
+      justify-content: center;
+      gap: 0.375rem;
+      padding-inline: 0.625rem;
+      white-space: nowrap;
+    }
+
+    .header-actions .action-text {
+      display: inline;
+      font-size: var(--fs-sm);
+      font-weight: 500;
     }
   }
 
@@ -273,36 +294,6 @@
     .header-tools :global(.segmented-control-btn) {
       flex: 1;
       min-width: 0;
-    }
-
-    .header-actions {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      align-items: stretch;
-      gap: 0.5rem;
-      width: 100%;
-      min-width: 0;
-    }
-
-    .header-actions .icon-btn,
-    .header-actions :global(button) {
-      width: 100%;
-      min-width: 0;
-      max-width: 100%;
-      height: 32px;
-      justify-content: center;
-      white-space: nowrap;
-    }
-
-    .header-actions .icon-btn {
-      gap: 0.375rem;
-      padding-inline: 0.625rem;
-    }
-
-    .header-actions .action-text {
-      display: inline;
-      font-size: var(--fs-sm);
-      font-weight: 500;
     }
   }
 </style>
