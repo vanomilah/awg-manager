@@ -685,15 +685,10 @@ $effect(() => {
 				/>
 
 				<div class="card">
-					<div class="section-label section-label-with-route">
+					<div class="section-label">
 						<span>Обновление AWGM</span>
-						{#if showDownloadRouteDetails}
-							<span class="section-label-route" title={downloadRouteLabel}>
-								через {downloadRouteLabel}
-							</span>
-						{/if}
 					</div>
-					<UpdateSection bind:updateInfo downloadRouteLabel={visibleDownloadRouteLabel} />
+					<UpdateSection bind:updateInfo />
 				</div>
 
 				<IntegrationsCard
@@ -1106,24 +1101,6 @@ $effect(() => {
 			width: 7.5rem;
 			min-width: 7.5rem;
 		}
-	}
-
-	.section-label-with-route {
-		display: flex;
-		align-items: baseline;
-		gap: 0.45rem;
-		min-width: 0;
-	}
-
-	.section-label-route {
-		text-transform: none;
-		letter-spacing: normal;
-		font-weight: 500;
-		opacity: 0.9;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		min-width: 0;
 	}
 
 	.api-key-controls {
