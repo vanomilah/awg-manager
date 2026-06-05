@@ -37,11 +37,17 @@ func newLoggingDownloader(next Downloader, log *logging.ScopedLogger) Downloader
 
 func (d *loggingDownloader) ReadAll(ctx context.Context, req downloader.Request) ([]byte, downloader.ResponseMeta, error) {
 	body, meta, err := d.next.ReadAll(ctx, req)
-	if err == nil {
-		switch req.Purpose {
-		case "awgm-update-check":
+	switch req.Purpose {
+	case "awgm-update-check":
+		if err != nil {
+			d.logWarn("check-url", req.URL, "Ошибка проверки обновлений", meta.Route, err)
+		} else {
 			d.logInfo("check-url", req.URL, "Проверка обновлений", meta.Route)
-		case "awgm-changelog":
+		}
+	case "awgm-changelog":
+		if err != nil {
+			d.logWarn("changelog-url", req.URL, "Ошибка загрузки changelog", meta.Route, err)
+		} else {
 			d.logInfo("changelog-url", req.URL, "Загрузка changelog", meta.Route)
 		}
 	}
@@ -50,8 +56,12 @@ func (d *loggingDownloader) ReadAll(ctx context.Context, req downloader.Request)
 
 func (d *loggingDownloader) DownloadFile(ctx context.Context, req downloader.FileRequest) (downloader.FileResult, error) {
 	result, err := d.next.DownloadFile(ctx, req)
-	if err == nil && req.Purpose == "awgm-update-ipk" {
-		d.logInfo("upgrade-url", req.URL, "Обновление AWGM", result.Route)
+	if req.Purpose == "awgm-update-ipk" {
+		if err != nil {
+			d.logWarn("upgrade-url", req.URL, "Ошибка обновления AWGM", result.Route, err)
+		} else {
+			d.logInfo("upgrade-url", req.URL, "Обновление AWGM", result.Route)
+		}
 	}
 	return result, err
 }
@@ -61,6 +71,17 @@ func (d *loggingDownloader) logInfo(action, target, prefix string, route downloa
 		return
 	}
 	d.log.Info(action, target, prefix+" через "+route.DisplayName()+": "+target)
+}
+
+func (d *loggingDownloader) logWarn(action, target, prefix string, route downloader.RouteInfo, err error) {
+	if d == nil || d.log == nil {
+		return
+	}
+	routePart := ""
+	if route.Tag != "" {
+		routePart = " через " + route.DisplayName()
+	}
+	d.log.Warn(action, target, prefix+routePart+": "+target+": "+err.Error())
 }
 
 func fetchLatestPackageWithDownloader(ctx context.Context, dl Downloader, pkgsURL, packageName string, cmp func(a, b string) int) (PackageEntry, error) {

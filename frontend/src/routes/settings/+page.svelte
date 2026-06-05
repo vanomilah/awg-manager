@@ -705,7 +705,6 @@ $effect(() => {
 					onupdateSingbox={updateSingbox}
 					showSingbox={showSingboxIntegration}
 					showHydra={showHydraIntegration}
-					downloadRouteLabel={visibleDownloadRouteLabel}
 				/>
 			</aside>
 

@@ -91,6 +91,63 @@ func TestGeoDataStore_LogsDownloadAndUpdateRouteURLs(t *testing.T) {
 	}
 }
 
+func TestGeoDataStore_LogsDownloadAndUpdateErrors(t *testing.T) {
+	store := newTestGeoStore(t)
+	rec := &recordingAppLogger{}
+	store.SetAppLogger(rec)
+
+	_, err := store.DownloadWithClientVia(context.Background(), "geosite", "https://example.com/geosite.dat", &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return nil, io.ErrUnexpectedEOF
+		}),
+	}, "RelayCH (AWG)")
+	if err == nil {
+		t.Fatal("DownloadWithClientVia error = nil")
+	}
+
+	path := filepath.Join(store.geoDir, "managed.dat")
+	if err := os.WriteFile(path, []byte("old-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.entries = []GeoFileEntry{
+		{Type: "geosite", Path: path, URL: "https://example.com/geosite.dat"},
+	}
+	store.mu.Unlock()
+
+	_, err = store.UpdateWithClientVia(context.Background(), path, &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return nil, io.ErrUnexpectedEOF
+		}),
+	}, "RelayCH (AWG)")
+	if err == nil {
+		t.Fatal("UpdateWithClientVia error = nil")
+	}
+
+	wantMessages := []string{
+		"Ошибка загрузки geo-data через RelayCH (AWG): https://example.com/geosite.dat:",
+		"Ошибка обновления geo-data через RelayCH (AWG): https://example.com/geosite.dat:",
+	}
+	var got []string
+	for _, e := range rec.entries {
+		if e.Action != "download-url" && e.Action != "update-url" {
+			continue
+		}
+		if e.Level != string(logging.LevelWarn) {
+			t.Fatalf("level = %q, want warn", e.Level)
+		}
+		got = append(got, e.Message)
+	}
+	if len(got) != len(wantMessages) {
+		t.Fatalf("route error log messages = %d, want %d: %+v", len(got), len(wantMessages), got)
+	}
+	for i, wantPrefix := range wantMessages {
+		if !strings.HasPrefix(got[i], wantPrefix) {
+			t.Fatalf("route error log[%d] = %q, want prefix %q", i, got[i], wantPrefix)
+		}
+	}
+}
+
 func TestAdoptExternalFiles_AddsUnknownFiles(t *testing.T) {
 	store := newTestGeoStore(t)
 

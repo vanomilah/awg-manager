@@ -20,7 +20,6 @@
 		onupdateSingbox?: () => void;
 		showSingbox?: boolean;
 		showHydra?: boolean;
-		downloadRouteLabel?: string;
 	}
 
 	let {
@@ -37,7 +36,6 @@
 		onupdateSingbox,
 		showSingbox = true,
 		showHydra = true,
-		downloadRouteLabel = '',
 	}: Props = $props();
 
 	const singboxInstalled = $derived(singboxStatus?.installed ?? false);
@@ -172,11 +170,6 @@
 								</span>
 							{/if}
 						{/if}
-						{#if downloadRouteLabel}
-							<span class="integration-route" title={downloadRouteLabel}>
-								Через {downloadRouteLabel}
-							</span>
-						{/if}
 					</div>
 				</div>
 				{#if installProgress}
@@ -244,11 +237,6 @@
 						{/if}
 						{#if !hydraStatusLoading && !hydraStatus && hydraStatusError}
 							<span class="setting-description warning">нет ответа: {hydraStatusError}</span>
-						{/if}
-						{#if downloadRouteLabel}
-							<span class="integration-route" title={downloadRouteLabel}>
-								geo.dat: через {downloadRouteLabel}
-							</span>
 						{/if}
 					</div>
 				</div>
@@ -327,15 +315,6 @@
 		font-family: var(--font-mono);
 		color: var(--color-text-muted);
 	}
-	.integration-route {
-		font-size: 0.6875rem;
-		font-family: var(--font-mono);
-		color: var(--color-text-muted);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
 	.warning {
 		color: var(--color-warning);
 	}

@@ -166,6 +166,66 @@ func TestLoggingDownloader_LogsUpdateCheckChangelogAndUpgradeURLs(t *testing.T) 
 	}
 }
 
+func TestLoggingDownloader_LogsErrorsWithURLs(t *testing.T) {
+	rec := &recordingAppLogger{}
+	scoped := logging.NewScopedLogger(rec, logging.GroupSystem, logging.SubUpdate)
+	dl := newLoggingDownloader(&fakeDownloader{
+		readAllFn: func(_ context.Context, req downloader.Request) ([]byte, downloader.ResponseMeta, error) {
+			return nil, downloader.ResponseMeta{
+				Route: downloader.RouteInfo{
+					Tag:  "RelayCH",
+					Kind: "AWG",
+				},
+			}, errors.New("network down")
+		},
+		downloadFileFn: func(_ context.Context, req downloader.FileRequest) (downloader.FileResult, error) {
+			return downloader.FileResult{
+				Route: downloader.RouteInfo{
+					Tag:  "RelayCH",
+					Kind: "AWG",
+				},
+			}, errors.New("disk full")
+		},
+	}, scoped)
+
+	_, _, _ = dl.ReadAll(context.Background(), downloader.Request{
+		Purpose:      "awgm-update-check",
+		URL:          "http://repo.local/VERSION",
+		MaxBodyBytes: 10,
+	})
+	_, _, _ = dl.ReadAll(context.Background(), downloader.Request{
+		Purpose:      "awgm-changelog",
+		URL:          "http://repo.local/CHANGELOG.md",
+		MaxBodyBytes: 10,
+	})
+	_, _ = dl.DownloadFile(context.Background(), downloader.FileRequest{
+		Request: downloader.Request{
+			Purpose:      "awgm-update-ipk",
+			URL:          "http://repo.local/awg-manager_2.12.0_aarch64-3.10-kn.ipk",
+			MaxBodyBytes: 10,
+		},
+		DestPath:     filepath.Join(t.TempDir(), "pkg.ipk"),
+		MaxFileBytes: 10,
+	})
+
+	wantMessages := []string{
+		"Ошибка проверки обновлений через RelayCH (AWG): http://repo.local/VERSION: network down",
+		"Ошибка загрузки changelog через RelayCH (AWG): http://repo.local/CHANGELOG.md: network down",
+		"Ошибка обновления AWGM через RelayCH (AWG): http://repo.local/awg-manager_2.12.0_aarch64-3.10-kn.ipk: disk full",
+	}
+	if len(rec.entries) != len(wantMessages) {
+		t.Fatalf("log entries = %d, want %d: %+v", len(rec.entries), len(wantMessages), rec.entries)
+	}
+	for i, want := range wantMessages {
+		if rec.entries[i].Level != string(logging.LevelWarn) {
+			t.Fatalf("log[%d] level = %q, want warn", i, rec.entries[i].Level)
+		}
+		if rec.entries[i].Message != want {
+			t.Fatalf("log[%d] message = %q, want %q", i, rec.entries[i].Message, want)
+		}
+	}
+}
+
 func TestChangelogFetcher_UsesDownloaderRequest(t *testing.T) {
 	const md = "## [1.0.0] - 2026-01-01\n\n### Added\n- item\n"
 	var seen downloader.Request
