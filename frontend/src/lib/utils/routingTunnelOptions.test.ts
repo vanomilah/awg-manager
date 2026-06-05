@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PolicyGlobalInterface, RoutingTunnel } from '$lib/types';
 import {
+	buildAwgTunnelDropdownOptions,
 	buildRoutingTunnelDropdownOptions,
 	filterPolicyGlobalInterfaces,
 	groupPolicyGlobalInterfaces,
@@ -112,5 +113,21 @@ describe('buildRoutingTunnelDropdownOptions', () => {
 		);
 		expect(opts).toHaveLength(1);
 		expect(opts[0].value).toBe('wan:eth3');
+	});
+});
+
+describe('buildAwgTunnelDropdownOptions', () => {
+	it('returns only managed tunnels and marks unavailable as disabled', () => {
+		const opts = buildAwgTunnelDropdownOptions([
+			t({ id: 'awg1', name: 'Mine', type: 'managed', iface: 'nwg0', available: true }),
+			t({ id: 'awg2', name: 'Down', type: 'managed', iface: 'nwg1', available: false }),
+			t({ id: 'wan:eth3', name: 'WAN', type: 'wan', available: true, iface: 'eth3' }),
+			t({ id: 'system:Proxy0', name: 'Proxy', type: 'system', iface: 'Proxy0', available: true }),
+		]);
+		expect(opts).toHaveLength(2);
+		expect(opts.map((o) => o.value)).toEqual(['awg1', 'awg2']);
+		expect(opts[0].disabled).toBe(false);
+		expect(opts[1].disabled).toBe(true);
+		expect(opts.every((o) => o.group === 'AWG туннели')).toBe(true);
 	});
 });

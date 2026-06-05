@@ -206,3 +206,17 @@ export function findRoutingTunnelLabel(tunnels: RoutingTunnel[], tunnelId: strin
 	const t = tunnels.find((x) => x.id === tunnelId);
 	return t ? routingTunnelLabel(t) : tunnelId;
 }
+
+/** Dropdown options for AWG (managed) tunnels only. */
+export function buildAwgTunnelDropdownOptions(
+	tunnels: RoutingTunnel[] | undefined | null,
+): DropdownOption[] {
+	return buildRoutingTunnelDropdownOptions(tunnels, {
+		includeWan: false,
+		filter: (t) => t.type === 'managed',
+	}).map((opt) => {
+		const t = (tunnels ?? []).find((x) => x.id === opt.value);
+		if (!t) return opt;
+		return { ...opt, disabled: !t.available };
+	});
+}
