@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { Button, ConfirmModal } from '$lib/components/ui';
 	import DownloadRouteNote from '$lib/components/downloads/DownloadRouteNote.svelte';
+	import DownloadErrorNotice from '$lib/components/downloads/DownloadErrorNotice.svelte';
+	import { downloadErrorToText } from '$lib/utils/downloadError';
 	import AmneziaConfEditor from './AmneziaConfEditor.svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
@@ -182,7 +184,7 @@
 			resetPremiumCatalogState();
 			const msg = e instanceof Error ? e.message : 'Ошибка запроса к cp.amnezia.org';
 			premiumError = msg;
-			notifications.error(msg);
+			notifications.error(downloadErrorToText(e));
 		} finally {
 			endPremiumBusy();
 		}
@@ -294,7 +296,7 @@
 				});
 			}
 		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : 'Не удалось скачать конфигурацию');
+			notifications.error(downloadErrorToText(e));
 		} finally {
 			premiumPickBusy = '';
 		}
@@ -356,7 +358,9 @@
 		</div>
 	{/if}
 	{#if premiumError}
-		<p class="link-error">{premiumError}</p>
+		<div class="link-error">
+			<DownloadErrorNotice error={premiumError} />
+		</div>
 	{/if}
 	{#if premiumCountries.length}
 		<p class="field-label premium-countries-label">Страны</p>

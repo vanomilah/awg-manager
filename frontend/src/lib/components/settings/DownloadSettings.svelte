@@ -29,6 +29,25 @@
 		onSelectRoute,
 	}: Props = $props();
 
+	// Only these kinds are meaningful download routes; anything else the backend
+	// might report (raw/legacy interfaces) is hidden. Order drives the section
+	// order in the dropdown, mirroring the NDMS-style grouping.
+	const KIND_ORDER: Record<string, number> = {
+		direct: 0,
+		awg: 1,
+		singbox: 2,
+		subscription: 3,
+	};
+	const KIND_GROUP: Record<string, string | undefined> = {
+		direct: undefined, // Direct sits on top, ungrouped.
+		awg: 'AWG-туннели',
+		singbox: 'Sing-box туннели',
+		subscription: 'Sing-box подписки',
+	};
+	function isKnownKind(kind: string): boolean {
+		return kind in KIND_ORDER;
+	}
+
 	function optionLabel(ob: DownloadOutbound): string {
 		return `${displayOutboundName(ob)}${ob.available ? '' : ' (unavailable)'}`;
 	}
@@ -64,12 +83,21 @@
 		}
 		return routeKey(selectedTag, selectedKind as DownloadOutbound['kind']);
 	});
-	const hasSelected = $derived(outbounds.some((ob) => routeKey(ob.tag, ob.kind) === selectedValue));
+	const visibleOutbounds = $derived(
+		outbounds
+			.filter((ob) => isKnownKind(ob.kind))
+			.slice()
+			.sort((a, b) => (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99)),
+	);
+	const hasSelected = $derived(
+		visibleOutbounds.some((ob) => routeKey(ob.tag, ob.kind) === selectedValue),
+	);
 	const options = $derived.by(() => {
-		const built: DropdownOption<string>[] = outbounds.map((ob) => ({
+		const built: DropdownOption<string>[] = visibleOutbounds.map((ob) => ({
 			value: routeKey(ob.tag, ob.kind),
 			label: optionLabel(ob),
 			disabled: !ob.available,
+			group: KIND_GROUP[ob.kind],
 		}));
 		if (!hasSelected && selectedValue) {
 			const extra = selectedKind ? `${maskSensitiveInText(selectedTag)} (${selectedKind})` : maskSensitiveInText(selectedTag);
@@ -90,13 +118,65 @@
 		}
 		onSelectRoute(selected.tag, selected.kind);
 	}
+
+	// Info-попап с пояснением, через что реально идут загрузки. Вынесен из
+	// основного описания, чтобы не перегружать строку. Закрытие — клик вне
+	// области и Escape.
+	let infoOpen = $state(false);
+	let infoHintEl = $state<HTMLElement | null>(null);
+
+	function closeInfoOnOutside(e: MouseEvent) {
+		if (!infoOpen) return;
+		if (infoHintEl && !infoHintEl.contains(e.target as Node)) {
+			infoOpen = false;
+		}
+	}
+
+	function closeInfoOnEscape(e: KeyboardEvent) {
+		if (e.key === 'Escape') infoOpen = false;
+	}
 </script>
+
+<svelte:window onclick={closeInfoOnOutside} onkeydown={closeInfoOnEscape} />
 
 <div id="downloads" class="setting-row download-setting">
 	<div class="flex flex-col gap-1">
 		<span class="font-medium">Служебные загрузки AWGM</span>
 		<span class="setting-description">
-			Используется для обновлений AWGM, загрузки geo.dat, DNSRoute URL-списков: проверки, ручного и автообновления, установки и обновления managed sing-box binary, а также Amnezia Premium: входа, списка стран и получения конфигураций. Sing-box URL-подписки всегда выполняются напрямую через WAN.
+			Маршрут для служебных задач: обновления AWGM и Sing-Box, загрузок geo.dat и DNSRoute-списков, а также конфигураций Amnezia Premium.<span
+				class="info-hint"
+				bind:this={infoHintEl}
+			>
+				<button
+					type="button"
+					class="info-trigger"
+					aria-label="Через что идут загрузки"
+					aria-expanded={infoOpen}
+					onclick={() => (infoOpen = !infoOpen)}
+				>
+					<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+						<circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.4" />
+						<circle cx="8" cy="4.8" r="0.95" fill="currentColor" />
+						<rect x="7.25" y="6.9" width="1.5" height="4.8" rx="0.75" fill="currentColor" />
+					</svg>
+				</button>
+				{#if infoOpen}
+					<span class="info-popup" role="tooltip">
+						<span class="info-popup-title">Через какой маршрут идёт загрузка</span>
+						<span class="info-popup-row">
+							<strong>AWG-туннели</strong> — качают напрямую, отдельный sing-box не нужен.
+						</span>
+						<span class="info-popup-row">
+							<strong>sing-box-туннели и подписки (SUB)</strong> — работают только при запущенном
+							sing-box; если он выключен, маршрут будет недоступен.
+						</span>
+						<span class="info-popup-row">
+							<strong>Загрузка самих подписок</strong> (скачивание их содержимого по URL) — всегда
+							идёт напрямую через WAN, мимо туннеля.
+						</span>
+					</span>
+				{/if}
+			</span>
 		</span>
 		{#if error}
 			<span class="download-error">{error}</span>
@@ -182,6 +262,76 @@
 	.download-error {
 		color: var(--color-danger);
 		font-size: 0.75rem;
+	}
+
+	.info-hint {
+		position: relative;
+		display: inline-flex;
+		vertical-align: middle;
+		margin-left: 0.25rem;
+	}
+
+	.info-trigger {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.05rem;
+		height: 1.05rem;
+		padding: 0;
+		border: none;
+		border-radius: 50%;
+		background: transparent;
+		color: var(--text-muted, var(--color-text-muted));
+		cursor: pointer;
+		transition: color 0.12s ease;
+	}
+
+	.info-trigger:hover,
+	.info-trigger[aria-expanded='true'] {
+		color: var(--accent);
+	}
+
+	.info-trigger:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+		border-radius: 50%;
+	}
+
+	.info-popup {
+		position: absolute;
+		top: calc(100% + 0.4rem);
+		left: 0;
+		z-index: 30;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+		width: max-content;
+		max-width: min(22rem, 80vw);
+		padding: 0.6rem 0.75rem;
+		border: 1px solid var(--border, var(--color-border));
+		border-radius: var(--radius-sm);
+		background: var(--bg-secondary, var(--color-bg-secondary));
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+		font-size: 0.75rem;
+		line-height: 1.4;
+		color: var(--text-primary, var(--color-text-primary));
+		white-space: normal;
+		text-align: left;
+		cursor: default;
+	}
+
+	.info-popup-title {
+		font-weight: 600;
+		color: var(--text-primary, var(--color-text-primary));
+	}
+
+	.info-popup-row {
+		color: var(--text-muted, var(--color-text-muted));
+	}
+
+	.info-popup-row strong {
+		color: var(--text-primary, var(--color-text-primary));
+		font-weight: 600;
 	}
 
 	.no-singbox-hint {

@@ -58,6 +58,7 @@
 		Wrench,
 		Power,
 	} from "lucide-svelte";
+	import { downloadErrorToText } from "$lib/utils/downloadError";
 
 	const expandUsageLevel = $derived($page.url.searchParams.has('mode'));
 	const highlightFeedbackFab = $derived($page.url.searchParams.has('feedbackFab'));
@@ -233,7 +234,7 @@
 		if (!showNotification) return;
 		const err = get(downloadOutboundsError);
 		if (err) {
-			notifications.error(`Ошибка обновления маршрутов: ${err}`);
+			notifications.error(`Маршруты загрузок: ${downloadErrorToText(err)}`);
 			return;
 		}
 		const list = get(downloadOutbounds);
@@ -538,8 +539,8 @@ $effect(() => {
 					? 'Канал обновлений: develop (нестабильный)'
 					: 'Канал обновлений изменён на стабильный',
 			);
-		} catch {
-			notifications.error('Ошибка смены канала обновлений');
+		} catch (e) {
+			notifications.error(`Смена канала обновлений: ${downloadErrorToText(e)}`);
 		} finally {
 			saving = false;
 		}

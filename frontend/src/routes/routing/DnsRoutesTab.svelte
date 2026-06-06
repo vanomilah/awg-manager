@@ -13,6 +13,7 @@
     import { exportRoutes, downloadJson } from '$lib/utils/dns-export';
     import { buildRoutingTunnelDropdownOptions } from '$lib/utils/routingTunnelOptions';
     import { notifications } from '$lib/stores/notifications';
+    import { downloadErrorToText } from '$lib/utils/downloadError';
     import { dnsRoutesStore } from '$lib/stores/routing';
     import { settings, usageLevel } from '$lib/stores/settings';
     import {
@@ -172,8 +173,8 @@
             const fresh = await api.refreshDnsRouteSubscriptions(id);
             dnsRoutesStore.applyMutationResponse(fresh);
             notifications.success('Подписки обновлены');
-        } catch (e: any) {
-            notifications.error(e.message || 'Ошибка обновления');
+        } catch (e: unknown) {
+            notifications.error(`Обновление подписок: ${downloadErrorToText(e)}`);
         }
     }
 

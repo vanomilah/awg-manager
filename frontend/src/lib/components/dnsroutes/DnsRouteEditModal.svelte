@@ -11,6 +11,7 @@
 		findRoutingTunnelLabel,
 	} from '$lib/utils/routingTunnelOptions';
 	import DownloadRouteNote from '$lib/components/downloads/DownloadRouteNote.svelte';
+	import { humanizeDownloadError } from '$lib/utils/downloadError';
 	import CreateIcon from '$lib/components/ui/icons/CreateIcon.svelte';
 
 	interface Props {
@@ -488,7 +489,9 @@
 							<span class="sub-url">{sub.url}</span>
 							<span class="sub-meta">
 								{#if sub.lastError}
-									<span class="sub-error">Ошибка: {sub.lastError}</span>
+									<span class="sub-error" title={sub.lastError}>
+										{humanizeDownloadError(sub.lastError).title}
+									</span>
 								{:else if sub.lastCount !== undefined && sub.lastCount > 0}
 									<span class="sub-ok">{sub.lastCount} доменов</span>
 									{#if sub.lastFetched}

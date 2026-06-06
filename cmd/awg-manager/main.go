@@ -747,9 +747,9 @@ func main() {
 	if err := sbOrch.Bootstrap(); err != nil {
 		bootLog.Error("singbox-orchestrator", "bootstrap", err.Error())
 	}
-	// Download proxy is an ephemeral per-operation slot. If a previous awgm
-	// process crashed during geo download, Bootstrap may discover an active
-	// 35-download-proxy.json. Always disable it on boot.
+	// Legacy download-proxy slot (35-download-proxy.json) is no longer used
+	// by the downloader, but disable it on boot in case a previous awgm
+	// process crashed with the slot still enabled.
 	if err := sbOrch.SetEnabledSilent(singboxorch.SlotDownloadProxy, false); err != nil {
 		bootLog.Warn("singbox-orchestrator", "downloadproxy-disable", err.Error())
 	}
@@ -1027,8 +1027,9 @@ func main() {
 	sharedDownloadSvc := downloader.NewSettingsBackedService(
 		deviceProxySvc,
 		singboxOp,
-		sbOrch,
+		subSvc,
 		settingsStore,
+		awgStore,
 	)
 	dnsRouteService.SetDownloader(&dnsRouteDownloaderAdapter{svc: sharedDownloadSvc})
 	dnsRefreshScheduler.Start()

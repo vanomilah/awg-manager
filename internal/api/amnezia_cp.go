@@ -19,6 +19,25 @@ import (
 
 const amneziaCPOrigin = "https://cp.amnezia.org"
 
+// applyAmneziaCPTimeouts sets the cp.amnezia.org-specific timeout profile
+// WITHOUT touching DialContext or TLS config. Used on a download-route lease
+// transport so the tunnel binding (SO_BINDTODEVICE + MSS clamp) and the
+// pinned HTTP/1.1 ALPN survive — otherwise "via Work" would silently leak to
+// the WAN.
+func applyAmneziaCPTimeouts(tr *http.Transport) {
+	if tr == nil {
+		return
+	}
+	tr.TLSHandshakeTimeout = 15 * time.Second
+	tr.ResponseHeaderTimeout = 25 * time.Second
+	tr.ExpectContinueTimeout = 1 * time.Second
+	tr.IdleConnTimeout = 45 * time.Second
+	tr.MaxIdleConnsPerHost = 8
+	tr.DisableKeepAlives = true
+}
+
+// configureAmneziaCPTransport sets up a fresh, direct (non-tunnel) transport
+// for the fallback client used when no download route is configured.
 func configureAmneziaCPTransport(tr *http.Transport) {
 	if tr == nil {
 		return
@@ -27,12 +46,7 @@ func configureAmneziaCPTransport(tr *http.Transport) {
 		Timeout:   12 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}).DialContext
-	tr.TLSHandshakeTimeout = 15 * time.Second
-	tr.ResponseHeaderTimeout = 25 * time.Second
-	tr.ExpectContinueTimeout = 1 * time.Second
-	tr.IdleConnTimeout = 45 * time.Second
-	tr.MaxIdleConnsPerHost = 8
-	tr.DisableKeepAlives = true
+	applyAmneziaCPTimeouts(tr)
 }
 
 // Dedicated HTTP client for cp.amnezia.org: disable connection reuse — idle TLS sessions
@@ -94,7 +108,8 @@ func (h *AmneziaCPHandler) downloadClient(ctx context.Context) (*downloader.Leas
 	}
 	client.Timeout = 45 * time.Second
 	if tr, ok := client.Transport.(*http.Transport); ok {
-		configureAmneziaCPTransport(tr)
+		// Preserve the lease's bind dialer + ALPN pin; only adjust timeouts.
+		applyAmneziaCPTimeouts(tr)
 	} else if client.Transport == nil {
 		tr := &http.Transport{Proxy: http.ProxyFromEnvironment}
 		configureAmneziaCPTransport(tr)

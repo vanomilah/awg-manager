@@ -970,6 +970,7 @@ func downloadFileWithClient(ctx context.Context, client *http.Client, rawURL, de
 	if err != nil {
 		return 0, fmt.Errorf("build request: %w", err)
 	}
+	req.Header.Set("User-Agent", "curl/8.7.1")
 
 	if client == nil {
 		client = &http.Client{}

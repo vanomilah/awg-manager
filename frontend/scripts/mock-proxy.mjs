@@ -126,6 +126,7 @@ const MOCK_CAPABILITY_GROUPS = Object.freeze([
 			'POST /__mock/reset-runtime',
 			'POST /__mock/reset',
 			'POST /__mock/singbox-install-fail',
+			'POST /__mock/download-faults',
 		],
 	},
 ]);
@@ -138,6 +139,21 @@ let downloadRouteTag = DEFAULT_MOCK_STATE.downloadRouteTag;
 let updateChannel = DEFAULT_MOCK_STATE.updateChannel;
 let updateCheckEnabled = DEFAULT_MOCK_STATE.updateCheckEnabled;
 
+// Service-download fault injection: every "download via route" endpoint
+// (geo.dat, AWGM update, DNSRoute lists, Amnezia Premium, sing-box binary,
+// download-outbounds) randomly returns a realistic failure instead of the
+// normal/proxied success, so every UI surface can exercise all outcomes
+// (sing-box off, AWG iface down, timeout, network drop, generic). Enabled by
+// default in mock dev; disable with MOCK_DOWNLOAD_FAULTS=0 or via
+// POST /__mock/download-faults. Probability tunable with MOCK_DOWNLOAD_FAULT_PROB.
+function parseProbability(raw, fallback) {
+	const n = Number.parseFloat(raw);
+	if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+	return fallback;
+}
+let downloadFaultsEnabled = process.env.MOCK_DOWNLOAD_FAULTS !== '0';
+let downloadFaultProbability = parseProbability(process.env.MOCK_DOWNLOAD_FAULT_PROB, 0.4);
+
 function getRuntimeState() {
 	return {
 		usageLevel,
@@ -146,6 +162,8 @@ function getRuntimeState() {
 		updateChannel,
 		updateCheckEnabled,
 		singboxInstallShouldFail,
+		downloadFaultsEnabled,
+		downloadFaultProbability,
 		logsCleared: { ...bucketCleared },
 	};
 }
@@ -157,6 +175,8 @@ function resetRuntimeControls() {
 	updateChannel = DEFAULT_MOCK_STATE.updateChannel;
 	updateCheckEnabled = DEFAULT_MOCK_STATE.updateCheckEnabled;
 	singboxInstallShouldFail = process.env.MOCK_SINGBOX_INSTALL_FAIL === '1';
+	downloadFaultsEnabled = process.env.MOCK_DOWNLOAD_FAULTS !== '0';
+	downloadFaultProbability = parseProbability(process.env.MOCK_DOWNLOAD_FAULT_PROB, 0.4);
 	bucketCleared.app = false;
 	bucketCleared.singbox = false;
 }
@@ -184,9 +204,16 @@ const MOCK_DOWNLOAD_OUTBOUNDS = [
 	},
 	{
 		tag: 'sb-vless-1',
-		kind: 'vless',
+		kind: 'singbox',
 		label: 'VLESS EU-1',
 		detail: 'eu1.vpn.example:443',
+		available: true,
+	},
+	{
+		tag: 'sb-vless-2',
+		kind: 'singbox',
+		label: 'Trojan NL-2',
+		detail: 'nl2.vpn.example:443',
 		available: true,
 	},
 	{
@@ -197,10 +224,10 @@ const MOCK_DOWNLOAD_OUTBOUNDS = [
 		available: true,
 	},
 	{
-		tag: 'sb-wg-reserve',
-		kind: 'wireguard',
-		label: 'WireGuard Reserve',
-		detail: 'wg-reserve.demo.example:51820',
+		tag: 'sb-subscription-2',
+		kind: 'subscription',
+		label: 'AleXRAY (SUB)',
+		detail: 'sub-alexray.demo.example',
 		available: false,
 	},
 ];
@@ -2616,6 +2643,64 @@ function wait(ms) {
 	return new Promise((resolveWait) => setTimeout(resolveWait, ms));
 }
 
+// Endpoints that perform a "service download" through the configurable route.
+// `style: 'envelope'` → backend error shape {error, message, code} @ 400.
+// `style: 'updateInfo'` → /system/update/check returns 200 with data.error.
+const DOWNLOAD_FAULT_ROUTES = [
+	{ method: 'POST', path: '/hydraroute/geo-files/update', style: 'envelope', code: 'GEO_UPDATE_ERROR' },
+	{ method: 'POST', path: '/hydraroute/geo-files/add', style: 'envelope', code: 'GEO_DOWNLOAD_ERROR' },
+	{ method: 'POST', path: '/dns-routes/refresh', style: 'envelope', code: 'DNS_ROUTE_REFRESH_ERROR' },
+	{ method: 'POST', path: '/amnezia-premium/login', style: 'envelope', code: 'AMNEZIA_CP_NETWORK' },
+	{ method: 'POST', path: '/amnezia-premium/account-info', style: 'envelope', code: 'AMNEZIA_CP_NETWORK' },
+	{ method: 'POST', path: '/amnezia-premium/download-config', style: 'envelope', code: 'AMNEZIA_CP_NETWORK' },
+	{ method: 'POST', path: '/singbox/install', style: 'envelope', code: 'SINGBOX_INSTALL_ERROR' },
+	{ method: 'POST', path: '/singbox/update', style: 'envelope', code: 'SINGBOX_UPDATE_ERROR' },
+	// NB: /download/outbounds is route *discovery*, not a download — never fault
+	// it, otherwise the route dropdown randomly empties.
+	{ method: 'GET', path: '/system/update/check', style: 'updateInfo' },
+];
+
+// One realistic message per humanized failure kind (see downloadError.ts):
+// sing-box off, AWG interface down, timeout, network drop, generic.
+const DOWNLOAD_FAULT_MESSAGES = [
+	'outbound "sb-subscription-1" is unavailable: sing-box is not running',
+	'outbound "awg-de-frankfurt" interface "awg0" is not present',
+	'download via DE Frankfurt: request failed: context deadline exceeded (timed out)',
+	'download via Direct (WAN): request failed: http get: EOF',
+	'remote returned HTTP 500: internal server error',
+];
+
+// Randomly short-circuit a service-download endpoint with a failure so the UI
+// can run through all outcomes. Returns true when a fault was written (caller
+// must stop), false to continue with the normal/proxied success path.
+function maybeInjectDownloadFault(req, res, path) {
+	if (!downloadFaultsEnabled) return false;
+	const route = DOWNLOAD_FAULT_ROUTES.find((r) => r.method === req.method && r.path === path);
+	if (!route) return false;
+	if (Math.random() >= downloadFaultProbability) return false;
+
+	// Drain any request body so keep-alive sockets don't stall.
+	if (req.method !== 'GET' && req.method !== 'HEAD') req.resume();
+
+	const message = DOWNLOAD_FAULT_MESSAGES[Math.floor(Math.random() * DOWNLOAD_FAULT_MESSAGES.length)];
+	if (route.style === 'updateInfo') {
+		send(res, 200, {
+			success: true,
+			data: {
+				currentVersion: 'dev',
+				latestVersion: '',
+				available: false,
+				channel: updateChannel,
+				error: message,
+			},
+		});
+	} else {
+		send(res, 400, { error: true, message, code: route.code });
+	}
+	console.log(`[mock-proxy] injected download fault on ${req.method} ${path}: ${message}`);
+	return true;
+}
+
 function readRequestText(req) {
 	return new Promise((resolveRead, rejectRead) => {
 		let raw = '';
@@ -2785,18 +2870,19 @@ function buildDownloadOutbounds() {
 			tag: t.id,
 			kind: 'awg',
 			label: t.name,
-			detail: `${t.interfaceName} · ${t.endpoint}`,
-			available: t.enabled !== false && t.status === 'running',
+			// detail = kernel iface (backend bind_interface), not endpoint metadata
+			detail: t.interfaceName ?? '',
+			available: t.enabled !== false && !!t.interfaceName,
 		});
 	}
 
 	for (const t of MOCK_SINGBOX_TUNNELS) {
 		add({
 			tag: t.tag,
-			kind: t.protocol || 'singbox',
+			kind: 'singbox',
 			label: t.tag,
-			detail: `${t.proxyInterface} · ${t.server}:${t.port}`,
-			available: !!t.running && t.connectivity?.connected !== false,
+			detail: `${t.protocol?.toUpperCase() ?? 'TUNNEL'} · ${t.server}:${t.port}`,
+			available: !!t.running && t.listenPort > 0,
 		});
 	}
 
@@ -3116,6 +3202,29 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	// Toggle / tune the random service-download fault injector at runtime.
+	// Body (optional JSON): { enabled?: boolean, probability?: 0..1 }.
+	if (req.method === 'POST' && path === '/__mock/download-faults') {
+		const text = await readRequestText(req);
+		try {
+			const body = text ? JSON.parse(text) : {};
+			if (typeof body.enabled === 'boolean') downloadFaultsEnabled = body.enabled;
+			if (body.probability !== undefined) {
+				downloadFaultProbability = parseProbability(body.probability, downloadFaultProbability);
+			}
+		} catch {
+			/* ignore malformed body, just report current state */
+		}
+		sendData(res, {
+			downloadFaultsEnabled,
+			downloadFaultProbability,
+		});
+		console.log(`[mock-proxy] download faults: enabled=${downloadFaultsEnabled} p=${downloadFaultProbability}`);
+		return;
+	}
+
+	if (maybeInjectDownloadFault(req, res, path)) return;
+
 	if (req.method === 'GET' && path === '/system/info') {
 		fetchJSON('/system/info').then(({ status, body }) => {
 			if (body && typeof body === 'object' && body.data && typeof body.data === 'object') {
@@ -3181,6 +3290,52 @@ const server = http.createServer(async (req, res) => {
 		send(res, 200, {
 			success: true,
 			data: buildDownloadOutbounds(),
+		});
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/hydraroute/geo-files') {
+		const ago = (min) => new Date(Date.now() - min * 60_000).toISOString();
+		send(res, 200, {
+			success: true,
+			data: [
+				// Managed by AWGM (external !== true) — updatable through the route.
+				{
+					type: 'geoip',
+					path: '/opt/etc/HydraRoute/geoip_GA.dat',
+					url: 'https://raw.githubusercontent.com/Ground-Zerro/Geo-Aggregator/main/geodat/geoip_GA.dat',
+					size: 1_245_184,
+					tagCount: 312,
+					updated: ago(180),
+				},
+				{
+					type: 'geosite',
+					path: '/opt/etc/HydraRoute/geosite_GA.dat',
+					url: 'https://raw.githubusercontent.com/Ground-Zerro/Geo-Aggregator/main/geodat/geosite_GA.dat',
+					size: 4_980_736,
+					tagCount: 868,
+					updated: ago(180),
+				},
+				// Extra non-external geoip (managed by AWGM).
+				{
+					type: 'geoip',
+					path: '/opt/etc/HydraRoute/geoip_antifilter.dat',
+					url: 'https://cdn.example.com/geodat/geoip_antifilter.dat',
+					size: 786_432,
+					tagCount: 154,
+					updated: ago(45),
+				},
+				// External — discovered in hrneo.conf, not managed by AWGM.
+				{
+					type: 'geosite',
+					path: '/opt/etc/hrneo/geosite.db',
+					url: 'https://cdn.example.com/geosite.db',
+					size: 3_145_728,
+					tagCount: 420,
+					updated: ago(1440),
+					external: true,
+				},
+			],
 		});
 		return;
 	}
@@ -4854,7 +5009,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
 	console.log(`mock-proxy on http://127.0.0.1:${PORT} → ${UPSTREAM} (usageLevel=${usageLevel})`);
-	console.log('[mock-proxy] controls: GET /__mock/capabilities, GET /__mock/tunnels, POST /__mock/reset-runtime, POST /__mock/singbox-install-fail');
+	console.log('[mock-proxy] controls: GET /__mock/capabilities, GET /__mock/tunnels, POST /__mock/reset-runtime, POST /__mock/singbox-install-fail, POST /__mock/download-faults');
+	console.log(`[mock-proxy] download faults: enabled=${downloadFaultsEnabled} p=${downloadFaultProbability} (disable: MOCK_DOWNLOAD_FAULTS=0)`);
 });
 
 function wsAccept(key) {

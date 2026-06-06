@@ -15,6 +15,7 @@
 	import { ConfirmModal, Button, Dropdown } from '$lib/components/ui';
 	import { geoDownloadProgress } from '$lib/stores/geoDownload';
 	import CreateIcon from '$lib/components/ui/icons/CreateIcon.svelte';
+	import DownloadErrorNotice from '$lib/components/downloads/DownloadErrorNotice.svelte';
 
 	interface Props {
 		files: GeoFileEntry[];
@@ -67,7 +68,10 @@
 		ok: boolean;
 		action: string;
 		routeLabel: string;
-		message: string;
+		// Success text; on failure the raw caught error is kept in `error`
+		// and humanized at render time via DownloadErrorNotice.
+		message?: string;
+		error?: unknown;
 	};
 
 	let activeDownload = $state<DownloadOperation | null>(null);
@@ -138,13 +142,11 @@
 			};
 			onrefresh();
 		} catch (e: unknown) {
-			const msg = e instanceof Error ? e.message : String(e);
-			err = `Не удалось скачать через «${op.routeLabel}»: ${msg}`;
 			lastDownload = {
 				ok: false,
 				action: 'Добавление geo-файла',
 				routeLabel: op.routeLabel,
-				message: msg,
+				error: e,
 			};
 		} finally {
 			busy = null;
@@ -171,13 +173,11 @@
 			};
 			onrefresh();
 		} catch (e: unknown) {
-			const msg = e instanceof Error ? e.message : String(e);
-			err = `Не удалось скачать через «${op.routeLabel}»: ${msg}`;
 			lastDownload = {
 				ok: false,
 				action: 'Добавление пресета',
 				routeLabel: op.routeLabel,
-				message: msg,
+				error: e,
 			};
 		} finally {
 			busy = null;
@@ -203,13 +203,11 @@
 			};
 			onrefresh();
 		} catch (e: unknown) {
-			const msg = e instanceof Error ? e.message : String(e);
-			err = `Не удалось обновить через «${op.routeLabel}»: ${msg}`;
 			lastDownload = {
 				ok: false,
 				action: `Обновление ${fileName(path)}`,
 				routeLabel: op.routeLabel,
-				message: msg,
+				error: e,
 			};
 		} finally {
 			busy = null;
@@ -259,12 +257,11 @@
 			}
 
 			if (notes.length > 0) {
-				err = notes.join('; ');
 				lastDownload = {
 					ok: false,
 					action: 'Синхронизация geo-файлов',
 					routeLabel: op.routeLabel,
-					message: notes.join('; '),
+					error: notes.join('; '),
 				};
 			} else {
 				lastDownload = {
@@ -387,12 +384,20 @@
 		</div>
 	{/if}
 	{#if !activeDownload && lastDownload}
-		<div class="route-status {lastDownload.ok ? 'route-status-ok' : 'route-status-error'}">
-			{lastDownload.ok ? 'Последняя операция успешна' : 'Последняя операция завершилась ошибкой'}:
-			{lastDownload.action} ({lastDownload.routeLabel}){#if lastDownload.message}
-				— {lastDownload.message}
-			{/if}
-		</div>
+		{#if lastDownload.ok}
+			<div class="route-status route-status-ok">
+				Последняя операция успешна: {lastDownload.action} ({lastDownload.routeLabel}){#if lastDownload.message}
+					— {lastDownload.message}
+				{/if}
+			</div>
+		{:else}
+			<div class="route-status route-status-error">
+				<span class="route-status-head">
+					Не удалось: {lastDownload.action} ({lastDownload.routeLabel})
+				</span>
+				<DownloadErrorNotice error={lastDownload.error} />
+			</div>
+		{/if}
 	{/if}
 	</div>
 	
@@ -823,6 +828,16 @@
 		background: rgba(245, 158, 11, 0.12);
 		color: var(--warning, #f59e0b);
 		border-left: 3px solid var(--warning, #f59e0b);
+	}
+
+	.route-status-error {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.route-status-head {
+		font-weight: 500;
 	}
 
 	.add-type-select {
