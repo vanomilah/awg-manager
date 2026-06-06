@@ -33,8 +33,7 @@
         autoDelayCheckNonce?: number;
         autoDelayCheckDelayMs?: number;
         layout?: SingboxLayoutMode;
-        /** Mobile list: dense header + action bar instead of a table row. */
-        listAsCard?: boolean;
+        renderMode?: import('$lib/constants/singboxLayout').TunnelRenderMode;
         ondetail?: (tag: string) => void;
     }
     let {
@@ -43,7 +42,7 @@
         autoDelayCheckNonce = 0,
         autoDelayCheckDelayMs = 0,
         layout = 'compact',
-        listAsCard = false,
+        renderMode = 'compact',
         ondetail,
     }: Props = $props();
 
@@ -197,7 +196,7 @@
 
 </script>
 
-{#if layout === 'list' && !listAsCard}
+{#if renderMode === 'table'}
     <tr
         class="sbx-sub-active-row"
         class:ok={cardState === 'ok'}
@@ -318,10 +317,10 @@
                 />
             </td>
     </tr>
-{:else if layout === 'dense' || listAsCard}
+{:else if layout === 'dense' || renderMode === 'list-card'}
 <div
     class="card view-dense"
-    class:view-list={listAsCard}
+    class:view-list={renderMode === 'list-card'}
     class:ok={cardState === 'ok'}
     class:slow={cardState === 'slow'}
     class:fail={cardState === 'fail'}
@@ -377,7 +376,7 @@
         </div>
     </div>
 
-    {#if !listAsCard}
+    {#if renderMode !== 'list-card'}
     <div class="details">
     {#if subscription.lastError}
         <div class="sub-error mono">{subscription.lastError}</div>
@@ -441,7 +440,7 @@
         />
     </div>
 
-    {#if !listAsCard && !subscription.lastError}
+    {#if renderMode !== 'list-card' && !subscription.lastError}
         <div class="charts-dense">
             <button
                 type="button"
@@ -1163,7 +1162,7 @@
     }
 
     .chart-body :global(.tunnel-delay-spark--compact) {
-        height: 28px;
+        height: 36px;
     }
 
     .sbx-sub-active-row {

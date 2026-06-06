@@ -16,7 +16,6 @@
 		showSearch?: boolean;
 		/** When false, toolbar is search-only (sort via table headers on desktop list). */
 		showSort?: boolean;
-		hideSortOnDesktop?: boolean;
 		onSearchChange: (value: string) => void;
 		onSortChange: (key: string | null) => void;
 		onToggleDir: () => void;
@@ -29,7 +28,6 @@
 		options,
 		showSearch = false,
 		showSort = true,
-		hideSortOnDesktop = false,
 		onSearchChange,
 		onSortChange,
 		onToggleDir,
@@ -43,7 +41,7 @@
 	);
 </script>
 
-<div class="tunnel-sort-controls" class:hide-sort-on-desktop={hideSortOnDesktop}>
+<div class="tunnel-sort-controls">
 	{#if showSearch}
 		<input
 			class="tunnel-search"
@@ -81,10 +79,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.375rem;
-	}
-
-	.tunnel-sort-controls.hide-sort-on-desktop .tunnel-sort-ui {
-		display: none;
 	}
 
 	.tunnel-search {

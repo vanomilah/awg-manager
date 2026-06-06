@@ -29,8 +29,7 @@
 	interface Props {
 		tunnel: SingboxTunnel;
 		layout?: SingboxLayoutMode;
-		/** Mobile list: dense header + action bar instead of a table row. */
-		listAsCard?: boolean;
+		renderMode?: import('$lib/constants/singboxLayout').TunnelRenderMode;
 		autoDelayCheckNonce?: number;
 		autoDelayCheckDelayMs?: number;
 		ondetail?: (tag: string) => void;
@@ -39,7 +38,7 @@
 	let {
 		tunnel,
 		layout = 'compact',
-		listAsCard = false,
+		renderMode = 'compact',
 		autoDelayCheckNonce = 0,
 		autoDelayCheckDelayMs = 0,
 		ondetail,
@@ -172,7 +171,7 @@
 
 </script>
 
-{#if layout === 'list' && !listAsCard}
+{#if renderMode === 'table'}
 	<tr
 		class="sbx-tunnel-list-row"
 		class:ok={cardState === 'ok'}
@@ -249,10 +248,10 @@
 			/>
 		</td>
 	</tr>
-{:else if layout === 'dense' || listAsCard}
+{:else if layout === 'dense' || renderMode === 'list-card'}
 <div
 	class="card view-dense"
-	class:view-list={listAsCard}
+	class:view-list={renderMode === 'list-card'}
 	class:ok={cardState === 'ok'}
 	class:slow={cardState === 'slow'}
 	class:fail={cardState === 'fail'}
@@ -291,7 +290,7 @@
 		</div>
 	</div>
 
-	{#if !listAsCard}
+	{#if renderMode !== 'list-card'}
 	<div class="details">
 	<div class="details-dense-cols">
 		<div class="details-dense-col details-dense-col-lead">
@@ -355,7 +354,7 @@
 		/>
 	</div>
 
-	{#if !listAsCard}
+	{#if renderMode !== 'list-card'}
 	<div class="charts-dense">
 		<button
 			type="button"
@@ -1011,7 +1010,7 @@
 	}
 
 	.chart-body :global(.tunnel-delay-spark--compact) {
-		height: 26px;
+		height: 36px;
 	}
 
 	/* List row (grid columns set on parent .singbox-tunnel-list-table) */

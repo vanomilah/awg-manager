@@ -1,6 +1,9 @@
 /** Sing-box surfaces: main tunnels tab, subscriptions tab, subscription detail members. */
 export type SingboxLayoutMode = 'dense' | 'compact' | 'list';
 
+/** How a tunnel surface renders — table on desktop list, cards otherwise. */
+export type TunnelRenderMode = 'table' | 'list-card' | 'dense' | 'compact';
+
 /**
  * Same breakpoint as the AWG tunnels tab (`isAwgMobile` on the home page).
  * Below this width: list mode uses compact card rows (dense header + actions).
@@ -19,11 +22,6 @@ export function parseSingboxLayoutMode(value: string | null): SingboxLayoutMode 
 export function readTunnelMobileLayout(): boolean {
 	if (typeof window === 'undefined') return false;
 	return window.matchMedia(`(max-width: ${TUNNEL_MOBILE_LAYOUT_MAX_WIDTH_PX}px)`).matches;
-}
-
-/** Mobile list mode: dense card header + action bar (not the desktop table). */
-export function isTunnelMobileCardList(mobile: boolean, layout: string): boolean {
-	return mobile && layout === 'list';
 }
 
 export function subscribeTunnelMobileLayout(onChange: (mobile: boolean) => void): () => void {

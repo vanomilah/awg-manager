@@ -519,12 +519,9 @@ button.tunnel-list-traffic-cell:focus-visible {
 }
 
 .tunnel-list-actions--labeled {
-	display: grid;
-	grid-auto-flow: column;
-	grid-auto-columns: minmax(0, 1fr);
-	justify-content: stretch;
-	width: 100%;
-	gap: 4px;
+	justify-content: center;
+	flex-wrap: wrap;
+	gap: 0.5rem;
 }
 
 .tunnel-list-actions__btn {
@@ -549,6 +546,30 @@ button.tunnel-list-traffic-cell:focus-visible {
 }
 
 .tunnel-list-actions--labeled .tunnel-list-actions__btn {
+	width: auto;
+	height: auto;
+	flex: 0 1 auto;
+	gap: 0.35rem;
+	padding: 0.375rem 0.625rem;
+	font-size: var(--sbx-card-action, 11px);
+}
+
+.tunnel-list-actions--labeled .tunnel-list-actions__btn svg {
+	flex-shrink: 0;
+}
+
+/* Equal action columns — mobile list cards and narrow viewports only. */
+.card.view-list .tunnel-list-actions--labeled {
+	display: grid;
+	grid-auto-flow: column;
+	grid-auto-columns: minmax(0, 1fr);
+	justify-content: stretch;
+	width: 100%;
+	flex-wrap: nowrap;
+	gap: 4px;
+}
+
+.card.view-list .tunnel-list-actions--labeled .tunnel-list-actions__btn {
 	width: 100%;
 	min-width: 0;
 	height: auto;
@@ -556,13 +577,32 @@ button.tunnel-list-traffic-cell:focus-visible {
 	justify-content: center;
 	gap: 0.25rem;
 	padding: 0.375rem 0.35rem;
-	font-size: var(--sbx-card-action, 11px);
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.tunnel-list-actions--labeled .tunnel-list-actions__btn svg {
-	flex-shrink: 0;
+@media (max-width: 760px) {
+	.tunnel-list-actions--labeled {
+		display: grid;
+		grid-auto-flow: column;
+		grid-auto-columns: minmax(0, 1fr);
+		justify-content: stretch;
+		width: 100%;
+		flex-wrap: nowrap;
+		gap: 4px;
+	}
+
+	.tunnel-list-actions--labeled .tunnel-list-actions__btn {
+		width: 100%;
+		min-width: 0;
+		height: auto;
+		flex: unset;
+		justify-content: center;
+		gap: 0.25rem;
+		padding: 0.375rem 0.35rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
 }
 
 /* ─── Tunnel card actions row ─── */

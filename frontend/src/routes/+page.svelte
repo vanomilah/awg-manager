@@ -61,18 +61,16 @@
 		SINGBOX_LAYOUT_STORAGE_KEY,
 		parseSingboxLayoutMode,
 		readTunnelMobileLayout,
-		isTunnelMobileCardList,
 		subscribeTunnelMobileLayout,
 		type SingboxLayoutMode,
+		type TunnelRenderMode,
 	} from '$lib/constants/singboxLayout';
 	import { isMockDevMode as getIsMockDevMode } from '$lib/env';
 	import { Download } from 'lucide-svelte';
 	import CreateIcon from '$lib/components/ui/icons/CreateIcon.svelte';
 	import { formatRunningSub, pluralForm, SUBSCRIPTION_WORDS, TUNNEL_WORDS } from '$lib/utils/pluralize';
 	import TunnelTableSortHeader from '$lib/components/tunnels/TunnelTableSortHeader.svelte';
-	import TunnelTableSortControls from '$lib/components/tunnels/TunnelTableSortControls.svelte';
 	import TunnelToolbarViewRow from '$lib/components/tunnels/TunnelToolbarViewRow.svelte';
-	import TunnelListEmptyMessage from '$lib/components/tunnels/TunnelListEmptyMessage.svelte';
 	import {
 		awgTunnelTableSort,
 		singboxSubscriptionTableSort,
@@ -92,6 +90,13 @@
 
 	type TunnelTab = 'awg' | 'singbox' | 'subscriptions';
 	type AwgTunnelViewMode = 'cards' | 'compact' | 'list';
+	type TunnelSurfaceLayout = SingboxLayoutMode | 'cards';
+
+	function resolveTunnelRenderMode(mobile: boolean, layout: TunnelSurfaceLayout): TunnelRenderMode {
+		if (layout === 'list') return mobile ? 'list-card' : 'table';
+		if (layout === 'dense' || layout === 'cards') return 'dense';
+		return 'compact';
+	}
 	type ConnectivityCell = { connected: boolean; latency: number | null } | undefined;
 	type EndpointScope = 'managed' | 'system' | 'external';
 	type TunnelSortOption = { value: string; label: string };
@@ -600,16 +605,13 @@
 			: singboxSubscriptionsLayoutMode,
 	);
 	let showSingboxGridListToggle = $derived(showSingboxListOption);
-	let awgEffectiveViewMode = $derived.by((): AwgTunnelViewMode => {
-		if (!showAwgViewModeSwitch) return 'compact';
-		return awgViewMode;
-	});
-	let awgMobileCardList = $derived(isTunnelMobileCardList(isAwgMobile, awgEffectiveViewMode));
-	let singboxTunnelsMobileCardList = $derived(
-		isTunnelMobileCardList(isAwgMobile, singboxTunnelsEffectiveLayout),
+	let awgEffectiveViewMode = $derived(!showAwgViewModeSwitch ? 'compact' : awgViewMode);
+	let awgRenderMode = $derived(resolveTunnelRenderMode(isAwgMobile, awgEffectiveViewMode));
+	let singboxTunnelsRenderMode = $derived(
+		resolveTunnelRenderMode(isAwgMobile, singboxTunnelsEffectiveLayout),
 	);
-	let singboxSubscriptionsMobileCardList = $derived(
-		isTunnelMobileCardList(isAwgMobile, singboxSubscriptionsEffectiveLayout),
+	let singboxSubscriptionsRenderMode = $derived(
+		resolveTunnelRenderMode(isAwgMobile, singboxSubscriptionsEffectiveLayout),
 	);
 	let awgCardViewMode = $derived<'cards' | 'compact'>(
 		awgEffectiveViewMode === 'cards' ? 'cards' : 'compact',
@@ -1417,12 +1419,25 @@
 		});
 	});
 
-	let awgListModeRowsCount = $derived(sortedFilteredAwgList.length + sortedFilteredSystemList.length + sortedFilteredExternalList.length);
-	let awgListModeSourceRowsCount = $derived(awgList.length + visibleSystemList.length + externalList.length);
-	let singboxTunnelsListModeRowsCount = $derived(sortedFilteredSingboxTunnels.length);
-	let singboxTunnelsListModeSourceRowsCount = $derived(singboxTunnelsList.length);
-	let singboxSubscriptionsListModeRowsCount = $derived(sortedFilteredSubscriptionsActiveCards.length + sortedFilteredSubscriptionsListRows.length);
-	let singboxSubscriptionsListModeSourceRowsCount = $derived(subscriptionsActiveCards.length + subscriptionsListRows.length);
+	let awgSourceRowCount = $derived(awgList.length + visibleSystemList.length + externalList.length);
+	let singboxTunnelsSourceRowCount = $derived(singboxTunnelsList.length);
+	let singboxSubscriptionsSourceRowCount = $derived(
+		subscriptionsActiveCards.length + subscriptionsListRows.length,
+	);
+	let awgFilteredRowsCount = $derived(
+		sortedFilteredAwgList.length + sortedFilteredSystemList.length + sortedFilteredExternalList.length,
+	);
+	let singboxTunnelsFilteredRowsCount = $derived(sortedFilteredSingboxTunnels.length);
+	let singboxSubscriptionsFilteredRowsCount = $derived(
+		sortedFilteredSubscriptionsActiveCards.length + sortedFilteredSubscriptionsListRows.length,
+	);
+	let awgSearchEmpty = $derived(awgListSearchQuery.trim() !== '' && awgFilteredRowsCount === 0);
+	let singboxTunnelsSearchEmpty = $derived(
+		singboxTunnelsSearchQuery.trim() !== '' && singboxTunnelsFilteredRowsCount === 0,
+	);
+	let singboxSubscriptionsSearchEmpty = $derived(
+		singboxSubscriptionsSearchQuery.trim() !== '' && singboxSubscriptionsFilteredRowsCount === 0,
+	);
 
 
 </script>
@@ -1589,23 +1604,11 @@
 				</div>
 				<div class="toolbar-actions">
 					<TunnelToolbarViewRow
-						show={awgListModeSourceRowsCount >= 5 || showAwgViewModeSwitch}
-						showSearch={awgListModeSourceRowsCount >= 5}
+						sourceRowCount={awgSourceRowCount}
 						showViewToggle={showAwgViewModeSwitch}
+						searchQuery={awgListSearchQuery}
+						onSearchChange={(value) => (awgListSearchQuery = value)}
 					>
-						{#snippet search()}
-							<TunnelTableSortControls
-								searchQuery={awgListSearchQuery}
-								sortKey={$awgTunnelTableSort.sortBy}
-								sortAsc={$awgTunnelTableSort.sortAsc}
-								options={awgSortOptions}
-								showSearch={true}
-								showSort={false}
-								onSearchChange={(value) => (awgListSearchQuery = value)}
-								onSortChange={(key) => awgTunnelTableSort.setSortBy(key as AwgTunnelSortKey | null)}
-								onToggleDir={() => awgTunnelTableSort.toggleDir()}
-							/>
-						{/snippet}
 						{#snippet viewToggle()}
 							<LayoutViewToggle
 								value={awgViewMode}
@@ -1623,7 +1626,7 @@
 					</Button>
 				</div>
 			</div>
-			{#if awgEffectiveViewMode === 'list' && !awgMobileCardList}
+			{#if awgRenderMode === 'table'}
 				<div class="awg-summary-row">
 					<StatStrip>
 						<Stat
@@ -2048,63 +2051,25 @@
 							</div>
 						{/each}
 					{/if}
-					{#if awgListSearchQuery.trim() && awgListModeRowsCount === 0}
+					{#if awgSearchEmpty}
 						<div class="awg-list-row awg-list-row--section">
 							<div class="awg-list-section-title">Ничего не найдено</div>
 						</div>
 					{/if}
 					</div>
 				</div>
-			{:else if awgMobileCardList}
-				<div class="tunnel-grid tunnel-grid--list">
-					{#each sortedFilteredAwgList as tunnel, i (tunnel.id)}
-						<TunnelCard
-							{tunnel}
-							view="list"
-							toggleLoading={toggleLoading[tunnel.id] ?? false}
-							deleteLoading={deleteLoading[tunnel.id] ?? false}
-							autoConnectivityNonce={awgAutoConnectivityNonce}
-							autoConnectivityDelayMs={i * 180}
-							onToggleOnOff={() => handleToggleOnOff(tunnel.id)}
-							ondelete={() => requestDelete(tunnel.id)}
-							ondetail={(id) => openDetail(id)}
-						/>
-					{/each}
-					{#each sortedFilteredSystemList as tunnel (tunnel.id)}
-						<SystemTunnelCard
-							{tunnel}
-							view="list"
-							onMarkServer={markAsServer}
-							ondetail={(id) => openDetail(id)}
-							ontest={(id, name) => openAwgDiagnostics(id, name, 'system')}
-						/>
-					{/each}
-				</div>
-				{#if sortedFilteredExternalList.length > 0}
-					<div class="external-section">
-						<h2 class="section-title">Внешние туннели</h2>
-						<div class="tunnel-grid tunnel-grid--list">
-							{#each sortedFilteredExternalList as extTunnel (extTunnel.interfaceName)}
-								<ExternalTunnelCard
-									tunnel={extTunnel}
-									view="list"
-									onadopt={(name) => handleAdoptClick(name)}
-								/>
-							{/each}
-						</div>
-					</div>
-				{/if}
-				<TunnelListEmptyMessage show={awgListSearchQuery.trim() !== '' && awgListModeRowsCount === 0} />
 			{:else}
+				{@const awgGridView = awgRenderMode === 'list-card' ? 'list' : awgCardViewMode}
 				<div
 					class="tunnel-grid"
-					class:tunnel-grid--dense={awgEffectiveViewMode === 'cards'}
-					class:tunnel-grid--compact={awgEffectiveViewMode === 'compact'}
+					class:tunnel-grid--list={awgRenderMode === 'list-card'}
+					class:tunnel-grid--dense={awgRenderMode !== 'list-card' && awgEffectiveViewMode === 'cards'}
+					class:tunnel-grid--compact={awgRenderMode !== 'list-card' && awgEffectiveViewMode === 'compact'}
 				>
 					{#each sortedFilteredAwgList as tunnel, i (tunnel.id)}
 						<TunnelCard
 							{tunnel}
-							view={awgCardViewMode}
+							view={awgGridView}
 							toggleLoading={toggleLoading[tunnel.id] ?? false}
 							deleteLoading={deleteLoading[tunnel.id] ?? false}
 							autoConnectivityNonce={awgAutoConnectivityNonce}
@@ -2117,7 +2082,7 @@
 					{#each sortedFilteredSystemList as tunnel (tunnel.id)}
 						<SystemTunnelCard
 							{tunnel}
-							view={awgCardViewMode}
+							view={awgGridView}
 							onMarkServer={markAsServer}
 							ondetail={(id) => openDetail(id)}
 							ontest={(id, name) => openAwgDiagnostics(id, name, 'system')}
@@ -2130,20 +2095,23 @@
 						<h2 class="section-title">Внешние туннели</h2>
 						<div
 							class="tunnel-grid"
-							class:tunnel-grid--dense={awgEffectiveViewMode === 'cards'}
-							class:tunnel-grid--compact={awgEffectiveViewMode === 'compact'}
+							class:tunnel-grid--list={awgRenderMode === 'list-card'}
+							class:tunnel-grid--dense={awgRenderMode !== 'list-card' && awgEffectiveViewMode === 'cards'}
+							class:tunnel-grid--compact={awgRenderMode !== 'list-card' && awgEffectiveViewMode === 'compact'}
 						>
 							{#each sortedFilteredExternalList as extTunnel (extTunnel.interfaceName)}
 								<ExternalTunnelCard
 									tunnel={extTunnel}
-									view={awgCardViewMode}
+									view={awgGridView}
 									onadopt={(name) => handleAdoptClick(name)}
 								/>
 							{/each}
 						</div>
 					</div>
 				{/if}
-				<TunnelListEmptyMessage show={awgListSearchQuery.trim() !== '' && awgListModeRowsCount === 0} />
+				{#if awgSearchEmpty}
+					<p class="tunnel-list-empty">Ничего не найдено</p>
+				{/if}
 			{/if}
 		{/if}
 		{:else if activeTab === 'subscriptions'}
@@ -2164,23 +2132,11 @@
 						</span>
 						<div class="toolbar-actions">
 							<TunnelToolbarViewRow
-								show={singboxSubscriptionsListModeSourceRowsCount >= 5 || subscriptionsList.length > 0}
-								showSearch={singboxSubscriptionsListModeSourceRowsCount >= 5}
+								sourceRowCount={singboxSubscriptionsSourceRowCount}
 								showViewToggle={subscriptionsList.length > 0}
+								searchQuery={singboxSubscriptionsSearchQuery}
+								onSearchChange={(value) => (singboxSubscriptionsSearchQuery = value)}
 							>
-								{#snippet search()}
-									<TunnelTableSortControls
-										searchQuery={singboxSubscriptionsSearchQuery}
-										sortKey={$singboxSubscriptionTableSort.sortBy}
-										sortAsc={$singboxSubscriptionTableSort.sortAsc}
-										options={subscriptionSortOptions}
-										showSearch={true}
-										showSort={false}
-										onSearchChange={(value) => (singboxSubscriptionsSearchQuery = value)}
-										onSortChange={(key) => singboxSubscriptionTableSort.setSortBy(key as SubscriptionSortKey | null)}
-										onToggleDir={() => singboxSubscriptionTableSort.toggleDir()}
-									/>
-								{/snippet}
 								{#snippet viewToggle()}
 									<LayoutViewToggle
 										value={singboxSubscriptionsLayoutMode}
@@ -2215,7 +2171,7 @@
 								Добавить подписку
 							</Button>
 						</div>
-					{:else if singboxSubscriptionsEffectiveLayout === 'list' && !singboxSubscriptionsMobileCardList}
+					{:else if singboxSubscriptionsRenderMode === 'table'}
 						<div class="awg-summary-row">
 							<StatStrip>
 								<Stat
@@ -2292,6 +2248,7 @@
 										autoDelayCheckNonce={singboxAutoDelayCheckNonce}
 										autoDelayCheckDelayMs={i * 180}
 										layout="list"
+										renderMode="table"
 										ondetail={(tag) => openSingboxDetail(tag)}
 									/>
 								{/each}
@@ -2305,12 +2262,13 @@
 										subscription={sub}
 										liveActiveMember={liveActives[sub.id] || null}
 										layout="list"
+										renderMode="table"
 										ondelete={requestSubscriptionDelete}
 										ondetail={(tag) => openSingboxDetail(tag)}
 									/>
 								{/each}
 							{/if}
-							{#if singboxSubscriptionsSearchQuery.trim() && singboxSubscriptionsListModeRowsCount === 0}
+							{#if singboxSubscriptionsSearchEmpty}
 								<tr class="tunnel-empty-row">
 									<td colspan="6">Ничего не найдено</td>
 								</tr>
@@ -2318,7 +2276,7 @@
 								</tbody>
 							</table>
 						</div>
-					{:else if singboxSubscriptionsMobileCardList}
+					{:else if singboxSubscriptionsRenderMode === 'list-card'}
 						<div class="tunnel-grid tunnel-grid--list">
 							{#each sortedFilteredSubscriptionsActiveCards as card, i (card.subscription.id)}
 								<SubscriptionActiveCard
@@ -2327,7 +2285,7 @@
 									autoDelayCheckNonce={singboxAutoDelayCheckNonce}
 									autoDelayCheckDelayMs={i * 180}
 									layout="list"
-									listAsCard
+									renderMode="list-card"
 									ondetail={(tag) => openSingboxDetail(tag)}
 								/>
 							{/each}
@@ -2336,15 +2294,15 @@
 									subscription={sub}
 									liveActiveMember={liveActives[sub.id] || null}
 									layout="list"
-									listAsCard
+									renderMode="list-card"
 									ondelete={requestSubscriptionDelete}
 									ondetail={(tag) => openSingboxDetail(tag)}
 								/>
 							{/each}
 						</div>
-						<TunnelListEmptyMessage
-							show={singboxSubscriptionsSearchQuery.trim() !== '' && singboxSubscriptionsListModeRowsCount === 0}
-						/>
+						{#if singboxSubscriptionsSearchEmpty}
+							<p class="tunnel-list-empty">Ничего не найдено</p>
+						{/if}
 					{:else}
 						{#if subscriptionsActiveCards.length > 0}
 							<div
@@ -2359,6 +2317,7 @@
 										autoDelayCheckNonce={singboxAutoDelayCheckNonce}
 										autoDelayCheckDelayMs={i * 180}
 										layout={singboxSubscriptionsEffectiveLayout}
+										renderMode={singboxSubscriptionsRenderMode}
 										ondetail={(tag) => openSingboxDetail(tag)}
 									/>
 								{/each}
@@ -2380,6 +2339,7 @@
 											subscription={sub}
 											liveActiveMember={liveActives[sub.id] || null}
 											layout={singboxSubscriptionsEffectiveLayout}
+											renderMode={singboxSubscriptionsRenderMode}
 											ondelete={requestSubscriptionDelete}
 											ondetail={(tag) => openSingboxDetail(tag)}
 										/>
@@ -2387,9 +2347,9 @@
 								</div>
 							</div>
 						{/if}
-						<TunnelListEmptyMessage
-							show={singboxSubscriptionsSearchQuery.trim() !== '' && singboxSubscriptionsListModeRowsCount === 0}
-						/>
+						{#if singboxSubscriptionsSearchEmpty}
+							<p class="tunnel-list-empty">Ничего не найдено</p>
+						{/if}
 					{/if}
 				{/if}
 			{/if}
@@ -2403,23 +2363,11 @@
 					</span>
 					<div class="toolbar-actions">
 						<TunnelToolbarViewRow
-							show={singboxTunnelsListModeSourceRowsCount >= 5 || singboxTunnelsList.length > 0}
-							showSearch={singboxTunnelsListModeSourceRowsCount >= 5}
+							sourceRowCount={singboxTunnelsSourceRowCount}
 							showViewToggle={singboxTunnelsList.length > 0}
+							searchQuery={singboxTunnelsSearchQuery}
+							onSearchChange={(value) => (singboxTunnelsSearchQuery = value)}
 						>
-							{#snippet search()}
-								<TunnelTableSortControls
-									searchQuery={singboxTunnelsSearchQuery}
-									sortKey={$singboxTunnelTableSort.sortBy}
-									sortAsc={$singboxTunnelTableSort.sortAsc}
-									options={singboxTunnelSortOptions}
-									showSearch={true}
-									showSort={false}
-									onSearchChange={(value) => (singboxTunnelsSearchQuery = value)}
-									onSortChange={(key) => singboxTunnelTableSort.setSortBy(key as SingboxTunnelSortKey | null)}
-									onToggleDir={() => singboxTunnelTableSort.toggleDir()}
-								/>
-							{/snippet}
 							{#snippet viewToggle()}
 								<LayoutViewToggle
 									value={singboxTunnelsLayoutMode}
@@ -2497,7 +2445,7 @@
 					</div>
 				</div>
 			{:else if singboxTunnelsList.length > 0}
-				{#if singboxTunnelsEffectiveLayout === 'list' && !singboxTunnelsMobileCardList}
+				{#if singboxTunnelsRenderMode === 'table'}
 					<div class="awg-summary-row">
 						<StatStrip>
 							<Stat
@@ -2565,12 +2513,13 @@
 							<SingboxTunnelCard
 								{tunnel}
 								layout="list"
+								renderMode="table"
 								autoDelayCheckNonce={singboxAutoDelayCheckNonce}
 								autoDelayCheckDelayMs={i * 180}
 								ondetail={(tag) => openSingboxDetail(tag)}
 							/>
 						{/each}
-						{#if singboxTunnelsSearchQuery.trim() && singboxTunnelsListModeRowsCount === 0}
+						{#if singboxTunnelsSearchEmpty}
 							<tr class="tunnel-empty-row">
 								<td colspan="7">Ничего не найдено</td>
 							</tr>
@@ -2578,41 +2527,28 @@
 							</tbody>
 						</table>
 					</div>
-				{:else if singboxTunnelsMobileCardList}
-					<div class="tunnel-grid tunnel-grid--list">
-						{#each sortedFilteredSingboxTunnels as tunnel, i (tunnel.tag)}
-							<SingboxTunnelCard
-								{tunnel}
-								layout="list"
-								listAsCard
-								autoDelayCheckNonce={singboxAutoDelayCheckNonce}
-								autoDelayCheckDelayMs={i * 180}
-								ondetail={(tag) => openSingboxDetail(tag)}
-							/>
-						{/each}
-					</div>
-					<TunnelListEmptyMessage
-						show={singboxTunnelsSearchQuery.trim() !== '' && singboxTunnelsListModeRowsCount === 0}
-					/>
 				{:else}
+					{@const sbTunnelCardLayout = singboxTunnelsRenderMode === 'list-card' ? 'list' : singboxTunnelsEffectiveLayout}
 					<div
 						class="tunnel-grid"
-						class:tunnel-grid--dense={singboxTunnelsEffectiveLayout === 'dense'}
-						class:tunnel-grid--compact={singboxTunnelsEffectiveLayout === 'compact'}
+						class:tunnel-grid--list={singboxTunnelsRenderMode === 'list-card'}
+						class:tunnel-grid--dense={singboxTunnelsRenderMode !== 'list-card' && singboxTunnelsEffectiveLayout === 'dense'}
+						class:tunnel-grid--compact={singboxTunnelsRenderMode !== 'list-card' && singboxTunnelsEffectiveLayout === 'compact'}
 					>
 						{#each sortedFilteredSingboxTunnels as tunnel, i (tunnel.tag)}
 							<SingboxTunnelCard
 								{tunnel}
-								layout={singboxTunnelsEffectiveLayout}
+								layout={sbTunnelCardLayout}
+								renderMode={singboxTunnelsRenderMode}
 								autoDelayCheckNonce={singboxAutoDelayCheckNonce}
 								autoDelayCheckDelayMs={i * 180}
 								ondetail={(tag) => openSingboxDetail(tag)}
 							/>
 						{/each}
 					</div>
-					<TunnelListEmptyMessage
-						show={singboxTunnelsSearchQuery.trim() !== '' && singboxTunnelsListModeRowsCount === 0}
-					/>
+					{#if singboxTunnelsSearchEmpty}
+						<p class="tunnel-list-empty">Ничего не найдено</p>
+					{/if}
 				{/if}
 		{/if}
 	{/if}

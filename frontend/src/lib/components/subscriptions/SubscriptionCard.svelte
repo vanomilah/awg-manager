@@ -23,8 +23,7 @@
 		subscription: Subscription;
 		liveActiveMember?: string | null;
 		layout?: SingboxLayoutMode;
-		/** Mobile list: dense header + action bar instead of a table row. */
-		listAsCard?: boolean;
+		renderMode?: import('$lib/constants/singboxLayout').TunnelRenderMode;
 		ondelete?: (id: string) => void;
 		ondetail?: (tag: string) => void;
 	}
@@ -32,7 +31,7 @@
 		subscription,
 		liveActiveMember = null,
 		layout = 'compact',
-		listAsCard = false,
+		renderMode = 'compact',
 		ondelete,
 		ondetail,
 	}: Props = $props();
@@ -164,7 +163,7 @@
 	}
 </script>
 
-{#if layout === 'list' && !listAsCard}
+{#if renderMode === 'table'}
 	<tr
 		role="button"
 		tabindex="0"
@@ -296,8 +295,8 @@
 				/>
 			</td>
 	</tr>
-{:else if layout === 'dense' || listAsCard}
-{@const denseCardClickProps = listAsCard
+{:else if layout === 'dense' || renderMode === 'list-card'}
+{@const denseCardClickProps = renderMode === 'list-card'
 	? {}
 	: {
 			role: 'button' as const,
@@ -312,8 +311,8 @@
 		}}
 <div
 	class="card inactive-panel"
-	class:view-dense={!listAsCard}
-	class:view-list={listAsCard}
+	class:view-dense={renderMode !== 'list-card'}
+	class:view-list={renderMode === 'list-card'}
 	class:err={status === 'error'}
 	class:off={!subscription.enabled}
 	{...denseCardClickProps}
@@ -355,7 +354,7 @@
 			</span>
 		{/if}
 	</div>
-	{#if !listAsCard}
+	{#if renderMode !== 'list-card'}
 	<hr class="divider" />
 	<div class="inactive-meta-dense secondary mono">
 		<span>{modeLabel}</span>
@@ -370,7 +369,7 @@
 		<div class="inactive-err mono" title={subscription.lastError}>{subscription.lastError}</div>
 	{/if}
 	{/if}
-	{#if listAsCard}
+	{#if renderMode === 'list-card'}
 	<div class="actions">
 		<TunnelListActions
 			variant="labeled"

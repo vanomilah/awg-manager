@@ -1,28 +1,44 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import TunnelTableSortControls from '$lib/components/tunnels/TunnelTableSortControls.svelte';
+
+	const TUNNEL_SEARCH_MIN_ROWS = 5;
 
 	interface Props {
-		show?: boolean;
-		showSearch?: boolean;
+		sourceRowCount?: number;
 		showViewToggle?: boolean;
-		search?: Snippet;
+		searchQuery: string;
+		onSearchChange: (value: string) => void;
 		viewToggle?: Snippet;
 	}
 
 	let {
-		show = true,
-		showSearch = false,
+		sourceRowCount = 0,
 		showViewToggle = false,
-		search,
+		searchQuery,
+		onSearchChange,
 		viewToggle,
 	}: Props = $props();
+
+	let showSearch = $derived(sourceRowCount >= TUNNEL_SEARCH_MIN_ROWS);
+	let show = $derived(showSearch || showViewToggle);
 </script>
 
 {#if show && (showSearch || showViewToggle)}
 	<div class="toolbar-view-row">
-		{#if showSearch && search}
+		{#if showSearch}
 			<div class="tunnel-toolbar-search">
-				{@render search()}
+				<TunnelTableSortControls
+					{searchQuery}
+					sortKey={null}
+					sortAsc={true}
+					options={[]}
+					showSearch={true}
+					showSort={false}
+					{onSearchChange}
+					onSortChange={() => {}}
+					onToggleDir={() => {}}
+				/>
 			</div>
 		{/if}
 		{#if showViewToggle && viewToggle}
