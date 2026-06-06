@@ -331,8 +331,8 @@ const MOCK_AWG_TUNNELS = [
 		id: 'awg-demo-5',
 		name: 'UK London',
 		type: 'amneziawg',
-		status: 'stopped',
-		enabled: false,
+		status: 'broken',
+		enabled: true,
 		defaultRoute: false,
 		resolvedIspInterface: 'ISP0',
 		resolvedIspInterfaceLabel: 'Резервный WAN',
@@ -340,15 +340,15 @@ const MOCK_AWG_TUNNELS = [
 		address: '10.50.0.2/32, fd00:8::2/128',
 		interfaceName: 'awg4',
 		ndmsName: 'Wireguard4',
-		rxBytes: 0,
-		txBytes: 0,
-		lastHandshake: '',
+		rxBytes: 1_204_880,
+		txBytes: 412_330,
+		lastHandshake: new Date(Date.now() - 720_000).toISOString(),
 		awgVersion: 'awg2.0',
 		mtu: 1420,
-		startedAt: '',
+		startedAt: new Date(Date.now() - 900_000).toISOString(),
 		backend: 'kernel',
 		connectivityCheck: { method: 'http' },
-		pingCheck: { status: 'failed', restartCount: 0, failCount: 3, failThreshold: 3 },
+		pingCheck: { status: 'failed', restartCount: 3, failCount: 3, failThreshold: 3 },
 	},
 	{
 		id: 'awg-demo-6',
@@ -399,8 +399,8 @@ const MOCK_AWG_TUNNELS = [
 	},
 ];
 
-/** AWG tunnels where monitoring self-check is down while status stays running. */
-const MOCK_AWG_SELF_CHECK_FAIL = new Set(['awg-demo-fin']);
+/** AWG tunnels where monitoring self-check is down while status stays running or broken. */
+const MOCK_AWG_SELF_CHECK_FAIL = new Set(['awg-demo-fin', 'awg-demo-5']);
 
 const MOCK_SYSTEM_TUNNELS = [
 	{
@@ -892,7 +892,7 @@ const AWG_BASE_LATENCY = (() => {
 	// starting: awg-demo-4 (SE Stockholm) → no latency until running
 	// bad (≥200ms): awg-demo-6
 	// self-check fail: awg-demo-fin → «Нет связи»
-	// stopped/failed: awg-demo-5 → no latency
+	// broken/failed: awg-demo-5 → «Сломан», ping failed
 	const ranges = {
 		'awg-demo-1': [15, 75],
 		'awg-demo-2': [80, 170],

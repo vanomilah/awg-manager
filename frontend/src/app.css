@@ -1,6 +1,7 @@
 @import 'tailwindcss';
 @import '@skeletonlabs/skeleton';
 @import './lib/styles/route-actions.css';
+@import './lib/styles/tunnel-layout.css';
 
 /* ─── Self-hosted IBM Plex (Latin + Cyrillic subsets) ─── */
 @font-face {
@@ -302,22 +303,7 @@ html.light, [data-theme="light"] {
   --lh-body:  1.5;
 }
 
-/* List mode — rem scale aligned with .awg-list-* (+page.svelte). */
-:is(
-  .singbox-tunnel-list-table,
-  .singbox-sub-list-table,
-  .member-list-table,
-  .awg-list-table-track > .sub-list-group,
-  .awg-list-table-track > .sub-active-list-group
-) {
-  --sbx-card-title: 0.9375rem;
-  --sbx-card-meta: 0.75rem;
-  --sbx-card-value: 0.8125rem;
-  --sbx-card-note: 0.75rem;
-  --sbx-card-badge: 0.625rem;
-  --sbx-card-status: 0.8125rem;
-  --sbx-card-action: 0.75rem;
-}
+/* List mode rem scale — see tunnel-layout.css */
 
 /* Компактная ширина — как в v2.8.2 / базовом режиме: main 960px, узкие боковые поля. */
 html[data-layout-compact='true'] {

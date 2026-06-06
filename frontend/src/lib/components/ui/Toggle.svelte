@@ -1,5 +1,7 @@
 <script lang="ts" module>
     export type ToggleSpinnerPosition = 'before' | 'after';
+    /** Status tint for flip toggles (AWG tunnel cards / list). */
+    export type ToggleTint = 'recovering' | 'starting' | 'unreachable';
 </script>
 
 <script lang="ts">
@@ -12,6 +14,8 @@
         hint?: string;
         size?: 'sm' | 'md';
         variant?: 'slider' | 'flip';
+        /** Flip ON-state colour override (AWG recovering / starting / unreachable). */
+        tint?: ToggleTint;
         /** Spinner slot relative to the slider track (flip variant ignores this). */
         spinner?: ToggleSpinnerPosition;
         // controlled: parent owns the state. The toggle does NOT self-commit
@@ -32,6 +36,7 @@
         hint = '',
         size = 'md',
         variant = 'slider',
+        tint,
         spinner = 'before',
         controlled = false,
     }: Props = $props();
@@ -57,7 +62,15 @@
 
 {#if label}
     <div class="toggle-group">
-        <label class="toggle-container" class:loading class:sm={size === 'sm'} class:flip={variant === 'flip'}>
+        <label
+            class="toggle-container"
+            class:loading
+            class:sm={size === 'sm'}
+            class:flip={variant === 'flip'}
+            class:tint-recovering={tint === 'recovering'}
+            class:tint-starting={tint === 'starting'}
+            class:tint-unreachable={tint === 'unreachable'}
+        >
             <input type="checkbox" checked={checked} {disabled} oninput={handleInput} />
             {#if variant === 'flip'}
                 <span class="flip-track">
@@ -87,7 +100,15 @@
         </div>
     </div>
 {:else}
-    <label class="toggle-container" class:loading class:sm={size === 'sm'} class:flip={variant === 'flip'}>
+    <label
+        class="toggle-container"
+        class:loading
+        class:sm={size === 'sm'}
+        class:flip={variant === 'flip'}
+        class:tint-recovering={tint === 'recovering'}
+        class:tint-starting={tint === 'starting'}
+        class:tint-unreachable={tint === 'unreachable'}
+    >
         <input type="checkbox" checked={checked} {disabled} oninput={handleInput} />
         {#if variant === 'flip'}
             <span class="flip-track">
@@ -338,6 +359,67 @@
             inset 2px 0 4px rgba(0, 0, 0, 0.15),
             inset -1px 0 2px var(--color-success-tint),
             0 0 6px var(--color-success-tint);
+    }
+
+    /* AWG status tints — must beat default green ON styles above */
+    .toggle-container.tint-recovering.flip input:checked + .flip-track,
+    .toggle-container.tint-recovering.sm.flip input:checked + .flip-track {
+        background: color-mix(in srgb, var(--color-broken) 18%, var(--color-bg-tertiary));
+        box-shadow:
+            inset 2px 0 4px rgba(0, 0, 0, 0.18),
+            0 0 6px color-mix(in srgb, var(--color-broken) 35%, transparent);
+    }
+
+    .toggle-container.tint-recovering.flip input:checked + .flip-track .flip-lever,
+    .toggle-container.tint-recovering.sm.flip input:checked + .flip-track .flip-lever {
+        background: linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--color-broken) 75%, white),
+            var(--color-broken)
+        );
+        box-shadow:
+            0 1px 3px rgba(0, 0, 0, 0.3),
+            0 0 5px color-mix(in srgb, var(--color-broken) 45%, transparent);
+    }
+
+    .toggle-container.tint-starting.flip input:checked + .flip-track,
+    .toggle-container.tint-starting.sm.flip input:checked + .flip-track {
+        background: color-mix(in srgb, var(--color-warning) 18%, var(--color-bg-tertiary));
+        box-shadow:
+            inset 2px 0 4px rgba(0, 0, 0, 0.18),
+            0 0 6px color-mix(in srgb, var(--color-warning) 35%, transparent);
+    }
+
+    .toggle-container.tint-starting.flip input:checked + .flip-track .flip-lever,
+    .toggle-container.tint-starting.sm.flip input:checked + .flip-track .flip-lever {
+        background: linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--color-warning) 75%, white),
+            var(--color-warning)
+        );
+        box-shadow:
+            0 1px 3px rgba(0, 0, 0, 0.3),
+            0 0 5px color-mix(in srgb, var(--color-warning) 45%, transparent);
+    }
+
+    .toggle-container.tint-unreachable.flip input:checked + .flip-track,
+    .toggle-container.tint-unreachable.sm.flip input:checked + .flip-track {
+        background: color-mix(in srgb, var(--color-error) 18%, var(--color-bg-tertiary));
+        box-shadow:
+            inset 2px 0 4px rgba(0, 0, 0, 0.18),
+            0 0 6px color-mix(in srgb, var(--color-error) 35%, transparent);
+    }
+
+    .toggle-container.tint-unreachable.flip input:checked + .flip-track .flip-lever,
+    .toggle-container.tint-unreachable.sm.flip input:checked + .flip-track .flip-lever {
+        background: linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--color-error) 75%, white),
+            var(--color-error)
+        );
+        box-shadow:
+            0 1px 3px rgba(0, 0, 0, 0.3),
+            0 0 5px color-mix(in srgb, var(--color-error) 45%, transparent);
     }
 
     .toggle-container.sm.flip .flip-spinner {

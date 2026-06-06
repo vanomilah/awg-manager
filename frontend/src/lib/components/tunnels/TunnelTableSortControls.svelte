@@ -84,7 +84,9 @@
 
 	.tunnel-search {
 		width: 140px;
-		padding: 0.25rem 0.5rem;
+		height: 32px;
+		box-sizing: border-box;
+		padding: 0 0.5rem;
 		border: 1px solid var(--border);
 		border-radius: var(--radius-sm);
 		background: var(--bg-primary);

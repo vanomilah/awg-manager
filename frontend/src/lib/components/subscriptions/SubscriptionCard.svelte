@@ -5,9 +5,18 @@
 	import { untrack } from 'svelte';
 	import { singboxDelayHistory, singboxTraffic, triggerDelayCheck } from '$lib/stores/singbox';
 	import { getTrafficRates, subscribeTraffic, loadHistory } from '$lib/stores/traffic';
-	import { Badge, TrafficSparkline, PingButton } from '$lib/components/ui';
+	import { Badge, TunnelListActions } from '$lib/components/ui';
+	import {
+		TunnelDelaySparkBars,
+		TunnelListEndpointLine,
+		TunnelListTrafficCell,
+		TunnelMetaText,
+		TunnelSingboxPingButton,
+		TunnelTitleRow,
+	} from '$lib/components/tunnels';
 	import { singboxDelayFromHistory } from '$lib/utils/singboxDelay';
-	import { formatBytes } from '$lib/utils/format';
+	import { singboxDelayStatusDot } from '$lib/utils/statusDot';
+	import { formatBitRate } from '$lib/utils/format';
 	import { resolveSubscriptionMemberTag } from '$lib/utils/subscriptionMember';
 	import TunnelDiagnosticsModal from '$lib/components/testing/TunnelDiagnosticsModal.svelte';
 	import TunnelTestIcon from '$lib/components/tunnels/TunnelTestIcon.svelte';
@@ -31,6 +40,18 @@
 	);
 	const delayState = $derived(delayPresentation.state);
 	const delayText = $derived(delayPresentation.label);
+	const statusDot = $derived.by(() => {
+		if (subscription.lastError) {
+			return { variant: 'error' as const, pulse: false, label: 'error' };
+		}
+		if (!subscription.enabled) {
+			return { variant: 'muted' as const, pulse: false, label: 'off' };
+		}
+		if (resolvedMemberTag) {
+			return singboxDelayStatusDot(delayState, true);
+		}
+		return { variant: 'muted' as const, pulse: false, label: 'unknown' };
+	});
 	const latest = $derived(delayPresentation.latest ?? -1);
 
 	const traffic = $derived(resolvedMemberTag ? $singboxTraffic.get(resolvedMemberTag) : undefined);
@@ -49,6 +70,8 @@
 	let rxRates = $state<number[]>([]);
 	let txRates = $state<number[]>([]);
 	let trafficTag = $derived(resolvedMemberTag);
+	const inlineRxRate = $derived(rxRates.length > 0 ? rxRates[rxRates.length - 1] : 0);
+	const inlineTxRate = $derived(txRates.length > 0 ? txRates[txRates.length - 1] : 0);
 
 	$effect(() => {
 		const tag = trafficTag;
@@ -113,9 +136,6 @@
 	const listActiveServerName = $derived(
 		resolvedMember?.label?.trim() || resolvedMember?.tag?.trim() || '',
 	);
-	const endpointText = $derived(
-		resolvedMember ? `${resolvedMember.server}:${resolvedMember.port}` : '',
-	);
 	let showEndpoint = $state(false);
 	let diagnosticsUnavailableReason = $derived(
 		!selectorTag || !kernelIface
@@ -175,7 +195,7 @@
 			}
 		}}
 	>
-			<td class="lc lc-delay" data-label="Delay">
+			<td class="tunnel-list-cell tunnel-list-cell--delay lc lc-delay" data-label="Delay">
 				{#if subscription.lastError}
 					<span class="delay-inline-err mono" title={subscription.lastError}>
 						{subscription.lastError}
@@ -183,170 +203,113 @@
 				{:else if !subscription.enabled}
 					<span class="delay-dash">—</span>
 				{:else if resolvedMemberTag}
-					<PingButton
+					<TunnelSingboxPingButton
+						layout="list"
 						label={delayText}
 						state={delayState}
 						checking={testingDelay}
-						forceBorder
 						onclick={runDelayCheck}
 					/>
 				{:else}
 					<span class="delay-dash">—</span>
 				{/if}
 			</td>
-			<td class="lc lc-name" data-label="Подписка">
-				<div class="name-title-row">
-					{#if subscription.lastError}
-						<span class="dot fail" aria-hidden="true"></span>
-					{:else if !subscription.enabled}
-						<span class="dot unknown" aria-hidden="true"></span>
-					{:else if resolvedMemberTag}
-						<span class="dot {delayState}" aria-hidden="true"></span>
-					{/if}
-					<div class="t1">{subscription.label || subscription.url}</div>
+			<td class="tunnel-list-cell tunnel-list-cell--name lc lc-name" data-label="Подписка">
+				<div class="tunnel-list-name-stack">
+					<TunnelTitleRow
+						title={subscription.label || subscription.url}
+						dotVariant={statusDot.variant}
+						dotPulse={statusDot.pulse}
+						staticTitle
+					/>
+					<TunnelMetaText>
+						<span>{subscription.memberTags.length} серверов</span>
+						<span class="meta-dot" aria-hidden="true">·</span>
+						<span>{lastFetchedHuman}</span>
+					</TunnelMetaText>
+					<TunnelMetaText mono>
+						{#if proxyIface}
+							<span>{proxyIface}</span>
+							{#if kernelIface}<span class="meta-dot" aria-hidden="true">·</span><span>{kernelIface}</span>{/if}
+							<span class="meta-dot" aria-hidden="true">·</span>
+						{:else if subscription.inboundTag}
+							<span>{subscription.inboundTag}</span>
+							<span class="meta-dot" aria-hidden="true">·</span>
+						{/if}
+						<span>{modeLabel}</span>
+					</TunnelMetaText>
 				</div>
-				<div class="name-meta-row">
-					<Badge variant="accent" size="sm">{sourceKindLabel}</Badge>
-					<span>{subscription.memberTags.length} серверов</span>
-					<span>{lastFetchedHuman}</span>
-				</div>
-				<div class="t2 mono">{proxyIface}{#if kernelIface} · {kernelIface}{/if}</div>
 			</td>
-			<td class="lc lc-mode" data-label="Режим">
-				{isURLTest ? 'URLTest' : 'Selector'}
-			</td>
-			<td class="lc lc-endpoint" data-label="Активный сервер">
+			<td class="tunnel-list-cell tunnel-list-cell--endpoint lc lc-endpoint" data-label="Активный сервер">
 				{#if !subscription.enabled}
 					<span class="off-label">выкл</span>
-				{:else if resolvedMember && endpointText}
+				{:else if resolvedMember}
 					<div class="lc-endpoint-stack">
 						{#if listActiveServerName}
 							<span class="lc-endpoint-name" title={listActiveServerName}>{listActiveServerName}</span>
 						{/if}
-						<span class="lc-endpoint-host mono">
-							{#if showEndpoint}{endpointText}{:else}••••••••{/if}
-						</span>
-					</div>
-					<button
-						type="button"
-						class="eye-mini"
-						onclick={(e) => {
-							e.stopPropagation();
-							showEndpoint = !showEndpoint;
-						}}
-						aria-label={showEndpoint ? 'Скрыть' : 'Показать'}
-					>
-						{#if showEndpoint}
-							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-						{:else}
-							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
-						{/if}
-					</button>
-				{:else}
-					<span class="delay-dash">—</span>
-				{/if}
-			</td>
-			<td class="lc lc-traffic" data-label="Трафик">
-				{#if subscription.lastError || !subscription.enabled}
-					<span class="delay-dash">—</span>
-				{:else if resolvedMemberTag}
-					<div
-						role="button"
-						tabindex="0"
-						class="traffic-row-list traffic-row-list--stack mono"
-						onclick={(e) => {
-							e.stopPropagation();
-							ondetail?.(resolvedMemberTag);
-						}}
-						onkeydown={(e) => {
-							if (e.key === 'Enter' || e.key === ' ') {
-								e.preventDefault();
-								e.stopPropagation();
-								ondetail?.(resolvedMemberTag);
-							}
-						}}
-						title="Открыть детальный график"
-					>
-						<span class="traffic-rate rx">↓ {formatBytes(traffic?.download ?? 0)}</span>
-						<TrafficSparkline
-							rxData={trafficSparkSeries.rx}
-							txData={trafficSparkSeries.tx}
-							responsive
-							height={18}
+						<TunnelListEndpointLine
+							host={resolvedMember.server}
+							port={resolvedMember.port}
+							bind:show={showEndpoint}
 						/>
-						<span class="traffic-rate tx">↑ {formatBytes(traffic?.upload ?? 0)}</span>
 					</div>
 				{:else}
 					<span class="delay-dash">—</span>
 				{/if}
 			</td>
-			<td class="lc lc-ping-mini" data-label="Ping">
+			<td
+				class="tunnel-list-cell tunnel-list-cell--traffic lc lc-traffic"
+				data-label="Трафик"
+				onclick={(e) => e.stopPropagation()}
+			>
 				{#if subscription.lastError || !subscription.enabled}
 					<span class="delay-dash">—</span>
 				{:else if resolvedMemberTag}
-					<div class="spark-mini {delayState}" title="Delay за последние проверки">
-						{#if history.length === 0}
-							{#each Array(10) as _, i (i)}
-								<div class="bar empty"></div>
-							{/each}
-						{:else}
-							{@const max = Math.max(...history.map((v) => (v <= 0 ? 100 : v)), 100)}
-							{#each history.slice(-14) as d, i (i)}
-								<div class="bar" style="height: {Math.max((d <= 0 ? max : d) / max, 0.08) * 100}%;"></div>
-							{/each}
-						{/if}
-					</div>
+					<TunnelListTrafficCell
+						rxRate={inlineRxRate}
+						txRate={inlineTxRate}
+						rxData={trafficSparkSeries.rx}
+						txData={trafficSparkSeries.tx}
+						onclick={() => ondetail?.(resolvedMemberTag)}
+						title="Открыть детальный график"
+					/>
 				{:else}
 					<span class="delay-dash">—</span>
 				{/if}
 			</td>
-			<td class="lc lc-actions col-actions" data-label="">
-				<button
-					type="button"
-					class="action-btn"
-					title="Открыть подписку «{subscription.label || subscription.url}»"
-					aria-label="Открыть подписку «{subscription.label || subscription.url}»"
-					onclick={(e) => {
-						e.stopPropagation();
-						open();
-					}}
-				>
-					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-						<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-						<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-					</svg>
-				</button>
-				<button
-					type="button"
-					class="action-btn action-test"
-					title="Открыть диагностику подписки «{subscription.label || subscription.url}»"
-					aria-label="Открыть диагностику подписки «{subscription.label || subscription.url}»"
-					data-diagnostics-action="true"
-					onpointerdown={stopNestedAction}
-					onmousedown={stopNestedAction}
-					onclick={openDiagnostics}
-					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ')
-							openDiagnostics(e as unknown as MouseEvent);
-						else e.stopPropagation();
-					}}
-				>
-					<TunnelTestIcon />
-				</button>
-				{#if ondelete}
-					<button
-						type="button"
-						class="action-btn action-danger"
-						title="Удалить подписку «{subscription.label || subscription.url}»"
-						aria-label="Удалить подписку «{subscription.label || subscription.url}»"
-						onclick={requestDelete}
-					>
-						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-							<polyline points="3,6 5,6 21,6"/>
-							<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-						</svg>
-					</button>
+			<td
+				class="tunnel-list-cell tunnel-list-cell--ping lc"
+				data-label="Ping"
+				onclick={(e) => e.stopPropagation()}
+			>
+				{#if subscription.lastError || !subscription.enabled}
+					<span class="delay-dash">—</span>
+				{:else if resolvedMemberTag}
+					<TunnelDelaySparkBars
+						{history}
+						state={delayState}
+						layout="list"
+						title="Delay за последние проверки"
+					/>
+				{:else}
+					<span class="delay-dash">—</span>
 				{/if}
+			</td>
+			<td
+				class="tunnel-list-cell tunnel-list-cell--actions lc lc-actions col-actions"
+				data-label=""
+				onclick={(e) => e.stopPropagation()}
+			>
+				<TunnelListActions
+					onEdit={() => open()}
+					editLabel="Открыть"
+					editTitle="Открыть подписку «{subscription.label || subscription.url}»"
+					onTest={() => (diagnosticsOpen = true)}
+					testTitle="Открыть диагностику подписки «{subscription.label || subscription.url}»"
+					onDelete={ondelete ? () => ondelete(subscription.id) : undefined}
+					deleteTitle="Удалить подписку «{subscription.label || subscription.url}»"
+				/>
 			</td>
 	</tr>
 {:else if layout === 'dense'}
@@ -382,11 +345,11 @@
 			</div>
 		</div>
 		{#if subscription.enabled && !subscription.lastError && resolvedMemberTag}
-			<PingButton
+			<TunnelSingboxPingButton
+				layout="dense"
 				label={delayText}
 				state={delayState}
 				checking={testingDelay}
-				forceBorder
 				onclick={runDelayCheck}
 			/>
 		{:else}
@@ -643,24 +606,10 @@
 		overflow-wrap: anywhere;
 	}
 
-	.name-meta-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.2rem 0.45rem;
-		min-width: 0;
+	.title-meta-inline {
 		font-size: var(--sbx-card-meta);
+		font-weight: 500;
 		color: var(--color-text-muted);
-		line-height: 1.25;
-	}
-
-	.name-meta-row :global(.badge) {
-		flex-shrink: 0;
-		font-size: 10px;
-		padding: 1px 5px;
-	}
-
-	.name-meta-row span {
 		white-space: nowrap;
 	}
 
@@ -892,6 +841,8 @@
 		font-family: var(--font-mono, ui-monospace, monospace);
 	}
 	.lc-endpoint {
+		display: flex;
+		align-items: center;
 		gap: 0.35rem;
 	}
 	.lc-endpoint-stack {
@@ -907,34 +858,12 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.lc-endpoint-host {
-		font-size: var(--sbx-card-meta);
-		color: var(--color-text-muted);
-	}
 	.off-label {
 		font-size: var(--sbx-card-badge);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--color-text-muted);
-	}
-	.eye-mini {
-		flex-shrink: 0;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 22px;
-		padding: 0;
-		border: none;
-		background: transparent;
-		color: var(--color-text-muted);
-		cursor: pointer;
-		border-radius: 4px;
-	}
-	.eye-mini:hover {
-		color: var(--color-text-primary);
-		background: var(--color-bg-tertiary);
 	}
 	.dot {
 		width: var(--sbx-status-dot);
@@ -949,7 +878,7 @@
 	.lc-actions {
 		flex-wrap: nowrap;
 		gap: 0.375rem;
-		justify-content: flex-end;
+		justify-content: center;
 		align-items: center;
 		white-space: nowrap;
 	}
@@ -972,12 +901,6 @@
 	.lc-actions .action-btn {
 		justify-content: center;
 		padding: 0.375rem;
-	}
-	.lc-ping-mini {
-		justify-content: center;
-		align-items: center;
-		width: 100%;
-		min-width: 0;
 	}
 	.action-btn:hover:not(:disabled) {
 		background: var(--color-bg-hover);
@@ -1007,35 +930,6 @@
 	.delay-dash {
 		font-size: var(--sbx-card-value);
 		color: var(--color-text-muted);
-	}
-	.spark-mini {
-		display: flex;
-		align-items: flex-end;
-		gap: 1px;
-		height: 20px;
-		width: 100%;
-		max-width: 96px;
-	}
-	.spark-mini .bar {
-		flex: 1;
-		min-width: 0;
-		min-height: 2px;
-		border-radius: 1px;
-		background: var(--color-bg-tertiary);
-	}
-	.spark-mini.ok .bar {
-		background: var(--latency-bar-ok);
-	}
-	.spark-mini.slow .bar {
-		background: var(--latency-bar-slow);
-	}
-	.spark-mini.fail .bar {
-		background: var(--latency-bar-fail);
-	}
-	.spark-mini.unknown .bar,
-	.spark-mini .bar.empty {
-		opacity: 0.35;
-		height: 30% !important;
 	}
 	.traffic-row-list {
 		display: flex;

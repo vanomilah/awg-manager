@@ -204,6 +204,15 @@ export function getTrafficRates(tunnelId: string): { rx: number[]; tx: number[] 
 	};
 }
 
+/** Latest RX/TX rates from the card window (last sample point). */
+export function getLatestTrafficRate(tunnelId: string): { rx: number; tx: number } {
+	const { rx, tx } = getTrafficRates(tunnelId);
+	return {
+		rx: rx.length > 0 ? rx[rx.length - 1] : 0,
+		tx: tx.length > 0 ? tx[tx.length - 1] : 0,
+	};
+}
+
 /** Aligned RX/TX slices for inline sparklines (list rows, compact headers). */
 export function getTrafficSparklineSeries(
 	tunnelId: string,

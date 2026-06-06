@@ -8,14 +8,17 @@
 	import { api } from '$lib/api/client';
 	import {
 		TunnelCard,
-		TunnelTestIcon,
 		ExternalTunnelCard,
 		AdoptTunnelDialog,
 		SystemTunnelCard,
 		TunnelReferencedModal,
 		ConnectivitySettingsModal,
+		TunnelListTrafficCell,
+		TunnelPingButton,
+		TunnelTitleRow,
+		TunnelMetaText,
 	} from '$lib/components/tunnels';
-	import { PingButton } from '$lib/components/ui';
+	import { TunnelListActions } from '$lib/components/ui';
 	import TunnelDiagnosticsModal from '$lib/components/testing/TunnelDiagnosticsModal.svelte';
 	import { PageContainer, PageHeader, LoadingSpinner, EmptyState, WelcomeBanner } from '$lib/components/layout';
 	import {
@@ -46,8 +49,11 @@
 	import {
 		awgConnectivityDown,
 		awgListShowsPingButton,
+		awgRecoveringVisual,
 		awgShowConnectivityRow,
+		awgToggleTint,
 	} from '$lib/utils/awgPingStatus';
+	import { awgManagedStatusDot } from '$lib/utils/statusDot';
 	import { resolveSubscriptionMemberTag } from '$lib/utils/subscriptionMember';
 	import { nativewgUnavailableHint } from '$lib/utils/backendAvailability';
 	import {
@@ -937,48 +943,6 @@
 		return awgListShowsPingButton(tunnel, connectivity);
 	}
 
-	function managedStatusVariant(
-		tunnel: TunnelListItem,
-		connectivity?: { connected: boolean; latency: number | null },
-	): 'success' | 'error' | 'warning' | 'muted' {
-		if (tunnel.hasAddressConflict) return 'error';
-		if (awgConnectivityDown(tunnel, connectivity)) return 'error';
-		switch (tunnelStatusBucket(tunnel.status)) {
-			case 'running':
-				return tunnel.pingCheck.status === 'recovering' ? 'warning' : 'success';
-			case 'broken':
-				return 'error';
-			case 'starting':
-				return 'warning';
-			default:
-				return 'muted';
-		}
-	}
-
-	function managedStatusLabel(
-		tunnel: TunnelListItem,
-		connectivity?: { connected: boolean; latency: number | null },
-	): string {
-		if (tunnel.hasAddressConflict) return 'Конфликт IP';
-		if (awgConnectivityDown(tunnel, connectivity)) return 'Нет связи';
-		switch (tunnel.status) {
-			case 'running':
-				return tunnel.pingCheck.status === 'recovering' ? 'Восстанавливается' : 'Активен';
-			case 'broken':
-				return 'Сломан';
-			case 'starting':
-				return 'Запускается';
-			case 'needs_stop':
-				return 'Останавливается';
-			case 'needs_start':
-				return 'Остановлен';
-			case 'disabled':
-				return 'Выключен';
-			default:
-				return tunnel.status || '—';
-		}
-	}
-
 	function managedRouteMeta(tunnel: TunnelListItem): string {
 		const iface = tunnel.resolvedIspInterface || tunnel.ispInterface || '';
 		const label = tunnel.resolvedIspInterfaceLabel || tunnel.ispInterfaceLabel || '';
@@ -1704,7 +1668,7 @@
 						</span>
 						<span>
 							<TunnelTableSortHeader
-								label="Throughput"
+								label="Трафик"
 								sortKey={'traffic'}
 								activeSortKey={$awgTunnelTableSort.sortBy}
 								sortAsc={$awgTunnelTableSort.sortAsc}
@@ -1724,64 +1688,60 @@
 					{@const connState = !isActive ? 'idle'
 						: connectivity === undefined ? 'checking'
 						: connectivity.connected ? 'connected' : 'disconnected'}
+					{@const statusDot = awgManagedStatusDot(tunnel, connectivity)}
 					{@const showPing = showManagedPing(tunnel, connectivity)}
 					{@const showConnectivityRow = awgShowConnectivityRow(tunnel.status)}
 						<div class="awg-list-row">
-						<div
-							class="awg-list-cell awg-list-cell-toggle"
-							class:awg-toggle-recovering={tunnel.status === 'running' && tunnel.pingCheck.status === 'recovering'}
-							class:awg-toggle-starting={tunnel.status === 'starting'}
-							class:awg-toggle-unreachable={awgConnectivityDown(tunnel, connectivity)}
-							data-label="Старт"
-						>
+						<div class="awg-list-cell awg-list-cell-toggle" data-label="Старт">
 							<Toggle
 								checked={isManagedTunnelOn(tunnel)}
 								size="sm"
 								variant="flip"
+								tint={awgToggleTint(tunnel, connectivity)}
 								loading={toggleLoading[tunnel.id] ?? false}
 								onchange={() => handleToggleOnOff(tunnel.id)}
 							/>
 						</div>
 							<div class="awg-list-cell awg-list-cell-name" data-label="Туннель">
-								<div class="awg-list-name-line">
-									<button
-										type="button"
-										class="awg-list-name-button"
+								<div class="tunnel-list-name-stack">
+									<TunnelTitleRow
 										title={tunnel.name}
-										onclick={() => openDetail(tunnel.id)}
+										showDot={false}
+										onTitleClick={() => openDetail(tunnel.id)}
 									>
-										{tunnel.name}
-									</button>
-									{#if tunnel.defaultRoute}
-										<Badge variant="accent" size="sm">default</Badge>
-									{/if}
-									{#if tunnel.backend}
-										<span class="awg-inline-badge">{tunnel.backend}</span>
-									{/if}
-									{#if tunnel.awgVersion}
-										<span class="awg-inline-badge awg-inline-badge--muted">{tunnel.awgVersion}</span>
-									{/if}
-								</div>
-								<div class="awg-list-sub">
-									{tunnel.address || '—'}
-									<span class="awg-list-dot">·</span>
-									{tunnel.interfaceName || tunnel.id}
-									<span class="awg-list-dot">·</span>
-									MTU {tunnel.mtu ?? '—'}
-								</div>
-								<div class="awg-list-sub awg-list-uptime">
-									Uptime {tunnel.startedAt ? formatDuration(secondsSince(tunnel.startedAt)) : '—'}
+										{#snippet badges()}
+											{#if tunnel.defaultRoute}
+												<Badge variant="accent" size="sm">default</Badge>
+											{/if}
+											{#if tunnel.backend}
+												<span class="awg-inline-badge">{tunnel.backend}</span>
+											{/if}
+											{#if tunnel.awgVersion}
+												<span class="awg-inline-badge awg-inline-badge--muted">{tunnel.awgVersion}</span>
+											{/if}
+										{/snippet}
+									</TunnelTitleRow>
+									<TunnelMetaText>
+										{tunnel.address || '—'}
+										<span class="meta-dot" aria-hidden="true">·</span>
+										{tunnel.interfaceName || tunnel.id}
+										<span class="meta-dot" aria-hidden="true">·</span>
+										MTU {tunnel.mtu ?? '—'}
+									</TunnelMetaText>
+									<TunnelMetaText mono>
+										Uptime {tunnel.startedAt ? formatDuration(secondsSince(tunnel.startedAt)) : '—'}
+									</TunnelMetaText>
 								</div>
 							</div>
 							<div class="awg-list-cell awg-list-cell-status" data-label="Статус">
 								<div class="awg-list-status-stack">
 									<div class="awg-list-status-line">
 									<StatusDot
-										variant={managedStatusVariant(tunnel, connectivity)}
-										pulse={tunnel.status === 'running' && tunnel.pingCheck.status === 'recovering'}
-										ariaLabel={managedStatusLabel(tunnel, connectivity)}
+										variant={statusDot.variant}
+										pulse={statusDot.pulse}
+										ariaLabel={statusDot.label}
 									/>
-									<span class="awg-list-status-text">{managedStatusLabel(tunnel, connectivity)}</span>
+									<span class="awg-list-status-text">{statusDot.label}</span>
 									</div>
 									<div class="awg-list-sub awg-list-handshake">
 										Handshake {tunnel.lastHandshake ? formatRelativeTime(tunnel.lastHandshake) : '—'}
@@ -1791,10 +1751,11 @@
 							{:else if showConnectivityRow}
 								<div
 									class="awg-list-connectivity-row"
-									class:recovering={tunnel.status === 'running' && tunnel.pingCheck.status === 'recovering'}
+									class:recovering={awgRecoveringVisual(tunnel)}
 								>
 									{#if showPing}
-										<PingButton
+										<TunnelPingButton
+											layout="list"
 											connectivity={connState}
 											latencyMs={connectivity?.latency ?? null}
 											checking={pingChecking[tunnel.id] ?? false}
@@ -1846,57 +1807,26 @@
 								</div>
 								<div class="awg-list-sub">{managedRouteMeta(tunnel)}</div>
 							</div>
-							<div class="awg-list-cell awg-list-cell-rate" data-label="Throughput">
-								<button
-									type="button"
-									class="awg-rate-button"
+							<div class="awg-list-cell awg-list-cell-rate" data-label="Трафик">
+								<TunnelListTrafficCell
+									rxRate={rate.rx}
+									txRate={rate.tx}
+									rxData={spark.rx}
+									txData={spark.tx}
 									onclick={() => openDetail(tunnel.id)}
 									title="Открыть детали туннеля"
-								>
-									<div class="awg-list-rate-stack awg-list-mono">
-										<div class="traffic-rate rx">↓ {formatBitRate(rate.rx)}</div>
-										<TrafficSparkline
-											rxData={spark.rx}
-											txData={spark.tx}
-											responsive
-											height={18}
-										/>
-										<div class="traffic-rate tx">↑ {formatBitRate(rate.tx)}</div>
-									</div>
-								</button>
+								/>
 							</div>
-							<div class="awg-list-cell awg-list-cell-actions" data-label="Действия">
-								<a
-									class="awg-action-btn"
-									href="/tunnels/{tunnel.id}"
-									title="Изменить туннель «{tunnel.name}»"
-									aria-label="Изменить туннель «{tunnel.name}»"
-								>
-									<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-								</a>
-								<button
-									type="button"
-									class="awg-action-btn awg-action-test"
-									title="Тест туннеля «{tunnel.name}»"
-									aria-label="Тест туннеля «{tunnel.name}»"
-									onclick={() => openAwgDiagnostics(tunnel.id, tunnel.name)}
-								>
-									<TunnelTestIcon />
-								</button>
-								<button
-									type="button"
-									class="awg-action-btn awg-action-danger"
-									disabled={deleteLoading[tunnel.id] ?? false}
-									onclick={() => requestDelete(tunnel.id)}
-									title="Удалить туннель «{tunnel.name}»"
-									aria-label="Удалить туннель «{tunnel.name}»"
-								>
-									{#if deleteLoading[tunnel.id] ?? false}
-										<span class="awg-action-spinner"></span>
-									{:else}
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3,6 5,6 21,6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-									{/if}
-								</button>
+							<div class="awg-list-cell awg-list-cell-actions tunnel-list-cell--actions" data-label="Действия">
+								<TunnelListActions
+									editHref="/tunnels/{tunnel.id}"
+									editTitle="Изменить туннель «{tunnel.name}»"
+									onTest={() => openAwgDiagnostics(tunnel.id, tunnel.name)}
+									testTitle="Тест туннеля «{tunnel.name}»"
+									onDelete={() => requestDelete(tunnel.id)}
+									deleteTitle="Удалить туннель «{tunnel.name}»"
+									deleting={deleteLoading[tunnel.id] ?? false}
+								/>
 							</div>
 						</div>
 					{/each}
@@ -1914,28 +1844,28 @@
 									<span class="awg-row-placeholder">SYS</span>
 								</div>
 								<div class="awg-list-cell awg-list-cell-name" data-label="Туннель">
-									<div class="awg-list-name-line">
-										<button
-											type="button"
-											class="awg-list-name-button"
+									<div class="tunnel-list-name-stack">
+										<TunnelTitleRow
 											title={tunnel.description || tunnel.id}
-											onclick={() => openDetail(tunnel.id)}
+											showDot={false}
+											onTitleClick={() => openDetail(tunnel.id)}
 										>
-											{tunnel.description || tunnel.id}
-										</button>
-										<span class="awg-inline-badge awg-inline-badge--muted">system</span>
-									</div>
-									<div class="awg-list-sub">
-										{tunnel.interfaceName}
-										{#if tunnel.address}
-											<span class="awg-list-dot">·</span>
-											{tunnel.address}
-										{/if}
-										<span class="awg-list-dot">·</span>
-										MTU {tunnel.mtu}
-									</div>
-									<div class="awg-list-sub awg-list-uptime">
-										Uptime {tunnel.status === 'up' && tunnel.uptime ? formatDuration(tunnel.uptime) : '—'}
+											{#snippet badges()}
+												<span class="awg-inline-badge awg-inline-badge--muted">system</span>
+											{/snippet}
+										</TunnelTitleRow>
+										<TunnelMetaText mono>
+											{tunnel.interfaceName}
+											{#if tunnel.address}
+												<span class="meta-dot" aria-hidden="true">·</span>
+												{tunnel.address}
+											{/if}
+											<span class="meta-dot" aria-hidden="true">·</span>
+											MTU {tunnel.mtu}
+										</TunnelMetaText>
+										<TunnelMetaText mono>
+											Uptime {tunnel.status === 'up' && tunnel.uptime ? formatDuration(tunnel.uptime) : '—'}
+										</TunnelMetaText>
 									</div>
 								</div>
 								<div class="awg-list-cell awg-list-cell-status" data-label="Статус">
@@ -1980,57 +1910,40 @@
 								</div>
 									<div class="awg-list-sub">{tunnel.address || '—'}</div>
 								</div>
-								<div class="awg-list-cell awg-list-cell-rate" data-label="Throughput">
-									<button
-										type="button"
-										class="awg-rate-button"
+								<div class="awg-list-cell awg-list-cell-rate" data-label="Трафик">
+									<TunnelListTrafficCell
+										rxRate={rate.rx}
+										txRate={rate.tx}
+										rxData={spark.rx}
+										txData={spark.tx}
 										onclick={() => openDetail(tunnel.id)}
 										title="Открыть детали туннеля"
-									>
-										<div class="awg-list-rate-stack awg-list-mono">
-											<div class="traffic-rate rx">↓ {formatBitRate(rate.rx)}</div>
-											<TrafficSparkline
-												rxData={spark.rx}
-												txData={spark.tx}
-												responsive
-												height={18}
-											/>
-											<div class="traffic-rate tx">↑ {formatBitRate(rate.tx)}</div>
-										</div>
-									</button>
+									/>
 								</div>
-								<div class="awg-list-cell awg-list-cell-actions" data-label="Действия">
-									<a
-										class="awg-action-btn"
-										href="/system-tunnels/{tunnel.id}"
-										title="Изменить туннель «{tunnel.description || tunnel.id}»"
-										aria-label="Изменить туннель «{tunnel.description || tunnel.id}»"
+								<div class="awg-list-cell awg-list-cell-actions tunnel-list-cell--actions" data-label="Действия">
+									<TunnelListActions
+										editHref="/system-tunnels/{tunnel.id}"
+										editTitle="Изменить туннель «{tunnel.description || tunnel.id}»"
+										onTest={() => openAwgDiagnostics(tunnel.id, tunnel.description || tunnel.id, 'system')}
+										testTitle="Тест туннеля «{tunnel.description || tunnel.id}»"
 									>
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-									</a>
-									<button
-										type="button"
-										class="awg-action-btn awg-action-test"
-										title="Тест туннеля «{tunnel.description || tunnel.id}»"
-										aria-label="Тест туннеля «{tunnel.description || tunnel.id}»"
-										onclick={() => openAwgDiagnostics(tunnel.id, tunnel.description || tunnel.id, 'system')}
-									>
-										<TunnelTestIcon />
-									</button>
-									<button
-										type="button"
-										class="awg-action-btn awg-action-primary"
-										title="Перенести туннель «{tunnel.description || tunnel.id}» в серверы"
-										aria-label="Перенести туннель «{tunnel.description || tunnel.id}» в серверы"
-										onclick={() => markAsServer(tunnel.id)}
-									>
-										<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-											<rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-											<rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-											<line x1="6" y1="6" x2="6.01" y2="6"/>
-											<line x1="6" y1="18" x2="6.01" y2="18"/>
-										</svg>
-									</button>
+										{#snippet extra()}
+											<button
+												type="button"
+												class="tunnel-list-actions__btn tunnel-list-actions__btn--primary"
+												title="Перенести туннель «{tunnel.description || tunnel.id}» в серверы"
+												aria-label="Перенести туннель «{tunnel.description || tunnel.id}» в серверы"
+												onclick={() => markAsServer(tunnel.id)}
+											>
+												<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+													<rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+													<rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+													<line x1="6" y1="6" x2="6.01" y2="6"/>
+													<line x1="6" y1="18" x2="6.01" y2="18"/>
+												</svg>
+											</button>
+										{/snippet}
+									</TunnelListActions>
 								</div>
 							</div>
 						{/each}
@@ -2104,7 +2017,7 @@
 									</div>
 									<div class="awg-list-sub">WG интерфейс</div>
 								</div>
-								<div class="awg-list-cell awg-list-cell-rate" data-label="Throughput">
+								<div class="awg-list-cell awg-list-cell-rate" data-label="Трафик">
 									<div class="awg-list-rate-stack awg-list-mono">
 										<div class="traffic-rate rx">↓ {formatBytes(tunnel.rxBytes)}</div>
 										<TrafficSparkline rxData={[]} txData={[]} responsive height={18} />
@@ -2284,7 +2197,6 @@
 								<colgroup>
 									<col class="col-delay" />
 									<col class="col-name" />
-									<col class="col-mode" />
 									<col class="col-active" />
 									<col class="col-traffic" />
 									<col class="col-ping" />
@@ -2297,9 +2209,6 @@
 										</th>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'label', $singboxSubscriptionTableSort.sortAsc)}>
 											<TunnelTableSortHeader label="Подписка" sortKey={'label'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
-										</th>
-										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'mode', $singboxSubscriptionTableSort.sortAsc)}>
-											<TunnelTableSortHeader label="Режим" sortKey={'mode'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
 										</th>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'active', $singboxSubscriptionTableSort.sortAsc)}>
 											<TunnelTableSortHeader label="Активный сервер" sortKey={'active'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
@@ -2328,7 +2237,7 @@
 							{/if}
 							{#if sortedFilteredSubscriptionsListRows.length > 0}
 								<tr class="tunnel-section-row">
-									<td colspan="7">Остановлено · {sortedFilteredSubscriptionsListRows.length}</td>
+									<td colspan="6">Остановлено · {sortedFilteredSubscriptionsListRows.length}</td>
 								</tr>
 								{#each sortedFilteredSubscriptionsListRows as sub (sub.id)}
 									<SubscriptionCard
@@ -2342,7 +2251,7 @@
 							{/if}
 							{#if singboxSubscriptionsSearchQuery.trim() && singboxSubscriptionsListModeRowsCount === 0}
 								<tr class="tunnel-empty-row">
-									<td colspan="7">Ничего не найдено</td>
+									<td colspan="6">Ничего не найдено</td>
 								</tr>
 							{/if}
 								</tbody>
@@ -2816,639 +2725,6 @@
 		filter: none;
 	}
 
-	:global(.tunnel-grid--dense) {
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 248px), 1fr));
-		gap: 8px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.card),
-	:global(.tunnel-grid--dense) :global(.ext-card) {
-		gap: 8px;
-		padding: 10px 12px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.ext-card.flex) {
-		gap: 0.5rem;
-	}
-
-	:global(.tunnel-grid--dense) :global(.tunnel-name) {
-		font-size: 13px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.iface-name),
-	:global(.tunnel-grid--dense) :global(.status-hint),
-	:global(.tunnel-grid--dense) :global(.detail-label),
-	:global(.tunnel-grid--dense) :global(.kv-label) {
-		font-size: 10px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.detail-value),
-	:global(.tunnel-grid--dense) :global(.kv-value) {
-		font-size: 12px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.title) {
-		font-size: 13px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.iface),
-	:global(.tunnel-grid--dense) :global(.label),
-	:global(.tunnel-grid--dense) :global(.chart-label) {
-		font-size: 10px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.badge) {
-		font-size: 9px;
-		padding: 1px 5px;
-	}
-
-	:global(.tunnel-grid--dense) :global(.value),
-	:global(.tunnel-grid--dense) :global(.port) {
-		font-size: 12px;
-	}
-
-	:global(.tunnel-grid--compact) {
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
-		gap: 12px;
-	}
-
-	:global(.tunnel-grid--list) {
-		grid-template-columns: minmax(0, 1fr);
-		gap: 10px;
-	}
-
-	.awg-summary-row {
-		margin-bottom: 0.75rem;
-	}
-
-	.awg-list-table {
-		/* Keep AWG rows compact: cells ellipsize instead of stretching the scroll track to max-content. */
-		--awg-list-min-width: 960px;
-		--awg-list-columns:
-			36px
-			minmax(190px, 1.05fr)
-			minmax(155px, 0.85fr)
-			minmax(145px, 0.8fr)
-			minmax(260px, 2.2fr)
-			minmax(82px, max-content);
-		border: 1px solid var(--color-border);
-		border-radius: 12px;
-		background: var(--color-bg-secondary);
-		overflow-x: auto;
-		overflow-y: hidden;
-		/* width/max-width/min-width — в app.css, чтобы подписки не раздували страницу */
-	}
-
-	.awg-list-row {
-		display: grid;
-		grid-template-columns: var(--awg-list-columns);
-		gap: 8px;
-		align-items: center;
-		padding: 0.75rem 0.75rem;
-		border-bottom: 1px solid var(--color-border);
-		min-width: max(100%, var(--awg-list-min-width, 0px));
-	}
-
-	.awg-list-row:last-child {
-		border-bottom: none;
-	}
-
-	.awg-list-row--head {
-		padding-top: 0.65rem;
-		padding-bottom: 0.65rem;
-		background: var(--color-bg-tertiary);
-		font-size: 0.6875rem;
-		font-weight: 700;
-		line-height: 1.2;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--color-text-muted);
-	}
-
-	.awg-list-row--head :global(.sort-header-btn) {
-		justify-content: flex-start;
-	}
-
-
-	.awg-list-row--section {
-		grid-template-columns: minmax(0, 1fr);
-		background: var(--color-bg-tertiary);
-		padding-top: 0.625rem;
-		padding-bottom: 0.625rem;
-		min-width: 100%;
-	}
-
-	.awg-list-head-actions {
-		text-align: right;
-	}
-
-	@media (hover: hover) and (pointer: fine) {
-		.awg-list-row:not(.awg-list-row--head):not(.awg-list-row--section):hover {
-			background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
-		}
-	}
-
-	.awg-list-section-title {
-		font-size: 0.6875rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--color-text-muted);
-	}
-
-	.awg-list-cell {
-		min-width: 0;
-	}
-
-	.awg-list-cell-toggle {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-
-	.awg-list-cell-toggle :global(.toggle-spinner-slot) {
-		display: none;
-	}
-
-	.awg-list-name-line {
-		display: flex;
-		align-items: center;
-		flex-wrap: wrap;
-		gap: 0.375rem;
-	}
-
-	.awg-list-name-button,
-	.awg-list-name-static {
-		font: inherit;
-		font-size: 0.9375rem;
-		font-weight: 600;
-		color: var(--color-text-primary);
-		background: none;
-		border: none;
-		padding: 0;
-		margin: 0;
-		cursor: pointer;
-		text-align: left;
-		max-width: 100%;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.awg-list-name-static {
-		cursor: default;
-	}
-
-	.awg-list-name-button:hover {
-		color: var(--color-accent);
-	}
-
-	.awg-list-sub {
-		margin-top: 0.25rem;
-		font-size: 0.75rem;
-		color: var(--color-text-muted);
-		white-space: break-spaces;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.awg-list-sub--error {
-		color: var(--color-error);
-	}
-
-	.awg-list-uptime,
-	.awg-list-handshake {
-		font-family: var(--font-mono);
-		white-space: normal;
-		line-height: 1.25;
-	}
-
-	/* recovering / starting toggle tint */
-	.awg-toggle-recovering :global(.toggle-container.sm.flip input:checked + .flip-track) {
-		background: color-mix(in srgb, var(--color-broken) 18%, var(--color-bg-tertiary));
-		box-shadow:
-			inset 2px 0 4px rgba(0, 0, 0, 0.18),
-			0 0 6px color-mix(in srgb, var(--color-broken) 35%, transparent);
-		transition: background 0.4s ease, box-shadow 0.4s ease;
-	}
-
-	.awg-toggle-recovering :global(.toggle-container.sm.flip input:checked + .flip-track .flip-lever) {
-		background: linear-gradient(
-			to bottom,
-			color-mix(in srgb, var(--color-broken) 75%, white),
-			var(--color-broken)
-		);
-		box-shadow:
-			0 1px 3px rgba(0, 0, 0, 0.3),
-			0 0 5px color-mix(in srgb, var(--color-broken) 45%, transparent);
-		transition: background 0.4s ease, box-shadow 0.4s ease, transform 0.2s ease;
-	}
-
-	.awg-toggle-starting :global(.toggle-container.sm.flip input:checked + .flip-track) {
-		background: color-mix(in srgb, var(--color-warning) 18%, var(--color-bg-tertiary));
-		box-shadow:
-			inset 2px 0 4px rgba(0, 0, 0, 0.18),
-			0 0 6px color-mix(in srgb, var(--color-warning) 35%, transparent);
-		transition: background 0.4s ease, box-shadow 0.4s ease;
-	}
-
-	.awg-toggle-starting :global(.toggle-container.sm.flip input:checked + .flip-track .flip-lever) {
-		background: linear-gradient(
-			to bottom,
-			color-mix(in srgb, var(--color-warning) 75%, white),
-			var(--color-warning)
-		);
-		box-shadow:
-			0 1px 3px rgba(0, 0, 0, 0.3),
-			0 0 5px color-mix(in srgb, var(--color-warning) 45%, transparent);
-		transition: background 0.4s ease, box-shadow 0.4s ease, transform 0.2s ease;
-	}
-
-	.awg-toggle-unreachable :global(.toggle-container.sm.flip input:checked + .flip-track) {
-		background: color-mix(in srgb, var(--color-error) 18%, var(--color-bg-tertiary));
-		box-shadow:
-			inset 2px 0 4px rgba(0, 0, 0, 0.18),
-			0 0 6px color-mix(in srgb, var(--color-error) 35%, transparent);
-		transition: background 0.4s ease, box-shadow 0.4s ease;
-	}
-
-	.awg-toggle-unreachable :global(.toggle-container.sm.flip input:checked + .flip-track .flip-lever) {
-		background: linear-gradient(
-			to bottom,
-			color-mix(in srgb, var(--color-error) 75%, white),
-			var(--color-error)
-		);
-		box-shadow:
-			0 1px 3px rgba(0, 0, 0, 0.3),
-			0 0 5px color-mix(in srgb, var(--color-error) 45%, transparent);
-		transition: background 0.4s ease, box-shadow 0.4s ease, transform 0.2s ease;
-	}
-
-	.awg-list-dot {
-		padding: 0 0.25rem;
-	}
-
-	.awg-inline-badge {
-		display: inline-flex;
-		align-items: center;
-		padding: 0.125rem 0.375rem;
-		border-radius: 999px;
-		background: var(--color-accent-tint);
-		color: var(--color-accent);
-		font-size: 0.625rem;
-		font-family: var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-	}
-
-	.awg-inline-badge--muted {
-		background: var(--color-bg-tertiary);
-		color: var(--color-text-muted);
-	}
-
-	.awg-list-status-stack {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 0.25rem;
-		min-width: 0;
-	}
-
-	.awg-list-status-stack :global(.ping-btn) {
-		width: auto;
-		max-width: 100%;
-	}
-
-	.awg-list-connectivity-row {
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-		flex-wrap: wrap;
-	}
-
-	.awg-list-connectivity-row.recovering :global(.ping-btn) {
-		color: var(--color-broken);
-	}
-
-	.awg-connectivity-gear {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		flex-shrink: 0;
-		border: none;
-		cursor: pointer;
-		padding: 2px;
-		background: none;
-		color: var(--color-text-muted);
-		border-radius: var(--radius-sm);
-		transition: color var(--t-fast) ease;
-	}
-
-	.awg-connectivity-gear:hover {
-		color: var(--color-accent);
-	}
-
-	.awg-list-status-line {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-
-	.awg-list-status-text {
-		font-size: 0.8125rem;
-		font-weight: 600;
-		color: var(--color-text-secondary);
-	}
-
-	.awg-list-kv-primary {
-		font-size: 0.8125rem;
-		color: var(--color-text-secondary);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.awg-endpoint-line {
-		display: flex;
-		align-items: center;
-		gap: 0.25rem;
-		min-width: 0;
-	}
-
-	.awg-endpoint-value {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.awg-endpoint-eye {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		padding: 0.125rem;
-		border: none;
-		background: none;
-		color: var(--color-text-muted);
-		cursor: pointer;
-		border-radius: 6px;
-		flex-shrink: 0;
-		transition: color var(--t-fast) ease;
-	}
-
-	.awg-endpoint-eye:hover {
-		color: var(--color-text-secondary);
-	}
-
-	.awg-endpoint-eye:focus-visible {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 2px;
-	}
-
-	.awg-endpoint-port {
-		flex-shrink: 0;
-		color: var(--color-text-muted);
-	}
-
-	.awg-list-cell-rate {
-		display: flex;
-		align-items: stretch;
-		width: 100%;
-		min-width: 0;
-	}
-
-	.awg-rate-button {
-		display: flex;
-		align-items: stretch;
-		justify-content: flex-start;
-		width: 100%;
-		min-width: 0;
-		padding: 0;
-		margin: 0;
-		border: none;
-		background: transparent;
-		color: inherit;
-		cursor: pointer;
-		text-align: left;
-	}
-
-	.awg-rate-button:hover :global(svg) {
-		opacity: 0.9;
-	}
-
-	.awg-rate-button:focus-visible {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 2px;
-		border-radius: 6px;
-	}
-
-	.awg-list-rate-stack {
-		display: flex;
-		flex-direction: column;
-		align-items: stretch;
-		gap: 0.05rem;
-		width: 100%;
-		min-width: 0;
-		font-size: 0.6875rem;
-		line-height: 1.1;
-		text-align: left;
-	}
-
-	.awg-list-rate-stack :global(svg.responsive) {
-		width: 100%;
-		min-width: 0;
-		max-width: 100%;
-		flex: 1 1 auto;
-	}
-
-	.awg-list-mono {
-		font-family: var(--font-mono);
-	}
-
-	.awg-list-cell-actions {
-		display: flex;
-		justify-content: flex-end;
-		align-items: center;
-		flex-wrap: nowrap;
-		gap: 0.25rem;
-		white-space: nowrap;
-	}
-
-	.awg-action-btn {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		flex: 0 0 28px;
-		gap: 0;
-		padding: 0;
-		border-radius: var(--radius-sm);
-		border: none;
-		background: transparent;
-		color: var(--color-text-muted);
-		font: inherit;
-		font-size: 0.75rem;
-		text-decoration: none;
-		cursor: pointer;
-		white-space: nowrap;
-		transition: background var(--t-fast) ease, color var(--t-fast) ease;
-	}
-
-	.awg-action-btn:hover:not(:disabled) {
-		background: var(--color-bg-hover);
-		color: var(--color-text-primary);
-	}
-
-	.awg-action-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-
-	.awg-action-btn:focus-visible {
-		outline: 2px solid var(--color-accent);
-		outline-offset: 2px;
-	}
-
-	.awg-action-danger:hover:not(:disabled) {
-		color: var(--color-error);
-		background: var(--color-error-tint);
-	}
-	.awg-action-test:hover:not(:disabled) {
-		color: var(--color-success);
-		background: var(--color-success-tint);
-	}
-
-	.awg-action-primary:hover:not(:disabled) {
-		color: var(--color-accent);
-		background: var(--color-accent-tint);
-	}
-
-	.awg-action-spinner {
-		width: 12px;
-		height: 12px;
-		border: 2px solid currentColor;
-		border-top-color: transparent;
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-	}
-
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
-	}
-
-	.awg-row-placeholder {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 2rem;
-		padding: 0.125rem 0.375rem;
-		border-radius: 999px;
-		background: var(--color-bg-tertiary);
-		color: var(--color-text-muted);
-		font-size: 0.625rem;
-		font-family: var(--font-mono);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-
-	@media (max-width: 1280px) {
-		.awg-list-table:not(.singbox-tunnel-list-table):not(.singbox-sub-list-table) {
-			--awg-list-min-width: 900px;
-			--awg-list-columns:
-				34px
-				minmax(180px, 1fr)
-				minmax(140px, 0.78fr)
-				minmax(132px, 0.72fr)
-				minmax(240px, 2fr)
-				minmax(72px, max-content);
-		}
-
-	}
-
-	@media (max-width: 1120px) {
-		.awg-list-table:not(.singbox-tunnel-list-table):not(.singbox-sub-list-table) {
-			--awg-list-min-width: 860px;
-			--awg-list-columns:
-				32px
-				minmax(168px, 0.95fr)
-				minmax(128px, 0.72fr)
-				minmax(122px, 0.68fr)
-				minmax(220px, 1.9fr)
-				minmax(70px, max-content);
-			padding: 0.75rem 0.8125rem;
-		}
-
-		.awg-list-row {
-			padding: 0.75rem 0.8125rem;
-		}
-
-		.awg-list-name-button,
-		.awg-list-name-static {
-			font-size: 0.875rem;
-		}
-
-		.awg-list-sub,
-		.awg-list-kv-primary,
-		.awg-list-status-text {
-			font-size: 0.71875rem;
-		}
-
-		.awg-action-btn {
-			padding: 0.3125rem 0.4375rem;
-			font-size: 0.6875rem;
-		}
-	}
-
-	:global(html[data-layout-compact='true']) .awg-list-table:not(.singbox-tunnel-list-table):not(.singbox-sub-list-table) {
-		--awg-list-min-width: 0px;
-		--awg-list-columns:
-			28px
-			minmax(150px, 1fr)
-			minmax(120px, 0.78fr)
-			minmax(112px, 0.68fr)
-			minmax(120px, 1.15fr)
-			minmax(64px, max-content);
-	}
-
-	:global(html[data-layout-compact='true']) .awg-list-row {
-		column-gap: 0.5rem !important;
-		padding-left: 0.625rem !important;
-		padding-right: 0.625rem !important;
-		min-width: 100% !important;
-	}
-
-	:global(html[data-layout-compact='true']) :global(.singbox-sub-table .lc-delay),
-	:global(html[data-layout-compact='true']) :global(.singbox-tunnel-table .list-cell-delay) {
-		padding-left: 0.25rem !important;
-		padding-right: 0.25rem !important;
-	}
-
-	:global(html[data-layout-compact='true']) .awg-list-cell-rate,
-	:global(html[data-layout-compact='true']) .awg-rate-button,
-	:global(html[data-layout-compact='true']) .awg-list-rate-stack,
-	:global(html[data-layout-compact='true']) :global(.singbox-tunnel-table .list-cell-traffic),
-	:global(html[data-layout-compact='true']) :global(.singbox-tunnel-table .traffic-row-list),
-	:global(html[data-layout-compact='true']) :global(.singbox-sub-table .lc-traffic),
-	:global(html[data-layout-compact='true']) :global(.singbox-sub-table .traffic-row-list--stack) {
-		min-width: 0 !important;
-		width: 100% !important;
-	}
-
-	:global(html[data-layout-compact='true']) :global(.singbox-sub-table .lc-actions) {
-		gap: 0.375rem !important;
-		padding-left: 0.25rem !important;
-		padding-right: 0 !important;
-	}
-
-	@media (max-width: 760px) {
-		.awg-list-table {
-			overflow: hidden;
-		}
-	}
-
 	/* Empty-state ghost terminal — page-specific */
 	.ghost-terminal {
 		margin: 3rem 0;
@@ -3821,323 +3097,6 @@
 		color: var(--color-text-muted);
 		font-size: 0.88rem;
 		margin-bottom: 1.2rem;
-	}
-
-	:global(.tunnel-table-wrap) {
-		overflow-x: auto;
-		margin-top: 0.75rem;
-		border: 1px solid var(--color-border);
-		border-radius: 12px;
-		background: var(--color-bg-secondary);
-	}
-
-	:global(.tunnel-data-table) {
-		width: 100%;
-		border-collapse: collapse;
-		table-layout: auto;
-		font-size: 12px;
-	}
-
-	:global(.singbox-tunnel-table) {
-		width: 100%;
-		min-width: 0;
-		table-layout: fixed;
-	}
-
-	:global(.singbox-tunnel-table col.col-delay) { width: 82px; }
-	:global(.singbox-tunnel-table col.col-name) { width: clamp(270px, 31%, 340px); }
-	:global(.singbox-tunnel-table col.col-protocol) { width: 96px; }
-	:global(.singbox-tunnel-table col.col-run) { width: 86px; }
-	:global(.singbox-tunnel-table col.col-traffic) { width: auto; }
-	:global(.singbox-tunnel-table col.col-ping) { width: 82px; }
-	:global(.singbox-tunnel-table col.col-actions) { width: 72px; }
-
-	:global(.singbox-tunnel-table th) {
-		background: transparent;
-		color: var(--color-text-muted);
-		font-size: 0.6875rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	:global(.singbox-sub-table th) {
-		background: transparent;
-		color: var(--color-text-muted);
-		font-size: 0.6875rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	:global(.singbox-tunnel-table th .sort-header-btn.active),
-	:global(.singbox-sub-table th .sort-header-btn.active) {
-		color: var(--accent, var(--color-accent));
-	}
-
-	:global(.singbox-tunnel-table th .sort-header-btn.active .sort-indicator),
-	:global(.singbox-sub-table th .sort-header-btn.active .sort-indicator) {
-		color: inherit;
-	}
-
-	:global(.singbox-tunnel-table th),
-	:global(.singbox-tunnel-table td) {
-		overflow: hidden;
-	}
-
-	:global(.singbox-sub-table) {
-		width: 100%;
-		min-width: 0;
-		table-layout: fixed;
-	}
-
-	:global(.singbox-sub-table col.col-delay) { width: 86px; }
-	:global(.singbox-sub-table col.col-name) { width: 260px; }
-	:global(.singbox-sub-table col.col-mode) { width: 86px; }
-	:global(.singbox-sub-table col.col-active) { width: 210px; }
-	:global(.singbox-sub-table col.col-traffic) { width: auto; }
-	:global(.singbox-sub-table col.col-ping) { width: 92px; }
-	:global(.singbox-sub-table col.col-actions) { width: 116px; }
-
-	:global(.tunnel-data-table th) {
-		text-align: center;
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
-		color: var(--accent);
-		border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-		font-weight: 600;
-		padding: 0.65rem 0.75rem;
-		line-height: 1.2;
-		white-space: nowrap;
-	}
-
-	:global(.tunnel-data-table td) {
-		padding: 0.55rem 0.5rem;
-		border-bottom: 1px solid var(--border);
-		vertical-align: middle;
-		transition: background-color 0.15s ease;
-	}
-
-	:global(.tunnel-data-table tbody tr:hover td) {
-		background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
-	}
-
-	:global(.tunnel-data-table .mono) {
-		font-family: var(--font-mono, monospace);
-	}
-
-	:global(.tunnel-data-table .col-actions),
-	:global(.tunnel-data-table td.col-actions) {
-		text-align: right;
-		white-space: nowrap;
-	}
-
-	:global(.singbox-tunnel-table th),
-	:global(.singbox-sub-table th) {
-		background: var(--color-bg-tertiary);
-		color: var(--color-text-muted);
-		font-size: 0.6875rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	:global(.tunnel-row-actions) {
-		display: inline-flex;
-		justify-content: flex-end;
-		align-items: center;
-		gap: 0.375rem;
-	}
-
-	:global(.tunnel-section-row td) {
-		background: var(--color-bg-tertiary);
-		font-size: 0.6875rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--color-text-muted);
-	}
-
-	:global(.tunnel-empty-row td) {
-		padding: 1rem;
-		text-align: center;
-		color: var(--color-text-muted);
-		background: var(--color-bg-secondary);
-	}
-
-	:global(.singbox-tunnel-table .sbx-tunnel-list-row) {
-		display: table-row !important;
-	}
-
-	:global(.singbox-sub-table .sbx-sub-active-row) {
-		display: table-row !important;
-	}
-
-	:global(.singbox-tunnel-table td.list-cell) {
-		display: table-cell !important;
-		vertical-align: middle;
-		min-width: 0;
-	}
-
-	:global(.singbox-sub-table td.lc) {
-		display: table-cell !important;
-		vertical-align: middle;
-		min-width: 0;
-	}
-
-	:global(.singbox-tunnel-table .list-cell-traffic .traffic-row-list) {
-		width: 100%;
-		min-width: 0;
-	}
-
-	:global(.singbox-tunnel-table .list-cell-actions) {
-		text-align: right;
-	}
-
-	:global(.singbox-tunnel-table .list-cell-name) {
-		min-width: 0;
-	}
-
-	:global(.singbox-tunnel-table .list-title-row),
-	:global(.singbox-tunnel-table .list-sub),
-	:global(.singbox-tunnel-table .list-server-line) {
-		min-width: 0;
-		max-width: 100%;
-	}
-
-	:global(.singbox-tunnel-table .name-btn),
-	:global(.singbox-tunnel-table .list-sub),
-	:global(.singbox-tunnel-table .list-server-host) {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	:global(.singbox-tunnel-table .list-cell-traffic) {
-		min-width: 0;
-	}
-
-	:global(.singbox-tunnel-table .traffic-row-list),
-	:global(.singbox-tunnel-table .traffic-mini-click) {
-		width: 100%;
-		min-width: 0;
-	}
-
-	:global(.singbox-tunnel-table .traffic-mini-click svg) {
-		width: 100%;
-		max-width: 100%;
-		min-width: 0;
-	}
-
-	:global(.singbox-tunnel-table .list-cell-ping-mini) {
-		text-align: center;
-	}
-
-	:global(.singbox-tunnel-table .list-cell-ping-mini .spark-mini) {
-		width: 78px;
-		max-width: 78px;
-		margin-inline: auto;
-	}
-
-	:global(.singbox-tunnel-table .list-actions) {
-		justify-content: flex-end;
-		gap: 0.25rem;
-	}
-
-	:global(.singbox-tunnel-table .list-actions .action-btn) {
-		width: 28px;
-		height: 28px;
-		padding: 0;
-	}
-
-	:global(.singbox-sub-table .lc-delay),
-	:global(.singbox-sub-table .lc-mode),
-	:global(.singbox-sub-table .lc-ping-mini) {
-		text-align: center;
-	}
-
-	:global(.singbox-sub-table .lc-name),
-	:global(.singbox-sub-table .lc-endpoint),
-	:global(.singbox-sub-table .lc-traffic) {
-		text-align: left;
-	}
-
-	:global(.singbox-sub-table th),
-	:global(.singbox-sub-table td) {
-		overflow: hidden;
-	}
-
-	:global(.singbox-sub-table .lc-name),
-	:global(.singbox-sub-table .lc-endpoint) {
-		min-width: 0;
-	}
-
-	:global(.singbox-sub-table .name-title-row),
-	:global(.singbox-sub-table .name-meta-row),
-	:global(.singbox-sub-table .t2),
-	:global(.singbox-sub-table .lc-endpoint-stack),
-	:global(.singbox-sub-table .lc-endpoint-name) {
-		min-width: 0;
-		max-width: 100%;
-	}
-
-	:global(.singbox-sub-table .name-title-row),
-	:global(.singbox-sub-table .t2),
-	:global(.singbox-sub-table .lc-endpoint-name) {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	:global(.singbox-sub-table .traffic-row-list--stack) {
-		width: 100%;
-		min-width: 0;
-	}
-
-	:global(.singbox-sub-table .lc-ping-mini .spark-mini) {
-		width: 100%;
-		max-width: 92px;
-		margin-inline: auto;
-	}
-
-	:global(.singbox-sub-table th.col-actions),
-	:global(.singbox-sub-table td.col-actions) {
-		padding-left: 0.25rem;
-		padding-right: 1rem;
-	}
-
-	:global(.singbox-sub-table th.col-actions) {
-		text-align: right;
-	}
-
-	:global(.singbox-sub-table .lc-actions) {
-		text-align: right;
-		white-space: nowrap;
-		gap: 0.25rem;
-	}
-
-	:global(.singbox-sub-table .lc-actions .action-btn) {
-		display: inline-flex;
-		justify-content: center;
-		vertical-align: middle;
-		width: 28px;
-		height: 28px;
-		gap: 0;
-		padding: 0;
-	}
-
-	:global(.singbox-sub-table .lc-actions .action-btn + .action-btn) {
-		margin-left: 0.25rem;
-	}
-
-	:global(.singbox-sub-table tr.err td) {
-		background: rgba(248, 81, 73, 0.04);
-	}
-
-	:global(.singbox-sub-table tr.off td) {
-		opacity: 0.72;
 	}
 
 	@media (max-width: 700px) {
