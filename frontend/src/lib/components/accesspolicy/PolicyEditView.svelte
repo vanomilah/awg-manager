@@ -390,6 +390,7 @@
 	.hr-policy-banner {
 		display: flex;
 		flex-direction: column;
+		align-items: flex-start;
 		gap: 12px;
 		width: 100%;
 		padding: 16px;
