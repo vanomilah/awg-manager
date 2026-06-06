@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { Dropdown, type DropdownOption } from '$lib/components/ui';
-
-	const DEFAULT_SORT_VALUE = '__default__';
+	import { DEFAULT_SORT_VALUE } from '$lib/utils/tableSort';
 
 	interface SortOption {
 		value: string | null;
@@ -61,7 +60,13 @@
 					fullWidth
 				/>
 			</div>
-			<button class="tunnel-sort-dir" type="button" onclick={onToggleDir} title="Направление сортировки">
+			<button
+				class="tunnel-sort-dir"
+				type="button"
+				disabled={sortKey === null}
+				onclick={onToggleDir}
+				title="Направление сортировки"
+			>
 				{sortAsc ? '↑' : '↓'}
 			</button>
 		</div>
@@ -113,9 +118,14 @@
 		transition: color 0.15s ease, background 0.15s ease;
 	}
 
-	.tunnel-sort-dir:hover {
+	.tunnel-sort-dir:hover:not(:disabled) {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+
+	.tunnel-sort-dir:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
 	}
 
 	@media (max-width: 760px) {

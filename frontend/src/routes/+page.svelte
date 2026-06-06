@@ -34,6 +34,7 @@
 		Stat,
 		StatStrip,
 		LayoutViewToggle,
+		TableSortHeader,
 	} from '$lib/components/ui';
 	import { singboxDelayHistory, singboxStatus, singboxTraffic, singboxTunnels } from '$lib/stores/singbox';
 	import { SingboxInstallBanner, SingboxTunnelCard } from '$lib/components/singbox';
@@ -69,7 +70,6 @@
 	import { Download } from 'lucide-svelte';
 	import CreateIcon from '$lib/components/ui/icons/CreateIcon.svelte';
 	import { formatRunningSub, pluralForm, SUBSCRIPTION_WORDS, TUNNEL_WORDS } from '$lib/utils/pluralize';
-	import TunnelTableSortHeader from '$lib/components/tunnels/TunnelTableSortHeader.svelte';
 	import TunnelToolbarViewRow from '$lib/components/tunnels/TunnelToolbarViewRow.svelte';
 	import {
 		awgTunnelTableSort,
@@ -1655,8 +1655,8 @@
 					<div class="awg-list-table-track">
 					<div class="awg-list-row awg-list-row--head">
 						<span></span>
-						<span>
-							<TunnelTableSortHeader
+						<span role="columnheader" aria-sort={ariaSort($awgTunnelTableSort.sortBy, 'name', $awgTunnelTableSort.sortAsc)}>
+							<TableSortHeader
 								label="Туннель"
 								sortKey={'name'}
 								activeSortKey={$awgTunnelTableSort.sortBy}
@@ -1664,8 +1664,8 @@
 								onchange={(key) => handleAwgSortChange(key as AwgTunnelSortKey)}
 							/>
 						</span>
-						<span>
-							<TunnelTableSortHeader
+						<span role="columnheader" aria-sort={ariaSort($awgTunnelTableSort.sortBy, 'status', $awgTunnelTableSort.sortAsc)}>
+							<TableSortHeader
 								label="Статус"
 								sortKey={'status'}
 								activeSortKey={$awgTunnelTableSort.sortBy}
@@ -1673,8 +1673,8 @@
 								onchange={(key) => handleAwgSortChange(key as AwgTunnelSortKey)}
 							/>
 						</span>
-						<span>
-							<TunnelTableSortHeader
+						<span role="columnheader" aria-sort={ariaSort($awgTunnelTableSort.sortBy, 'endpoint', $awgTunnelTableSort.sortAsc)}>
+							<TableSortHeader
 								label="Endpoint"
 								sortKey={'endpoint'}
 								activeSortKey={$awgTunnelTableSort.sortBy}
@@ -1682,8 +1682,8 @@
 								onchange={(key) => handleAwgSortChange(key as AwgTunnelSortKey)}
 							/>
 						</span>
-						<span>
-							<TunnelTableSortHeader
+						<span role="columnheader" aria-sort={ariaSort($awgTunnelTableSort.sortBy, 'traffic', $awgTunnelTableSort.sortAsc)}>
+							<TableSortHeader
 								label="Трафик"
 								sortKey={'traffic'}
 								activeSortKey={$awgTunnelTableSort.sortBy}
@@ -2222,19 +2222,19 @@
 								<thead>
 									<tr>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'delay', $singboxSubscriptionTableSort.sortAsc)}>
-											<TunnelTableSortHeader label="Delay" sortKey={'delay'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
+											<TableSortHeader label="Delay" sortKey={'delay'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
 										</th>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'label', $singboxSubscriptionTableSort.sortAsc)}>
-											<TunnelTableSortHeader label="Подписка" sortKey={'label'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
+											<TableSortHeader label="Подписка" sortKey={'label'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
 										</th>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'active', $singboxSubscriptionTableSort.sortAsc)}>
-											<TunnelTableSortHeader label="Активный сервер" sortKey={'active'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
+											<TableSortHeader label="Активный сервер" sortKey={'active'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
 										</th>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'traffic', $singboxSubscriptionTableSort.sortAsc)}>
-											<TunnelTableSortHeader label="Трафик" sortKey={'traffic'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
+											<TableSortHeader label="Трафик" sortKey={'traffic'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
 										</th>
 										<th aria-sort={ariaSort($singboxSubscriptionTableSort.sortBy, 'ping', $singboxSubscriptionTableSort.sortAsc)}>
-											<TunnelTableSortHeader label="Ping" sortKey={'ping'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
+											<TableSortHeader label="Ping" sortKey={'ping'} activeSortKey={$singboxSubscriptionTableSort.sortBy} sortAsc={$singboxSubscriptionTableSort.sortAsc} onchange={(key) => handleSubscriptionSortChange(key as SubscriptionSortKey)} />
 										</th>
 										<th class="col-actions">Действия</th>
 									</tr>
@@ -2488,22 +2488,22 @@
 							<thead>
 								<tr>
 									<th aria-sort={ariaSort($singboxTunnelTableSort.sortBy, 'delay', $singboxTunnelTableSort.sortAsc)}>
-										<TunnelTableSortHeader label="Delay" sortKey={'delay'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
+										<TableSortHeader label="Delay" sortKey={'delay'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
 									</th>
 									<th aria-sort={ariaSort($singboxTunnelTableSort.sortBy, 'name', $singboxTunnelTableSort.sortAsc)}>
-										<TunnelTableSortHeader label="Туннель" sortKey={'name'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
+										<TableSortHeader label="Туннель" sortKey={'name'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
 									</th>
 									<th aria-sort={ariaSort($singboxTunnelTableSort.sortBy, 'protocol', $singboxTunnelTableSort.sortAsc)}>
-										<TunnelTableSortHeader label="Протокол" sortKey={'protocol'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
+										<TableSortHeader label="Протокол" sortKey={'protocol'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
 									</th>
 									<th aria-sort={ariaSort($singboxTunnelTableSort.sortBy, 'running', $singboxTunnelTableSort.sortAsc)}>
-										<TunnelTableSortHeader label="Процесс" sortKey={'running'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
+										<TableSortHeader label="Процесс" sortKey={'running'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
 									</th>
 									<th aria-sort={ariaSort($singboxTunnelTableSort.sortBy, 'traffic', $singboxTunnelTableSort.sortAsc)}>
-										<TunnelTableSortHeader label="Трафик" sortKey={'traffic'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
+										<TableSortHeader label="Трафик" sortKey={'traffic'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
 									</th>
 									<th aria-sort={ariaSort($singboxTunnelTableSort.sortBy, 'ping', $singboxTunnelTableSort.sortAsc)}>
-										<TunnelTableSortHeader label="Ping" sortKey={'ping'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
+										<TableSortHeader label="Ping" sortKey={'ping'} activeSortKey={$singboxTunnelTableSort.sortBy} sortAsc={$singboxTunnelTableSort.sortAsc} onchange={(key) => handleSingboxTunnelSortChange(key as SingboxTunnelSortKey)} />
 									</th>
 									<th class="col-actions">Действия</th>
 								</tr>

@@ -337,12 +337,12 @@
 
 	.managed-peer-table th {
 		text-align: center;
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
-		color: var(--accent);
+		background: var(--bg-tertiary, var(--color-bg-tertiary));
+		color: var(--text-muted, var(--color-text-muted));
 		font-weight: 600;
 		padding: 0.65rem 0.75rem;
 		line-height: 1.2;
-		border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+		border-bottom: 1px solid var(--border, var(--color-border));
 		white-space: nowrap;
 	}
 

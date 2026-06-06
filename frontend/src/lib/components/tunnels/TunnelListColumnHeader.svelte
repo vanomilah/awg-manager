@@ -1,10 +1,10 @@
 <script lang="ts">
-	import TunnelTableSortHeader from '$lib/components/tunnels/TunnelTableSortHeader.svelte';
+	import { TableSortHeader } from '$lib/components/ui';
 
 	interface Props {
 		label: string;
 		sortKey?: string;
-		activeSortKey?: string;
+		activeSortKey?: string | null;
 		sortAsc?: boolean;
 		onchange?: (key: string) => void;
 		align?: 'left' | 'right' | 'center';
@@ -13,7 +13,7 @@
 	let {
 		label,
 		sortKey,
-		activeSortKey,
+		activeSortKey = null,
 		sortAsc = true,
 		onchange,
 		align = 'left',
@@ -22,10 +22,10 @@
 
 <span class="tunnel-list-col-head" class:tunnel-list-col-head--right={align === 'right'} class:tunnel-list-col-head--center={align === 'center'}>
 	{#if sortKey && onchange}
-		<TunnelTableSortHeader
+		<TableSortHeader
 			{label}
 			{sortKey}
-			activeSortKey={activeSortKey ?? ''}
+			{activeSortKey}
 			{sortAsc}
 			{onchange}
 		/>

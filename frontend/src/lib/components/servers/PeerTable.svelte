@@ -276,9 +276,9 @@
 
 	.peer-table th {
 		text-align: center;
-		background: color-mix(in srgb, var(--accent) 16%, transparent);
-		color: var(--accent);
-		border-bottom: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+		background: var(--bg-tertiary, var(--color-bg-tertiary));
+		color: var(--text-muted, var(--color-text-muted));
+		border-bottom: 1px solid var(--border, var(--color-border));
 		font-weight: 500;
 		font-size: 0.75rem;
 		text-transform: uppercase;

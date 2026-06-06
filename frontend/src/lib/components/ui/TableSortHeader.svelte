@@ -1,25 +1,28 @@
-<script lang="ts">
+<script lang="ts" generics="T extends string = string">
 	interface Props {
 		label: string;
-		sortKey: string;
-		activeSortKey: string | null;
+		sortKey: T;
+		activeSortKey: T | null;
 		sortAsc: boolean;
-		onchange: (key: string) => void;
+		onchange: (key: T) => void;
 	}
 
 	let { label, sortKey, activeSortKey, sortAsc, onchange }: Props = $props();
+
+	const active = $derived(activeSortKey === sortKey);
 </script>
 
 <button
 	type="button"
 	class="sort-header-btn"
-	class:active={activeSortKey === sortKey}
+	class:active
+	aria-pressed={active}
 	onclick={() => onchange(sortKey)}
-	title={`Сортировать по колонке «${label}»`}
+	title={`Сортировать по колонке «${label}». Повторный клик — смена направления, третий — исходный порядок`}
 >
 	<span>{label}</span>
 	<span class="sort-indicator" aria-hidden="true">
-		{#if activeSortKey === sortKey}
+		{#if active}
 			{sortAsc ? '↑' : '↓'}
 		{:else}
 			↕
@@ -46,16 +49,21 @@
 	}
 
 	.sort-header-btn:hover {
-		color: var(--text-primary);
+		color: var(--text-primary, var(--color-text-primary));
 	}
 
 	.sort-header-btn.active {
-		color: var(--accent);
+		color: var(--accent, var(--color-accent));
 	}
 
 	.sort-indicator {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
 		width: 1em;
+		height: 1em;
 		flex: 0 0 auto;
+		line-height: 1;
 		opacity: 0.65;
 		font-size: 0.8em;
 	}

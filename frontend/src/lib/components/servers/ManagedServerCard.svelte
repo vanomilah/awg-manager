@@ -66,6 +66,9 @@
 			);
 		}
 
+		const sortBy = $peerSort.sortBy;
+		if (sortBy === null) return peers;
+
 		const sorted = [...peers].sort((a, b) => {
 			const sa = getPeerStats(a.publicKey);
 			const sb = getPeerStats(b.publicKey);
@@ -88,7 +91,7 @@
 					online: sb?.online ?? null,
 					lastHandshake: sb?.lastHandshake ?? null,
 				},
-				$peerSort.sortBy,
+				sortBy,
 				$peerSort.sortAsc,
 			);
 		});

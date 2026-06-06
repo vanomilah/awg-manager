@@ -5,6 +5,7 @@ import {
 	SINGBOX_TUNNEL_SORT_DEFAULTS,
 	SUBSCRIPTION_SORT_DEFAULTS,
 } from '$lib/utils/tunnelTableSort';
+import { cycleTableSort } from '$lib/utils/tableSort';
 
 export type AwgTunnelSortKey = 'name' | 'status' | 'endpoint' | 'traffic' | 'handshake';
 export type SingboxTunnelSortKey = 'delay' | 'name' | 'protocol' | 'server' | 'running' | 'traffic' | 'ping';
@@ -40,9 +41,9 @@ function createTunnelTableSortStore<T extends string>(
 				sortAsc:
 					typeof parsed.sortAsc === 'boolean'
 						? parsed.sortAsc
-						: sortBy === null
-							? true
-							: defaults[sortBy],
+						: sortBy !== null
+							? defaults[sortBy]
+							: true,
 			};
 		} catch {
 			return defaultState();
@@ -69,9 +70,10 @@ function createTunnelTableSortStore<T extends string>(
 		},
 		setSortBy(sortBy: T | null) {
 			update((state) => {
+				if (state.sortBy === sortBy) return state;
 				const next: TunnelTableSortState<T> = {
 					sortBy,
-					sortAsc: sortBy === null ? true : defaults[sortBy],
+					sortAsc: true,
 				};
 				persist(next);
 				return next;
@@ -79,16 +81,14 @@ function createTunnelTableSortStore<T extends string>(
 		},
 		toggleSort(key: T) {
 			update((state) => {
-				const next: TunnelTableSortState<T> =
-					state.sortBy === key
-						? { sortBy: key, sortAsc: !state.sortAsc }
-						: { sortBy: key, sortAsc: defaults[key] };
+				const next = cycleTableSort(state, key);
 				persist(next);
 				return next;
 			});
 		},
 		toggleDir() {
 			update((state) => {
+				if (state.sortBy === null) return state;
 				const next = { ...state, sortAsc: !state.sortAsc };
 				persist(next);
 				return next;

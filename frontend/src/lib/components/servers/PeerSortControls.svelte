@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PeerSortKey } from '$lib/utils/peerSort';
 	import { peerSort } from '$lib/stores/peerSort';
+	import { DEFAULT_SORT_VALUE } from '$lib/utils/tableSort';
 	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 
 	interface Props {
@@ -23,6 +24,13 @@
 		{ value: 'online', label: 'Онлайн' },
 		{ value: 'handshake', label: 'Handshake' },
 	];
+
+	const dropdownOptions = $derived(
+		([
+			{ value: DEFAULT_SORT_VALUE, label: 'Исходный порядок' },
+			...sortOptions,
+		] satisfies DropdownOption<string>[])
+	);
 </script>
 
 <div class="peer-sort-controls" class:hide-sort-on-desktop={hideSortOnDesktop}>
@@ -36,9 +44,19 @@
 	{/if}
 	<div class="peer-sort-ui">
 		<div class="peer-sort-select">
-			<Dropdown value={$peerSort.sortBy} options={sortOptions} onchange={(k) => peerSort.setSortBy(k)} fullWidth />
+			<Dropdown
+				value={$peerSort.sortBy ?? DEFAULT_SORT_VALUE}
+				options={dropdownOptions}
+				onchange={(k) => peerSort.setSortBy(k === DEFAULT_SORT_VALUE ? null : (k as PeerSortKey))}
+				fullWidth
+			/>
 		</div>
-		<button class="peer-sort-dir" onclick={() => peerSort.toggleDir()} title="Направление сортировки">
+		<button
+			class="peer-sort-dir"
+			disabled={$peerSort.sortBy === null}
+			onclick={() => peerSort.toggleDir()}
+			title="Направление сортировки"
+		>
 			{$peerSort.sortAsc ? '↑' : '↓'}
 		</button>
 	</div>
@@ -91,9 +109,14 @@
 		transition: color 0.15s ease, background 0.15s ease;
 	}
 
-	.peer-sort-dir:hover {
+	.peer-sort-dir:hover:not(:disabled) {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+
+	.peer-sort-dir:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
 	}
 
 	@media (max-width: 640px) {

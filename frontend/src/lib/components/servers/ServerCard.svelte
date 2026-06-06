@@ -53,6 +53,9 @@
 			);
 		}
 
+		const sortBy = $peerSort.sortBy;
+		if (sortBy === null) return peers;
+
 		const sorted = [...peers].sort((a, b) => {
 			return comparePeerFieldsDirected(
 				{
@@ -73,7 +76,7 @@
 					online: b.online,
 					lastHandshake: b.lastHandshake || null,
 				},
-				$peerSort.sortBy,
+				sortBy,
 				$peerSort.sortAsc,
 			);
 		});

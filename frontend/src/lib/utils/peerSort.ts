@@ -21,7 +21,7 @@ export interface PeerSortFields {
 }
 
 export interface PeerSortStateLike {
-	sortBy: PeerSortKey;
+	sortBy: PeerSortKey | null;
 	sortAsc: boolean;
 }
 
