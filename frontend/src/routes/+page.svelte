@@ -60,6 +60,7 @@
 	import { nativewgUnavailableHint } from '$lib/utils/backendAvailability';
 	import {
 		SINGBOX_LAYOUT_STORAGE_KEY,
+		isTunnelListRenderMode,
 		parseSingboxLayoutMode,
 		readTunnelMobileLayout,
 		subscribeTunnelMobileLayout,
@@ -1626,7 +1627,7 @@
 					</Button>
 				</div>
 			</div>
-			{#if awgRenderMode === 'table'}
+			{#if isTunnelListRenderMode(awgRenderMode)}
 				<div class="awg-summary-row">
 					<StatStrip>
 						<Stat
@@ -1651,6 +1652,8 @@
 						/>
 					</StatStrip>
 				</div>
+			{/if}
+			{#if awgRenderMode === 'table'}
 				<div class="awg-list-table">
 					<div class="awg-list-table-track">
 					<div class="awg-list-row awg-list-row--head">
@@ -2171,44 +2174,47 @@
 								Добавить подписку
 							</Button>
 						</div>
-					{:else if singboxSubscriptionsRenderMode === 'table'}
-						<div class="awg-summary-row">
-							<StatStrip>
-								<Stat
-									value={`${singboxSubscriptionsTrafficStats.activeCount}/${singboxSubscriptionsTrafficStats.count}`}
-									label={pluralForm(singboxSubscriptionsTrafficStats.activeCount, SUBSCRIPTION_WORDS)}
-									sub={formatRunningSub(
-										singboxSubscriptionsTrafficStats.activeCount,
-										singboxSubscriptionsTrafficStats.count,
-									)}
-								/>
-								<Stat
-									value={formatBytes(
-										singboxSubscriptionsTrafficStats.down + singboxSubscriptionsTrafficStats.up,
-									)}
-									label="Суммарный трафик"
-									sub={`↓ ${formatBytes(singboxSubscriptionsTrafficStats.down)} · ↑ ${formatBytes(singboxSubscriptionsTrafficStats.up)}`}
-								/>
-								<Stat
-									value={singboxSubscriptionsTrafficStats.avgDelayMs !== null
-										? `${singboxSubscriptionsTrafficStats.avgDelayMs} ms`
-										: '—'}
-									label="Средний delay"
-									sub={singboxSubscriptionsTrafficStats.delaySamples > 0
-										? `по ${singboxSubscriptionsTrafficStats.delaySamples} активным подпискам`
-										: 'нет активных замеров'}
-								/>
-								<Stat
-									value={singboxSubscriptionsTrafficStats.leaderBytes > 0
-										? formatBytes(singboxSubscriptionsTrafficStats.leaderBytes)
-										: '—'}
-									label="Лидер по трафику"
-									sub={singboxSubscriptionsTrafficStats.leaderBytes > 0
-										? `${singboxSubscriptionsTrafficStats.leaderName} · ${singboxSubscriptionsTrafficStats.leaderSharePct}% всего`
-										: '—'}
-								/>
-							</StatStrip>
-						</div>
+					{:else}
+						{#if isTunnelListRenderMode(singboxSubscriptionsRenderMode)}
+							<div class="awg-summary-row">
+								<StatStrip>
+									<Stat
+										value={`${singboxSubscriptionsTrafficStats.activeCount}/${singboxSubscriptionsTrafficStats.count}`}
+										label={pluralForm(singboxSubscriptionsTrafficStats.activeCount, SUBSCRIPTION_WORDS)}
+										sub={formatRunningSub(
+											singboxSubscriptionsTrafficStats.activeCount,
+											singboxSubscriptionsTrafficStats.count,
+										)}
+									/>
+									<Stat
+										value={formatBytes(
+											singboxSubscriptionsTrafficStats.down + singboxSubscriptionsTrafficStats.up,
+										)}
+										label="Суммарный трафик"
+										sub={`↓ ${formatBytes(singboxSubscriptionsTrafficStats.down)} · ↑ ${formatBytes(singboxSubscriptionsTrafficStats.up)}`}
+									/>
+									<Stat
+										value={singboxSubscriptionsTrafficStats.avgDelayMs !== null
+											? `${singboxSubscriptionsTrafficStats.avgDelayMs} ms`
+											: '—'}
+										label="Средний delay"
+										sub={singboxSubscriptionsTrafficStats.delaySamples > 0
+											? `по ${singboxSubscriptionsTrafficStats.delaySamples} активным подпискам`
+											: 'нет активных замеров'}
+									/>
+									<Stat
+										value={singboxSubscriptionsTrafficStats.leaderBytes > 0
+											? formatBytes(singboxSubscriptionsTrafficStats.leaderBytes)
+											: '—'}
+										label="Лидер по трафику"
+										sub={singboxSubscriptionsTrafficStats.leaderBytes > 0
+											? `${singboxSubscriptionsTrafficStats.leaderName} · ${singboxSubscriptionsTrafficStats.leaderSharePct}% всего`
+											: '—'}
+									/>
+								</StatStrip>
+							</div>
+						{/if}
+						{#if singboxSubscriptionsRenderMode === 'table'}
 						<div class="tunnel-table-wrap">
 							<table class="tunnel-data-table singbox-sub-table">
 								<colgroup>
@@ -2276,7 +2282,7 @@
 								</tbody>
 							</table>
 						</div>
-					{:else if singboxSubscriptionsRenderMode === 'list-card'}
+						{:else if singboxSubscriptionsRenderMode === 'list-card'}
 						<div class="tunnel-grid tunnel-grid--list">
 							{#each sortedFilteredSubscriptionsActiveCards as card, i (card.subscription.id)}
 								<SubscriptionActiveCard
@@ -2303,7 +2309,7 @@
 						{#if singboxSubscriptionsSearchEmpty}
 							<p class="tunnel-list-empty">Ничего не найдено</p>
 						{/if}
-					{:else}
+						{:else}
 						{#if subscriptionsActiveCards.length > 0}
 							<div
 								class="tunnel-grid"
@@ -2349,6 +2355,7 @@
 						{/if}
 						{#if singboxSubscriptionsSearchEmpty}
 							<p class="tunnel-list-empty">Ничего не найдено</p>
+						{/if}
 						{/if}
 					{/if}
 				{/if}
@@ -2445,7 +2452,7 @@
 					</div>
 				</div>
 			{:else if singboxTunnelsList.length > 0}
-				{#if singboxTunnelsRenderMode === 'table'}
+				{#if isTunnelListRenderMode(singboxTunnelsRenderMode)}
 					<div class="awg-summary-row">
 						<StatStrip>
 							<Stat
@@ -2474,6 +2481,8 @@
 							/>
 							</StatStrip>
 						</div>
+				{/if}
+				{#if singboxTunnelsRenderMode === 'table'}
 					<div class="tunnel-table-wrap">
 						<table class="tunnel-data-table singbox-tunnel-table">
 							<colgroup>
