@@ -28,25 +28,26 @@
 		if (!ascParams) return;
 		generating = true;
 		try {
-			const extended = isExtendedASCParams(ascParams) && (systemInfo?.supportsExtendedASC ?? false);
+			const extended = systemInfo?.supportsExtendedASC ?? false;
 			const hRanges = systemInfo?.supportsHRanges ?? false;
-			const params = generateASCParams({ extended, hRanges });
+			const generated = generateASCParams({ extended, hRanges });
+			const existing = isExtendedASCParams(ascParams) ? (ascParams as ASCParamsExtended) : null;
+			const signatures = {
+				i1: existing?.i1 ?? '',
+				i2: existing?.i2 ?? '',
+				i3: existing?.i3 ?? '',
+				i4: existing?.i4 ?? '',
+				i5: existing?.i5 ?? '',
+			};
 
-			ascParams.jc = params.jc;
-			ascParams.jmin = params.jmin;
-			ascParams.jmax = params.jmax;
-			ascParams.s1 = params.s1;
-			ascParams.s2 = params.s2;
-			ascParams.h1 = params.h1;
-			ascParams.h2 = params.h2;
-			ascParams.h3 = params.h3;
-			ascParams.h4 = params.h4;
-
-			if (extended && isExtendedASCParams(ascParams)) {
-				const ext = ascParams as ASCParamsExtended;
-				ext.s3 = params.s3!;
-				ext.s4 = params.s4!;
-			}
+			ascParams = extended
+				? ({
+						...generated,
+						s3: generated.s3!,
+						s4: generated.s4!,
+						...signatures,
+					} satisfies ASCParamsExtended)
+				: generated;
 
 			notifications.success('Параметры сгенерированы');
 		} catch (e) {

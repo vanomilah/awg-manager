@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { protocols, getSignaturePackets, calcByteSize, type ProtocolKey } from '$lib/utils/protocols';
+	import { protocols, getSignaturePackets, calcByteSize, type ProtocolKey, type SignaturePackets } from '$lib/utils/protocols';
 	import { api } from '$lib/api/client';
 	import type { ASCParams, ASCParamsExtended } from '$lib/types';
 	import { isExtendedASCParams } from '$lib/utils/asc-validation';
 	import { AWG_PARAM_HINTS } from '$lib/utils/awgParamHints';
+	import { notifications } from '$lib/stores/notifications';
 	import { SettingsSectionLabel } from '$lib/components/settings';
 	import { Button, Dropdown, FieldHint, type DropdownOption } from '$lib/components/ui';
 	import { Fingerprint, Hash, MoveHorizontal, Shredder } from 'lucide-svelte';
@@ -41,6 +42,7 @@
 	let generateMode = $state<GenerateMode>('protocol');
 	let domainInput = $state('');
 	let capturing = $state(false);
+	let generating = $state(false);
 	let captureError = $state('');
 	let captureSource = $state('');
 
@@ -62,43 +64,85 @@
 		return `${idPrefix}${name}`;
 	}
 
+	function generationErrorMessage(e: unknown): string {
+		const msg = e instanceof Error ? e.message : String(e);
+		if (/getRandomValues|crypto/i.test(msg)) {
+			return 'Генерация недоступна: откройте интерфейс по HTTPS или через localhost';
+		}
+		return msg || 'Ошибка генерации пакетов';
+	}
+
+	function applySignaturePackets(packets: SignaturePackets) {
+		params = {
+			...params,
+			i1: packets.i1,
+			i2: packets.i2,
+			i3: packets.i3,
+			i4: packets.i4,
+			i5: packets.i5,
+		} as ASCParams;
+	}
+
 	function handleGenerate() {
-		if (!showExtended) return;
-		const ext = params as ASCParamsExtended;
-		const packets = getSignaturePackets(selectedProtocol, mtu);
-		const size =
-			calcByteSize(packets.i1) +
-			calcByteSize(packets.i2) +
-			calcByteSize(packets.i3) +
-			calcByteSize(packets.i4) +
-			calcByteSize(packets.i5);
-		if (size > MAX_SIGNATURE_BYTES) return;
-		ext.i1 = packets.i1;
-		ext.i2 = packets.i2;
-		ext.i3 = packets.i3;
-		ext.i4 = packets.i4;
-		ext.i5 = packets.i5;
+		if (!showExtended) {
+			notifications.error('Signature-пакеты (I1–I5) недоступны на этом устройстве');
+			return;
+		}
+
+		generating = true;
+		try {
+			const packets = getSignaturePackets(selectedProtocol, mtu);
+			const size =
+				calcByteSize(packets.i1) +
+				calcByteSize(packets.i2) +
+				calcByteSize(packets.i3) +
+				calcByteSize(packets.i4) +
+				calcByteSize(packets.i5);
+			if (size > MAX_SIGNATURE_BYTES) {
+				notifications.error(
+					`Суммарный размер (${size} байт) превышает лимит ${MAX_SIGNATURE_BYTES}`,
+				);
+				return;
+			}
+
+			applySignaturePackets(packets);
+			const protoName = protocols[selectedProtocol]?.name ?? selectedProtocol;
+			notifications.success(`Signature-пакеты сгенерированы (${protoName})`);
+		} catch (e: unknown) {
+			notifications.error(generationErrorMessage(e));
+		} finally {
+			generating = false;
+		}
 	}
 
 	async function handleCapture() {
-		if (!domainInput.trim() || !showExtended) return;
-		const ext = params as ASCParamsExtended;
+		if (!showExtended) {
+			notifications.error('Signature-пакеты (I1–I5) недоступны на этом устройстве');
+			return;
+		}
+		if (!domainInput.trim()) return;
+
 		capturing = true;
 		captureError = '';
 		captureSource = '';
 		try {
 			const result = await api.captureSignature(domainInput.trim());
-			ext.i1 = result.packets.i1 || '';
-			ext.i2 = result.packets.i2 || '';
-			ext.i3 = result.packets.i3 || '';
-			ext.i4 = result.packets.i4 || '';
-			ext.i5 = result.packets.i5 || '';
+			applySignaturePackets({
+				i1: result.packets.i1 || '',
+				i2: result.packets.i2 || '',
+				i3: result.packets.i3 || '',
+				i4: result.packets.i4 || '',
+				i5: result.packets.i5 || '',
+			});
 			captureSource = result.source;
 			if (result.warning) {
 				captureError = result.warning;
+			} else {
+				notifications.success('Signature-пакеты захвачены');
 			}
 		} catch (e: unknown) {
 			captureError = e instanceof Error ? e.message : 'Ошибка захвата';
+			notifications.error(captureError);
 		} finally {
 			capturing = false;
 		}
@@ -174,14 +218,23 @@
 
 			{#if signatureModes === 'both'}
 				<div class="mode-options">
-					<label class="mode-option">
-						<input type="radio" value="protocol" bind:group={generateMode} />
-						<span>Протокол</span>
-					</label>
-					<label class="mode-option">
-						<input type="radio" value="domain" bind:group={generateMode} />
-						<span>По домену</span>
-					</label>
+					<div class="mode-options-radios">
+						<label class="mode-option">
+							<input type="radio" value="protocol" bind:group={generateMode} />
+							<span>Протокол</span>
+						</label>
+						<label class="mode-option">
+							<input type="radio" value="domain" bind:group={generateMode} />
+							<span>По домену</span>
+						</label>
+					</div>
+					{#if captureSource && !captureError}
+						<span class="capture-badge">{captureSource.toUpperCase()}</span>
+					{/if}
+				</div>
+			{:else if captureSource && !captureError}
+				<div class="mode-options mode-options-badge-only">
+					<span class="capture-badge">{captureSource.toUpperCase()}</span>
 				</div>
 			{/if}
 
@@ -213,9 +266,6 @@
 				{#if captureError}
 					<p class="capture-info" class:capture-warning={!!captureSource}>{captureError}</p>
 				{/if}
-				{#if captureSource && !captureError}
-					<span class="capture-badge">{captureSource.toUpperCase()}</span>
-				{/if}
 			{:else}
 				{@const protocolOpts: DropdownOption<ProtocolKey>[] = Object.entries(protocols).map(
 					([key, proto]) => ({
@@ -228,7 +278,15 @@
 					<div class="protocol-select">
 						<Dropdown bind:value={selectedProtocol} options={protocolOpts} fullWidth />
 					</div>
-					<Button variant="secondary" size="sm" onclick={handleGenerate}>Сгенерировать</Button>
+					<Button
+						variant="secondary"
+						size="sm"
+						onclick={handleGenerate}
+						disabled={generating || capturing}
+						loading={generating}
+					>
+						{generating ? 'Генерация...' : 'Сгенерировать'}
+					</Button>
 				</div>
 			{/if}
 
@@ -328,8 +386,20 @@
 	.mode-options {
 		display: flex;
 		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
 		gap: 0.5rem 1rem;
 		margin-bottom: 12px;
+	}
+
+	.mode-options-radios {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1rem;
+	}
+
+	.mode-options-badge-only {
+		justify-content: flex-start;
 	}
 
 	.mode-option {
@@ -383,14 +453,15 @@
 	}
 
 	.capture-badge {
-		display: inline-block;
+		display: inline-flex;
+		align-items: center;
+		flex-shrink: 0;
 		font-size: 11px;
 		font-weight: 600;
 		padding: 2px 8px;
 		border-radius: var(--radius-sm);
 		background: var(--color-bg-tertiary);
 		color: var(--color-accent);
-		margin-top: 4px;
 	}
 
 	@media (max-width: 640px) {
@@ -403,8 +474,17 @@
 	@media (max-width: 480px) {
 		.mode-options {
 			flex-direction: column;
+			align-items: stretch;
 			gap: 0.5rem;
+		}
+
+		.mode-options-radios {
+			flex-direction: column;
 			align-items: flex-start;
+		}
+
+		.capture-badge {
+			align-self: flex-start;
 		}
 	}
 </style>
