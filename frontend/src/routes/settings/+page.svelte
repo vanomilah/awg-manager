@@ -21,6 +21,7 @@
 		UsageLevelCard,
 		DevelopChannelGateModal,
 		ExperimentalSettingsCard,
+		PukhososPatrol,
 		SettingsSectionLabel,
 	} from "$lib/components/settings";
 	import { setSettings as setGlobalSettings } from "$lib/stores/settings";
@@ -943,7 +944,7 @@ $effect(() => {
 			</main>
 		</div>
 
-		<div class="settings-block">
+		<div class="settings-block" id="settings-actions">
 			<div class="card actions-card">
 			<SettingsSectionLabel label="Действия" icon={Power} tone="red" header />
 			<div class="setting-row">
@@ -1011,8 +1012,11 @@ $effect(() => {
 			</div>
 		</div>
 
-		<div class="settings-doc-block">
-			<SettingsFooter />
+		<div class="settings-doc-block" id="settings-footer-block">
+			<div class="settings-footer-patrol-host">
+				<PukhososPatrol />
+				<SettingsFooter />
+			</div>
 		</div>
 		</div>
 	{/if}
@@ -1087,6 +1091,11 @@ $effect(() => {
 		color: var(--color-text-secondary);
 		font-size: 0.875rem;
 		margin: 0;
+	}
+
+	.settings-footer-patrol-host {
+		position: relative;
+		overflow: visible;
 	}
 
 	.actions-card > .setting-row {
