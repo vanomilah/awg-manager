@@ -23,6 +23,7 @@
     import { notifications } from '$lib/stores/notifications';
     import type { Subscription, SubscriptionMember } from '$lib/types';
     import { formatBitRate, formatBytes, formatRelativeTime } from '$lib/utils/format';
+    import { isCardNestedInteraction } from '$lib/utils/cardClick';
     import SubscriptionMemberPicker from './SubscriptionMemberPicker.svelte';
     import type { SingboxLayoutMode } from '$lib/constants/singboxLayout';
     import TunnelDiagnosticsModal from '$lib/components/testing/TunnelDiagnosticsModal.svelte';
@@ -176,14 +177,8 @@
         await subscriptionsStore.refetch();
     }
 
-    function isNestedActionEvent(e: Event): boolean {
-        const target = e.target;
-        if (!(target instanceof HTMLElement)) return false;
-        return target.closest('button,a,input,select,textarea,label') !== null;
-    }
-
     function openDetail(e?: MouseEvent | KeyboardEvent): void {
-        if (e && isNestedActionEvent(e)) return;
+        if (e && isCardNestedInteraction(e)) return;
         goto(`/subscriptions/${subscription.id}`);
     }
 
@@ -280,7 +275,6 @@
             <td
                 class="tunnel-list-cell tunnel-list-cell--traffic lc lc-traffic"
                 data-label="Трафик"
-                onclick={(e) => e.stopPropagation()}
             >
                 {#if subscription.lastError}
                     <span class="delay-dash">—</span>
@@ -298,7 +292,6 @@
             <td
                 class="tunnel-list-cell tunnel-list-cell--ping lc"
                 data-label="Ping"
-                onclick={(e) => e.stopPropagation()}
             >
                 {#if subscription.lastError}
                     <span class="delay-dash">—</span>
@@ -315,7 +308,6 @@
             <td
                 class="tunnel-list-cell tunnel-list-cell--actions lc lc-actions col-actions"
                 data-label=""
-                onclick={(e) => e.stopPropagation()}
             >
                 <TunnelListActions
                     onEdit={openSettings}
@@ -447,7 +439,25 @@
     </div>
     {/if}
 
-    <div class="actions" onclick={(e) => e.stopPropagation()}>
+    {#if renderMode === 'list-card'}
+    <div class="list-card-endpoint mono">
+        <span class="list-card-endpoint-label">{isURLTest ? 'Авто' : 'Активен'}</span>
+        <span
+            class="list-card-endpoint-value"
+            title={showEndpoint ? activeEndpointTitle : (listActiveServerName || subscription.activeMember || activeMember.tag)}
+        >
+            {#if showEndpoint}
+                {endpointText}
+            {:else if listActiveServerName}
+                {listActiveServerName}
+            {:else}
+                {subscription.activeMember || activeMember.tag}
+            {/if}
+        </span>
+    </div>
+    {/if}
+
+    <div class="actions">
         <TunnelListActions
             variant="labeled"
             onEdit={openSettings}
@@ -642,7 +652,7 @@
     </div>
     </div>
 
-    <div class="actions actions--bar" onclick={(e) => e.stopPropagation()}>
+    <div class="actions actions--bar">
         <TunnelListActions
             variant="labeled"
             onEdit={openSettings}
@@ -656,7 +666,7 @@
     </div>
 
     {#if !subscription.lastError}
-        <div class="chart-section" onclick={(e) => e.stopPropagation()}>
+        <div class="chart-section">
             <div class="chart-body">
                 <div class="chart-head">
                     <span>Delay (5 мин)</span>
@@ -743,6 +753,12 @@
 
     .card.card-clickable {
         cursor: pointer;
+    }
+
+    @media (hover: hover) and (pointer: fine) {
+        .card.card-clickable:hover {
+            border-color: var(--color-accent-border);
+        }
     }
 
     .card.card-clickable:focus-visible {
@@ -856,6 +872,32 @@
 
     .dense-meta-line span {
         white-space: nowrap;
+    }
+
+    .list-card-endpoint {
+        display: flex;
+        align-items: baseline;
+        gap: 0.35rem;
+        min-width: 0;
+        font-size: 10px;
+        line-height: 1.3;
+        color: var(--color-text-muted);
+    }
+
+    .list-card-endpoint-label {
+        flex: 0 0 auto;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-size: 9px;
+    }
+
+    .list-card-endpoint-value {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: var(--color-text-secondary);
     }
 
     .kv-stacked-stat {

@@ -17,6 +17,7 @@
 	import { singboxDelayFromHistory } from '$lib/utils/singboxDelay';
 	import { singboxDelayStatusDot } from '$lib/utils/statusDot';
 	import { resolveSubscriptionMemberTag } from '$lib/utils/subscriptionMember';
+	import { isCardNestedInteraction } from '$lib/utils/cardClick';
 	import TunnelDiagnosticsModal from '$lib/components/testing/TunnelDiagnosticsModal.svelte';
 
 	interface Props {
@@ -110,14 +111,8 @@
 			testingDelay = false;
 		}
 	}
-	function isNestedActionEvent(e: Event): boolean {
-		const target = e.target;
-		if (!(target instanceof HTMLElement)) return false;
-		return target.closest('button,a,input,select,textarea') !== null;
-	}
-
 	function open(e?: MouseEvent | KeyboardEvent): void {
-		if (e && isNestedActionEvent(e)) return;
+		if (e && isCardNestedInteraction(e)) return;
 		goto(`/subscriptions/${subscription.id}`);
 	}
 
@@ -248,7 +243,6 @@
 			<td
 				class="tunnel-list-cell tunnel-list-cell--traffic lc lc-traffic"
 				data-label="Трафик"
-				onclick={(e) => e.stopPropagation()}
 			>
 				{#if subscription.lastError || !subscription.enabled}
 					<span class="delay-dash">—</span>
@@ -268,7 +262,6 @@
 			<td
 				class="tunnel-list-cell tunnel-list-cell--ping lc"
 				data-label="Ping"
-				onclick={(e) => e.stopPropagation()}
 			>
 				{#if subscription.lastError || !subscription.enabled}
 					<span class="delay-dash">—</span>
@@ -286,7 +279,6 @@
 			<td
 				class="tunnel-list-cell tunnel-list-cell--actions lc lc-actions col-actions"
 				data-label=""
-				onclick={(e) => e.stopPropagation()}
 			>
 				<TunnelListActions
 					onEdit={openSettings}
@@ -372,7 +364,7 @@
 	{/if}
 	{/if}
 	{#if renderMode === 'list-card'}
-	<div class="actions" onclick={(e) => e.stopPropagation()}>
+	<div class="actions">
 		<TunnelListActions
 			variant="labeled"
 			onEdit={openSettings}
@@ -459,7 +451,7 @@
 		{/if}
 	</div>
 
-	<div class="actions actions--bar-top" onclick={(e) => e.stopPropagation()}>
+	<div class="actions actions--bar-top">
 		<TunnelListActions
 			variant="labeled"
 			onEdit={openSettings}
@@ -512,8 +504,10 @@
 	.card.panel.inactive-panel {
 		border: 1px dashed color-mix(in srgb, var(--color-text-muted) 38%, transparent);
 	}
-	.card.inactive-panel:hover {
-		border-color: var(--color-accent);
+	@media (hover: hover) and (pointer: fine) {
+		.card.inactive-panel:hover {
+			border-color: var(--color-accent-border);
+		}
 	}
 	.card.panel.inactive-panel.off {
 		opacity: 1;
@@ -684,6 +678,7 @@
 		gap: 10px;
 		margin-top: 12px;
 		padding-top: 12px;
+		padding-bottom: 12px;
 		border-top: 1px solid var(--color-border);
 	}
 	.detail-row {

@@ -1,0 +1,3 @@
+warning ../../../../package.json: No license field
+(!) Some chunks are larger than 500 kB after minification. Consider:
+- Adjust chunk size limit for this warning via build.chunkSizeWarningLimit.

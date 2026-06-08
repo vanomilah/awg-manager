@@ -323,9 +323,8 @@
 						checked={isUp}
 						onchange={handleToggleEnabled}
 						disabled={togglingEnabled || restartingServer || statusUnknown}
-						loading={togglingEnabled}
-						label="Сервер включён"
 						size="sm"
+						spinner="none"
 					/>
 					<h3 class="card-title">{serverDisplayName}</h3>
 				</div>
@@ -571,8 +570,6 @@
 
 
 <style>
-	@import './serverCardShared.css';
-
 	.managed-card {
 		border-color: var(--accent);
 	}
@@ -623,21 +620,5 @@
 		background: var(--color-settings-surface-bg);
 		border-color: var(--color-border);
 		border-radius: var(--radius-sm);
-	}
-
-	@media (max-width: 640px) {
-		.header-actions {
-			align-self: stretch;
-			display: grid;
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			gap: 0.5rem;
-			width: 100%;
-		}
-
-		.header-actions :global(.btn) {
-			width: 100%;
-			min-width: 0;
-			justify-content: center;
-		}
 	}
 </style>

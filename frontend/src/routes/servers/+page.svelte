@@ -25,6 +25,11 @@
 
 	const withIngressLock = createIngressMutationLock();
 
+	/** System servers in the rail are built-in VPN Server or user-marked interfaces only. */
+	function isMarkedSystemServer(server: { builtIn?: boolean; description: string }): boolean {
+		return !(server.builtIn ?? server.description === 'Wireguard VPN Server');
+	}
+
 	let unsub: (() => void) | undefined;
 	onMount(() => {
 		unsub = servers.subscribe(() => {});
@@ -217,20 +222,6 @@
 		activeItem?.kind === 'system' ? serverList.find((s) => s.id === activeId) : null,
 	);
 
-	let markedServerIds = $state<string[]>([]);
-
-	async function loadMarkedServers() {
-		try {
-			markedServerIds = await api.getMarkedServerInterfaces();
-		} catch {
-			markedServerIds = [];
-		}
-	}
-
-	$effect(() => {
-		if (snap.data) void loadMarkedServers();
-	});
-
 	async function unmarkServer(id: string) {
 		try {
 			const fresh = await api.unmarkServerInterface(id);
@@ -312,7 +303,7 @@
 				{:else if activeItem?.kind === 'system' && activeServer}
 				<ServerCard
 					server={activeServer}
-					isMarked={markedServerIds.includes(activeServer.id)}
+					isMarked={isMarkedSystemServer(activeServer)}
 					onUnmark={unmarkServer}
 					ingressEnabled={ingressRefs.includes(`iface:${activeServer.interfaceName}`)}
 					onToggleIngress={handleToggleSystemIngress}

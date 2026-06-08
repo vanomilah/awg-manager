@@ -1066,6 +1066,12 @@ button.tunnel-list-traffic-cell:focus-visible {
 	background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
 }
 
+@media (hover: hover) and (pointer: fine) {
+	.singbox-sub-table tbody tr.sbx-sub-active-row:hover td {
+		background: color-mix(in srgb, var(--color-accent-tint) 40%, var(--color-bg-secondary));
+	}
+}
+
 .tunnel-data-table .mono {
 	font-family: var(--font-mono, monospace);
 }

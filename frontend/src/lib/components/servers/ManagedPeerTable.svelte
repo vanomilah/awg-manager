@@ -170,8 +170,8 @@
 											checked={peer.enabled}
 											onchange={() => onTogglePeer(peer)}
 											disabled={isPeerToggling(peer.publicKey)}
-											loading={isPeerToggling(peer.publicKey)}
 											size="sm"
+											spinner="none"
 										/>
 									</span>
 								{/if}
@@ -280,8 +280,8 @@
 								checked={peer.enabled}
 								onchange={() => onTogglePeer(peer)}
 								disabled={isPeerToggling(peer.publicKey)}
-								loading={isPeerToggling(peer.publicKey)}
 								size="sm"
+								spinner="none"
 							/>
 						</span>
 					{/if}

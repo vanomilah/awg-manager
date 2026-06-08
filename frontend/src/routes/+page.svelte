@@ -1719,7 +1719,7 @@
 								size="sm"
 								variant="flip"
 								tint={awgToggleTint(tunnel, connectivity)}
-								loading={toggleLoading[tunnel.id] ?? false}
+								disabled={(toggleLoading[tunnel.id] ?? false) || tunnel.hasAddressConflict === true}
 								onchange={() => handleToggleOnOff(tunnel.id)}
 							/>
 						</div>

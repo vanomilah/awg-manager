@@ -313,9 +313,8 @@
 						checked={isUp}
 						onchange={handleToggleEnabled}
 						disabled={togglingEnabled || restartingServer}
-						loading={togglingEnabled}
-						label="Сервер включён"
 						size="sm"
+						spinner="none"
 					/>
 					<h3 class="card-title">{serverName}</h3>
 				</div>
@@ -535,8 +534,6 @@
 {/snippet}
 
 <style>
-	@import './serverCardShared.css';
-
 	.server-card {
 		transition: border-color 0.2s;
 	}
@@ -551,8 +548,8 @@
 	}
 
 	.badge-builtin {
-		background: rgba(59, 130, 246, 0.15);
-		color: var(--accent);
+		background: var(--color-success-tint);
+		color: var(--success);
 	}
 
 	.badge-system {

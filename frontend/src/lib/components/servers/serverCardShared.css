@@ -105,20 +105,15 @@
 }
 
 .server-detail-card .server-settings {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
 	background: var(--color-bg-tertiary);
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
-	padding: 0 0.875rem;
+	padding: 0.875rem;
 	margin-top: 0.5rem;
 	min-width: 0;
-}
-
-.server-detail-card .server-settings .setting-row:first-child {
-	padding-top: 0.875rem;
-}
-
-.server-detail-card .server-settings .setting-row:last-child {
-	padding-bottom: 0.875rem;
 }
 
 .server-detail-card .setting-copy {
@@ -260,8 +255,30 @@
 		gap: 0.5rem;
 	}
 
+	.server-detail-card.managed-card .header-actions {
+		align-self: stretch;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.5rem;
+		width: 100%;
+		flex-wrap: wrap;
+		justify-content: stretch;
+	}
+
+	.server-detail-card.managed-card .header-actions :global(.btn) {
+		width: 100%;
+		min-width: 0;
+		justify-content: center;
+	}
+
 	.server-detail-card .setting-control {
 		max-width: none;
+	}
+
+	.server-detail-card .server-settings .setting-row:not(.setting-row-toggle) {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
 	}
 
 	.server-detail-card .peers-header {

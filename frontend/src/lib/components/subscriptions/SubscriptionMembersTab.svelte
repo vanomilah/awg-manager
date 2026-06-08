@@ -450,7 +450,11 @@
 	{:else}
 	<div class="grid">
 		{#each memberList as member (member.tag)}
-			<div class="member-slot">
+			<div
+				class="member-slot"
+				class:member-slot--inline={subscription.isInline}
+				class:member-slot--active={member.tag === effectiveActiveMember}
+			>
 				<SubscriptionMemberCard
 					{member}
 					active={member.tag === effectiveActiveMember}
@@ -911,6 +915,43 @@
 		bottom: 6px;
 		top: auto;
 		z-index: 1;
+	}
+
+	@media (max-width: 640px) {
+		.member-slot--inline {
+			display: flex;
+			flex-direction: column;
+			border: 1px solid var(--color-border);
+			border-radius: 10px;
+			overflow: hidden;
+			background: var(--color-bg-secondary);
+		}
+
+		.member-slot--inline.member-slot--active {
+			border-color: #3fb950;
+			background: rgba(63, 185, 80, 0.06);
+		}
+
+		.member-slot--inline :global(.card) {
+			border: none;
+			border-radius: 0;
+			background: transparent;
+			min-height: 0;
+		}
+
+		.member-slot--inline :global(.card.active) {
+			border: none;
+			background: transparent;
+		}
+
+		.member-slot--inline .member-remove-btn {
+			position: static;
+			width: 100%;
+			border-top: 1px solid var(--color-border);
+			border-radius: 0;
+			padding: 0.5rem 0.75rem;
+			justify-content: center;
+		}
 	}
 
 	.add-form { display: flex; flex-direction: column; gap: 0.5rem; }
