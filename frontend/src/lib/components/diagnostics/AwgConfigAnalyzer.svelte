@@ -831,6 +831,7 @@
 		margin: 0 auto;
 		padding: 12px 16px 28px;
 		color: var(--color-text-primary, var(--text-primary));
+		overflow-x: clip;
 	}
 
 	.privacy-banner {
@@ -968,6 +969,10 @@
 		min-width: 0;
 	}
 
+	.col-input {
+		position: relative;
+	}
+
 	.results-empty {
 		padding: 20px 18px;
 		border-radius: 10px;
@@ -1030,8 +1035,13 @@
 
 	@media (max-width: 640px) {
 		.awg-analyzer {
-			padding: 0;
+			padding: 0 0 0.75rem;
 			max-width: none;
+		}
+
+		.col-input,
+		.col-results {
+			overflow-x: clip;
 		}
 
 		.privacy-banner {
@@ -1074,7 +1084,10 @@
 
 		.ta {
 			min-height: 130px;
-			max-height: 40vh;
+			max-height: none;
+			resize: none;
+			overflow-y: visible;
+			overscroll-behavior: contain;
 		}
 
 		.bar {
@@ -1176,6 +1189,13 @@
 		position: absolute;
 		width: 1px;
 		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		clip-path: inset(50%);
+		white-space: nowrap;
+		border: 0;
 		opacity: 0;
 		pointer-events: none;
 	}
