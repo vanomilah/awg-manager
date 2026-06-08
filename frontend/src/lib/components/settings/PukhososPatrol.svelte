@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { tick } from 'svelte';
+	import { get } from 'svelte/store';
 	import { PukhososSprite } from '$lib/components/ui';
 	import type { PukhososAnimation } from '$lib/components/ui';
 	import { pukhososSummonTick } from '$lib/stores/pukhososSummon';
@@ -39,7 +40,13 @@
 	let spriteEl: HTMLDivElement | undefined = $state();
 
 	let runId = 0;
-	let lastSummonTick = 0;
+	// Baseline = current value at mount, NOT 0. pukhososSummonTick is a global
+	// store that persists across remounts; if seeded with 0, any remount with
+	// a non-zero tick (i.e. after the user summoned once this session) would
+	// re-fire the patrol unprompted on every visit to /settings. Seeding with
+	// the live value makes mount a no-op — only a *new* summon (tick increases
+	// past this baseline) starts a run.
+	let lastSummonTick = get(pukhososSummonTick);
 
 	$effect(() => {
 		const tick = $pukhososSummonTick;
@@ -71,16 +78,17 @@
 	}
 
 	function waitMove(durationMs: number) {
-		if (!spriteEl || !moving) return sleep(durationMs);
+		const el = spriteEl;
+		if (!el || !moving) return sleep(durationMs);
 		return new Promise<void>((resolve) => {
 			const fallback = window.setTimeout(resolve, durationMs + 120);
 			const onEnd = (event: TransitionEvent) => {
 				if (event.propertyName !== 'left') return;
 				window.clearTimeout(fallback);
-				spriteEl?.removeEventListener('transitionend', onEnd);
+				el.removeEventListener('transitionend', onEnd);
 				resolve();
 			};
-			spriteEl.addEventListener('transitionend', onEnd);
+			el.addEventListener('transitionend', onEnd);
 		});
 	}
 
