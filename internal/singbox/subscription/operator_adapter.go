@@ -565,11 +565,17 @@ func (a *OperatorAdapter) flush() error {
 		dropped = append(dropped, DropReason{Tag: tag, Reason: reason})
 	}
 
-	if len(a.cfg.Outbounds) == 0 {
+	// An empty slot is fatal only for an additive op (Create/Refresh) where
+	// every server was dropped as invalid (dropped > 0). A deliberate teardown
+	// — deleting the last subscription / member, nothing dropped — commits an
+	// empty slot and disables it below. Erroring here would block deleteLocked's
+	// store.Delete and Reload would restore the just-removed config, leaving the
+	// subscription undeletable (#331 regression).
+	if len(a.cfg.Outbounds) == 0 && len(dropped) > 0 {
 		return fmt.Errorf("%w: no valid outbounds left after filtering (dropped: %s)", ErrValidation, formatDropList(dropped))
 	}
 
-	// All outbounds clean — commit and enable.
+	// Commit; enable a populated slot, disable an emptied one.
 	data, err := json.MarshalIndent(a.cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("subscription adapter: marshal slot: %w", err)
@@ -577,7 +583,7 @@ func (a *OperatorAdapter) flush() error {
 	if err := a.orch.Save(orchestrator.SlotSubscriptions, data); err != nil {
 		return fmt.Errorf("subscription adapter: save slot: %w", err)
 	}
-	_ = a.orch.SetEnabled(orchestrator.SlotSubscriptions, true)
+	_ = a.orch.SetEnabled(orchestrator.SlotSubscriptions, len(a.cfg.Outbounds) > 0)
 
 	a.lastDropped = dropped
 	return nil

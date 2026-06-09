@@ -85,3 +85,38 @@ func TestOperatorAdapter_RollbackRestoresCommitted(t *testing.T) {
 		t.Errorf("after rollback want 1 (committed), got %d", got)
 	}
 }
+
+// #331 regression: deleting the last subscription removes every outbound,
+// emptying the slot. Committing that teardown must SUCCEED — the "no valid
+// outbounds left" guard is for an additive Create/Refresh where every server
+// was dropped as invalid, NOT for a deliberate emptying. If commit errors,
+// deleteLocked's Reload-error check blocks store.Delete AND Reload restores the
+// just-deleted config, making the last subscription undeletable.
+func TestOperatorAdapter_CommitEmptySlotOnDelete(t *testing.T) {
+	dir := t.TempDir()
+	orch := orchestrator.New(dir, nil)
+	if err := orch.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	orch.SetValidator(&countingValidator{})
+	adapter := NewOperatorAdapter(orch, nil, nil)
+
+	// Materialise the only subscription member and commit it.
+	if err := adapter.AddOutbound("sub-x-0", validVlessJSON("10.0.0.1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Reload(context.Background()); err != nil {
+		t.Fatalf("initial commit: %v", err)
+	}
+
+	// Delete it: remove the only outbound, then commit the teardown.
+	if err := adapter.RemoveOutbound("sub-x-0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Reload(context.Background()); err != nil {
+		t.Fatalf("delete-to-empty commit must succeed, got: %v", err)
+	}
+	if got := len(adapter.DeclaredOutboundTags()); got != 0 {
+		t.Errorf("slot must be empty after delete, got %d outbound(s) (config resurrected?)", got)
+	}
+}
