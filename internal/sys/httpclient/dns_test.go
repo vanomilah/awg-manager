@@ -14,6 +14,18 @@ func TestEncodeDNSQuery(t *testing.T) {
 	if len(q) < 20 {
 		t.Fatalf("query too short: %d", len(q))
 	}
+	// QDCOUNT must be 1 — the packet carries one question. A query that omits
+	// it (QDCOUNT=0 with a question present) is malformed and strict resolvers
+	// reject it with FORMERR/rcode 1 (#239: download-via-AWG-tunnel DNS).
+	if qd := binary.BigEndian.Uint16(q[4:6]); qd != 1 {
+		t.Errorf("QDCOUNT = %d, want 1", qd)
+	}
+	// Sanity: ANCOUNT/NSCOUNT/ARCOUNT are 0 in a query.
+	for name, off := range map[string]int{"ANCOUNT": 6, "NSCOUNT": 8, "ARCOUNT": 10} {
+		if v := binary.BigEndian.Uint16(q[off : off+2]); v != 0 {
+			t.Errorf("%s = %d, want 0", name, v)
+		}
+	}
 }
 
 func TestParseDNSARecord_directA(t *testing.T) {

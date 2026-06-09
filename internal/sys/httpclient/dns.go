@@ -109,6 +109,9 @@ func encodeDNSQuery(host string) ([]byte, error) {
 	out[0] = 0x12
 	out[1] = 0x34
 	out[2] = 0x01 // RD=1
+	// QDCOUNT=1 — the packet carries one question. Without it, strict resolvers
+	// reject the query with FORMERR/rcode 1 (#239: download-via-AWG-tunnel DNS).
+	binary.BigEndian.PutUint16(out[4:], 1)
 	copy(out[12:], q)
 	off := 12 + len(q)
 	binary.BigEndian.PutUint16(out[off:], 1)   // A
