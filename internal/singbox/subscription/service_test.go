@@ -88,6 +88,7 @@ func (f *fakeMutator) RemoveProxy(_ context.Context, idx int) error {
 	return nil
 }
 func (f *fakeMutator) Reload(ctx context.Context) error { return nil }
+func (f *fakeMutator) Rollback()                        {}
 func (f *fakeMutator) DeclaredOutboundTags() []string   { return f.declaredTags }
 func (f *fakeMutator) SelectClashProxy(selectorTag, memberTag string) error {
 	f.selectedSelector = append(f.selectedSelector, selectorTag+"→"+memberTag)

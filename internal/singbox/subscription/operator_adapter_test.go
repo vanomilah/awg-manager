@@ -1,6 +1,7 @@
 package subscription
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -60,6 +61,12 @@ func TestOperatorAdapter_AddOutbound_SkipsInvalidUUIDBeforeValid(t *testing.T) {
 	tags := adapter.DeclaredOutboundTags()
 	if len(tags) != 1 || tags[0] != "sub-test-good" {
 		t.Fatalf("DeclaredOutboundTags = %v, want [sub-test-good]", tags)
+	}
+
+	// Drops are reported after the batch commits (#331): mutations only
+	// accumulate; the validation/drop pipeline runs once at Reload.
+	if err := adapter.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload (commit): %v", err)
 	}
 
 	drops := adapter.LastFilterDrops()

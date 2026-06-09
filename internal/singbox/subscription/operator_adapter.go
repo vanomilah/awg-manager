@@ -57,9 +57,11 @@ type ClashSelector interface {
 // OperatorAdapter implements ConfigMutator by maintaining its own
 // config slot (40-subscriptions.json) written through the orchestrator.
 //
-// Every mutation is applied in-memory then the full slot is flushed via
-// orch.Save, which schedules a debounced sing-box SIGHUP. Reload() is a
-// no-op because Save already arms the reload timer.
+// Mutations (Add*/Update*/Remove*) only accumulate in-memory; the full slot
+// is validated, written via orch.Save and SIGHUP'd ONCE when Reload() commits
+// the batch (#331 — committing per mutation ran the sing-box validator O(N^2)
+// times while materialising an N-server subscription). Rollback() discards an
+// uncommitted batch.
 //
 // The adapter is safe for concurrent use — a single mutex guards all
 // state reads and writes.
@@ -72,6 +74,61 @@ type OperatorAdapter struct {
 	cfg             slotConfig
 	lastDropped     []DropReason // outbounds filtered out of the most recent flush
 	preFlushDropped []DropReason // Pass-1 rejects from Add/Update before the next flush
+
+	// pending holds a snapshot of the committed config taken at the first
+	// mutation of an uncommitted batch (#331). Add*/Remove* accumulate into
+	// a.cfg WITHOUT flushing; Reload() commits the whole batch with a single
+	// validate+save+reload, and on failure restores this snapshot. Rollback()
+	// discards an uncommitted batch (failed Create). nil = no open batch.
+	pending *slotSnapshot
+}
+
+// slotSnapshot is a shallow copy of the mutable slot state. Shallow is enough
+// because mutations replace slice elements / the rules slice wholesale and
+// never edit inner outbound maps in place.
+type slotSnapshot struct {
+	inbounds        []any
+	outbounds       []any
+	rules           []any
+	lastDropped     []DropReason
+	preFlushDropped []DropReason
+}
+
+// beginIfNeededLocked snapshots the committed state on the first mutation of a
+// batch. Caller MUST hold a.mu.
+func (a *OperatorAdapter) beginIfNeededLocked() {
+	if a.pending != nil {
+		return
+	}
+	a.pending = &slotSnapshot{
+		inbounds:        append([]any(nil), a.cfg.Inbounds...),
+		outbounds:       append([]any(nil), a.cfg.Outbounds...),
+		rules:           append([]any(nil), a.routeRules()...),
+		lastDropped:     append([]DropReason(nil), a.lastDropped...),
+		preFlushDropped: append([]DropReason(nil), a.preFlushDropped...),
+	}
+}
+
+// restoreLocked reverts a.cfg to a snapshot. Caller MUST hold a.mu.
+func (a *OperatorAdapter) restoreLocked(s *slotSnapshot) {
+	a.cfg.Inbounds = s.inbounds
+	a.cfg.Outbounds = s.outbounds
+	a.setRouteRules(s.rules)
+	a.lastDropped = s.lastDropped
+	a.preFlushDropped = s.preFlushDropped
+}
+
+// Rollback discards an uncommitted batch, restoring the last committed config.
+// Used by the Service when a Create fails before commit so the in-memory slot
+// cannot keep a partial that the next operation would flush. No-op if no batch
+// is open.
+func (a *OperatorAdapter) Rollback() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending != nil {
+		a.restoreLocked(a.pending)
+		a.pending = nil
+	}
 }
 
 // NewOperatorAdapter constructs the adapter. In production the subscription
@@ -163,6 +220,7 @@ func (a *OperatorAdapter) AllocListenPort() (uint16, error) {
 func (a *OperatorAdapter) AddOutbound(tag string, jsonBody []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	var ob map[string]any
 	if err := json.Unmarshal(jsonBody, &ob); err != nil {
@@ -174,13 +232,14 @@ func (a *OperatorAdapter) AddOutbound(tag string, jsonBody []byte) error {
 		return nil
 	}
 	a.upsertOutbound(tag, ob)
-	return a.flush()
+	return nil
 }
 
 // UpdateOutbound replaces the outbound JSON for an existing tag.
 func (a *OperatorAdapter) UpdateOutbound(tag string, jsonBody []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	var ob map[string]any
 	if err := json.Unmarshal(jsonBody, &ob); err != nil {
@@ -192,13 +251,14 @@ func (a *OperatorAdapter) UpdateOutbound(tag string, jsonBody []byte) error {
 		return nil
 	}
 	a.upsertOutbound(tag, ob)
-	return a.flush()
+	return nil
 }
 
 // RemoveOutbound strips the outbound with the given tag. No-op if absent.
 func (a *OperatorAdapter) RemoveOutbound(tag string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	obs := a.cfg.Outbounds
 	out := obs[:0:0]
@@ -214,7 +274,7 @@ func (a *OperatorAdapter) RemoveOutbound(tag string) error {
 		out = append(out, v)
 	}
 	a.cfg.Outbounds = out
-	return a.flush()
+	return nil
 }
 
 // SubscriptionOutbounds returns a snapshot of every outbound currently
@@ -241,6 +301,7 @@ func (a *OperatorAdapter) SubscriptionOutbounds() []map[string]any {
 func (a *OperatorAdapter) AddInbound(tag string, jsonBody []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	var ib map[string]any
 	if err := json.Unmarshal(jsonBody, &ib); err != nil {
@@ -269,13 +330,14 @@ func (a *OperatorAdapter) AddInbound(tag string, jsonBody []byte) error {
 		}
 	}
 	a.cfg.Inbounds = append(a.cfg.Inbounds, ib)
-	return a.flush()
+	return nil
 }
 
 // RemoveInbound strips the inbound with the given tag. No-op if absent.
 func (a *OperatorAdapter) RemoveInbound(tag string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	ibs := a.cfg.Inbounds
 	out := ibs[:0:0]
@@ -291,7 +353,7 @@ func (a *OperatorAdapter) RemoveInbound(tag string) error {
 		out = append(out, v)
 	}
 	a.cfg.Inbounds = out
-	return a.flush()
+	return nil
 }
 
 // AddRouteRule inserts the route rule described by jsonBody if not already present.
@@ -299,6 +361,7 @@ func (a *OperatorAdapter) RemoveInbound(tag string) error {
 func (a *OperatorAdapter) AddRouteRule(jsonBody []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	var rule map[string]any
 	if err := json.Unmarshal(jsonBody, &rule); err != nil {
@@ -318,13 +381,14 @@ func (a *OperatorAdapter) AddRouteRule(jsonBody []byte) error {
 		}
 	}
 	a.setRouteRules(append(rules, rule))
-	return a.flush()
+	return nil
 }
 
 // RemoveRouteRule removes the route rule matching the given inbound and outbound tags.
 func (a *OperatorAdapter) RemoveRouteRule(inboundTag, outboundTag string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	a.beginIfNeededLocked()
 
 	rules := a.routeRules()
 	out := rules[:0:0]
@@ -340,14 +404,28 @@ func (a *OperatorAdapter) RemoveRouteRule(inboundTag, outboundTag string) error 
 		out = append(out, v)
 	}
 	a.setRouteRules(out)
-	return a.flush()
+	return nil
 }
 
-// Reload is a no-op: every mutation calls flush() which invokes orch.Save,
-// and that already schedules the debounced SIGHUP. Callers that invoke
-// Reload() after a batch of mutations do not need a second trigger.
+// Reload commits the accumulated batch: a single flush (validate + save +
+// debounced SIGHUP) for every mutation since the last commit. This replaces
+// the old flush-per-mutation behaviour that ran the sing-box validator O(N^2)
+// times while materialising an N-server subscription (#331 — 15 min + pinned
+// CPU on a 199-server sub). On flush failure the batch is rolled back so a.cfg
+// cannot keep a partial/half-dropped state for the next operation. No-op when
+// no batch is open.
 func (a *OperatorAdapter) Reload(_ context.Context) error {
-	return nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pending == nil {
+		return nil
+	}
+	err := a.flush()
+	if err != nil {
+		a.restoreLocked(a.pending)
+	}
+	a.pending = nil
+	return err
 }
 
 // SelectClashProxy hits the running sing-box Clash API to switch the

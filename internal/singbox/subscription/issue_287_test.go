@@ -125,16 +125,27 @@ func TestIssue287_AddInbound_RejectsDuplicateListenPort(t *testing.T) {
 	}
 }
 
-// reloadFailMutator is a fakeMutator whose Reload fails after applyDiff has
-// committed member outbounds — modelling a Create that errors late (slow link,
-// or a duplicate listen_port the daemon rejects). DeclaredOutboundTags mirrors
-// the live slot (added minus removed) so the rollback purge can enumerate it.
+// reloadFailMutator is a fakeMutator whose Reload (the batch commit) fails —
+// modelling a Create that errors at commit (slow link, or a duplicate
+// listen_port the daemon rejects). DeclaredOutboundTags mirrors the live slot
+// (added minus removed); Rollback discards the uncommitted batch.
 type reloadFailMutator struct {
 	fakeMutator
 }
 
 func (m *reloadFailMutator) Reload(context.Context) error {
 	return errors.New("simulated reload failure")
+}
+
+// Rollback models the real adapter discarding the uncommitted batch (#331):
+// this fake never commits (Reload always fails), so everything added since
+// start is uncommitted and is discarded here. The Create-failure path now
+// calls this instead of the old per-tag purge; if it were not wired, the
+// orphan check would still see the added outbound.
+func (m *reloadFailMutator) Rollback() {
+	m.addedOutbounds = nil
+	m.addedInbounds = nil
+	m.addedRules = 0
 }
 
 func (m *reloadFailMutator) DeclaredOutboundTags() []string {

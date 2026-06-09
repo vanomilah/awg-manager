@@ -27,7 +27,14 @@ type ConfigMutator interface {
 	RemoveRouteRule(inboundTag, outboundTag string) error
 	EnsureProxy(ctx context.Context, idx, port int, description string) error
 	RemoveProxy(ctx context.Context, idx int) error
+	// Reload commits the batch of mutations since the last commit with a
+	// single validate+save+reload (#331). Mutations (Add*/Remove*/Update*)
+	// only accumulate in memory; nothing reaches sing-box until Reload.
 	Reload(ctx context.Context) error
+	// Rollback discards an uncommitted batch (mutations since the last
+	// commit), restoring the last committed config. Used on a failed Create
+	// so a partial materialisation can't linger in the in-memory slot.
+	Rollback()
 	// SelectClashProxy hits the running sing-box Clash API to switch the
 	// selector's active member at runtime, without rewriting config or
 	// triggering a reload. The config slot's stored selector.default
@@ -266,15 +273,12 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, er
 	}
 
 	if _, err := s.refreshLocked(ctx, sub.ID); err != nil {
-		// refreshLocked commits to the slot incrementally (each AddOutbound
-		// flushes + persists), so a mid-failure may have already written
-		// member outbounds / selector / inbound / route to
-		// 40-subscriptions.json. Purge them — otherwise they linger as
-		// orphans referencing a subscription that is about to be deleted,
-		// and (issue #287) break every later flush. Reads the live slot via
-		// DeclaredOutboundTags since the store's MemberTags are not written
-		// on a failed refresh.
-		s.purgeCreatedSlotEntries(sub)
+		// refreshLocked accumulates member outbounds / selector / inbound /
+		// route into the in-memory slot but commits only at Reload (#331).
+		// On a mid-failure nothing was flushed to 40-subscriptions.json, so
+		// discard the uncommitted batch — otherwise the partial would linger
+		// in memory and get committed by the next operation (issue #287).
+		s.mutator.Rollback()
 		// EnsureProxy succeeded above — the NDMS Proxy interface is now
 		// live in the router. We must roll it back before dropping the
 		// storage row; otherwise every failed Create leaks a ProxyN that
@@ -284,7 +288,6 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, er
 		if proxyIdx >= 0 {
 			_ = s.mutator.RemoveProxy(ctx, proxyIdx)
 		}
-		_ = s.mutator.Reload(ctx)
 		s.store.Delete(sub.ID)
 		s.logWarn("subscription-create", sub.ID, "initial refresh failed: "+err.Error())
 		return nil, fmt.Errorf("subscription: initial fetch failed: %w", err)
@@ -478,25 +481,6 @@ func filterDeclaredMembers(members []MemberInfo, declared map[string]bool) (kept
 		}
 	}
 	return kept, dropped
-}
-
-// purgeCreatedSlotEntries removes everything a partial Create committed to the
-// subscription slot: member outbounds (enumerated from the live slot by the
-// subscription's tag prefix), the selector, the mixed inbound and the route
-// rule. Used to roll back a failed Create so it cannot leave orphans in
-// 40-subscriptions.json (issue #287). Reads the actual slot via
-// DeclaredOutboundTags rather than the store, because the store's MemberTags
-// are not written when refreshLocked fails mid-commit. The caller is
-// responsible for the subsequent Reload.
-func (s *Service) purgeCreatedSlotEntries(sub *Subscription) {
-	memberPrefix := sub.SelectorTag + "-" // "sub-<short>-"
-	for _, tag := range s.mutator.DeclaredOutboundTags() {
-		if tag == sub.SelectorTag || strings.HasPrefix(tag, memberPrefix) {
-			s.mutator.RemoveOutbound(tag)
-		}
-	}
-	s.mutator.RemoveInbound(sub.InboundTag)
-	s.mutator.RemoveRouteRule(sub.InboundTag, sub.SelectorTag)
 }
 
 // applyDiff commits the diff to sing-box config. Selector + mixed inbound +

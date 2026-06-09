@@ -28,6 +28,7 @@ func (noopMutator) RemoveRouteRule(string, string) error                { return
 func (noopMutator) EnsureProxy(context.Context, int, int, string) error { return nil }
 func (noopMutator) RemoveProxy(context.Context, int) error              { return nil }
 func (noopMutator) Reload(context.Context) error                        { return nil }
+func (noopMutator) Rollback()                                           {}
 func (noopMutator) SelectClashProxy(string, string) error               { return nil }
 func (noopMutator) GetClashSelectorActive(string) (string, error)       { return "", nil }
 func (noopMutator) DeclaredOutboundTags() []string                      { return nil }

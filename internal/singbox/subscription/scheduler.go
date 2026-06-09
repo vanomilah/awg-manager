@@ -23,6 +23,13 @@ type Scheduler struct {
 	stop         chan struct{}
 	stopOnce     sync.Once
 	log          *logging.ScopedLogger
+
+	// inflight guards against relaunching a refresh for a subscription whose
+	// previous refresh is still running (#331). Without it, a refresh slower
+	// than tickInterval is re-launched every tick and the launches queue up
+	// behind the per-subscription mutex.
+	mu       sync.Mutex
+	inflight map[string]struct{}
 }
 
 func NewScheduler(store *Store, doRefresh RefreshFunc) *Scheduler {
@@ -31,6 +38,7 @@ func NewScheduler(store *Store, doRefresh RefreshFunc) *Scheduler {
 		doRefresh:    doRefresh,
 		tickInterval: time.Minute,
 		stop:         make(chan struct{}),
+		inflight:     make(map[string]struct{}),
 	}
 }
 
@@ -71,7 +79,21 @@ func (s *Scheduler) tick(ctx context.Context, now time.Time) {
 	}
 	for _, sub := range due {
 		id := sub.ID
+		// Skip if a refresh for this subscription is already running.
+		s.mu.Lock()
+		if _, running := s.inflight[id]; running {
+			s.mu.Unlock()
+			continue
+		}
+		s.inflight[id] = struct{}{}
+		s.mu.Unlock()
+
 		go func() {
+			defer func() {
+				s.mu.Lock()
+				delete(s.inflight, id)
+				s.mu.Unlock()
+			}()
 			if err := s.doRefresh(ctx, id); err != nil && s.log != nil {
 				s.log.Warn("subscription-scheduler", id, "refresh failed: "+err.Error())
 			}
