@@ -717,25 +717,18 @@ func (s *Service) SetActiveMember(ctx context.Context, id, memberTag string) err
 		return fmt.Errorf("member %q not in subscription", memberTag)
 	}
 
-	// 1. Update config slot's selector.default for restart persistence.
-	//    NOT followed by Reload — clash API handles the runtime switch.
-	//    For urltest mode: BuildURLTest ignores defaultTag (urltest has
-	//    no `default` field). The Clash API call below still pins the
-	//    chosen member as a temporary override until sing-box's next
-	//    auto-test interval, matching mihomo/sing-box semantics.
-	s.mutator.RemoveOutbound(sub.SelectorTag)
-	if err := s.mutator.AddOutbound(sub.SelectorTag, BuildGroupOutbound(*sub, sub.MemberTags, memberTag)); err != nil {
-		return err
-	}
-
-	// 2. Persist active member in store.
+	// Persist the choice in the store — the source of truth for the active
+	// member. The config slot is deliberately NOT rewritten: selector.default
+	// is rebuilt as first-member on every refresh, so persisting it here buys
+	// nothing, and a slot write without Reload would only leave an uncommitted
+	// batch open in the adapter.
 	if err := s.store.SetActiveMember(id, memberTag); err != nil {
 		return err
 	}
 
-	// 3. Hit Clash API for instant runtime switch — no SIGHUP, no connection
-	//    drop. If clash is unreachable (sing-box not running), return error but
-	//    config is already updated so a future restart will use the new default.
+	// Switch the live selector via the Clash API — instant, no SIGHUP, no
+	// connection drop. If clash is unreachable (sing-box not running) we return
+	// the error, but the store already holds the new active member.
 	if err := s.mutator.SelectClashProxy(sub.SelectorTag, memberTag); err != nil {
 		s.logWarn("subscription-active-member", id, "clash switch failed: "+err.Error())
 		return fmt.Errorf("subscription: clash select: %w", err)

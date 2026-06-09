@@ -583,6 +583,11 @@ func TestService_SetActiveMember_UsesClashAPI(t *testing.T) {
 	}
 
 	secondMember := sub.MemberTags[1]
+	// Snapshot slot-mutation counts after Create; switching the active member
+	// must not touch the config slot at all (Clash + store only).
+	addedAfterCreate := len(mutator.addedOutbounds)
+	removedAfterCreate := len(mutator.removedOutbounds)
+
 	if err := svc.SetActiveMember(context.Background(), sub.ID, secondMember); err != nil {
 		t.Fatalf("SetActiveMember: %v", err)
 	}
@@ -596,9 +601,16 @@ func TestService_SetActiveMember_UsesClashAPI(t *testing.T) {
 		t.Errorf("clash select args wrong: got %q want %q", mutator.selectedSelector[0], expected)
 	}
 
-	// Verify Reload was NOT called for SetActiveMember (no connection-dropping SIGHUP).
-	// We verify this indirectly: the mutator's Reload is a no-op and SelectClashProxy
-	// is recorded; the key invariant is the config update + clash call both happen.
+	// Switching the active member is runtime-only: no selector Remove/Add, so
+	// no open batch and no SIGHUP. The slot's selector.default is rebuilt as
+	// first-member on every refresh anyway, so persisting it here is pointless;
+	// the choice lives in store.ActiveMember + the live Clash selector.
+	if len(mutator.addedOutbounds) != addedAfterCreate {
+		t.Errorf("SetActiveMember must not add outbounds, got %d new", len(mutator.addedOutbounds)-addedAfterCreate)
+	}
+	if len(mutator.removedOutbounds) != removedAfterCreate {
+		t.Errorf("SetActiveMember must not remove outbounds, got %d new", len(mutator.removedOutbounds)-removedAfterCreate)
+	}
 	stored, _ := store.Get(sub.ID)
 	if stored.ActiveMember != secondMember {
 		t.Errorf("store.ActiveMember=%q want %q", stored.ActiveMember, secondMember)
