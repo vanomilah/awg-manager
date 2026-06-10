@@ -236,6 +236,65 @@ func TestInstaller_CurrentSHA256(t *testing.T) {
 	}
 }
 
+func TestInstaller_CurrentSHA256_CachedWhileUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sing-box")
+	body := []byte("original binary contents AAAA")
+	sum := sha256.Sum256(body)
+	want := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(target, body, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := New(target, "test-arch", BinarySpec{Version: "1.2.3", SHA256: want}, nil)
+	if got, err := inst.CurrentSHA256(); err != nil || got != want {
+		t.Fatalf("CurrentSHA256() = %q, %v; want %q", got, err, want)
+	}
+
+	// Swap contents keeping the same size, then restore mtime: the stat
+	// snapshot matches, so the cached value must be served (no rehash).
+	fi, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := []byte("different binary contents BBB")
+	if len(swapped) != len(body) {
+		t.Fatalf("test bug: sizes differ (%d vs %d)", len(swapped), len(body))
+	}
+	if err := os.WriteFile(target, swapped, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(target, fi.ModTime(), fi.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := inst.CurrentSHA256(); err != nil || got != want {
+		t.Fatalf("CurrentSHA256() after same-stat swap = %q, %v; want cached %q", got, err, want)
+	}
+}
+
+func TestInstaller_CurrentSHA256_RecomputesOnChange(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "sing-box")
+	if err := os.WriteFile(target, []byte("v1"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := New(target, "test-arch", BinarySpec{}, nil)
+	if _, err := inst.CurrentSHA256(); err != nil {
+		t.Fatalf("CurrentSHA256() err: %v", err)
+	}
+
+	body2 := []byte("v2 — longer replacement")
+	sum2 := sha256.Sum256(body2)
+	want2 := hex.EncodeToString(sum2[:])
+	if err := os.WriteFile(target, body2, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := inst.CurrentSHA256(); err != nil || got != want2 {
+		t.Fatalf("CurrentSHA256() after change = %q, %v; want %q", got, err, want2)
+	}
+}
+
 func TestInstaller_MatchesRequired_RequiresVersionAndSHA(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "sing-box")
