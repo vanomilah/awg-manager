@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
@@ -52,6 +53,16 @@ type Installer struct {
 	opkgListInstalled func(context.Context) (string, error)
 
 	freeDisk func(path string) (int64, bool) // overridable for tests; defaults to routerinfo.FreeBytes
+
+	// SHA256 of the live binary, cached by (size, mtime). Generic SHA256 of a
+	// ~80MB binary costs ~13s CPU on softfloat MIPS, and GetStatus needs the
+	// checksum on every 30s poll — without the cache the router burns a full
+	// core just serving /api/singbox/status. Activate() replaces the file via
+	// rename, so a stat mismatch self-invalidates the cache.
+	shaMu   sync.Mutex
+	shaVal  string
+	shaSize int64
+	shaMod  time.Time
 }
 
 type Downloader interface {
@@ -128,9 +139,34 @@ func (i *Installer) RequiredSHA256() string { return i.spec.SHA256 }
 // Zero means unknown — disk-gate is skipped.
 func (i *Installer) RequiredSize() int64 { return i.spec.Size }
 
-// CurrentSHA256 returns the checksum of the installed managed binary.
+// CurrentSHA256 returns the checksum of the installed managed binary,
+// served from the (size, mtime) cache when the file is unchanged.
 func (i *Installer) CurrentSHA256() (string, error) {
-	return sha256File(i.binaryPath)
+	return i.binarySHA256()
+}
+
+// binarySHA256 returns the cached checksum of binaryPath, rehashing only
+// when the file's size or mtime differs from the cached snapshot. The
+// mutex serializes concurrent polls so they don't hash the same file twice.
+func (i *Installer) binarySHA256() (string, error) {
+	i.shaMu.Lock()
+	defer i.shaMu.Unlock()
+
+	fi, err := os.Stat(i.binaryPath)
+	if err != nil {
+		return "", err
+	}
+	if i.shaVal != "" && fi.Size() == i.shaSize && fi.ModTime().Equal(i.shaMod) {
+		return i.shaVal, nil
+	}
+	sha, err := sha256File(i.binaryPath)
+	if err != nil {
+		return "", err
+	}
+	i.shaVal = sha
+	i.shaSize = fi.Size()
+	i.shaMod = fi.ModTime()
+	return sha, nil
 }
 
 // MatchesRequired reports whether the installed binary matches both the
@@ -268,8 +304,8 @@ const safetyMargin = 5 << 20
 const SafetyMargin = safetyMargin
 
 // EvaluateInstallState reports the install state vs pinned spec, gated by
-// free disk. Pure file ops: isExecutable + sha256File (no `sing-box version`
-// subprocess), so safe to call on every status-poll.
+// free disk. Pure file ops: isExecutable + cached binarySHA256 (no
+// `sing-box version` subprocess), so safe to call on every status-poll.
 //
 // Returns Installed/Missing/MissingNoSpace/OutdatedNoSpace. Free-disk unknown
 // OR spec.Size==0 → gate skipped (Missing instead of NoSpace).
@@ -282,7 +318,7 @@ func (i *Installer) EvaluateInstallState() InstallState {
 
 	matches := false
 	if installed {
-		sha, err := sha256File(i.binaryPath)
+		sha, err := i.binarySHA256()
 		matches = err == nil && strings.EqualFold(sha, i.spec.SHA256)
 	}
 	if matches {

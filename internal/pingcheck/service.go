@@ -60,6 +60,7 @@ type checkConfig struct {
 	Method        string
 	Target        string
 	CheckURL      string
+	DNSServers    []string
 	Interval      int
 	FailThreshold int
 }
@@ -424,6 +425,7 @@ func (s *Service) getCheckConfig(tunnelID string) *checkConfig {
 		Method:        pc.Method,
 		Target:        pc.Target,
 		CheckURL:      s.connectivityCheckURL(),
+		DNSServers:    tunnel.ParseDNSList(stored.Interface.DNS),
 		Interval:      interval,
 		FailThreshold: failThreshold,
 	}

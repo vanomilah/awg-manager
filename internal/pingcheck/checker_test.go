@@ -30,7 +30,7 @@ func TestPerformCheckHTTPUsesCustomURLAndAcceptsHTTP200(t *testing.T) {
 	}
 	httpprobe.Client = doer
 
-	result := performCheck(context.Background(), "wg0", "http", "", "https://probe.example.net/ping")
+	result := performCheck(context.Background(), "wg0", "http", "", "https://probe.example.net/ping", nil)
 	if !result.Success {
 		t.Fatalf("Success = false, error=%s", result.Error)
 	}

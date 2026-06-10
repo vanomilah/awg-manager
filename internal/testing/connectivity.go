@@ -3,11 +3,11 @@ package testing
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/httpprobe"
+	"github.com/hoaxisr/awg-manager/internal/icmpprobe"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/exec"
 )
@@ -51,7 +51,7 @@ func (s *Service) checkHTTP(ctx context.Context, tunnelID string) (*Connectivity
 	checkURL := s.connectivityCheckURL()
 	s.appLog.Full("http-check", tunnelID, fmt.Sprintf("Executing HTTP check: %s", checkURL))
 
-	res, err := httpprobe.ByInterface(ctx, iface, checkURL)
+	res, err := httpprobe.ByInterface(ctx, iface, checkURL, nil)
 	if err != nil {
 		errDetail := err.Error()
 		s.appLog.Warn("http-check", tunnelID, fmt.Sprintf("HTTP check failed: %s", errDetail))
@@ -88,38 +88,18 @@ func (s *Service) checkPing(ctx context.Context, tunnelID string, stored *storag
 
 	s.appLog.Full("ping-check", tunnelID, fmt.Sprintf("Starting ping check: iface=%s, target=%s", iface, target))
 
-	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// 3s wait — parity with the old `ping -W 3`.
+	pingCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	// Use Entware ping with explicit path and proper interface binding
-	s.appLog.Debug("ping-check", tunnelID, fmt.Sprintf("Executing: /opt/bin/ping -I %s -c 1 -W 3 %s", iface, target))
-
-	result, err := exec.Run(pingCtx, "/opt/bin/ping", "-I", iface, "-c", "1", "-W", "3", target)
-
-	// Check exit code, not err — ping may return err with exit 0 on some systems
-	if result.ExitCode != 0 {
-		errDetail := exec.FormatError(result, err).Error()
-		s.appLog.Warn("ping-check", tunnelID, fmt.Sprintf("Ping failed: target=%s, exit=%d, stderr=%s, stdout=%s", target, result.ExitCode, result.Stderr, result.Stdout))
-		return &ConnectivityResult{Connected: false, Reason: "ping failed: " + target + " - " + errDetail}, nil
+	res, err := icmpprobe.ByInterface(pingCtx, iface, target, nil)
+	if err != nil {
+		s.appLog.Warn("ping-check", tunnelID, fmt.Sprintf("Ping failed: target=%s: %v", target, err))
+		return &ConnectivityResult{Connected: false, Reason: "ping failed: " + target + " - " + err.Error()}, nil
 	}
 
-	s.appLog.Debug("ping-check", tunnelID, fmt.Sprintf("Ping raw output: stdout='%s', stderr='%s'", result.Stdout, result.Stderr))
-
-	// Try parsing latency from stdout first, then stderr (busybox may output to stderr)
-	latency := parsePingLatency(result.Stdout)
-	if latency == nil {
-		latency = parsePingLatency(result.Stderr)
-	}
-	if latency == nil {
-		// If no latency parsed but exit code is 0, ping succeeded — return minimal latency
-		// This happens with busybox ping which may not output timing info
-		s.appLog.Full("ping-check", tunnelID, fmt.Sprintf("Ping exit code 0 but no timing output - stdout='%s', stderr='%s'", result.Stdout, result.Stderr))
-		s.appLog.Info("ping-check", tunnelID, fmt.Sprintf("Ping successful (no latency parsed): target=%s", target))
-		return &ConnectivityResult{Connected: true, Latency: intPtr(1)}, nil
-	}
-
-	s.appLog.Debug("ping-check", tunnelID, fmt.Sprintf("Ping successful: target=%s, latency=%dms", target, *latency))
-	return &ConnectivityResult{Connected: true, Latency: latency}, nil
+	s.appLog.Debug("ping-check", tunnelID, fmt.Sprintf("Ping successful: target=%s, latency=%dms", target, res.LatencyMs))
+	return &ConnectivityResult{Connected: true, Latency: intPtr(res.LatencyMs)}, nil
 }
 
 // intPtr returns a pointer to an int.
@@ -156,25 +136,6 @@ func autoDetectGateway(stored *storage.AWGTunnel) string {
 	}
 	parts[3] = "1"
 	return strings.Join(parts, ".")
-}
-
-// parsePingLatency extracts round-trip time from ping output.
-func parsePingLatency(output string) *int {
-	idx := strings.Index(output, "time=")
-	if idx < 0 {
-		return nil
-	}
-	rest := output[idx+5:]
-	end := strings.IndexAny(rest, " m")
-	if end <= 0 {
-		return nil
-	}
-	val, err := strconv.ParseFloat(rest[:end], 64)
-	if err != nil {
-		return nil
-	}
-	ms := int(val)
-	return &ms
 }
 
 // checkHandshake checks if WireGuard has a recent handshake (< 3 minutes).
@@ -232,7 +193,7 @@ func CheckConnectivityByInterface(ctx context.Context, ifaceName string) *Connec
 // CheckConnectivityByInterfaceURL performs connectivity test using a kernel
 // interface name directly and the supplied HTTP check URL.
 func CheckConnectivityByInterfaceURL(ctx context.Context, ifaceName string, checkURL string) *ConnectivityResult {
-	res, err := httpprobe.ByInterface(ctx, ifaceName, checkURL)
+	res, err := httpprobe.ByInterface(ctx, ifaceName, checkURL, nil)
 	if err != nil {
 		return &ConnectivityResult{
 			Connected: false,

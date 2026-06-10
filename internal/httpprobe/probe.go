@@ -22,7 +22,7 @@ type Result struct {
 	LatencyMs int
 }
 
-func ByInterface(ctx context.Context, ifaceName, checkURL string) (Result, error) {
+func ByInterface(ctx context.Context, ifaceName, checkURL string, dnsServers []string) (Result, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
 
@@ -34,6 +34,7 @@ func ByInterface(ctx context.Context, ifaceName, checkURL string) (Result, error
 	res, err := Client.Do(checkCtx, httpclient.CallConfig{
 		URL:            checkURL,
 		Interface:      ifaceName,
+		DNSServers:     dnsServers,
 		ConnectTimeout: ConnectTimeout,
 		MaxTime:        MaxTime,
 		DiscardBody:    true,

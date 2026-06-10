@@ -111,7 +111,7 @@ jobs:
       - name: Setup go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
-          go-version: 1.25.10
+          go-version: 1.26.4
 
       - name: Install dependencies
         run: |
@@ -121,9 +121,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             git ca-certificates gnupg curl file xz-utils unzip zip python3 python3-requests procps \
             build-essential pkg-config
-
-          go install golang.org/dl/go1.23.12@latest
-          go1.23.12 download
 
       - name: Restore sing-box build artifacts
         id: singbox-cache
@@ -216,7 +213,7 @@ jobs:
       - name: Setup go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
-          go-version: 1.25.10
+          go-version: 1.26.4
 
       - name: Run go tests with backend coverage
         shell: bash
@@ -274,7 +271,7 @@ jobs:
       - name: Setup go
         uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
-          go-version: 1.25.10
+          go-version: 1.26.4
 
       - name: Generate develop changelog
         env:

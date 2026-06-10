@@ -24,23 +24,12 @@ fi
 
 mkdir -p build/bin
 
-# MIPS targets run on Keenetic routers with Linux kernel 3.4.
-# Go 1.24+ requires kernel >= 3.17 (spinbit mutex uses futex ops unavailable on 3.4).
-# Use Go 1.23.x for MIPS builds; system Go for everything else.
+# All targets build with the system Go toolchain. The old Go 1.23 pin for
+# MIPS assumed Keenetic routers run kernel 3.4 and Go 1.24+ needs >= 3.17;
+# both premises are false — the fleet runs kernel 4.9-ndm (all five Keenetic
+# kernel-ABI groups), and Go 1.24+ officially requires only kernel 3.2+.
+# sing-box for the same routers is already built with the system Go.
 GO_CMD="go"
-case "$ARCH" in
-    mipsle|mipsel|mips)
-        MIPS_GO="${MIPS_GO:-go1.23.12}"
-        if command -v "$MIPS_GO" &>/dev/null; then
-            GO_CMD="$MIPS_GO"
-        elif [[ -x "$(go env GOPATH)/bin/$MIPS_GO" ]]; then
-            GO_CMD="$(go env GOPATH)/bin/$MIPS_GO"
-        else
-            echo "WARNING: $MIPS_GO not found, falling back to system go ($(go version))"
-            echo "  MIPS targets need Go 1.23.x — install with: go install golang.org/dl/${MIPS_GO}@latest && ${MIPS_GO} download"
-        fi
-        ;;
-esac
 
 # vendor/ contains pre-built binaries and kernel modules (not Go vendor).
 # Use -mod=mod so Go ignores it and fetches deps from go.sum.
