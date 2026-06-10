@@ -18,7 +18,7 @@ func buildDialContext(bindIface string, dnsServers []string, connectTimeout time
 				return nil, err
 			}
 			if net.ParseIP(host) == nil {
-				ip, err := LookupIPv4ForBind(ctx, host, dnsServers, bindIface)
+				ip, err := ResolveIPv4Resilient(ctx, host, dnsServers, bindIface)
 				if err != nil {
 					return nil, err
 				}
