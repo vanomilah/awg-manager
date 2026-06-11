@@ -34,6 +34,7 @@
   let runtimes = $state<RuntimeById>({});
   let listenChoices = $state<ListenChoices | null>(null);
   let loadError = $state<string | null>(null);
+  let loaded = $state(false);
 
   onMount(async () => {
     try {
@@ -57,6 +58,8 @@
       runtimes = Object.fromEntries(runtimeEntries) as RuntimeById;
     } catch (e) {
       loadError = e instanceof Error ? e.message : String(e);
+    } finally {
+      loaded = true;
     }
   });
 
@@ -143,7 +146,7 @@
               </button>
             {/if}
 
-            {#if onDelete && in_.id !== 'default'}
+            {#if onDelete}
               <button
                 type="button"
                 class="route-action-btn danger"
@@ -163,10 +166,14 @@
       <div class="title">Не удалось загрузить</div>
       <div class="sub error">{loadError}</div>
     </div>
-  {:else}
+  {:else if !loaded}
     <div class="info">
       <div class="title">Загрузка...</div>
       <div class="sub">device proxy</div>
+    </div>
+  {:else}
+    <div class="empty">
+      Нет inbound'ов. «Inbound» — локальный прокси для устройств в сети.
     </div>
   {/if}
   {#if !bare && onConfigure}
@@ -254,6 +261,14 @@
   }
   .dot[data-tone='error'] {
     background: var(--color-error, #dc2626);
+  }
+  .empty {
+    flex: 1;
+    min-width: 0;
+    padding: 14px;
+    color: var(--text-muted);
+    text-align: center;
+    font-size: 12px;
   }
   .info, .proxy-info {
     flex: 1;

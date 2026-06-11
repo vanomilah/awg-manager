@@ -189,8 +189,8 @@
       <section class="sec">
         <div class="sec-cap">WAN-интерфейс</div>
         <div class="field-row">
-          <Toggle checked={cfg.wanAutoDetect} onchange={(checked) => toggleAutoDetect(checked)} />
           <span>Авто-определение</span>
+          <Toggle checked={cfg.wanAutoDetect} onchange={(checked) => toggleAutoDetect(checked)} />
         </div>
         {#if !cfg.wanAutoDetect}
           <div class="field">
@@ -210,10 +210,10 @@
       <section class="sec">
         <div class="sec-cap">Анализ трафика</div>
         <div class="field-row">
+          <span>Включить sniff</span>
           <Toggle checked={cfg.snifferEnabled} onchange={(checked) => toggleSniffer(checked)} />
-          <span>Включить sniff (HTTP/TLS/QUIC по содержимому)</span>
         </div>
-        <p class="hint">Улучшает срабатывание domain-based правил при IP-only matchers.</p>
+        <p class="hint">Анализ HTTP/TLS/QUIC по содержимому. Улучшает срабатывание domain-based правил при IP-only matchers.</p>
       </section>
 
       <!-- Исключения портов -->
@@ -330,7 +330,21 @@
   }
 
   .field { display: flex; flex-direction: column; gap: 4px; }
-  .field-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .field-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+  }
+  .field-row > span {
+    flex: 1;
+    min-width: 0;
+  }
+  .field-row > :global([role='switch']),
+  .field-row > :global(.toggle-container) {
+    flex-shrink: 0;
+  }
   .lbl { font-size: 11px; color: var(--text-muted); font-weight: 500; }
   .inp {
     padding: 6px 10px; border-radius: var(--radius-sm); background: var(--bg-primary);

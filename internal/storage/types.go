@@ -142,10 +142,13 @@ type ManagedServer struct {
 	ASC json.RawMessage `json:"-"`
 }
 
-// ServerInterfaceMeta tracks NAT teardown metadata for system servers.
+// ServerInterfaceMeta tracks AWG Manager metadata for built-in/marked servers.
 type ServerInterfaceMeta struct {
 	NATMode      string `json:"natMode,omitempty"`      // full | internet-only | none
 	NATStaticWAN string `json:"natStaticWan,omitempty"` // WAN iface used by ip static
+	// Endpoint is the host (IP or domain) embedded in generated client .conf
+	// files. Empty = resolve WAN IP at generation time.
+	Endpoint string `json:"endpoint,omitempty"`
 }
 
 // ServerPeerSecret holds key material for a peer on a built-in/marked server.

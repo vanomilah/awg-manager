@@ -56,6 +56,7 @@ func LoadConfig(path string) (*RouterConfig, error) {
 	if cfg.DNS.Rules == nil {
 		cfg.DNS.Rules = []DNSRule{}
 	}
+	SanitizeDNSConfig(cfg)
 	return cfg, nil
 }
 

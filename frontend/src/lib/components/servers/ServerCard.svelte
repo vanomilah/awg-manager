@@ -24,6 +24,7 @@
 		PeerConfModal,
 		ConfGeneratorModal,
 		ServerAccessPolicyDropdown,
+		ServerEndpointSetting,
 	} from '$lib/components/servers';
 	import { Toggle, Button, Stat, StatStrip } from '$lib/components/ui';
 	import { Plus, RefreshCw, ExternalLink } from 'lucide-svelte';
@@ -64,6 +65,9 @@
 	let togglingNAT = $state(false);
 	let policyChanging = $state(false);
 	let togglingPeerKeys = $state(new Set<string>());
+	let builtinWanIP = $state('');
+	let loadingBuiltinWanIP = $state(false);
+	let builtinWanIPLoadedFor = $state('');
 
 	let natMode = $derived(resolveNatMode(server.natMode, server.natEnabled));
 	// Keenetic exposes NAT as on/off; internet-only is normalized to "on" in the UI.
@@ -299,6 +303,29 @@
 	let keenDnsHref = $derived(
 		server.keenDnsDomain ? `https://${server.keenDnsDomain}` : ''
 	);
+
+	$effect(() => {
+		if (!isBuiltIn) {
+			builtinWanIP = '';
+			loadingBuiltinWanIP = false;
+			builtinWanIPLoadedFor = '';
+			return;
+		}
+		if (builtinWanIPLoadedFor === server.id) return;
+		builtinWanIPLoadedFor = server.id;
+		loadingBuiltinWanIP = true;
+		void api
+			.getWANIP()
+			.then((ip) => {
+				builtinWanIP = ip;
+			})
+			.catch(() => {
+				builtinWanIP = '';
+			})
+			.finally(() => {
+				loadingBuiltinWanIP = false;
+			});
+	});
 </script>
 
 <div class="card server-detail-card server-card" class:status-up={isUp}>
@@ -430,6 +457,15 @@
 					{/if}
 				{/snippet}
 			</ServerAccessPolicyDropdown>
+
+			<ServerEndpointSetting
+				serverId={server.id}
+				endpoint={server.endpoint}
+				listenPort={server.listenPort}
+				wanIP={builtinWanIP}
+				keenDnsDomain={server.keenDnsDomain}
+				loadingWanIP={loadingBuiltinWanIP}
+			/>
 		</div>
 	{/if}
 

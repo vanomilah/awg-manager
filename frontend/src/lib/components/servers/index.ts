@@ -19,3 +19,4 @@ export { default as ManagedServerBackupToolbar } from './ManagedServerBackupTool
 export { default as ManagedServerImportModal } from './ManagedServerImportModal.svelte';
 export { default as ManagedServerDriftBanner } from './ManagedServerDriftBanner.svelte';
 export { default as ServerAccessPolicyDropdown } from './ServerAccessPolicyDropdown.svelte';
+export { default as ServerEndpointSetting } from './ServerEndpointSetting.svelte';

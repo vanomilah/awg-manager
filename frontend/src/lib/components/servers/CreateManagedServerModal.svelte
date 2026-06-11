@@ -2,6 +2,7 @@
 	import { Modal, Button, Toggle } from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
+	import { isValidEndpointHost } from '$lib/utils/endpoint';
 
 	interface Props {
 		open: boolean;
@@ -128,15 +129,9 @@
 		generateAsc !== initialGenerateAsc
 	);
 
-	function isValidEndpoint(val: string): boolean {
-		if (!val) return true;
-		if (/^(\d{1,3}\.){3}\d{1,3}$/.test(val)) return true;
-		if (/^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(val)) return true;
-		return false;
-	}
 
 	async function handleCreate() {
-		if (!isValidEndpoint(endpoint)) {
+		if (!isValidEndpointHost(endpoint)) {
 			notifications.error('Endpoint должен быть IP-адресом или доменным именем');
 			return;
 		}
@@ -228,6 +223,7 @@
 		<div class="form-group">
 			<label class="label" for="ms-mtu">MTU</label>
 			<input type="number" id="ms-mtu" class="input" bind:value={mtu} min={1280} max={1500} />
+			<span class="field-hint">Применяется к интерфейсу сервера и конфигам клиентов</span>
 		</div>
 
 		<div class="form-group">
@@ -270,6 +266,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
+	}
+
+	.field-hint {
+		font-size: 0.6875rem;
+		color: var(--text-muted);
 	}
 
 	.form-group {

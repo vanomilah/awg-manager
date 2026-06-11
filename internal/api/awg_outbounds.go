@@ -20,7 +20,7 @@ type AWGOutboundTagDTO struct {
 	Tag   string `json:"tag" example:"awg-vpn0"`
 	Label string `json:"label" example:"My VPN"`
 	Kind  string `json:"kind" example:"managed"`
-	Iface string `json:"iface" example:"t2s0"`
+	Iface string `json:"iface" example:"nwg0"`
 }
 
 // AWGOutboundsHandler exposes the catalog of AWG-direct outbound tags

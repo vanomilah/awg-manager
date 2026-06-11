@@ -1,6 +1,6 @@
 <!--
   Hero-баннер beginner-вида. Концепт «Весь роутер → sing-box → развилка»:
-  выход по умолчанию (Напрямую) и туннельный выход, DNS показан по каждой ветке.
+  выход По умолчанию (Напрямую) и Через туннель, DNS и провайдер — по каждой ветке.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -10,24 +10,34 @@
   import { systemInfo } from '$lib/stores/system';
   import { openDrawer } from './drawerStore';
   import { openSourceDrawer } from './sourceDrawerStore';
-  import { deriveRoutingSummary } from './flowData';
+  import { deriveRoutingSummary, resolveDefaultWanLabel } from './flowData';
   import { liveConnectionsTraffic } from './liveConnectionsStore';
   import { pluralize, RULE_WORDS, TUNNEL_WORDS, DEVICE_WORDS } from '$lib/utils/pluralize';
-  import type { RouterPolicy } from '$lib/types';
+  import type { RouterPolicy, SingboxRouterWANInterface } from '$lib/types';
 
   const status = singboxRouterStore.status;
+  const storeSettings = singboxRouterStore.settings;
   const rulesStore = singboxRouterStore.rules;
   const dnsServersStore = singboxRouterStore.dnsServers;
   const dnsGlobalsStore = singboxRouterStore.dnsGlobals;
   const options = singboxRouterStore.options;
 
   let policies = $state<RouterPolicy[]>([]);
+  let wanInterfaces = $state<SingboxRouterWANInterface[]>([]);
 
   async function loadPolicies() {
     try {
       policies = await api.singboxRouterListPolicies();
     } catch {
       policies = [];
+    }
+  }
+
+  async function loadWanInterfaces() {
+    try {
+      wanInterfaces = await api.singboxRouterListWANInterfaces();
+    } catch {
+      wanInterfaces = [];
     }
   }
 
@@ -43,6 +53,7 @@
 
   onMount(() => {
     void loadPolicies();
+    void loadWanInterfaces();
   });
 
   let singboxInstallStatus = $derived($singboxStatus.data);
@@ -78,6 +89,10 @@
     summary.tunnels.length <= 1 ? (summary.tunnels[0] ?? '—') : pluralize(summary.tunnels.length, TUNNEL_WORDS),
   );
 
+  let defaultWanLabel = $derived(
+    resolveDefaultWanLabel($storeSettings, wanInterfaces, routeFinal),
+  );
+
   let defaultRuleHint = $derived.by(() => {
     if (summary.bypassRuleCount > 0) return pluralize(summary.bypassRuleCount, RULE_WORDS);
     if (routeFinal === 'direct' && summary.tunneledRuleCount > 0) return 'остальной трафик';
@@ -101,7 +116,13 @@
       <div class="cap acc">Движок sing-box</div>
       <div class="node-title">{engineSub}</div>
       <div class="node-sub">
-        {pluralize(rulesCount, RULE_WORDS)}{deviceMode === 'all' ? ' · весь роутер' : ''}{#if trafficText}<span class="traffic"> · {trafficText}</span>{/if}
+        {pluralize(rulesCount, RULE_WORDS)}
+        {#if deviceMode === 'all'}
+          {' · '}весь роутер
+        {/if}
+        {#if trafficText}
+          {' · '}<span class="traffic">{trafficText}</span>
+        {/if}
       </div>
     </button>
 
@@ -111,25 +132,37 @@
       <div class="out">
         <div class="out-line">
           <span class="dot muted"></span>
-          <span class="out-prefix"><span class="mut">по умолчанию →</span></span>
+          <span class="out-prefix"><span class="mut">По умолчанию →</span></span>
           <span class="out-target" title={summary.defaultLabel}><b>{summary.defaultLabel}</b></span>
           {#if defaultRuleHint}
-            <span class="out-hint mut"> · {defaultRuleHint}</span>
+            <span class="out-hint mut">{' · '}{defaultRuleHint}</span>
           {/if}
         </div>
-        <div class="dns">DNS: {summary.defaultDnsLabel}</div>
+        <div class="dns">
+          {#if defaultWanLabel}
+            {defaultWanLabel}{' · '}DNS: {summary.defaultDnsLabel}
+          {:else}
+            DNS: {summary.defaultDnsLabel}
+          {/if}
+        </div>
       </div>
       {#if hasTunnel}
         <div class="out tun">
           <div class="out-line">
             <span class="dot"></span>
-            <span class="out-prefix"><span class="mut">через туннель →</span></span>
+            <span class="out-prefix"><span class="mut">Через туннель →</span></span>
             <span class="out-target acc" title={tunnelTitle}>{tunnelTitle}</span>
             {#if summary.tunneledRuleCount > 0}
-              <span class="out-hint mut"> · {pluralize(summary.tunneledRuleCount, RULE_WORDS)}</span>
+              <span class="out-hint mut">{' · '}{pluralize(summary.tunneledRuleCount, RULE_WORDS)}</span>
             {/if}
           </div>
-          <div class="dns">DNS: {summary.tunnelDnsLabel ? `через туннель · ${summary.tunnelDnsLabel}` : 'через туннель'}</div>
+          <div class="dns">
+            {#if summary.tunnelDnsLabel}
+              DNS: {summary.tunnelDnsLabel} (через туннель)
+            {:else}
+              DNS: через туннель
+            {/if}
+          </div>
         </div>
       {/if}
     </div>

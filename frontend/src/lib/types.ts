@@ -319,6 +319,8 @@ export interface WireguardServer {
 	natMode?: 'full' | 'internet-only' | 'none';
 	policy?: string;
 	keenDnsDomain?: string;
+	/** User-configured connect host for client .conf; empty = WAN IP at generation. */
+	endpoint?: string;
 	builtIn?: boolean;
 	/**
 	 * False when the backend failed to read NAT mode / policy from NDMS
@@ -887,13 +889,6 @@ export interface DeviceProxyRuntime {
 	defaultTag: string;
 }
 
-export interface DeviceProxyInstanceIPCheckResult {
-	directIp: string;
-	proxyIp: string;
-	ipChanged: boolean;
-	service: string;
-}
-
 // #endregion
 
 // ─────────────────────────────────────────────
@@ -1387,6 +1382,7 @@ export interface SingboxRouterRule {
 	// the same shape.
 	action?: 'route' | 'reject' | 'sniff' | 'hijack-dns';
 	outbound?: string;
+	rules?: SingboxRouterRule[];
 }
 
 /**

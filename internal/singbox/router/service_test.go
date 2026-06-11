@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
@@ -139,6 +140,15 @@ func newTestService(_ *testing.T, deps Deps) *ServiceImpl {
 	return &ServiceImpl{deps: deps}
 }
 
+// stubListeningProbe overrides the singboxListeningProbe seam for the test
+// duration so waitForSingbox/GetStatus don't read the real procfs.
+func stubListeningProbe(t *testing.T, fn func() bool) {
+	t.Helper()
+	old := singboxListeningProbe
+	singboxListeningProbe = fn
+	t.Cleanup(func() { singboxListeningProbe = old })
+}
+
 // ---------------------------------------------------------------------------
 // Enable error-path tests
 // ---------------------------------------------------------------------------
@@ -204,6 +214,7 @@ func TestEnable_AllDevicesMode_DoesNotRequirePolicyMark(t *testing.T) {
 	policies := &fakeAccessPolicyProvider{markErr: query.ErrPolicyMarkNotFound}
 	singbox := newTestSingbox(t)
 	singbox.isRunningFn = func() (bool, int) { return true, 1234 }
+	stubListeningProbe(t, func() bool { return true })
 	svc := newTestService(t, Deps{
 		Settings:           settingsStore,
 		Policies:           policies,
@@ -220,6 +231,41 @@ func TestEnable_AllDevicesMode_DoesNotRequirePolicyMark(t *testing.T) {
 	}
 	if !strings.Contains(restoreInput, "-A PREROUTING -m conntrack ! --ctstate INVALID -j "+ChainName) {
 		t.Fatalf("expected unconditional mangle PREROUTING jump, got:\n%s", restoreInput)
+	}
+}
+
+// Issue #354: PID-alive is not enough — Enable's wait gate must hold until
+// sing-box actually binds the router inbound sockets, otherwise iptables
+// starts redirecting into unbound ports and the status emitted at the end
+// of Enable reports Active=false («СБОЙ») despite a successful enable.
+func TestWaitForSingbox_WaitsForSocketBinding(t *testing.T) {
+	singbox := newTestSingbox(t)
+	singbox.isRunningFn = func() (bool, int) { return true, 1234 }
+	svc := newTestService(t, Deps{Singbox: singbox})
+
+	probeCalls := 0
+	stubListeningProbe(t, func() bool {
+		probeCalls++
+		return probeCalls >= 3
+	})
+
+	if err := svc.waitForSingbox(context.Background(), 5*time.Second); err != nil {
+		t.Fatalf("waitForSingbox: %v", err)
+	}
+	if probeCalls < 3 {
+		t.Fatalf("expected wait to poll the listening probe until it turns true, got %d calls", probeCalls)
+	}
+}
+
+func TestWaitForSingbox_TimesOutWhenSocketsNeverBind(t *testing.T) {
+	singbox := newTestSingbox(t)
+	singbox.isRunningFn = func() (bool, int) { return true, 1234 }
+	svc := newTestService(t, Deps{Singbox: singbox})
+
+	stubListeningProbe(t, func() bool { return false })
+
+	if err := svc.waitForSingbox(context.Background(), 300*time.Millisecond); err == nil {
+		t.Fatal("expected timeout when sing-box never binds inbound sockets")
 	}
 }
 

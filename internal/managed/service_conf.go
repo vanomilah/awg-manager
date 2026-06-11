@@ -52,10 +52,7 @@ func (s *Service) GenerateConf(ctx context.Context, id, pubkey string) (string, 
 	if dns == "" {
 		dns = "1.1.1.1, 8.8.8.8"
 	}
-	mtu := server.MTU
-	if mtu == 0 {
-		mtu = 1376
-	}
+	mtu := effectiveMTU(server.MTU)
 
 	// Get ASC params from NDMS + locally stored I1-I5
 	ascRaw, _ := s.GetASCParams(ctx, id)

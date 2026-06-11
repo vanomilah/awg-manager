@@ -38,6 +38,11 @@ export function clearSelection(): void {
   selectionW.set(new Set());
 }
 
+/** Полная замена выбранных шаблонов (для prefill редактирования). */
+export function setTemplateSelection(ids: string[]): void {
+  selectionW.set(new Set(ids));
+}
+
 export function setFilter(key: FilterKey): void {
   filterW.set(key);
 }

@@ -14,6 +14,9 @@
 		title?: string;
 		description?: string;
 		embedded?: boolean;
+		/** В модалке sing-box — кнопки в footer модалки, не в карточке. */
+		hideFooter?: boolean;
+		saving?: boolean;
 	}
 
 	let {
@@ -26,16 +29,15 @@
 		title = '',
 		description = '',
 		embedded = false,
+		hideFooter = false,
+		saving = $bindable(false),
 	}: Props = $props();
 
 	// Draft is a one-time snapshot of the prop. Edits survive store
 	// refreshes — reset() is the explicit resync affordance.
 	// svelte-ignore state_referenced_locally
 	let draft = $state<DeviceProxyConfig>(structuredClone(config));
-	let saving = $state(false);
 
-	// "listenChoice" is the UI aggregation of draft.listenAll + draft.listenInterface
-	// into a single dropdown value: either '__all' or the interface id.
 	let listenChoice = $derived(draft.listenAll ? '__all' : draft.listenInterface);
 
 	function setListenChoice(v: string) {
@@ -48,7 +50,7 @@
 		}
 	}
 
-	function reset() {
+	export function reset() {
 		draft = structuredClone(config);
 		onCancel?.();
 	}
@@ -62,7 +64,7 @@
 		draft.auth.password = out;
 	}
 
-	async function save() {
+	export async function save() {
 		saving = true;
 		try {
 			const saved = await onSaveConfig(draft);
@@ -75,23 +77,13 @@
 		}
 	}
 
-	// Enable toggle auto-saves so turning the proxy on/off doesn't
-	// require clicking "Сохранить" afterwards. The rest of the form
-	// stays draft-based (the user may edit port / listen / auth /
-	// default incrementally and commit them together).
 	let togglingEnabled = $state(false);
 	async function toggleEnabled(next: boolean) {
 		if (togglingEnabled) return;
 		togglingEnabled = true;
-		// Merge the new enabled flag with ALL fields from the saved
-		// config — not draft — so uncommitted edits in other fields
-		// don't sneak into this save.
 		const payload = { ...config, enabled: next };
 		try {
 			const saved = await onSaveConfig(payload);
-			// Mirror into the draft so the toggle control reflects the
-			// new state immediately and the "Отменить" snapshot is
-			// aligned with what's persisted.
 			draft = structuredClone(payload);
 			onSaved(saved);
 			notifications.success(next ? 'Прокси включён' : 'Прокси выключен');
@@ -121,137 +113,230 @@
 		...grouped.sub.map((ob) => ({
 			value: ob.tag,
 			label: ob.label || ob.tag,
-			group: 'Подписки'
+			group: 'Подписки',
 		})),
 		...grouped.awg.map((ob) => ({ value: ob.tag, label: `${ob.label} · ${ob.detail}`, group: 'Туннели' })),
 	]);
 </script>
 
-<section class="card" class:embedded>
-	{#if title || description}
-		<header class="card-head">
-			{#if title}<h2 class="section-title">{title}</h2>{/if}
-			{#if description}<p class="section-desc">{description}</p>{/if}
-		</header>
-	{/if}
-
-	<div class="card-body">
-		<div class="settings-stack">
-		<div class="setting-row setting-row-toggle">
-			<div class="flex flex-col gap-1">
-				<span class="font-medium">Прокси-сервер</span>
-				<span class="setting-description">
-					SOCKS5 / HTTP для LAN-устройств. Изменение применяется сразу.
-				</span>
-			</div>
-			<div class="setting-control setting-control-toggle">
-				<Toggle
-					checked={config.enabled}
-					onchange={(v) => toggleEnabled(v)}
-					loading={togglingEnabled}
-				/>
+{#if embedded}
+	<div class="form">
+		<div class="field field-toggle">
+			<div class="field-toggle-line">
+				<div>
+					<div class="lbl">Прокси-сервер</div>
+					<div class="hint">SOCKS5 / HTTP для LAN-устройств. Изменение применяется сразу.</div>
+				</div>
+				<Toggle checked={config.enabled} onchange={(v) => toggleEnabled(v)} loading={togglingEnabled} />
 			</div>
 		</div>
 
-		<div class="setting-row setting-row-field">
-			<div class="flex flex-col gap-1">
-				<span class="font-medium">Порт</span>
-				<span class="setting-description">Рекомендуем 1099 или выше</span>
-			</div>
-			<div class="setting-control">
-				<input type="number" min="1024" max="65535" bind:value={draft.port} class="num-input" />
-			</div>
+		<label class="field">
+			<div class="lbl">Порт</div>
+			<input type="number" min="1024" max="65535" bind:value={draft.port} />
+			<div class="hint">Рекомендуем 1099 или выше</div>
+		</label>
+
+		<div class="field">
+			<div class="lbl">Доступен на</div>
+			<Dropdown value={listenChoice} options={listenOpts} onchange={setListenChoice} fullWidth />
+			<div class="hint">Все интерфейсы или конкретный мост</div>
 		</div>
 
-		<div class="setting-row setting-row-field">
-			<div class="flex flex-col gap-1">
-				<span class="font-medium">Доступен на</span>
-				<span class="setting-description">Все интерфейсы или конкретный мост</span>
-			</div>
-			<div class="setting-control select">
-				<Dropdown
-					value={listenChoice}
-					options={listenOpts}
-					onchange={setListenChoice}
-					fullWidth
-				/>
-			</div>
+		<div class="field">
+			<div class="lbl">По умолчанию направлять в</div>
+			<Dropdown bind:value={draft.selectedOutbound} options={outboundOpts} fullWidth />
+			<div class="hint">Применяется при запуске sing-box</div>
 		</div>
 
-		<div class="setting-row setting-row-field">
-			<div class="flex flex-col gap-1">
-				<span class="font-medium">По умолчанию направлять в</span>
-				<span class="setting-description">Применяется при запуске sing-box</span>
-			</div>
-			<div class="setting-control select">
-				<Dropdown bind:value={draft.selectedOutbound} options={outboundOpts} fullWidth />
-			</div>
-		</div>
-
-		<div class="setting-row setting-row-toggle">
-			<div class="flex flex-col gap-1">
-				<span class="font-medium">Защита паролем</span>
-				<span class="setting-description">Требовать логин и пароль при подключении</span>
-			</div>
-			<div class="setting-control setting-control-toggle">
+		<div class="field field-toggle">
+			<div class="field-toggle-line">
+				<div>
+					<div class="lbl">Защита паролем</div>
+					<div class="hint">Требовать логин и пароль при подключении</div>
+				</div>
 				<Toggle checked={draft.auth.enabled} onchange={(v) => (draft.auth.enabled = v)} />
 			</div>
 		</div>
 
 		{#if draft.auth.enabled}
-			<div class="setting-row setting-row-field">
-				<div class="flex flex-col gap-1">
-					<span class="font-medium">Имя пользователя</span>
-				</div>
-				<div class="setting-control">
-					<input type="text" bind:value={draft.auth.username} class="text-input" />
-				</div>
-			</div>
-			<div class="setting-row setting-row-field">
-				<div class="flex flex-col gap-1">
-					<span class="font-medium">Пароль</span>
-				</div>
-				<div class="setting-control">
-					<div class="pw-group">
-						<input type="text" bind:value={draft.auth.password} class="text-input" />
-						<Button variant="ghost" size="sm" onclick={generatePassword}>
-							Сгенерировать
-						</Button>
-					</div>
+			<label class="field">
+				<div class="lbl">Имя пользователя</div>
+				<input type="text" bind:value={draft.auth.username} />
+			</label>
+			<div class="field">
+				<div class="lbl">Пароль</div>
+				<div class="pw-group">
+					<input type="text" bind:value={draft.auth.password} />
+					<Button variant="ghost" size="sm" onclick={generatePassword}>Сгенерировать</Button>
 				</div>
 			</div>
 		{/if}
 	</div>
-	</div>
 
-	<footer class="card-footer">
-		<Button variant="ghost" size="md" onclick={reset} disabled={saving}>Отменить</Button>
-		<Button variant="primary" size="md" onclick={save} loading={saving}>Сохранить</Button>
-	</footer>
-</section>
+	{#if !hideFooter}
+		<div class="form-actions">
+			<Button variant="ghost" size="md" onclick={reset} disabled={saving}>Отменить</Button>
+			<Button variant="primary" size="md" onclick={save} loading={saving}>Сохранить</Button>
+		</div>
+	{/if}
+{:else}
+	<section class="card">
+		{#if title || description}
+			<header class="card-head">
+				{#if title}<h2 class="section-title">{title}</h2>{/if}
+				{#if description}<p class="section-desc">{description}</p>{/if}
+			</header>
+		{/if}
+
+		<div class="card-body">
+			<div class="settings-stack">
+				<div class="setting-row setting-row-toggle">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Прокси-сервер</span>
+						<span class="setting-description">
+							SOCKS5 / HTTP для LAN-устройств. Изменение применяется сразу.
+						</span>
+					</div>
+					<div class="setting-control setting-control-toggle">
+						<Toggle
+							checked={config.enabled}
+							onchange={(v) => toggleEnabled(v)}
+							loading={togglingEnabled}
+						/>
+					</div>
+				</div>
+
+				<div class="setting-row setting-row-field">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Порт</span>
+						<span class="setting-description">Рекомендуем 1099 или выше</span>
+					</div>
+					<div class="setting-control">
+						<input type="number" min="1024" max="65535" bind:value={draft.port} class="num-input" />
+					</div>
+				</div>
+
+				<div class="setting-row setting-row-field">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Доступен на</span>
+						<span class="setting-description">Все интерфейсы или конкретный мост</span>
+					</div>
+					<div class="setting-control select">
+						<Dropdown
+							value={listenChoice}
+							options={listenOpts}
+							onchange={setListenChoice}
+							fullWidth
+						/>
+					</div>
+				</div>
+
+				<div class="setting-row setting-row-field">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">По умолчанию направлять в</span>
+						<span class="setting-description">Применяется при запуске sing-box</span>
+					</div>
+					<div class="setting-control select">
+						<Dropdown bind:value={draft.selectedOutbound} options={outboundOpts} fullWidth />
+					</div>
+				</div>
+
+				<div class="setting-row setting-row-toggle">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Защита паролем</span>
+						<span class="setting-description">Требовать логин и пароль при подключении</span>
+					</div>
+					<div class="setting-control setting-control-toggle">
+						<Toggle checked={draft.auth.enabled} onchange={(v) => (draft.auth.enabled = v)} />
+					</div>
+				</div>
+
+				{#if draft.auth.enabled}
+					<div class="setting-row setting-row-field">
+						<div class="flex flex-col gap-1">
+							<span class="font-medium">Имя пользователя</span>
+						</div>
+						<div class="setting-control">
+							<input type="text" bind:value={draft.auth.username} class="text-input" />
+						</div>
+					</div>
+					<div class="setting-row setting-row-field">
+						<div class="flex flex-col gap-1">
+							<span class="font-medium">Пароль</span>
+						</div>
+						<div class="setting-control">
+							<div class="pw-group">
+								<input type="text" bind:value={draft.auth.password} class="text-input" />
+								<Button variant="ghost" size="sm" onclick={generatePassword}>
+									Сгенерировать
+								</Button>
+							</div>
+						</div>
+					</div>
+				{/if}
+			</div>
+		</div>
+
+		<footer class="card-footer">
+			<Button variant="ghost" size="md" onclick={reset} disabled={saving}>Отменить</Button>
+			<Button variant="primary" size="md" onclick={save} loading={saving}>Сохранить</Button>
+		</footer>
+	</section>
+{/if}
 
 <style>
+	.field-toggle-line {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.pw-group {
+		display: flex;
+		gap: 0.5rem;
+		align-items: center;
+	}
+
+	.form-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 0.5rem;
+		margin-top: 0.75rem;
+	}
+
+	@media (max-width: 640px) {
+		.pw-group {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr);
+			gap: 0.5rem;
+			align-items: stretch;
+			width: 100%;
+		}
+
+		.pw-group :global(.btn) {
+			width: 100%;
+		}
+
+		.form-actions {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			align-items: stretch;
+		}
+
+		.form-actions :global(.btn) {
+			width: 100%;
+			min-width: 0;
+		}
+	}
+
 	.card {
 		min-width: 0;
 		border: 1px solid var(--border);
 		border-radius: 12px;
 		background: var(--bg-secondary, var(--color-bg-secondary));
 		overflow: hidden;
-	}
-	.card.embedded {
-		border: 0;
-		border-radius: 0;
-		background: transparent;
-		overflow: visible;
-	}
-	.card.embedded .card-body {
-		padding: 0;
-	}
-	.card.embedded .card-footer {
-		border-top: 0;
-		padding: 0;
-		margin-top: 0.75rem;
-		background: transparent;
 	}
 	.card-head {
 		padding: 1rem 1rem 0.875rem;
@@ -314,7 +399,6 @@
 	.num-input { width: 120px; }
 	.text-input { min-width: 200px; }
 	.select { min-width: 240px; }
-	.pw-group { display: flex; gap: 0.5rem; align-items: center; }
 
 	@media (max-width: 640px) {
 		.card-head {
@@ -395,7 +479,7 @@
 			max-width: 100%;
 		}
 
-		.pw-group {
+		.card .pw-group {
 			display: grid;
 			grid-template-columns: minmax(0, 1fr);
 			gap: 0.5rem;
@@ -403,7 +487,7 @@
 			width: 100%;
 		}
 
-		.pw-group :global(.btn) {
+		.card .pw-group :global(.btn) {
 			width: 100%;
 		}
 	}

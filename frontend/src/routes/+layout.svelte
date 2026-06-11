@@ -21,6 +21,7 @@
 	import { monitoringStore } from '$lib/stores/monitoring';
 	import { appendPingLog } from '$lib/stores/pingcheck';
 	import { systemInfo } from '$lib/stores/system';
+	import { subscriptionsStore } from '$lib/stores/subscriptions';
 	import { feedTraffic } from '$lib/stores/traffic';
 	import { applyTraffic as singboxApplyTraffic, applyDelay as singboxApplyDelay } from '$lib/stores/singbox';
 	import { singboxRouter } from '$lib/stores/singboxRouter';
@@ -29,7 +30,10 @@
 	import { settings as settingsStore, reloadSettings, usageLevel } from '$lib/stores/settings';
 	import { loadPresetCatalog } from '$lib/stores/presets';
 	import { donateModalOpen, openDonateModal, closeDonateModal } from '$lib/stores/donateModal';
+	import { outboundReferenced } from '$lib/stores/outboundReferenced';
+	import TunnelReferencedModal from '$lib/components/tunnels/TunnelReferencedModal.svelte';
 	import DevelopFeedbackFab from '$lib/components/layout/DevelopFeedbackFab.svelte';
+	import UiElementHider from '$lib/components/layout/UiElementHider.svelte';
 	import {
 		isSectionVisible,
 		pathToSection,
@@ -63,6 +67,7 @@
 
 	let disconnectSSE: (() => void) | null = null;
 	let unsubSysInfo: (() => void) | null = null;
+	let unsubSubscriptions: (() => void) | null = null;
 
 	const isDevelopChannel = $derived($settingsStore?.updates?.channel === 'develop');
 
@@ -243,11 +248,16 @@
 			if (!unsubSysInfo) {
 				unsubSysInfo = systemInfo.subscribe(() => {});
 			}
+			if (!unsubSubscriptions) {
+				unsubSubscriptions = subscriptionsStore.subscribe(() => {});
+			}
 		} else {
 			healthMonitor.stop();
 			stopSSE();
 			unsubSysInfo?.();
 			unsubSysInfo = null;
+			unsubSubscriptions?.();
+			unsubSubscriptions = null;
 		}
 	});
 
@@ -353,7 +363,7 @@
 </script>
 
 {#if backendOffline}
-	<div class="offline-screen">
+	<div class="offline-screen" data-awg-ui-protected>
 		<svg class="offline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
 			<path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
 			<line x1="12" y1="9" x2="12" y2="13"/>
@@ -365,12 +375,12 @@
 		<p class="offline-hint">Переподключение...</p>
 	</div>
 {:else if booting}
-	<div class="loading-screen">
+	<div class="loading-screen" data-awg-ui-protected>
 		<div class="loading-spinner"></div>
 		<p style="color: var(--text-muted); font-size: 0.875rem; margin-top: 1rem;">Роутер загружается...</p>
 	</div>
 {:else if $isLoading}
-	<div class="loading-screen">
+	<div class="loading-screen" data-awg-ui-protected>
 		<div class="loading-spinner"></div>
 	</div>
 {:else}
@@ -396,7 +406,7 @@
 			{@render children()}
 		</main>
 
-		<div class="toast-container">
+		<div class="toast-container" data-awg-ui-protected>
 			{#if $notifications.length > 1}
 				<button class="toast-dismiss-all" onclick={() => notifications.clearAll()}>
 					Закрыть все ({$notifications.length})
@@ -453,8 +463,20 @@
 		</div>
 	</Modal>
 
+	<TunnelReferencedModal
+		open={$outboundReferenced !== null}
+		details={$outboundReferenced?.details ?? null}
+		tunnelName={$outboundReferenced?.name}
+		entityLabel={$outboundReferenced?.entityLabel}
+		onclose={() => outboundReferenced.close()}
+	/>
+
 	{#if $isAuthenticated && isDevelopChannel}
 		<DevelopFeedbackFab />
+	{/if}
+
+	{#if $isAuthenticated}
+		<UiElementHider />
 	{/if}
 {/if}
 

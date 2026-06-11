@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -49,6 +50,82 @@ func TestDNSServerUDPMarshalIncludesServer(t *testing.T) {
 	}
 	if got["server"] != "1.1.1.1" {
 		t.Errorf("expected server=1.1.1.1, got %v: %s", got["server"], raw)
+	}
+}
+
+func TestDNSServerMarshalOmitsEmptyDetour(t *testing.T) {
+	srv := DNSServer{Tag: "dns-up", Type: "udp", Server: "1.1.1.1", Detour: ""}
+	raw, err := json.Marshal(srv)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, has := got["detour"]; has {
+		t.Errorf("empty detour must be omitted, got: %s", raw)
+	}
+}
+
+func TestAddDNSServerNormalizesDirectDetour(t *testing.T) {
+	c := NewEmptyConfig()
+	if err := c.AddDNSServer(makeDNSServer("bootstrap", "udp", "1.1.1.1", "direct")); err != nil {
+		t.Fatal(err)
+	}
+	if c.DNS.Servers[0].Detour != "" {
+		t.Fatalf("direct detour normalized away, got %q", c.DNS.Servers[0].Detour)
+	}
+}
+
+func TestUpdateDNSServerStripsDetourOnDNSDirect(t *testing.T) {
+	c := NewEmptyConfig()
+	_ = c.AddDNSServer(makeDNSServer("dns-direct", "udp", "77.88.8.8", ""))
+	if err := c.UpdateDNSServer("dns-direct", makeDNSServer("dns-direct", "udp", "77.88.8.8", "wg-nl")); err != nil {
+		t.Fatal(err)
+	}
+	if c.DNS.Servers[0].Detour != "" {
+		t.Fatalf("dns-direct detour stripped, got %q", c.DNS.Servers[0].Detour)
+	}
+}
+
+func TestLoadConfigPreservesLegacyDNSDirectDetour(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20-router.json")
+	raw := []byte(`{
+		"dns": {
+			"servers": [
+				{"tag":"dns-direct","type":"udp","server":"77.88.8.8","detour":"wg-nl"}
+			]
+		}
+	}`)
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DNS.Servers[0].Detour != "wg-nl" {
+		t.Fatalf("legacy dns-direct detour preserved in store, got %q", cfg.DNS.Servers[0].Detour)
+	}
+}
+
+func TestSanitizeDNSConfigForSingboxStripsDNSDirectDetour(t *testing.T) {
+	cfg := &RouterConfig{
+		DNS: DNS{
+			Servers: []DNSServer{
+				{Tag: "dns-direct", Type: "udp", Server: "77.88.8.8", Detour: "wg-nl"},
+				{Tag: "dns-tunnel", Type: "udp", Server: "9.9.9.9", Detour: "wg-nl"},
+			},
+		},
+	}
+	SanitizeDNSConfigForSingbox(cfg)
+	if cfg.DNS.Servers[0].Detour != "" {
+		t.Fatalf("dns-direct detour stripped for sing-box, got %q", cfg.DNS.Servers[0].Detour)
+	}
+	if cfg.DNS.Servers[1].Detour != "wg-nl" {
+		t.Fatalf("dns-tunnel detour kept, got %q", cfg.DNS.Servers[1].Detour)
 	}
 }
 

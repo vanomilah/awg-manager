@@ -179,9 +179,6 @@ func encodeHysteria2(ob map[string]any, label string) (string, error) {
 		if tls["insecure"] == true {
 			q.Set("insecure", "1")
 		}
-		if pin, _ := tls["certificate_public_key_sha256"].(string); pin != "" {
-			q.Set("pinSHA256", pin)
-		}
 		if ech, _ := tls["ech"].(map[string]any); ech != nil && ech["enabled"] == true {
 			q.Set("ech", "1")
 		}

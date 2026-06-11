@@ -20,9 +20,10 @@ export async function finishSetup(args: FinishSetupArgs): Promise<SubmitResult> 
     selectedTemplates: args.selectedTemplates,
     customFields: args.customFields,
     outboundCategory: 'tunnel',
-    tunnelTag: args.tunnelTag,
+    tunnelTags: [args.tunnelTag],
     groups: args.groups,
     existingRuleSetTags: args.existingRuleSetTags,
+    existingOutbounds: [],
   });
   try {
     await ensureTunnelDnsInfra(args.tunnelTag);

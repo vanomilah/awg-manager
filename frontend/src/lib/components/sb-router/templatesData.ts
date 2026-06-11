@@ -1,4 +1,5 @@
 import type { SingboxRouterPreset, SingboxRouterRuleSet } from '$lib/types';
+import { resolveRuleSetDisplayType, type RuleSetDisplayType } from '$lib/utils/ruleSetType';
 
 export type TemplateCategory = 'services' | 'rulesets';
 export type FilterKey = 'all' | TemplateCategory;
@@ -17,7 +18,7 @@ export interface RulesetTemplate {
   id: string;
   category: 'rulesets';
   tag: string;
-  type: 'inline' | 'remote' | 'local';
+  type: RuleSetDisplayType;
 }
 
 export type TemplateItem = ServiceTemplate | RulesetTemplate;
@@ -69,7 +70,7 @@ export function buildTemplateList(
       id: `rs:${rs.tag}`,
       category: 'rulesets' as const,
       tag: rs.tag,
-      type: (rs.type ?? 'remote') as 'inline' | 'remote' | 'local',
+      type: resolveRuleSetDisplayType(rs),
     }));
 
   if (rss.length > 0) {

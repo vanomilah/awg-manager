@@ -56,7 +56,7 @@ describe('emptyStateActions', () => {
       existingRuleSetTags: [],
     });
     expect(submitWizard).toHaveBeenCalledWith(
-      expect.objectContaining({ outboundCategory: 'tunnel', tunnelTag: 'wg-nl', selectedTemplates: ['svc:netflix'] }),
+      expect.objectContaining({ outboundCategory: 'tunnel', tunnelTags: ['wg-nl'], selectedTemplates: ['svc:netflix'] }),
     );
     expect(api.singboxRouterPutRouteFinal).toHaveBeenCalledWith('direct');
     expect(api.singboxRouterPutDNSGlobals).toHaveBeenCalledWith(

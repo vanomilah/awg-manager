@@ -1,5 +1,14 @@
 <script lang="ts">
-	import { Button, Dropdown, ChipMultiSelect, SideDrawer, type DropdownOption, type ChipOption } from '$lib/components/ui';
+	import {
+		Button,
+		Dropdown,
+		ChipMultiSelect,
+		SegmentedControl,
+		type DropdownOption,
+		type ChipOption,
+		type SegmentedOption,
+	} from '$lib/components/ui';
+	import SingboxSettingsModal from './SingboxSettingsModal.svelte';
 	import type { SingboxRouterDNSRule, SingboxRouterDNSServer, SingboxRouterRuleSet } from '$lib/types';
 
 	interface Props {
@@ -71,6 +80,11 @@
 		{ value: 'nxdomain', label: 'NXDOMAIN (нет такого домена)' },
 		{ value: 'refused', label: 'REFUSED' },
 		{ value: 'drop', label: 'Drop (без ответа)' },
+	];
+
+	const actionOptions: SegmentedOption<'route' | 'block'>[] = [
+		{ value: 'route', label: 'Резолвить' },
+		{ value: 'block', label: 'Заблокировать' },
 	];
 
 	let busy = $state(false);
@@ -183,12 +197,11 @@
 	}
 </script>
 
-<SideDrawer
-	open
-	onClose={onClose}
+<SingboxSettingsModal
 	title={rule ? 'Редактировать DNS правило' : 'Новое DNS правило'}
-	width={620}
-	footer={drawerFooter}
+	onClose={onClose}
+	size="lg"
+	hasUnsavedChanges={() => isDirty}
 >
 	<div class="form">
 		<div class="section-label">Matchers (минимум один)</div>
@@ -231,10 +244,12 @@
 
 		<div class="action-section">
 			<div class="section-label">Действие</div>
-			<div class="segment">
-				<button class:active={action === 'route'} onclick={() => (action = 'route')} type="button">Резолвить</button>
-				<button class:active={action === 'block'} onclick={() => (action = 'block')} type="button">Заблокировать</button>
-			</div>
+			<SegmentedControl
+				value={action}
+				options={actionOptions}
+				ariaLabel="Действие DNS правила"
+				onchange={(next) => (action = next)}
+			/>
 
 			{#if action === 'route'}
 				<label class="field">
@@ -251,103 +266,11 @@
 
 		{#if error}<div class="error">{error}</div>{/if}
 	</div>
-</SideDrawer>
 
-{#snippet drawerFooter()}
-	<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
-	<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
-		Сохранить
-	</Button>
-{/snippet}
-
-<style>
-	.form {
-		display: grid;
-		gap: 0.6rem;
-		min-width: 0;
-	}
-	.section-label {
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--muted-text);
-		margin-bottom: 0.25rem;
-	}
-	.field {
-		display: grid;
-		gap: 0.25rem;
-	}
-	.lbl {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-	}
-	.field textarea,
-	.field input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.4rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-		box-sizing: border-box;
-		width: 100%;
-		resize: vertical;
-	}
-	.action-section {
-		border-top: 1px solid var(--border);
-		padding-top: 0.75rem;
-		margin-top: 0.25rem;
-		display: grid;
-		gap: 0.5rem;
-	}
-	.segment {
-		display: inline-flex;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		overflow: hidden;
-		width: fit-content;
-	}
-	.segment button {
-		background: transparent;
-		border: none;
-		padding: 0.4rem 0.9rem;
-		font-size: 0.85rem;
-		cursor: pointer;
-		color: var(--muted-text);
-	}
-	.segment button + button {
-		border-left: 1px solid var(--border);
-	}
-	.segment button.active {
-		background: var(--accent, #3b82f6);
-		color: var(--color-accent-contrast, #ffffff);
-		font-weight: 600;
-	}
-	@media (max-width: 640px) {
-		.action-section .segment {
-			display: grid;
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			width: 100%;
-			border-radius: 0.375rem;
-			overflow: hidden;
-		}
-
-		.action-section .segment button {
-			width: 100%;
-			min-width: 0;
-			min-height: 2.25rem;
-			padding: 0.5rem 0.625rem;
-			text-align: center;
-			white-space: nowrap;
-		}
-
-		.action-section .segment button + button {
-			border-left: 1px solid var(--border);
-		}
-	}
-	.error {
-		color: var(--danger, #dc2626);
-		font-size: 0.85rem;
-	}
-</style>
+	{#snippet actions()}
+		<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
+		<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
+			Сохранить
+		</Button>
+	{/snippet}
+</SingboxSettingsModal>

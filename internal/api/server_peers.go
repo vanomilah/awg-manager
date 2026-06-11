@@ -54,6 +54,13 @@ func (h *ServersHandler) Subtree(w http.ResponseWriter, r *http.Request) {
 		}
 		h.SetPolicy(w, r, name)
 		return
+	case "endpoint":
+		if len(parts) != 2 {
+			response.Error(w, "unknown path", "UNKNOWN_PATH")
+			return
+		}
+		h.SetEndpoint(w, r, name)
+		return
 	case "peers":
 	default:
 		response.Error(w, "unknown path", "UNKNOWN_PATH")
@@ -400,7 +407,7 @@ func (h *ServersHandler) ServerPeerConf(w http.ResponseWriter, r *http.Request, 
 }
 
 func (h *ServersHandler) generateServerPeerConf(ctx context.Context, server *ndms.WireguardServer, pubkey string, sec storage.ServerPeerSecret) (string, error) {
-	endpoint, err := h.resolveServerEndpoint(ctx)
+	endpoint, err := h.resolveServerEndpoint(ctx, server.ID)
 	if err != nil {
 		return "", err
 	}
@@ -439,17 +446,24 @@ func (h *ServersHandler) generateServerPeerConf(ctx context.Context, server *ndm
 	if sec.PresharedKey != "" {
 		b.WriteString(fmt.Sprintf("PresharedKey = %s\n", sec.PresharedKey))
 	}
-	b.WriteString(fmt.Sprintf("Endpoint = %s:%d\n", endpoint, server.ListenPort))
+	b.WriteString(fmt.Sprintf("Endpoint = %s:%d\n", formatWireguardEndpointHost(endpoint), server.ListenPort))
 	b.WriteString("AllowedIPs = 0.0.0.0/0, ::/0\n")
 	b.WriteString("PersistentKeepalive = 25\n")
 	return b.String(), nil
 }
 
-func (h *ServersHandler) resolveServerEndpoint(ctx context.Context) (string, error) {
+func (h *ServersHandler) resolveServerEndpoint(ctx context.Context, serverID string) (string, error) {
+	var storedEndpoint, keenDNSDomain string
+	if meta, ok := h.settings.GetServerInterfaceMeta(serverID); ok {
+		storedEndpoint = meta.Endpoint
+	}
 	if h.queries != nil && h.queries.KeenDNS != nil {
-		if info, err := h.queries.KeenDNS.Get(ctx); err == nil && info != nil && info.Domain != "" {
-			return info.Domain, nil
+		if info, err := h.queries.KeenDNS.Get(ctx); err == nil && info != nil {
+			keenDNSDomain = info.Domain
 		}
+	}
+	if host := resolveWireguardClientEndpointHost(storedEndpoint, keenDNSDomain); host != "" {
+		return host, nil
 	}
 	return testing.GetWANIPWithFallback(ctx, h.queries.WANInterfaceAddress)
 }
@@ -586,6 +600,9 @@ func (h *ServersHandler) enrichServerDTO(ctx context.Context, srv ndms.Wireguard
 		if info, err := h.queries.KeenDNS.Get(ctx); err == nil && info != nil {
 			dto.KeenDNSDomain = info.Domain
 		}
+	}
+	if meta, ok := h.settings.GetServerInterfaceMeta(srv.ID); ok {
+		dto.Endpoint = meta.Endpoint
 	}
 	for i := range dto.Peers {
 		sec, ok := h.settings.GetServerPeerSecret(srv.ID, dto.Peers[i].PublicKey)

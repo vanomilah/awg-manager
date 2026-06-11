@@ -8,9 +8,11 @@
   import type { MatcherChip as MatcherChipData, RuleCardData } from './types';
   import ServiceTile from './ServiceTile.svelte';
   import MatcherChip from './MatcherChip.svelte';
-  import OutboundTile from './OutboundTile.svelte';
+  import RuleOutboundAction from './RuleOutboundAction.svelte';
   import { Badge } from '$lib/components/ui';
   import { Edit3, GripVertical, Trash2 } from 'lucide-svelte';
+  import { outboundDisplayTitle } from './outboundLabelFormat';
+  import { COMPLEX_RULE_EDIT_MESSAGE } from './simpleRule';
 
   interface Props {
     card: RuleCardData;
@@ -19,9 +21,12 @@
     onDelete?: () => void;
     onEdit?: () => void;
     onRulesetClick?: (tag: string) => void;
+    onTextMatchersClick?: () => void;
+    onInlineListClick?: () => void;
     knownRulesetTags?: Set<string>;
     onDragHandlePointerDown?: (event: PointerEvent) => void;
     dragging?: boolean;
+    dragDisabled?: boolean;
   }
   let {
     card,
@@ -29,9 +34,12 @@
     onDelete,
     onEdit,
     onRulesetClick,
+    onTextMatchersClick,
+    onInlineListClick,
     knownRulesetTags,
     onDragHandlePointerDown,
     dragging = false,
+    dragDisabled = false,
   }: Props = $props();
 
   const MAX_CHIPS = 4;
@@ -41,11 +49,24 @@
   let useServiceTile = $derived(!card.isSystem);
   let editTip = $derived(actionTooltip('edit', card, index));
   let deleteTip = $derived(actionTooltip('delete', card, index));
+  let editDisabled = $derived(!card.isSystem && !card.simplicity.simple);
+  let editDisabledTip = $derived(editDisabled ? COMPLEX_RULE_EDIT_MESSAGE : editTip);
+
+  const isCompositeOutbound = $derived(
+    (card.outbound.kind === 'composite' || card.outbound.kind === 'subscription')
+      && !!card.outbound.activeMemberLabel,
+  );
 
   function outboundLabel(cardData: RuleCardData): string {
     if (cardData.action === 'block' || cardData.outbound.kind === 'block') return 'Заблокировать';
     if (cardData.outbound.kind === 'direct') return 'Напрямую';
-    return cardData.outbound.label;
+    if (
+      (cardData.outbound.kind === 'composite' || cardData.outbound.kind === 'subscription')
+      && cardData.outbound.activeMemberLabel
+    ) {
+      return `${outboundDisplayTitle(cardData.outbound)} → ${cardData.outbound.activeMemberLabel}`;
+    }
+    return outboundDisplayTitle(cardData.outbound);
   }
 
   function ruleActionTarget(cardData: RuleCardData, idx: number): string {
@@ -59,21 +80,38 @@
   }
 
   function chipOnclick(chip: MatcherChipData): (() => void) | undefined {
+    const sim = card.simplicity;
+    // Развёрнутые домены/IP custom-N — тот же редактор набора, что и по бейджу inline.
+    if (sim.simple && sim.kind === 'inline-set') {
+      if ((chip.kind === 'domain' || chip.kind === 'ip') && onInlineListClick) {
+        return onInlineListClick;
+      }
+    }
+    if (sim.simple && sim.kind === 'inline-text') {
+      if ((chip.kind === 'domain' || chip.kind === 'ip') && onTextMatchersClick) {
+        return onTextMatchersClick;
+      }
+    }
     if (chip.kind === 'ruleset' && chip.rulesetTag && onRulesetClick && knownRulesetTags?.has(chip.rulesetTag)) {
       return () => onRulesetClick(chip.rulesetTag!);
-    }
-    if (chip.kind === 'domain' && onEdit) {
-      return onEdit;
     }
     return undefined;
   }
 
   function chipTitle(chip: MatcherChipData): string | undefined {
+    const sim = card.simplicity;
+    if (sim.simple && sim.kind === 'inline-set' && onInlineListClick) {
+      if (chip.kind === 'domain' || chip.kind === 'ip') {
+        return 'Редактировать набор';
+      }
+    }
+    if (sim.simple && sim.kind === 'inline-text' && onTextMatchersClick) {
+      if (chip.kind === 'domain' || chip.kind === 'ip') {
+        return 'Редактировать домены и адреса';
+      }
+    }
     if (chip.kind === 'ruleset' && chip.rulesetTag && onRulesetClick && knownRulesetTags?.has(chip.rulesetTag)) {
       return `Редактировать набор «${chip.label}»`;
-    }
-    if (chip.kind === 'domain' && onEdit) {
-      return editTip;
     }
     return undefined;
   }
@@ -89,9 +127,11 @@
       <button
         type="button"
         class="drag-handle"
+        class:is-busy={dragDisabled}
+        aria-disabled={dragDisabled}
         aria-label={`Перетащить правило #${orderStr}`}
-        title={`Перетащить правило #${orderStr}`}
-        onpointerdown={onDragHandlePointerDown}
+        title={dragDisabled ? 'Подождите, правило перемещается…' : `Перетащить правило #${orderStr}`}
+        onpointerdown={dragDisabled ? undefined : onDragHandlePointerDown}
       >
         <GripVertical size={16} />
       </button>
@@ -127,6 +167,7 @@
             kind={chip.kind}
             label={chip.label}
             mono={chip.mono}
+            rulesetType={chip.rulesetType}
             onclick={chipOnclick(chip)}
             title={chipTitle(chip)}
           />
@@ -138,46 +179,51 @@
     {/if}
   </div>
 
-  <!-- Arrow + outbound tile -->
-  <div class="action">
-    <svg class="arrow" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <line x1="5" y1="12" x2="19" y2="12" />
-      <polyline points="12 5 19 12 12 19" />
-    </svg>
-    <OutboundTile outbound={card.outbound} />
-  </div>
-
-  <!-- System badge -->
-  {#if card.isSystem}
-    <div class="right-slot">
-      <Badge variant="muted" size="sm">система</Badge>
+  <div class="trail">
+    <div class="action" class:composite={isCompositeOutbound}>
+      <RuleOutboundAction outbound={card.outbound} />
     </div>
-  {:else if onDelete || onEdit}
-    <div class="right-slot">
-      {#if onEdit}
-        <span class="action-tip" data-tip={editTip}>
-          <button type="button" class="route-action-btn" onclick={onEdit} aria-label={editTip} title={editTip}>
-            <Edit3 size={15} />
+
+    {#if card.isSystem}
+      <div class="right-slot">
+        <Badge variant="muted" size="sm">система</Badge>
+      </div>
+    {:else if onDelete || onEdit}
+      <div class="right-slot">
+        {#if onEdit}
+          <span class="action-tip" data-tip={editDisabledTip}>
+            <button
+              type="button"
+              class="route-action-btn"
+              class:is-disabled={editDisabled}
+              onclick={editDisabled ? undefined : onEdit}
+              disabled={editDisabled}
+              aria-label={editDisabledTip}
+              title={editDisabledTip}
+            >
+              <Edit3 size={15} />
+            </button>
+          </span>
+        {/if}
+        <span class="action-tip" data-tip={deleteTip}>
+          <button type="button" class="route-action-btn danger" onclick={onDelete} aria-label={deleteTip} title={deleteTip}>
+            <Trash2 size={15} />
           </button>
         </span>
-      {/if}
-      <span class="action-tip" data-tip={deleteTip}>
-        <button type="button" class="route-action-btn danger" onclick={onDelete} aria-label={deleteTip} title={deleteTip}>
-          <Trash2 size={15} />
-        </button>
-      </span>
-    </div>
-  {/if}
+      </div>
+    {/if}
+  </div>
 </div>
 </div>
 
 <style>
   .card-wrap {
     position: relative;
+    min-width: 0;
   }
   .card {
     display: grid;
-    grid-template-columns: 28px 28px minmax(0, 1fr) auto auto;
+    grid-template-columns: 28px 28px minmax(0, 1fr) auto;
     gap: 12px;
     align-items: center;
     padding: 10px 14px;
@@ -185,6 +231,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius);
     transition: border-color var(--t-fast);
+    min-width: 0;
   }
   .card:hover { border-color: var(--border-hover); }
   .card.is-system {
@@ -225,12 +272,23 @@
     justify-content: center;
     touch-action: none;
     border-radius: 4px;
-    transition: color 0.15s;
+    opacity: 1;
+    transition:
+      color 0.28s ease,
+      opacity 0.28s ease;
   }
   .drag-handle:hover {
     color: var(--text-primary);
   }
   .drag-handle:active { cursor: grabbing; }
+  .drag-handle.is-busy {
+    cursor: wait;
+    opacity: 0.42;
+    pointer-events: none;
+  }
+  .drag-handle.is-busy:hover {
+    color: var(--text-muted);
+  }
   .handle-disabled {
     width: 20px;
     height: 20px;
@@ -309,28 +367,39 @@
     line-height: 1.4;
   }
 
+  .trail {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    max-width: 100%;
+    justify-content: flex-end;
+  }
+
   .action {
     display: flex;
     align-items: center;
     gap: 10px;
-    flex-shrink: 0;
+    flex-shrink: 1;
     min-width: 0;
     max-width: 100%;
   }
-  .arrow {
-    color: var(--text-muted);
-    flex-shrink: 0;
+  .action.composite {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 100%;
   }
-  .action :global(.tile) {
+
+  @media (min-width: 769px) {
+    .action.composite {
+      max-width: min(40vw, 100%);
+    }
+  }
+  .action :global(.tile),
+  .action :global(.tone-chip) {
     min-width: 0;
     max-width: 11rem;
   }
-  .action :global(.label-mono) {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-  }
-
   .right-slot {
     display: flex;
     gap: 4px;
@@ -342,6 +411,14 @@
     position: relative;
     display: inline-flex;
   }
+  .route-action-btn.is-disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .route-action-btn.is-disabled:hover {
+    color: var(--text-muted);
+  }
+
   .action-tip:hover::after,
   .action-tip:focus-within::after {
     content: attr(data-tip);
@@ -381,6 +458,10 @@
       align-items: start;
       gap: 8px 10px;
       padding: 10px 12px;
+    }
+
+    .trail {
+      display: contents;
     }
 
     .drag-slot {
@@ -443,12 +524,19 @@
     .action {
       grid-area: action;
       min-width: 0;
+      max-width: 100%;
       display: flex;
       align-items: center;
       gap: 8px;
       border-top: 1px dashed var(--border);
       padding-top: 8px;
       margin-top: 2px;
+      justify-content: flex-start;
+    }
+
+    .action.composite {
+      width: 100%;
+      max-width: 100%;
     }
 
     .card.is-system {

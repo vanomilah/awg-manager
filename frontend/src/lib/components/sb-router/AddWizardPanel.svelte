@@ -10,7 +10,13 @@
     ArrowLeft, Info, Check, Zap, Globe, ShieldOff, Plus,
   } from 'lucide-svelte';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
+  import { subscriptionsStore } from '$lib/stores/subscriptions';
+  import { singboxProxies } from '$lib/stores/singboxProxies';
+  import { singboxTunnels } from '$lib/stores/singbox';
   import { notifications } from '$lib/stores/notifications';
+  import { resolveOutboundDisplay } from './adapters';
+  import OutboundToneIcon from './OutboundToneIcon.svelte';
+  import { displayTone, toneClass } from './outboundTileTone';
   import { Button } from '$lib/components/ui';
   import StepPill from './StepPill.svelte';
   import WizardStep from './WizardStep.svelte';
@@ -21,19 +27,22 @@
   import SbRouterServiceCatalogModal from './SbRouterServiceCatalogModal.svelte';
   import {
     addWizardOpen,
-    wizardOutboundCategory, wizardTunnelTag, wizardCustom,
-    closeAddWizard, setOutboundCategory, setTunnelTag, resetWizardState,
+    wizardOutboundCategory, wizardTunnelTags, wizardCustom,
+    wizardEditRuleIndex, wizardEditMode, wizardExistingInlineRuleSetTag, wizardWasInlineText,
+    closeAddWizard, setOutboundCategory, toggleTunnelTag, resetWizardState,
   } from './addWizardStore';
   import {
-    templatesSelection, openTemplatesModal, toggleTemplate, clearSelection,
+    templatesSelection, openTemplatesModal, clearSelection,
   } from './templatesStore';
   import { buildTemplateList } from './templatesData';
-  import { submitWizard, ValidationError } from './addWizardActions';
+  import { submitWizard, submitWizardEdit, ValidationError } from './addWizardActions';
   import { isInlineRuleListEmpty } from '$lib/utils/singboxInlineRules';
   import MobileBottomBar from './MobileBottomBar.svelte';
   import { mode } from './modeStore';
   import { ensureTunnelDnsInfra, syncTunnelDnsRule } from './emptyStateActions';
   import { pluralize, RULE_WORDS, SERVICE_WORDS, SET_WORDS } from '$lib/utils/pluralize';
+  import { findScrollContainer } from '$lib/utils/findScrollContainer';
+  import { previewTunnelOutboundResolution, formatWizardOutboundPreview } from './wizardCompositeOutbound';
 
   const outbounds = singboxRouterStore.outbounds;
   const options = singboxRouterStore.options;
@@ -66,52 +75,123 @@
 
   const groups = $derived(buildTemplateList($presets, $ruleSets, ''));
 
+  const isEditMode = $derived($wizardEditRuleIndex !== null);
+  const editMode = $derived($wizardEditMode);
+
   const hasTemplates = $derived($templatesSelection.size > 0);
   const hasCustom = $derived(!isInlineRuleListEmpty($wizardCustom.rulesList));
-  const step1Ok = $derived(hasTemplates || hasCustom);
+  const step1Ok = $derived.by(() => {
+    if (isEditMode && editMode === 'external') return hasTemplates;
+    if (isEditMode && editMode === 'inline') return hasCustom;
+    return hasTemplates || hasCustom;
+  });
   const step2Ok = $derived.by(() => {
     if ($wizardOutboundCategory === null) return false;
-    if ($wizardOutboundCategory === 'tunnel') return $wizardTunnelTag !== null;
+    if ($wizardOutboundCategory === 'tunnel') return $wizardTunnelTags.length > 0;
     return true;
   });
   const canSave = $derived(step1Ok && step2Ok);
+
+  const tunnelOutboundPreview = $derived.by(() => {
+    if ($wizardOutboundCategory !== 'tunnel' || $wizardTunnelTags.length === 0) return null;
+    return previewTunnelOutboundResolution($wizardTunnelTags, $outbounds);
+  });
+
+  const outboundPreviewText = $derived(
+    formatWizardOutboundPreview($wizardOutboundCategory, tunnelOutboundPreview, directTag),
+  );
 
   let submitting = $state(false);
   // Бамп для remount CustomMatcherForm после «добавить ещё одно»:
   // визард не уничтожается, поэтому локальный value формы надо сбросить вместе со стором.
   let customResetKey = $state(0);
+  let wizardEl = $state<HTMLElement | null>(null);
+
+  const STICKY_HEADER_OFFSET = 72;
+
+  async function scrollWizardToTop(): Promise<void> {
+    if (typeof window === 'undefined' || !wizardEl) return;
+    (document.activeElement as HTMLElement | null)?.blur?.();
+
+    const anchor = wizardEl.querySelector('.title') ?? wizardEl;
+    const container = findScrollContainer(wizardEl);
+
+    if (container) {
+      const top =
+        container.scrollTop
+        + anchor.getBoundingClientRect().top
+        - container.getBoundingClientRect().top
+        - STICKY_HEADER_OFFSET;
+      container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    } else {
+      const top = anchor.getBoundingClientRect().top + window.scrollY - STICKY_HEADER_OFFSET;
+      window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 400);
+    });
+  }
+
+  async function syncDnsAfterSave() {
+    if (get(mode) !== 'beginner') return;
+    try {
+      const cat = get(wizardOutboundCategory);
+      const tags = get(wizardTunnelTags);
+      if (cat === 'tunnel' && tags.length > 0) await ensureTunnelDnsInfra(tags[0]!);
+      await syncTunnelDnsRule();
+    } catch (e) {
+      notifications.error(`DNS: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
 
   async function doSave(continueAfter: boolean) {
     if (!canSave) return;
     submitting = true;
     try {
+      const editIndex = get(wizardEditRuleIndex);
+      if (editIndex !== null && get(wizardEditMode)) {
+        await submitWizardEdit({
+          ruleIndex: editIndex,
+          editMode: get(wizardEditMode)!,
+          selectedTemplates: Array.from(get(templatesSelection)),
+          customFields: get(wizardCustom),
+          outboundCategory: get(wizardOutboundCategory)!,
+          tunnelTags: get(wizardTunnelTags),
+          groups,
+          presets: get(presets),
+          existingRuleSetTags: get(ruleSets).map((r) => r.tag),
+          existingOutbounds: get(outbounds),
+          existingInlineRuleSetTag: get(wizardExistingInlineRuleSetTag),
+          wasInlineText: get(wizardWasInlineText),
+        });
+        await syncDnsAfterSave();
+        notifications.success('Правило обновлено');
+        clearSelection();
+        closeAddWizard();
+        await singboxRouterStore.loadAll();
+        return;
+      }
+
       const result = await submitWizard({
         selectedTemplates: Array.from(get(templatesSelection)),
         customFields: get(wizardCustom),
         outboundCategory: get(wizardOutboundCategory)!,
-        tunnelTag: get(wizardTunnelTag),
+        tunnelTags: get(wizardTunnelTags),
         groups,
         existingRuleSetTags: get(ruleSets).map((r) => r.tag),
+        existingOutbounds: get(outbounds),
       });
       if (result.failures.length === 0) {
-        if (get(mode) === 'beginner') {
-          try {
-            const cat = get(wizardOutboundCategory);
-            const tag = get(wizardTunnelTag);
-            if (cat === 'tunnel' && tag) await ensureTunnelDnsInfra(tag);
-            await syncTunnelDnsRule();
-          } catch (e) {
-            notifications.error(`DNS: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
+        await syncDnsAfterSave();
         const created = result.successes.length;
         if (continueAfter) {
           notifications.success(`Создано ${pluralize(created, RULE_WORDS)}. Можно добавить ещё одно.`);
           clearSelection();
+          await scrollWizardToTop();
           resetWizardState();
           customResetKey++;
           await singboxRouterStore.loadAll();
-          if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
         } else {
           notifications.success(`Создано ${pluralize(created, RULE_WORDS)}`);
           clearSelection();
@@ -145,47 +225,66 @@
 {#snippet iconBlock()}<ShieldOff size={18} />{/snippet}
 
 {#if $addWizardOpen}
-  <div class="wizard">
+  <div class="wizard" bind:this={wizardEl}>
     <div class="bc">
       <button type="button" class="bc-back" onclick={closeAddWizard}>
         <ArrowLeft size={12} /> Маршрутизация
       </button>
       <span class="bc-sep">/</span>
-      <span class="bc-current">Новое правило</span>
+      <span class="bc-current">{isEditMode ? 'Редактирование' : 'Новое правило'}</span>
     </div>
 
-    <h1 class="title">Куда направить трафик?</h1>
-    <p class="sub">Выберите сервис или опишите свой. Затем — куда его пустить.</p>
+    <h1 class="title">{isEditMode ? 'Редактировать правило' : 'Куда направить трафик?'}</h1>
+    <p class="sub">
+      {#if isEditMode && editMode === 'external'}
+        Выберите другой шаблон и куда направить трафик.
+      {:else if isEditMode}
+        Измените список и куда направить трафик.
+      {:else}
+        Выберите сервис или опишите свой. Затем — куда его пустить.
+      {/if}
+    </p>
 
     <div class="stepper">
       <StepPill n={1} label="Что направить" shortLabel="Что" active={!step1Ok} done={step1Ok} />
       <div class="connector" aria-hidden="true"></div>
       <StepPill n={2} label="Куда" shortLabel="Куда" active={step1Ok && !step2Ok} done={step1Ok && step2Ok} />
       <div class="connector" aria-hidden="true"></div>
-      <StepPill n={3} label="Превью" shortLabel="Проверка" active={step1Ok && step2Ok} done={false} />
+      <StepPill n={3} label="Предпросмотр" shortLabel="Проверка" active={step1Ok && step2Ok} done={false} />
     </div>
 
-    <WizardStep n={1} title="Что направить" hint="выберите шаблон или опишите вручную" active={true}>
-      <button type="button" class="picker-btn" onclick={() => openTemplatesModal()}>
-        <div class="picker-icon"><Plus size={20} /></div>
-        <div class="picker-text">
-          <div class="picker-title">Выбрать из готовых шаблонов</div>
-          <div class="picker-sub">
-            {#if $mode === 'beginner'}
-              {pluralize($presets.length, SERVICE_WORDS)}
-            {:else}
-              {pluralize($presets.length, SERVICE_WORDS)} · {pluralize($ruleSets.length, SET_WORDS)}
-            {/if}
+    <WizardStep
+      n={1}
+      title="Что направить"
+      hint={isEditMode && editMode === 'inline' ? 'список доменов и адресов' : 'выберите шаблон или опишите вручную'}
+      active={true}
+    >
+      {#if !isEditMode || editMode === 'external'}
+        <button type="button" class="picker-btn" onclick={() => openTemplatesModal()}>
+          <div class="picker-icon"><Plus size={20} /></div>
+          <div class="picker-text">
+            <div class="picker-title">
+              {isEditMode ? 'Заменить шаблон' : 'Выбрать из готовых шаблонов'}
+            </div>
+            <div class="picker-sub">
+              {#if $mode === 'beginner'}
+                {pluralize($presets.length, SERVICE_WORDS)}
+              {:else}
+                {pluralize($presets.length, SERVICE_WORDS)} · {pluralize($ruleSets.length, SET_WORDS)}
+              {/if}
+            </div>
           </div>
-        </div>
-        <div class="picker-chev">›</div>
-      </button>
+          <div class="picker-chev">›</div>
+        </button>
 
-      <SelectedTemplatesRow />
+        <SelectedTemplatesRow />
+      {/if}
 
-      {#key customResetKey}
-        <CustomMatcherForm />
-      {/key}
+      {#if !isEditMode || editMode === 'inline'}
+        {#key customResetKey}
+          <CustomMatcherForm expanded={isEditMode && editMode === 'inline'} />
+        {/key}
+      {/if}
     </WizardStep>
 
     <WizardStep n={2} title="Куда направить" active={step1Ok}>
@@ -221,13 +320,31 @@
 
       {#if $wizardOutboundCategory === 'tunnel'}
         <div class="tunnel-row">
-          <div class="tunnel-cap">Выбрать туннель</div>
+          <div class="tunnel-cap">
+            Выбрать туннели
+            {#if $wizardTunnelTags.length > 1}
+              <span class="tunnel-count">{$wizardTunnelTags.length} выбрано</span>
+            {/if}
+          </div>
+          <p class="tunnel-hint">Можно выбрать несколько — будет использован composite outbound</p>
           {#if tunnelOutbounds.length > 0}
             <div class="tunnel-chips">
               {#each tunnelOutbounds as ob (ob.value)}
-                {@const selected = $wizardTunnelTag === ob.value}
-                <button type="button" class="t-chip" class:selected onclick={() => setTunnelTag(ob.value)}>
-                  <Zap size={12} />
+                {@const selected = $wizardTunnelTags.includes(ob.value)}
+                {@const tunnelDisplay = resolveOutboundDisplay(
+                  ob.value,
+                  'route',
+                  $outbounds,
+                  $options,
+                  $subscriptionsStore.data,
+                  $singboxProxies.data ?? [],
+                  $singboxTunnels.data ?? [],
+                )}
+                {@const tunnelTone = displayTone(tunnelDisplay)}
+                <button type="button" class="t-chip" class:selected onclick={() => toggleTunnelTag(ob.value)}>
+                  <span class="tone-icon {toneClass(tunnelTone)}">
+                    <OutboundToneIcon tone={tunnelTone} kind={tunnelDisplay.kind} size={12} />
+                  </span>
                   <span class="tag">{ob.label}</span>
                 </button>
               {/each}
@@ -239,26 +356,38 @@
       {/if}
     </WizardStep>
 
-    <WizardStep n={3} title="Превью" active={step1Ok && step2Ok}>
-      <p class="preview-hint">
-        Правила появятся в конце списка. После создания можно перетаскивать.
-      </p>
-      <div class="preview-info">
-        <Info size={14} />
-        <span>
-          {pluralize($templatesSelection.size + (hasCustom ? 1 : 0), RULE_WORDS)} будет создано.
-        </span>
-      </div>
+    <WizardStep n={3} title="Предпросмотр" active={step1Ok && step2Ok}>
+      {#if isEditMode}
+        <p class="preview-hint">Изменения применятся к текущему правилу.</p>
+      {:else}
+        <p class="preview-hint">
+          Правила появятся в конце списка. После создания можно перетаскивать.
+        </p>
+        <div class="preview-info">
+          <Info size={14} />
+          <span>
+            {pluralize($templatesSelection.size + (hasCustom ? 1 : 0), RULE_WORDS)} будет создано.
+          </span>
+        </div>
+      {/if}
+      {#if outboundPreviewText}
+        <div class="preview-outbound">
+          <Info size={14} />
+          <span>{outboundPreviewText}</span>
+        </div>
+      {/if}
     </WizardStep>
 
     <div class="actions desktop-only">
       <Button variant="ghost" size="md" onclick={closeAddWizard} disabled={submitting}>Отмена</Button>
       <div class="actions-right">
-        <Button variant="secondary" size="md" onclick={() => doSave(true)} disabled={!canSave || submitting}>
-          + Добавить ещё одно
-        </Button>
+        {#if !isEditMode}
+          <Button variant="secondary" size="md" onclick={() => doSave(true)} disabled={!canSave || submitting}>
+            + Добавить ещё одно
+          </Button>
+        {/if}
         <Button variant="primary" size="md" onclick={() => doSave(false)} disabled={!canSave || submitting} iconBefore={iconCheck}>
-          Сохранить
+          {isEditMode ? 'Сохранить изменения' : 'Сохранить'}
         </Button>
       </div>
     </div>
@@ -363,12 +492,30 @@
     border-top: 1px solid var(--border);
   }
   .tunnel-cap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-muted);
-    margin-bottom: 8px;
+    margin-bottom: 4px;
+  }
+  .tunnel-count {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: none;
+    letter-spacing: 0;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .tunnel-hint {
+    margin: 0 0 8px;
+    font-size: 11.5px;
+    color: var(--text-muted);
   }
   .tunnel-chips {
     display: flex;
@@ -406,7 +553,8 @@
     font-size: 13px;
     color: var(--text-secondary);
   }
-  .preview-info {
+  .preview-info,
+  .preview-outbound {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -415,6 +563,12 @@
     color: var(--text-muted);
     background: rgba(107, 148, 168, 0.08);
     border-radius: var(--radius-sm);
+  }
+  .preview-outbound {
+    margin-top: 8px;
+    color: var(--text-secondary);
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
   }
   .actions {
     display: flex;
@@ -428,8 +582,11 @@
   }
   @media (max-width: 768px) {
     .wizard {
-      padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + 72px);
-      max-width: none;
+      min-width: 0;
+      max-width: 100%;
+      padding: 0.875rem;
+      padding-bottom: calc(0.875rem + 72px);
+      overflow: hidden;
     }
     .title {
       font-size: 20px;

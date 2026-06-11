@@ -1,4 +1,10 @@
-import type { SingboxRouterRule, SingboxRouterDNSServer, SingboxRouterDNSGlobals } from '$lib/types';
+import type {
+	SingboxRouterRule,
+	SingboxRouterDNSServer,
+	SingboxRouterDNSGlobals,
+	SingboxRouterSettings,
+	SingboxRouterWANInterface,
+} from '$lib/types';
 import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
 import { isSystemRule } from './adapters';
 
@@ -38,6 +44,34 @@ function outboundLabelByTag(groups: OutboundGroup[] | undefined, tag: string): s
     if (item) return item.label;
   }
   return tag;
+}
+
+export function formatWanInterfaceLabel(
+	iface: Pick<SingboxRouterWANInterface, 'name' | 'label'>,
+): string {
+	const label = iface.label?.trim() || iface.name;
+	return `${label} (${iface.name})`;
+}
+
+/** Подпись WAN для ветки «напрямую»: выбранный или авто-определяемый интерфейс провайдера. */
+export function resolveDefaultWanLabel(
+	settings: Pick<SingboxRouterSettings, 'wanAutoDetect' | 'wanInterface'> | null | undefined,
+	wanInterfaces: SingboxRouterWANInterface[],
+	routeFinal = 'direct',
+): string | null {
+	if (routeFinal && routeFinal !== 'direct') return null;
+	if (!settings) return null;
+
+	if (!settings.wanAutoDetect) {
+		const name = settings.wanInterface?.trim();
+		if (!name) return null;
+		const iface = wanInterfaces.find((i) => i.name === name);
+		return iface ? formatWanInterfaceLabel(iface) : formatWanInterfaceLabel({ name, label: name });
+	}
+
+	const sorted = [...wanInterfaces].sort((a, b) => a.priority - b.priority);
+	const primary = sorted.find((i) => i.up) ?? sorted[0];
+	return primary ? formatWanInterfaceLabel(primary) : null;
 }
 
 export function deriveRoutingSummary(

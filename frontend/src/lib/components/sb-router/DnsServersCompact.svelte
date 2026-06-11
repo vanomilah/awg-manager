@@ -3,72 +3,121 @@
 -->
 
 <script lang="ts">
-  import type { SingboxRouterDNSServer, SingboxRouterDNSRule } from '$lib/types';
+  import type {
+    SingboxProxyGroup,
+    SingboxRouterDNSServer,
+    SingboxRouterDNSRule,
+    SingboxRouterOutbound,
+    SingboxTunnel,
+    Subscription,
+  } from '$lib/types';
   import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
   import { Badge, Button } from '$lib/components/ui';
-  import { ArrowRight, Trash2, Edit3 } from 'lucide-svelte';
-  import { resolveMemberLabel } from '$lib/utils/memberLabel';
+  import { Trash2, Edit3 } from 'lucide-svelte';
+  import { dnsServerDetourDisplay } from './dnsServerDetourDisplay';
+  import OutboundTile from './OutboundTile.svelte';
   import { dnsRuleTarget } from './dnsRuleLabel';
   import { dnsMatcherParts, dnsMatcherSummary } from './dnsMatcherParts';
-
-  const AWG_OPTION_GROUPS = new Set(['AWG туннели', 'Системные WireGuard']);
+  import { dnsServerDeleteBlockReasons, type DnsServerUsageInput } from './dnsServerUsage';
 
   interface Props {
     servers: SingboxRouterDNSServer[];
     rules: SingboxRouterDNSRule[];
+    outbounds?: SingboxRouterOutbound[];
     onEditServer: (tag: string) => void;
+    onDeleteServer?: (tag: string) => void;
     onEditRule: (idx: number) => void;
     onDeleteRule?: (idx: number) => void;
     onAddRule?: () => void;
     addRuleDisabled?: boolean;
     addRuleTitle?: string;
     outboundOptions?: OutboundGroup[];
+    subscriptions?: Subscription[] | null;
+    proxyGroups?: SingboxProxyGroup[];
+    singboxTunnels?: SingboxTunnel[];
+    dnsUsage?: Omit<DnsServerUsageInput, 'tag'>;
   }
 
   let {
-    servers, rules, onEditServer, onEditRule, onDeleteRule, onAddRule, addRuleDisabled = false, addRuleTitle,
+    servers,
+    rules,
+    outbounds = [],
+    onEditServer,
+    onDeleteServer,
+    onEditRule,
+    onDeleteRule,
+    onAddRule,
+    addRuleDisabled = false,
+    addRuleTitle,
     outboundOptions = [],
+    subscriptions = null,
+    proxyGroups = [],
+    singboxTunnels = [],
+    dnsUsage,
   }: Props = $props();
 
   function subFor(s: SingboxRouterDNSServer): string {
     return `${s.type ?? 'dns'} · ${s.server}`;
   }
 
-  function detourFor(s: SingboxRouterDNSServer): string {
-    return s.detour ?? 'direct';
-  }
-
-  function detourLabelFor(s: SingboxRouterDNSServer): string {
-    const detour = detourFor(s);
-    if (detour === 'direct') return detour;
-    return resolveMemberLabel(detour, null, outboundOptions);
-  }
-
-  function detourVariantFor(s: SingboxRouterDNSServer): 'default' | 'accent' | 'purple' {
-    const detour = detourFor(s);
-    if (detour === 'direct') return 'default';
-    return outboundOptions.some((g) =>
-      AWG_OPTION_GROUPS.has(g.group) && g.items.some((i) => i.value === detour)
-    ) ? 'purple' : 'accent';
-  }
+  // Один проход по DNS-конфигу на список вместо O(servers × конфиг) на строку.
+  const serverDeleteReasons = $derived(
+    dnsUsage ? dnsServerDeleteBlockReasons(servers, dnsUsage) : null,
+  );
 </script>
 
 <div class="wrap">
   <div class="servers">
     {#each servers as s (s.tag)}
-      <button type="button" class="row" onclick={() => onEditServer(s.tag)}>
+      {@const deleteReason = serverDeleteReasons?.get(s.tag) ?? null}
+      <div class="server-row">
         <span class="dot"></span>
-        <div class="meta">
-          <div class="tag">{s.tag}</div>
-          <div class="sub">{subFor(s)}</div>
+        <button type="button" class="meta-btn" onclick={() => onEditServer(s.tag)}>
+          <div class="meta">
+            <div class="tag">{s.tag}</div>
+            <div class="sub">{subFor(s)}</div>
+          </div>
+        </button>
+        <span class="detour-chip">
+          <OutboundTile
+            outbound={dnsServerDetourDisplay(
+              s,
+              outbounds,
+              outboundOptions,
+              subscriptions,
+              proxyGroups,
+              singboxTunnels,
+            )}
+            size="compact"
+          />
+        </span>
+        <div class="server-actions">
+          <button
+            type="button"
+            class="route-action-btn"
+            onclick={() => onEditServer(s.tag)}
+            aria-label={`Редактировать DNS-сервер ${s.tag}`}
+            title={`Редактировать DNS-сервер «${s.tag}»`}
+          >
+            <Edit3 size={15} />
+          </button>
+          {#if onDeleteServer}
+            <button
+              type="button"
+              class="route-action-btn danger"
+              disabled={deleteReason !== null}
+              onclick={() => onDeleteServer(s.tag)}
+              aria-label={`Удалить DNS-сервер ${s.tag}`}
+              title={deleteReason ?? `Удалить DNS-сервер «${s.tag}»`}
+            >
+              <Trash2 size={15} />
+            </button>
+          {/if}
         </div>
-        <Badge variant={detourVariantFor(s)} size="sm" mono title={detourFor(s)}>
-          {detourLabelFor(s)}
-        </Badge>
-      </button>
+      </div>
     {/each}
     {#if servers.length === 0}
-      <div class="empty">Нет серверов</div>
+      <div class="empty">Нет DNS-серверов.</div>
     {/if}
   </div>
 
@@ -152,7 +201,7 @@
       </div>
     </div>
   {:else}
-    <div class="rules-empty">нет правил</div>
+    <div class="empty">Нет правил</div>
   {/if}
 </div>
 
@@ -165,23 +214,38 @@
     display: flex;
     flex-direction: column;
   }
-  .row {
+  .empty {
+    padding: 14px;
+    color: var(--text-muted);
+    text-align: center;
+    font-size: 12px;
+  }
+  .server-row {
     transition: background-color 0.15s ease;
-    display: flex;
+    display: grid;
+    grid-template-columns: 6px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 10px;
     padding: 8px 14px;
-    background: transparent;
-    border: 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-    cursor: pointer;
-    font-family: inherit;
+  }
+  .meta-btn {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
     color: inherit;
-    width: 100%;
+    font: inherit;
     text-align: left;
+    cursor: pointer;
+  }
+  .server-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   @media (hover: hover) and (pointer: fine) {
-    .row:hover,
+    .server-row:hover,
     .rule-row:hover {
       background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
     }
@@ -210,6 +274,16 @@
     white-space: normal;
     overflow-wrap: anywhere;
   }
+  .detour-chip {
+    flex-shrink: 1;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .detour-chip :global(.tone-chip) {
+    max-width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
   .rules-cap {
     display: flex;
     align-items: center;
@@ -222,13 +296,6 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 600;
-  }
-  .rules-empty {
-    padding: 12px 14px;
-    color: var(--text-muted);
-    text-align: center;
-    font-size: 11.5px;
-    font-style: italic;
   }
   .rules-table {
     display: grid;
@@ -322,13 +389,6 @@
     flex-shrink: 0;
     white-space: nowrap;
   }
-  .empty {
-    padding: 14px;
-    color: var(--text-muted);
-    text-align: center;
-    font-size: 12px;
-  }
-
   @media (max-width: 768px) {
     .rules-rows {
       gap: 0;

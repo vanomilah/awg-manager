@@ -60,7 +60,6 @@ import type {
 	DeviceProxyInstance,
 	DeviceProxyOutbound,
 	DeviceProxyRuntime,
-	DeviceProxyInstanceIPCheckResult,
 	AWGTagInfo,
 	TunnelReferencedError,
 	MonitoringSnapshot,
@@ -99,7 +98,8 @@ import type {
 	DnsProxyInfo,
 	CatalogPreset,
 } from '$lib/types';
-import { isMockDevMode } from '$lib/env';
+import { sanitizeDnsServerForApi } from '$lib/utils/dnsServerDetour';
+import { isMockDevMode as envIsMockDevMode } from '$lib/env';
 
 export type TrafficPeriod = '5m' | '10m' | '30m' | '1h' | '3h' | '6h' | '12h' | '24h';
 
@@ -246,18 +246,32 @@ class ApiClient {
 		);
 	}
 
-	async deleteTunnel(id: string): Promise<DeleteResult> {
-		// Direct fetch (not via this.request) so we can inspect HTTP 409
-		// for the structured TunnelReferencedError payload before the
-		// generic error handler swallows it.
-		const url = `${this.baseUrl}/tunnels/delete?id=${encodeURIComponent(id)}`;
+	private throwTunnelReferencedFrom409(body: unknown, fallbackId: string): never {
+		const details: TunnelReferencedError =
+			(body as { details?: TunnelReferencedError })?.details ?? {
+				tunnelId: fallbackId,
+				deviceProxy: false,
+				routerRules: [],
+				routerOther: [],
+			};
+		const err = new Error('tunnel_referenced') as Error & {
+			details: TunnelReferencedError;
+		};
+		err.details = details;
+		throw err;
+	}
+
+	private async fetchDelete<T>(url: string, options: RequestInit, fallbackId: string): Promise<T> {
 		let res: Response;
 		try {
 			res = await fetch(url, {
-				method: 'POST',
+				...options,
 				credentials: 'same-origin',
 				signal: this.abortController.signal,
-				headers: { 'Content-Type': 'application/json' }
+				headers: {
+					'Content-Type': 'application/json',
+					...options.headers,
+				},
 			});
 		} catch (e) {
 			if (e instanceof DOMException && e.name === 'AbortError') throw e;
@@ -266,17 +280,7 @@ class ApiClient {
 		}
 		if (res.status === 409) {
 			const body = await res.json().catch(() => ({}));
-			const details: TunnelReferencedError = body?.details ?? {
-				tunnelId: id,
-				deviceProxy: false,
-				routerRules: [],
-				routerOther: []
-			};
-			const err = new Error('tunnel_referenced') as Error & {
-				details: TunnelReferencedError;
-			};
-			err.details = details;
-			throw err;
+			this.throwTunnelReferencedFrom409(body, fallbackId);
 		}
 		if (res.status === 401) {
 			this.onUnauthorized?.();
@@ -286,9 +290,17 @@ class ApiClient {
 			const text = await res.text().catch(() => '');
 			throw new Error(`Ошибка удаления (${res.status}): ${text.substring(0, 100)}`);
 		}
-		const data = (await res.json()) as ApiResponse<DeleteResult>;
+		const data = (await res.json()) as ApiResponse<T>;
 		if (data.error) throw new Error(data.message || 'Ошибка удаления');
-		return data.data as DeleteResult;
+		return data.data as T;
+	}
+
+	async deleteTunnel(id: string): Promise<DeleteResult> {
+		return this.fetchDelete<DeleteResult>(
+			`${this.baseUrl}/tunnels/delete?id=${encodeURIComponent(id)}`,
+			{ method: 'POST' },
+			id,
+		);
 	}
 
 	async getAWGTags(): Promise<AWGTagInfo[]> {
@@ -888,6 +900,16 @@ class ApiClient {
 		return this.request(`/servers/${encodeURIComponent(name)}/policy`, {
 			method: 'POST',
 			body: JSON.stringify({ policy })
+		});
+	}
+
+	async setWireguardServerEndpoint(
+		name: string,
+		endpoint: string
+	): Promise<import('$lib/stores/servers').ServersSnapshot> {
+		return this.request(`/servers/${encodeURIComponent(name)}/endpoint`, {
+			method: 'POST',
+			body: JSON.stringify({ endpoint })
 		});
 	}
 
@@ -1494,7 +1516,7 @@ class ApiClient {
 	}
 
 	private isMockDevMode(): boolean {
-		return isMockDevMode();
+		return envIsMockDevMode();
 	}
 
 	private ensureMockSubscriptionMembers(sub: Subscription): Subscription {
@@ -1679,9 +1701,11 @@ class ApiClient {
 	}
 
 	async singboxDeleteTunnel(tag: string): Promise<SingboxTunnel[]> {
-		return this.request(`/singbox/tunnels?tag=${encodeURIComponent(tag)}`, {
-			method: 'DELETE'
-		});
+		return this.fetchDelete<SingboxTunnel[]>(
+			`${this.baseUrl}/singbox/tunnels?tag=${encodeURIComponent(tag)}`,
+			{ method: 'DELETE' },
+			tag,
+		);
 	}
 
 	async singboxDelayCheck(tag: string): Promise<{ tag: string; delay: number }> {
@@ -1756,17 +1780,6 @@ class ApiClient {
 		return this.request('/proxy/runtime');
 	}
 
-	async selectDeviceProxyRuntime(tag: string): Promise<{ active: string }> {
-		return this.request('/proxy/runtime/select', {
-			method: 'POST',
-			body: JSON.stringify({ tag }),
-		});
-	}
-
-	async applyDeviceProxy(): Promise<{ applied: boolean }> {
-		return this.request('/proxy/apply', { method: 'POST' });
-	}
-
 	async listDeviceProxyOutbounds(): Promise<DeviceProxyOutbound[]> {
 		return this.request('/proxy/outbounds');
 	}
@@ -1798,36 +1811,14 @@ class ApiClient {
 		});
 	}
 
-	async deleteDeviceProxyInstance(id: string): Promise<{ deleted: boolean }> {
-		return this.request<{ deleted: boolean }>(`/proxy/instance?id=${encodeURIComponent(id)}`, {
+	async deleteDeviceProxyInstance(id: string): Promise<{ deleted: boolean; applied: boolean }> {
+		return this.request<{ deleted: boolean; applied: boolean }>(`/proxy/instance?id=${encodeURIComponent(id)}`, {
 			method: 'DELETE'
-		});
-	}
-
-	async applyDeviceProxyInstances(): Promise<{ applied: boolean }> {
-		return this.request<{ applied: boolean }>('/proxy/instances/apply', {
-			method: 'POST'
 		});
 	}
 
 	async getDeviceProxyInstanceRuntime(id: string): Promise<DeviceProxyRuntime> {
 		return this.request<DeviceProxyRuntime>(`/proxy/instance/runtime?id=${encodeURIComponent(id)}`);
-	}
-
-	async selectDeviceProxyInstanceRuntime(id: string, tag: string): Promise<{ active: string }> {
-		return this.request<{ active: string }>(`/proxy/instance/runtime/select?id=${encodeURIComponent(id)}`, {
-			method: 'POST',
-			body: JSON.stringify({ tag })
-		});
-	}
-
-	async checkDeviceProxyInstanceExternalIP(
-		id: string,
-		serviceURL?: string
-	): Promise<DeviceProxyInstanceIPCheckResult> {
-		let endpoint = `/proxy/instance/check-ip?id=${encodeURIComponent(id)}`;
-		if (serviceURL) endpoint += `&service=${encodeURIComponent(serviceURL)}`;
-		return this.request<DeviceProxyInstanceIPCheckResult>(endpoint);
 	}
 
 	// #endregion
@@ -2031,20 +2022,22 @@ class ApiClient {
 	}
 
 	async singboxRouterListDNSServers(): Promise<SingboxRouterDNSServer[]> {
-		return this.request('/singbox/router/dns/servers/list');
+		return this.request<SingboxRouterDNSServer[]>('/singbox/router/dns/servers/list');
 	}
 
 	async singboxRouterAddDNSServer(server: SingboxRouterDNSServer): Promise<void> {
+		const payload = sanitizeDnsServerForApi(server);
 		await this.request('/singbox/router/dns/servers/add', {
 			method: 'POST',
-			body: JSON.stringify(server),
+			body: JSON.stringify(payload),
 		});
 	}
 
 	async singboxRouterUpdateDNSServer(tag: string, server: SingboxRouterDNSServer): Promise<void> {
+		const payload = sanitizeDnsServerForApi(server);
 		await this.request('/singbox/router/dns/servers/update', {
 			method: 'POST',
-			body: JSON.stringify({ tag, server }),
+			body: JSON.stringify({ tag, server: payload }),
 		});
 	}
 
@@ -2244,8 +2237,11 @@ class ApiClient {
 	}
 
 	async deleteSubscription(id: string): Promise<void> {
-		const url = `/singbox/subscriptions/delete?id=${encodeURIComponent(id)}`;
-		await this.request(url, { method: 'DELETE' });
+		await this.fetchDelete<{ ok: boolean }>(
+			`${this.baseUrl}/singbox/subscriptions/delete?id=${encodeURIComponent(id)}`,
+			{ method: 'DELETE' },
+			id,
+		);
 	}
 
 	async refreshSubscription(id: string): Promise<SubscriptionRefreshResult> {

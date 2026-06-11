@@ -424,6 +424,7 @@ func (s *ServiceImpl) loadRouterConfig() (*RouterConfig, error) {
 		if cfg.DNS.Rules == nil {
 			cfg.DNS.Rules = []DNSRule{}
 		}
+		SanitizeDNSConfig(cfg)
 		return cfg, nil
 	}
 	// Legacy fallback (no orchestrator): read from active path directly.
@@ -504,15 +505,24 @@ func (s *ServiceImpl) prepareNetfilter(ctx context.Context) error {
 	return nil
 }
 
-// waitForSingbox polls SingboxController.IsRunning until it reports true
-// or the deadline expires. Used by Enable after SetEnabled triggers the
-// orchestrator's debounced cold-start so iptables redirects don't land
-// on a TPROXY port that nothing is listening on yet.
+// waitForSingbox polls until sing-box is BOTH process-alive and actually
+// listening on the router inbound sockets (TCP RedirectPort + UDP
+// TPROXYPort), or the deadline expires. Used by Enable after SetEnabled
+// triggers the orchestrator's debounced cold-start so iptables redirects
+// don't land on a TPROXY port that nothing is listening on yet.
 //
-// Returns nil immediately if sing-box is already running. Returns ctx.Err
-// on cancellation, or a timeout error after the deadline; callers can
-// treat the timeout as soft (proceed with iptables and accept the brief
-// race) or hard at their discretion.
+// PID-alive alone is not enough (issue #354): the router config reaches
+// sing-box via the orchestrator's debounced (250ms) reload, so an
+// already-running process keeps serving the OLD inbound set for a moment,
+// and a freshly started one binds inbounds only at the end of startup
+// (after config parse + rule-set load — seconds on mipsel). Gating on the
+// same socket probe GetStatus uses means the status emitted at the end of
+// Enable reflects a truly active interception path instead of a transient
+// «СБОЙ».
+//
+// Returns ctx.Err on cancellation, or a timeout error after the deadline;
+// callers can treat the timeout as soft (proceed with iptables and accept
+// the brief race) or hard at their discretion.
 func (s *ServiceImpl) waitForSingbox(ctx context.Context, timeout time.Duration) error {
 	if s.deps.Singbox == nil {
 		return nil
@@ -520,7 +530,7 @@ func (s *ServiceImpl) waitForSingbox(ctx context.Context, timeout time.Duration)
 	deadline := time.Now().Add(timeout)
 	const pollInterval = 100 * time.Millisecond
 	for {
-		if running, _ := s.deps.Singbox.IsRunning(); running {
+		if running, _ := s.deps.Singbox.IsRunning(); running && singboxListeningProbe() {
 			return nil
 		}
 		if time.Now().After(deadline) {

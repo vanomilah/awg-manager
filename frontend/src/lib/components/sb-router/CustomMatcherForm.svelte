@@ -7,12 +7,18 @@
   import InlineRuleListEditor from '$lib/components/routing/singboxRouter/InlineRuleListEditor.svelte';
   import { wizardCustom, updateCustomField } from './addWizardStore';
 
+  interface Props {
+    /** В режиме редактирования inline — список сразу развёрнут. */
+    expanded?: boolean;
+  }
+  let { expanded = false }: Props = $props();
+
   // svelte-ignore state_referenced_locally
   let value = $state($wizardCustom.rulesList);
   $effect(() => { updateCustomField('rulesList', value); });
 </script>
 
-<details class="form">
+<details class="form" open={expanded || undefined}>
   <summary class="summary">
     <Code size={14} color="var(--text-muted)" />
     <span>Описать вручную</span>

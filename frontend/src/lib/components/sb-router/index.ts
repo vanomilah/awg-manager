@@ -5,6 +5,7 @@ export { mode, setMode, type RouterMode } from './modeStore';
 export { default as RuleCard } from './RuleCard.svelte';
 export { default as MatcherChip } from './MatcherChip.svelte';
 export { default as OutboundTile } from './OutboundTile.svelte';
+export type { OutboundTileSize } from './OutboundTile.svelte';
 export { default as RulesPanel } from './RulesPanel.svelte';
 export type {
   RuleAction,
@@ -48,6 +49,12 @@ export {
 // F5a — Templates Modal
 export { default as TemplatesModal } from './TemplatesModal.svelte';
 export { default as SbRouterServiceCatalogModal } from './SbRouterServiceCatalogModal.svelte';
+export { default as SbRouterRuleSetCatalogModal } from './SbRouterRuleSetCatalogModal.svelte';
+export {
+  applyCatalogPresetsAsRuleSets,
+  fullyAddedPresetNames,
+  type ApplyRuleSetsFromCatalogResult,
+} from './rulesetCatalogActions';
 export { default as TemplatesFilterChip } from './TemplatesFilterChip.svelte';
 export { default as TemplatesGroup } from './TemplatesGroup.svelte';
 export { default as TemplateServiceTile } from './TemplateServiceTile.svelte';
@@ -75,12 +82,18 @@ export { default as CustomMatcherForm } from './CustomMatcherForm.svelte';
 export {
   addWizardOpen,
   wizardOutboundCategory,
-  wizardTunnelTag,
+  wizardTunnelTags,
   wizardCustom,
+  wizardEditRuleIndex,
+  wizardEditMode,
+  wizardExistingInlineRuleSetTag,
+  wizardWasInlineText,
   openAddWizard,
+  openEditWizard,
   closeAddWizard,
   setOutboundCategory,
-  setTunnelTag,
+  setTunnelTags,
+  toggleTunnelTag,
   updateCustomField,
   resetWizardState,
   type OutboundCategory,
@@ -89,13 +102,16 @@ export {
 export {
   resolveOutbound,
   submitWizard,
+  submitWizardEdit,
   ValidationError,
   type SubmitWizardArgs,
+  type SubmitWizardEditArgs,
 } from './addWizardActions';
 export {
   dismissTemplatesModal,
   catalogIdsFromTemplatesSelection,
   setServiceTemplateSelection,
+  setTemplateSelection,
 } from './templatesStore';
 
 // F5c — EmptyState
@@ -112,6 +128,14 @@ export { default as SidePanel } from './SidePanel.svelte';
 export { default as StatStrip } from './StatStrip.svelte';
 export type { StatCellData } from './StatStrip.svelte';
 export { default as ExpertPanel } from './ExpertPanel.svelte';
+export {
+  expertPanelCollapse,
+  toggleExpertPanelSection,
+  setExpertPanelSectionCollapsed,
+  isExpertPanelSectionCollapsed,
+  type ExpertPanelSection,
+  type ExpertPanelCollapseState,
+} from './expertPanelCollapseStore';
 
 // F7 — Mobile
 export { default as MobileBottomBar } from './MobileBottomBar.svelte';

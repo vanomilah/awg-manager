@@ -21,13 +21,25 @@
 	let showQR = $state(false);
 	let qrDataUrl = $state('');
 	let qrGenerating = $state(false);
+	let loadedForKey = $state('');
 
+	function confLoadKey(): string {
+		return `${serverId}\0${pubkey}\0${kind}`;
+	}
+
+	// Load once per open cycle / peer — polling updates on the servers page
+	// re-run parent effects and would otherwise flash "Загрузка..." and reset QR.
 	$effect(() => {
-		if (open && pubkey) {
-			showQR = false;
-			qrDataUrl = '';
-			loadConf();
+		if (!open || !pubkey) {
+			if (!open) loadedForKey = '';
+			return;
 		}
+		const key = confLoadKey();
+		if (loadedForKey === key) return;
+		loadedForKey = key;
+		showQR = false;
+		qrDataUrl = '';
+		void loadConf();
 	});
 
 	async function loadConf() {

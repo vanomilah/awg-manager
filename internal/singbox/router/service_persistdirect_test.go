@@ -132,6 +132,7 @@ func TestPersistConfigDirect_WritesActiveWhenAbsent(t *testing.T) {
 
 func TestWaitForSingbox_ReturnsWhenRunning(t *testing.T) {
 	svc, _ := newOrchedTestService(t)
+	stubListeningProbe(t, func() bool { return true })
 
 	calls := 0
 	svc.deps.Singbox.(*fakeSingbox).isRunningFn = func() (bool, int) {

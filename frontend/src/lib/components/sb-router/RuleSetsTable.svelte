@@ -4,8 +4,13 @@
 
 <script lang="ts">
   import type { SingboxRouterRuleSet } from '$lib/types';
-  import { Badge } from '$lib/components/ui';
   import { Edit3, Trash2 } from 'lucide-svelte';
+  import RuleSetTypeBadge from './RuleSetTypeBadge.svelte';
+  import {
+    datInfo,
+    resolveRuleSetDisplayType,
+  } from '$lib/utils/ruleSetType';
+  import { displayRuleSetTag } from '$lib/utils/singboxInlineRules';
 
   type RsFilter = 'all' | 'remote' | 'local' | 'inline' | 'dat';
 
@@ -25,30 +30,6 @@
     if (filter === 'dat') return ruleSets.filter((rs) => datInfo(rs) !== null);
     return ruleSets.filter((rs) => (rs.type ?? 'remote') === filter);
   });
-
-  function typeVariant(t?: string): 'accent' | 'info' | 'warning' {
-    if (t === 'local') return 'info';
-    if (t === 'inline') return 'warning';
-    return 'accent';
-  }
-
-  function datInfo(rs: SingboxRouterRuleSet): { kind: string; tags: string[] } | null {
-    if (rs.type !== 'remote' || !rs.url) return null;
-    try {
-      const u = new URL(rs.url);
-      if (u.pathname !== '/api/singbox/router/rulesets/dat-srs') return null;
-      const kind = u.searchParams.get('kind') ?? '';
-      const tags = u.searchParams.getAll('tag').filter((t) => t.trim() !== '');
-      if ((kind !== 'geosite' && kind !== 'geoip') || tags.length === 0) return null;
-      return { kind, tags };
-    } catch {
-      return null;
-    }
-  }
-
-  function typeLabel(rs: SingboxRouterRuleSet): string {
-    return datInfo(rs) ? 'dat' : (rs.type ?? 'remote');
-  }
 
   function sourceFor(rs: SingboxRouterRuleSet): string {
     const dat = datInfo(rs);
@@ -91,9 +72,9 @@
     </div>
     {#each filtered as rs (rs.tag)}
       <div class="row">
-        <div class="tag">{rs.tag}</div>
+        <div class="tag">{displayRuleSetTag(rs.tag)}</div>
         <div>
-          <Badge variant={typeVariant(typeLabel(rs))} size="sm" mono>{typeLabel(rs)}</Badge>
+          <RuleSetTypeBadge type={resolveRuleSetDisplayType(rs)} />
         </div>
         <div class="source" title={sourceFor(rs)}>{sourceFor(rs)}</div>
         <div class="detour">{detourFor(rs)}</div>

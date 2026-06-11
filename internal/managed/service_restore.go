@@ -346,7 +346,7 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 	if err := s.rciCreateInterface(ctx, target); err != nil {
 		return false, fmt.Errorf("create interface: %w", err)
 	}
-	if err := s.rciConfigureServer(ctx, target, sv.Description, sv.Address, sv.Mask, sv.ListenPort); err != nil {
+	if err := s.rciConfigureServer(ctx, target, sv.Description, sv.Address, sv.Mask, sv.ListenPort, effectiveMTU(sv.MTU)); err != nil {
 		return true, fmt.Errorf("configure interface: %w", err)
 	}
 	if err := s.rciSetPrivateKey(ctx, target, sv.PrivateKey); err != nil {

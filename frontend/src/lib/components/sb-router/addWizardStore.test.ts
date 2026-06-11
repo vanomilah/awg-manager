@@ -15,7 +15,7 @@ describe('addWizardStore', () => {
     const m = await import('./addWizardStore');
     expect(get(m.addWizardOpen)).toBe(false);
     expect(get(m.wizardOutboundCategory)).toBe(null);
-    expect(get(m.wizardTunnelTag)).toBe(null);
+    expect(get(m.wizardTunnelTags)).toEqual([]);
     const c = get(m.wizardCustom);
     expect(c.rulesList).toBe('');
   });
@@ -31,12 +31,12 @@ describe('addWizardStore', () => {
     const m = await import('./addWizardStore');
     m.openAddWizard();
     m.setOutboundCategory('tunnel');
-    m.setTunnelTag('warp');
+    m.toggleTunnelTag('warp');
     m.updateCustomField('rulesList', 'a.com');
     m.closeAddWizard();
     expect(get(m.addWizardOpen)).toBe(false);
     expect(get(m.wizardOutboundCategory)).toBe(null);
-    expect(get(m.wizardTunnelTag)).toBe(null);
+    expect(get(m.wizardTunnelTags)).toEqual([]);
     expect(get(m.wizardCustom).rulesList).toBe('');
     expect(window.location.search).not.toContain('add=1');
   });
@@ -51,12 +51,22 @@ describe('addWizardStore', () => {
     expect(get(m.wizardOutboundCategory)).toBe(null);
   });
 
-  it('setTunnelTag updates', async () => {
+  it('toggleTunnelTag adds and removes', async () => {
     const m = await import('./addWizardStore');
-    m.setTunnelTag('warp');
-    expect(get(m.wizardTunnelTag)).toBe('warp');
-    m.setTunnelTag(null);
-    expect(get(m.wizardTunnelTag)).toBe(null);
+    m.toggleTunnelTag('warp');
+    expect(get(m.wizardTunnelTags)).toEqual(['warp']);
+    m.toggleTunnelTag('awg10');
+    expect(get(m.wizardTunnelTags)).toEqual(['warp', 'awg10']);
+    m.toggleTunnelTag('warp');
+    expect(get(m.wizardTunnelTags)).toEqual(['awg10']);
+  });
+
+  it('setTunnelTags replaces selection', async () => {
+    const m = await import('./addWizardStore');
+    m.setTunnelTags(['warp', 'awg10']);
+    expect(get(m.wizardTunnelTags)).toEqual(['warp', 'awg10']);
+    m.setTunnelTags([]);
+    expect(get(m.wizardTunnelTags)).toEqual([]);
   });
 
   it('updateCustomField пишет rulesList', async () => {
@@ -76,26 +86,93 @@ describe('addWizardStore', () => {
     const m = await import('./addWizardStore');
     m.openAddWizard();
     m.setOutboundCategory('tunnel');
-    m.setTunnelTag('warp');
+    m.toggleTunnelTag('warp');
     m.updateCustomField('rulesList', 'a.com');
     m.resetWizardState();
     expect(get(m.addWizardOpen)).toBe(true);
     expect(get(m.wizardOutboundCategory)).toBe(null);
-    expect(get(m.wizardTunnelTag)).toBe(null);
+    expect(get(m.wizardTunnelTags)).toEqual([]);
     expect(get(m.wizardCustom).rulesList).toBe('');
   });
 
-  it('module init с URL ?add=1 → open=true', async () => {
+  it('module init с URL ?add=1 не восстанавливает визард', async () => {
     resetEnv('/?add=1');
     const m = await import('./addWizardStore');
-    expect(get(m.addWizardOpen)).toBe(true);
+    expect(get(m.addWizardOpen)).toBe(false);
   });
 
-  it('module init с URL ?add=1&trace=1 → wizard wins (trace closed)', async () => {
-    resetEnv('/?add=1&trace=1');
+  it('openEditWizard: prefill + edit state', async () => {
     const m = await import('./addWizardStore');
+    m.openEditWizard(5, {
+      editMode: 'inline',
+      rulesList: 'foo.com',
+      outboundCategory: 'tunnel',
+      tunnelTags: ['warp', 'awg10'],
+      existingInlineRuleSetTag: 'custom-1',
+      wasInlineText: false,
+    });
     expect(get(m.addWizardOpen)).toBe(true);
-    // trace param removed by addWizard init logic
-    expect(window.location.search).not.toContain('trace=1');
+    expect(get(m.wizardEditRuleIndex)).toBe(5);
+    expect(get(m.wizardEditMode)).toBe('inline');
+    expect(get(m.wizardExistingInlineRuleSetTag)).toBe('custom-1');
+    expect(get(m.wizardWasInlineText)).toBe(false);
+    expect(get(m.wizardCustom).rulesList).toBe('foo.com');
+    expect(get(m.wizardOutboundCategory)).toBe('tunnel');
+    expect(get(m.wizardTunnelTags)).toEqual(['warp', 'awg10']);
+  });
+
+  it('openEditWizard external mode', async () => {
+    const m = await import('./addWizardStore');
+    m.openEditWizard(2, {
+      editMode: 'external',
+      rulesList: '',
+      outboundCategory: 'block',
+      tunnelTags: [],
+      wasInlineText: false,
+    });
+    expect(get(m.wizardEditMode)).toBe('external');
+    expect(get(m.wizardOutboundCategory)).toBe('block');
+  });
+
+  it('closeAddWizard clears edit state', async () => {
+    const m = await import('./addWizardStore');
+    m.openEditWizard(1, {
+      editMode: 'inline',
+      rulesList: 'a.com',
+      outboundCategory: 'direct',
+      tunnelTags: [],
+      wasInlineText: true,
+    });
+    m.closeAddWizard();
+    expect(get(m.wizardEditRuleIndex)).toBe(null);
+    expect(get(m.wizardEditMode)).toBe(null);
+    expect(get(m.wizardWasInlineText)).toBe(false);
+  });
+
+  it('openAddWizard clears prior edit state', async () => {
+    const m = await import('./addWizardStore');
+    m.openEditWizard(9, {
+      editMode: 'inline',
+      rulesList: 'x.com',
+      outboundCategory: 'tunnel',
+      tunnelTags: ['warp'],
+    });
+    m.openAddWizard();
+    expect(get(m.wizardEditRuleIndex)).toBe(null);
+    expect(get(m.wizardEditMode)).toBe(null);
+  });
+
+  it('closeAddWizard clears templates selection (утечка edit-prefill)', async () => {
+    const m = await import('./addWizardStore');
+    const t = await import('./templatesStore');
+    t.setTemplateSelection(['svc:discord']);
+    m.openEditWizard(2, {
+      editMode: 'external',
+      rulesList: '',
+      outboundCategory: 'tunnel',
+      tunnelTags: ['warp'],
+    });
+    m.closeAddWizard();
+    expect(get(t.templatesSelection).size).toBe(0);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { outboundDisplay } from './outboundLabel';
+import { isSubscriptionOutbound, outboundDisplay } from './outboundLabel';
 import type { Subscription } from '$lib/types';
 
 const subs = [
@@ -7,18 +7,36 @@ const subs = [
 	{ selectorTag: 'sub-58dea6ef', label: 'Veesp NL' },
 ] as unknown as Subscription[];
 
+describe('isSubscriptionOutbound', () => {
+	it('detects by source field', () => {
+		expect(isSubscriptionOutbound({ type: 'urltest', tag: 'sub-abc', source: 'subscription' }, null)).toBe(
+			true,
+		);
+	});
+
+	it('detects by selectorTag match', () => {
+		expect(isSubscriptionOutbound({ type: 'selector', tag: 'sub-1a98d416' }, subs)).toBe(true);
+	});
+
+	it('returns false for router composite', () => {
+		expect(isSubscriptionOutbound({ type: 'selector', tag: 'my-group', source: 'router' }, subs)).toBe(
+			false,
+		);
+	});
+});
+
 describe('outboundDisplay', () => {
 	it('subscription composite → subscription label, not raw tag', () => {
 		expect(outboundDisplay({ type: 'urltest', tag: 'sub-1a98d416', source: 'subscription' }, subs)).toEqual({
 			title: 'Veesp LV',
-			subtitle: 'подписка',
+			subtitle: 'urltest',
 		});
 	});
 
 	it('subscription composite without a matching subscription → falls back to tag', () => {
 		expect(outboundDisplay({ type: 'urltest', tag: 'sub-unknown', source: 'subscription' }, subs)).toEqual({
 			title: 'sub-unknown',
-			subtitle: 'подписка',
+			subtitle: 'urltest',
 		});
 	});
 
@@ -39,7 +57,7 @@ describe('outboundDisplay', () => {
 	it('no subscriptions list → tag fallback', () => {
 		expect(outboundDisplay({ type: 'urltest', tag: 'sub-1a98d416', source: 'subscription' }, null)).toEqual({
 			title: 'sub-1a98d416',
-			subtitle: 'подписка',
+			subtitle: 'urltest',
 		});
 	});
 });

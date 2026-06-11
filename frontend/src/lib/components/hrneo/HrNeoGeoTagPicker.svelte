@@ -11,11 +11,13 @@
 		kind: 'geosite' | 'geoip';
 		files: string[];
 		maxelem?: number;
+		/** Уменьшенная высота списка тегов (для inline-редакторов в модалках). */
+		compact?: boolean;
 		onpick: (token: string) => void;
 		onclose: () => void;
 	}
 
-	let { kind, files, maxelem = 0, onpick, onclose }: Props = $props();
+	let { kind, files, maxelem = 0, compact = false, onpick, onclose }: Props = $props();
 
 	let query = $state('');
 	let allTags = $state<Array<{ tag: GeoTag; file: string }>>([]);
@@ -53,7 +55,7 @@
 	}
 </script>
 
-<div class="picker" role="dialog" aria-label="Выбор {kind} тега">
+<div class="picker" class:compact role="dialog" aria-label="Выбор {kind} тега">
 	<div class="picker-header">
 		<input
 			class="form-input picker-search"
@@ -170,5 +172,34 @@
 	.result-meta {
 		color: var(--text-muted);
 		font-size: 0.6875rem;
+	}
+
+	.picker.compact {
+		padding: 6px;
+		gap: 4px;
+		margin-bottom: 4px;
+	}
+
+	.picker.compact .picker-header {
+		gap: 4px;
+	}
+
+	.picker.compact .picker-empty {
+		padding: 8px;
+		font-size: 0.75rem;
+	}
+
+	.picker.compact .picker-results {
+		max-height: 160px;
+		gap: 1px;
+	}
+
+	.picker.compact .picker-result {
+		padding: 4px 8px;
+		border-radius: 4px;
+	}
+
+	.picker.compact .result-meta {
+		font-size: 0.625rem;
 	}
 </style>

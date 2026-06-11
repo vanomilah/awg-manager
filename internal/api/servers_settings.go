@@ -2,11 +2,54 @@ package api
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/response"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
+
+var serverEndpointHostPattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$`)
+
+// SetServerEndpointRequest is the body for POST /servers/{name}/endpoint.
+type SetServerEndpointRequest struct {
+	Endpoint string `json:"endpoint" example:"203.0.113.42"`
+}
+
+func isValidServerEndpointHost(val string) bool {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return true
+	}
+	if net.ParseIP(val) != nil {
+		return true
+	}
+	return serverEndpointHostPattern.MatchString(val)
+}
+
+// formatWireguardEndpointHost brackets IPv6 literals so the host:port line
+// in generated client configs stays parseable (isValidServerEndpointHost
+// accepts IPv6 via net.ParseIP).
+func formatWireguardEndpointHost(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		return "[" + host + "]"
+	}
+	return host
+}
+
+// resolveWireguardClientEndpointHost picks the connect host for generated
+// client configs before WAN IP fallback: stored override → KeenDNS → empty.
+func resolveWireguardClientEndpointHost(storedEndpoint, keenDNSDomain string) string {
+	if ep := strings.TrimSpace(storedEndpoint); ep != "" {
+		return ep
+	}
+	if domain := strings.TrimSpace(keenDNSDomain); domain != "" {
+		return domain
+	}
+	return ""
+}
 
 func detectSystemServerNATMode(natEnabled, hasStatic bool) string {
 	switch {
@@ -196,5 +239,57 @@ func (h *ServersHandler) SetPolicy(w http.ResponseWriter, r *http.Request, name 
 
 	h.invalidateSystemServerCaches(name)
 	publishInvalidated(h.bus, ResourceServers, "server-policy-changed")
+	h.writeAll(w, r)
+}
+
+// SetEndpoint stores the connect host used in generated client .conf files.
+// POST /api/servers/{name}/endpoint
+//
+//	@Summary		Set server client endpoint host
+//	@Description	Stores the IP or domain embedded in generated client configs. Empty clears the override and falls back to WAN IP. Returns the fresh servers snapshot.
+//	@Tags			servers
+//	@Accept			json
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			name	path		string					true	"Interface name (e.g. Wireguard0)"
+//	@Param			body	body		SetServerEndpointRequest	true	"Endpoint host"
+//	@Success		200		{object}	ServersAllResponse
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Router			/servers/{name}/endpoint [post]
+func (h *ServersHandler) SetEndpoint(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	if _, ok := h.requireListedServer(r.Context(), w, name); !ok {
+		return
+	}
+
+	req, ok := parseJSON[SetServerEndpointRequest](w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+	endpoint := strings.TrimSpace(req.Endpoint)
+	if !isValidServerEndpointHost(endpoint) {
+		response.BadRequest(w, "endpoint must be an IP address or domain name")
+		return
+	}
+
+	meta, _ := h.settings.GetServerInterfaceMeta(name)
+	if meta.Endpoint == endpoint {
+		h.writeAll(w, r)
+		return
+	}
+
+	if err := h.settings.UpdateServerInterfaceMeta(name, func(m *storage.ServerInterfaceMeta) error {
+		m.Endpoint = endpoint
+		return nil
+	}); err != nil {
+		response.Error(w, err.Error(), "SAVE_FAILED")
+		return
+	}
+
+	publishInvalidated(h.bus, ResourceServers, "server-endpoint-changed")
 	h.writeAll(w, r)
 }

@@ -8,9 +8,12 @@
   import { X as XIcon } from 'lucide-svelte';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
   import PresetIcon from '$lib/components/routing/singboxRouter/PresetIcon.svelte';
+  import RuleSetTypeBadge from './RuleSetTypeBadge.svelte';
+  import { resolveRuleSetDisplayType, type RuleSetDisplayType } from '$lib/utils/ruleSetType';
   import { templatesSelection, toggleTemplate, openTemplatesModal } from './templatesStore';
 
   const presets = singboxRouterStore.presets;
+  const ruleSets = singboxRouterStore.ruleSets;
 
   interface SelectedItem {
     id: string;
@@ -18,6 +21,7 @@
     label: string;
     iconSlug?: string;
     presetId?: string;
+    rsType?: RuleSetDisplayType;
   }
 
   const items = $derived.by((): SelectedItem[] => {
@@ -34,7 +38,13 @@
         });
       } else if (id.startsWith('rs:')) {
         const tag = id.slice(3);
-        result.push({ id, kind: 'rs', label: tag });
+        const rs = $ruleSets.find((r) => r.tag === tag);
+        result.push({
+          id,
+          kind: 'rs',
+          label: tag,
+          rsType: rs ? resolveRuleSetDisplayType(rs) : 'remote',
+        });
       }
     }
     return result;
@@ -63,6 +73,9 @@
         {:else}
           <span class="chip chip-rs">
             <span class="chip-tag">{it.label}</span>
+            {#if it.rsType}
+              <RuleSetTypeBadge type={it.rsType} size="xs" />
+            {/if}
             <button type="button" class="chip-x" onclick={() => toggleTemplate(it.id)} aria-label="Убрать">
               <XIcon size={10} />
             </button>

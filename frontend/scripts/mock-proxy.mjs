@@ -1518,6 +1518,7 @@ let mockSubscriptions = [
 		],
 		activeMember: 'sub-demo0001-aabbccdd',
 		enabled: true,
+		mode: 'selector',
 	},
 	{
 		id: 'sub-demo0002',
@@ -1576,6 +1577,7 @@ let mockSubscriptions = [
 			'sub-bigprov-hk09q7r8',
 			'sub-bigprov-ca10s9t0',
 			'sub-bigprov-au11u1v2',
+			'sub-bigprov-in12w3x4',
 		],
 		members: [
 			{ tag: 'sub-bigprov-de01a1b2', label: '🇩🇪 Germany — Frankfurt', protocol: 'vless',       server: 'de01.bigprov.example',  port: 443,   sni: 'cdn.example.com',     transport: 'tcp', security: 'reality' },
@@ -1589,6 +1591,7 @@ let mockSubscriptions = [
 			{ tag: 'sub-bigprov-hk09q7r8', label: '🇭🇰 Hong Kong',            protocol: 'trojan',     server: 'hk09.bigprov.example',  port: 443,                                transport: 'ws',  security: 'tls' },
 			{ tag: 'sub-bigprov-ca10s9t0', label: '🇨🇦 Canada — Toronto',     protocol: 'vless',      server: 'ca10.bigprov.example',  port: 21123, sni: 'ca.example.cloud',    transport: 'tcp', security: 'tls' },
 			{ tag: 'sub-bigprov-au11u1v2',                                    protocol: 'naive',      server: 'au11.bigprov.example',  port: 443,   sni: 'au.example.app',      transport: 'tcp', security: 'tls' },
+			{ tag: 'sub-bigprov-in12w3x4', label: '🇮🇳 India — Mumbai',       protocol: 'vless',      server: 'in12.bigprov.example',  port: 443,   sni: 'in.example.cloud',    transport: 'tcp', security: 'tls' },
 		],
 		orphanTags: [],
 		activeMember: 'sub-bigprov-de01a1b2',
@@ -1847,7 +1850,32 @@ const mockBindableInterfaces = [
 	{ name: 'ppp0', id: 'PPPoE0', label: 'Letai (PPPoE)', up: true, priority: 0 },
 ];
 let mockOutbounds = [
-	{ type: 'selector', tag: 'manual-eu', outbounds: ['awg-de', 'awg-nl'], default: 'awg-de', source: 'router' },
+	{ type: 'selector', tag: 'manual-eu', outbounds: ['awg-vpn0', 'awg-sys-Wireguard0'], default: 'awg-vpn0', source: 'router' },
+	{
+		type: 'selector',
+		tag: 'sub-demo0001',
+		outbounds: ['sub-demo0001-aabbccdd', 'sub-demo0001-eeff0011', 'sub-demo0001-22334455'],
+		source: 'subscription',
+	},
+	{
+		type: 'urltest',
+		tag: 'sub-bigprov',
+		outbounds: [
+			'sub-bigprov-de01a1b2',
+			'sub-bigprov-nl02c3d4',
+			'sub-bigprov-fi03e5f6',
+			'sub-bigprov-fr04g7h8',
+			'sub-bigprov-uk05i9j0',
+			'sub-bigprov-us06k1l2',
+			'sub-bigprov-jp07m3n4',
+			'sub-bigprov-sg08o5p6',
+			'sub-bigprov-hk09q7r8',
+			'sub-bigprov-ca10s9t0',
+			'sub-bigprov-au11u1v2',
+			'sub-bigprov-in12w3x4',
+		],
+		source: 'subscription',
+	},
 ];
 
 // WAN interfaces returned by GET /singbox/router/wan-interfaces. Mix of
@@ -1861,7 +1889,45 @@ const mockWANInterfaces = [
 	{ name: 'usb0', id: 'UsbModem0', label: 'Резервный 4G', up: true, priority: 500000 },
 ];
 let mockBoundDevices = new Set();
+function scrubMockDnsServerStored(server) {
+	const next = { ...server };
+	const detour = typeof next.detour === 'string' ? next.detour.trim() : '';
+	delete next.detour;
+	if (detour && detour !== 'direct') {
+		next.detour = detour;
+	}
+	return next;
+}
+
+/** Write path — mirrors backend scrubDNSServerDetourForSingbox. */
+function sanitizeMockDnsServerForWrite(server) {
+	const next = { ...server };
+	const detour = typeof next.detour === 'string' ? next.detour.trim() : '';
+	delete next.detour;
+	if (detour && detour !== 'direct' && server?.tag !== 'dns-direct') {
+		next.detour = detour;
+	}
+	return next;
+}
+
+let mockDNSGlobals = { final: 'dns-direct', strategy: 'prefer_ipv4' };
+
 let mockDNSServers = [
+	// UI repro: legacy detour on final DNS — human label instead of outbound tag.
+	{
+		tag: 'dns-direct',
+		type: 'udp',
+		server: '77.88.8.8',
+		server_port: 53,
+		detour: 'Нидерланды🇳🇱🔃',
+	},
+	{
+		tag: 'dns-tunnel',
+		type: 'udp',
+		server: '9.9.9.9',
+		server_port: 53,
+		detour: 'vless-nl-ws',
+	},
 	{
 		tag: 'wizard-upstream',
 		type: 'udp',
@@ -2439,6 +2505,13 @@ const mockSingboxRules = [
 	{ ip_is_private: true, outbound: 'direct' },
 	{ action: 'route', domain_suffix: ['youtube.com', 'ytimg.com'], outbound: 'sub-demo0001' },
 	{ action: 'route', rule_set: ['geosite-openai'], outbound: 'sub-demo0001' },
+	{ action: 'route', rule_set: ['inline-neo-demo'], outbound: 'sub-demo0001' },
+	{ action: 'route', rule_set: ['geosite-google'], outbound: 'sub-demo0001' },
+	{ action: 'route', rule_set: ['geosite-discord'], outbound: 'manual-eu' },
+	{ action: 'route', domain_suffix: ['netflix.com'], outbound: 'Kto-VLESS-kto-po-drova' },
+	{ action: 'route', domain_suffix: ['spotify.com'], outbound: 'awg-vpn0' },
+	{ action: 'route', rule_set: ['geosite-github'], outbound: 'sub-bigprov' },
+	{ action: 'route', rule_set: ['local-ads-block'], outbound: 'direct' },
 	{ action: 'route', domain_suffix: ['github.com'], outbound: 'direct' },
 	{ action: 'reject', domain: ['vkvideo.ru', 'long-host.example.com'], rule_set: ['geosite-category-ads-all', 'geosite-youtube'] },
 ];
@@ -2450,6 +2523,26 @@ const mockSingboxRuleSets = [
 	{ tag: 'geosite-discord', type: 'remote', format: 'binary', url: 'https://cdn.example.com/geosite-discord.srs', update_interval: '24h', download_detour: 'direct' },
 	{ tag: 'geosite-github', type: 'remote', format: 'binary', url: 'https://cdn.example.com/geosite-github.srs', update_interval: '24h', download_detour: 'direct' },
 	{ tag: 'geoip-ru', type: 'remote', format: 'binary', url: 'https://cdn.example.com/geoip-ru.srs', update_interval: '24h', download_detour: 'direct' },
+	{
+		tag: 'geosite-google',
+		type: 'remote',
+		format: 'binary',
+		url: 'http://127.0.0.1:8081/api/singbox/router/rulesets/dat-srs?kind=geosite&tag=GOOGLE&tag=GEMINI',
+		update_interval: '24h',
+	},
+	{
+		tag: 'geoip-ru-dat',
+		type: 'remote',
+		format: 'binary',
+		url: 'http://127.0.0.1:8081/api/singbox/router/rulesets/dat-srs?kind=geoip&tag=RU',
+		update_interval: '24h',
+	},
+	{
+		tag: 'local-ads-block',
+		type: 'local',
+		format: 'binary',
+		path: '/opt/etc/sing-box/rule-sets/ads.srs',
+	},
 	{
 		tag: 'inline-neo-demo',
 		type: 'inline',
@@ -2736,10 +2829,10 @@ function buildMockServersAllData() {
 	};
 }
 
-/** @type {Record<string, { natMode: 'full' | 'internet-only' | 'none', policy: string }>} */
+/** @type {Record<string, { natMode: 'full' | 'internet-only' | 'none', policy: string, endpoint?: string }>} */
 const mockSystemServerSettings = {
-	Wireguard0: { natMode: 'full', policy: 'none' },
-	Wireguard9: { natMode: 'none', policy: 'Policy0' },
+	Wireguard0: { natMode: 'full', policy: 'none', endpoint: '' },
+	Wireguard9: { natMode: 'none', policy: 'Policy0', endpoint: '' },
 };
 
 /** @type {Map<string, { privateKey: string, presharedKey: string, description: string, tunnelIP: string }>} */
@@ -2792,6 +2885,7 @@ function mockSystemServers() {
 			natEnabled: wg0.natMode === 'full',
 			natMode: wg0.natMode,
 			policy: wg0.policy,
+			endpoint: wg0.endpoint ?? '',
 			keenDnsDomain: 'demo.keenetic.pro',
 			peers: builtinPeers,
 		},
@@ -3360,6 +3454,34 @@ const mockProxies = {
 		type: 'urltest',
 		now: 'vless-2',
 		all: ['vless-1', 'vless-2', 'vless-3', 'vless-4'],
+	},
+	'sub-demo0001': {
+		type: 'selector',
+		now: 'sub-demo0001-aabbccdd',
+		all: ['sub-demo0001-aabbccdd', 'sub-demo0001-eeff0011', 'sub-demo0001-22334455'],
+	},
+	'manual-eu': {
+		type: 'selector',
+		now: 'awg-vpn0',
+		all: ['awg-vpn0', 'awg-sys-Wireguard0'],
+	},
+	'sub-bigprov': {
+		type: 'urltest',
+		now: 'sub-bigprov-de01a1b2',
+		all: [
+			'sub-bigprov-de01a1b2',
+			'sub-bigprov-nl02c3d4',
+			'sub-bigprov-fi03e5f6',
+			'sub-bigprov-fr04g7h8',
+			'sub-bigprov-uk05i9j0',
+			'sub-bigprov-us06k1l2',
+			'sub-bigprov-jp07m3n4',
+			'sub-bigprov-sg08o5p6',
+			'sub-bigprov-hk09q7r8',
+			'sub-bigprov-ca10s9t0',
+			'sub-bigprov-au11u1v2',
+			'sub-bigprov-in12w3x4',
+		],
 	},
 };
 const mockProxyDelays = {
@@ -4151,6 +4273,70 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'DELETE' && path === '/proxy/instance') {
+		const id = new URL(req.url, 'http://x').searchParams.get('id');
+		if (!id) {
+			send(res, 400, { success: false, error: { code: 'MISSING_ID', message: 'missing id' } });
+			return;
+		}
+		const idx = mockProxyInstances.findIndex((i) => i.id === id);
+		if (idx === -1) {
+			send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'proxy instance not found' } });
+			return;
+		}
+		mockProxyInstances.splice(idx, 1);
+		delete mockProxyRuntimeByID[id];
+		send(res, 200, { success: true, data: { deleted: true, applied: true } });
+		return;
+	}
+
+	if (req.method === 'PUT' && path === '/proxy/instance') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const body = JSON.parse(raw || '{}');
+				const id = String(body.id || '');
+				if (!id) {
+					send(res, 400, { success: false, error: { code: 'MISSING_ID', message: 'instance id is empty' } });
+					return;
+				}
+				const idx = mockProxyInstances.findIndex((i) => i.id === id);
+				const next = {
+					id,
+					name: String(body.name || id),
+					enabled: !!body.enabled,
+					listenAll: !!body.listenAll,
+					listenInterface: String(body.listenInterface || ''),
+					port: Number(body.port ?? 1099),
+					auth: body.auth ?? { enabled: false, username: '', password: '' },
+					selectedOutbound: String(body.selectedOutbound || 'direct'),
+				};
+				if (idx === -1) {
+					mockProxyInstances.push(next);
+				} else {
+					mockProxyInstances[idx] = next;
+				}
+				if (!mockProxyRuntimeByID[id]) {
+					mockProxyRuntimeByID[id] = {
+						alive: !!next.enabled,
+						activeTag: next.selectedOutbound,
+						defaultTag: next.selectedOutbound,
+					};
+				}
+				send(res, 200, { success: true, data: next });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/proxy/instances/apply') {
+		send(res, 200, { success: true, data: { applied: true } });
+		return;
+	}
+
 	if (req.method === 'GET' && path === '/proxy/outbounds') {
 		send(res, 200, {
 			success: true,
@@ -4592,7 +4778,7 @@ const server = http.createServer(async (req, res) => {
 	}
 
 	if (req.method === 'GET' && path === '/singbox/router/dns/servers/list') {
-		send(res, 200, { success: true, data: mockDNSServers });
+		send(res, 200, { success: true, data: mockDNSServers.map(scrubMockDnsServerStored) });
 		return;
 	}
 
@@ -4601,9 +4787,65 @@ const server = http.createServer(async (req, res) => {
 		req.on('data', (c) => (raw += c));
 		req.on('end', () => {
 			try {
-				const payload = JSON.parse(raw || '{}');
+				const payload = sanitizeMockDnsServerForWrite(JSON.parse(raw || '{}'));
 				mockDNSServers.push(payload);
 				send(res, 200, { success: true, data: payload });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/router/dns/servers/update') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const { tag, server } = JSON.parse(raw || '{}');
+				const idx = mockDNSServers.findIndex((s) => s.tag === tag);
+				if (idx === -1) {
+					send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'dns server not found' } });
+					return;
+				}
+				mockDNSServers[idx] = sanitizeMockDnsServerForWrite(server);
+				send(res, 200, { success: true, data: { ok: true } });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/router/dns/servers/delete') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const { tag } = JSON.parse(raw || '{}');
+				const idx = mockDNSServers.findIndex((s) => s.tag === tag);
+				if (idx === -1) {
+					send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'dns server not found' } });
+					return;
+				}
+				const refs = [];
+				for (let i = 0; i < mockDNSRules.length; i++) {
+					if (mockDNSRules[i]?.server === tag) refs.push(`rule[${i}]`);
+				}
+				for (const s of mockDNSServers) {
+					if (s.tag !== tag && s.domain_resolver?.server === tag) {
+						refs.push(`server[${s.tag}].domain_resolver`);
+					}
+				}
+				if (refs.length > 0) {
+					send(res, 409, {
+						success: false,
+						error: { code: 'CONFLICT', message: `dns server "${tag}" referenced by ${refs.join(', ')}` },
+					});
+					return;
+				}
+				mockDNSServers.splice(idx, 1);
+				send(res, 200, { success: true, data: { ok: true } });
 			} catch (e) {
 				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
 			}
@@ -4631,6 +4873,44 @@ const server = http.createServer(async (req, res) => {
 				const payload = JSON.parse(raw || '{}');
 				mockDNSRules.push(payload);
 				send(res, 200, { success: true, data: payload });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/router/dns/rules/update') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const { index, rule } = JSON.parse(raw || '{}');
+				if (index < 0 || index >= mockDNSRules.length) {
+					send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'dns rule not found' } });
+					return;
+				}
+				mockDNSRules[index] = rule;
+				send(res, 200, { success: true, data: { ok: true } });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/singbox/router/dns/rules/delete') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const { index } = JSON.parse(raw || '{}');
+				if (index < 0 || index >= mockDNSRules.length) {
+					send(res, 404, { success: false, error: { code: 'NOT_FOUND', message: 'dns rule not found' } });
+					return;
+				}
+				mockDNSRules.splice(index, 1);
+				send(res, 200, { success: true, data: { ok: true } });
 			} catch (e) {
 				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
 			}
@@ -4716,6 +4996,29 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'GET' && path === '/singbox/router/dns/globals') {
+		send(res, 200, { success: true, data: mockDNSGlobals });
+		return;
+	}
+
+	if (req.method === 'PUT' && path === '/singbox/router/dns/globals') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const payload = JSON.parse(raw || '{}');
+				mockDNSGlobals = {
+					final: payload.final ?? mockDNSGlobals.final,
+					strategy: payload.strategy ?? mockDNSGlobals.strategy,
+				};
+				send(res, 200, { success: true, data: { ok: true } });
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+			}
+		});
+		return;
+	}
+
 	if (req.method === 'POST' && path === '/singbox/router/enable') {
 		mockEngineRunning = true;
 		send(res, 200, { success: true, data: {} });
@@ -4745,7 +5048,7 @@ const server = http.createServer(async (req, res) => {
 		send(res, 200, {
 			success: true,
 			data: [
-				{ tag: 'awg-vpn0',             label: 'DE Frankfurt', kind: 'managed', iface: 't2s0' },
+				{ tag: 'awg-vpn0',             label: 'DE Frankfurt', kind: 'managed', iface: 'awg0' },
 				{ tag: 'awg-sys-Wireguard0',   label: 'NL Amsterdam', kind: 'system',  iface: 'nwg0' },
 				{ tag: 'awg-sys-Wireguard1',   label: 'FI Helsinki',  kind: 'system',  iface: 'nwg1' },
 			],
@@ -5137,6 +5440,27 @@ const server = http.createServer(async (req, res) => {
 					mockSystemServerSettings[serverId] = { natMode: 'none', policy: 'none' };
 				}
 				mockSystemServerSettings[serverId].natMode = mode;
+				sendData(res, buildMockServersAllData());
+			} catch (e) {
+				sendInvalidRequest(res, String(e));
+			}
+		});
+		return;
+	}
+
+	const serverEndpointMatch = path.match(/^\/servers\/([^/]+)\/endpoint$/);
+	if (serverEndpointMatch && req.method === 'POST') {
+		const serverId = decodeURIComponent(serverEndpointMatch[1]);
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			try {
+				const body = JSON.parse(raw || '{}');
+				const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
+				if (!mockSystemServerSettings[serverId]) {
+					mockSystemServerSettings[serverId] = { natMode: 'none', policy: 'none', endpoint: '' };
+				}
+				mockSystemServerSettings[serverId].endpoint = endpoint;
 				sendData(res, buildMockServersAllData());
 			} catch (e) {
 				sendInvalidRequest(res, String(e));

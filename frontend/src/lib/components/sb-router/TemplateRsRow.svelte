@@ -4,12 +4,13 @@
 
 <script lang="ts">
   import { Check } from 'lucide-svelte';
-  import { Badge } from '$lib/components/ui';
+  import RuleSetTypeBadge from './RuleSetTypeBadge.svelte';
+  import type { RuleSetDisplayType } from '$lib/utils/ruleSetType';
 
   interface Props {
     templateId: string;
     tag: string;
-    type: 'inline' | 'remote' | 'local';
+    type: RuleSetDisplayType;
     desc?: string;
     count?: string;
     selected: boolean;
@@ -17,10 +18,6 @@
   }
 
   let { tag, type, desc, count, selected, onclick }: Props = $props();
-
-  const badgeVariant: 'accent' | 'warning' | 'info' = $derived(
-    type === 'remote' ? 'accent' : type === 'inline' ? 'warning' : 'info',
-  );
 </script>
 
 <button type="button" class="row" class:selected aria-pressed={selected} {onclick}>
@@ -32,7 +29,7 @@
   <div class="meta">
     <div class="line">
       <span class="tag">{tag}</span>
-      <Badge variant={badgeVariant} size="sm" mono>{type}</Badge>
+      <RuleSetTypeBadge {type} />
     </div>
     {#if desc}
       <div class="desc">{desc}</div>

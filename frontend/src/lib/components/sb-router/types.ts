@@ -6,6 +6,9 @@
  *   domain → 'домен', ip → 'IP', port → 'порт', set → 'набор', src → 'источник', geoip → 'geoip'
  */
 
+import type { RuleSetDisplayType } from '$lib/utils/ruleSetType';
+import type { RuleSimplicity } from './simpleRule';
+
 export type RuleAction = 'route' | 'block' | 'direct' | 'sniff' | 'hijack-dns';
 
 /** Категория matcher chip — соответствует labelMap из дизайна. */
@@ -20,17 +23,46 @@ export interface MatcherChip {
   mono?: boolean;
   /** Тег rule_set в конфиге (только kind === 'ruleset') — для открытия редактора набора */
   rulesetTag?: string;
+  /** Тип rule_set для иконки в простом режиме (только kind === 'ruleset') */
+  rulesetType?: RuleSetDisplayType;
 }
 
-export type OutboundKind = 'tunnel' | 'awg' | 'direct' | 'block' | 'composite' | 'unknown' | 'sniff' | 'hijack-dns';
+export type OutboundKind =
+	| 'proxy'
+	| 'tunnel'
+	| 'awg'
+	| 'subscription'
+	| 'direct'
+	| 'block'
+	| 'composite'
+	| 'via-route'
+	| 'unknown'
+	| 'sniff'
+	| 'hijack-dns';
 
 export interface OutboundDisplay {
   /** Имя outbound'а из singbox config (raw key) */
   name: string;
-  /** Локализованный label для tile ("WARP", "Прямо", "Блок") */
+  /** Локализованный label для tile — основной текст без metaSuffix */
   label: string;
+  /** Суффикс в скобках: sub, t2s0 — единый рендер в OutboundChipLabel */
+  metaSuffix?: string;
   /** Тип — определяет визуальный вариант OutboundTile */
   kind: OutboundKind;
+  /** Цветовая категория бейджа (если не задан — из kind) */
+  tone?: import('./outboundTileTone').OutboundTileTone;
+  /** Подсказка для invalid/warning chip */
+  invalidHint?: string;
+  /** Тип composite (selector / urltest / loadbalance) */
+  compositeType?: 'selector' | 'urltest' | 'loadbalance';
+  /** Активный участник composite (clash now / selector / urltest) */
+  activeMemberLabel?: string;
+  activeMemberTitle?: string;
+  /** proxyInterface активного участника — суффикс в chip composite */
+  activeMemberMetaSuffix?: string;
+  /** Остальные участники — в +N */
+  otherMemberLabels?: string[];
+  otherMemberTitles?: string[];
 }
 
 export interface RuleCardData {
@@ -50,6 +82,8 @@ export interface RuleCardData {
   outbound: OutboundDisplay;
   /** System rule (ip_is_private bypass, sniff, hijack-dns) — рендерится muted */
   isSystem: boolean;
+  /** Эвристика простого правила для beginner UI */
+  simplicity: RuleSimplicity;
   /** Пояснение при наведении (только системные правила) */
   tooltip?: string;
 }

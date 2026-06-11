@@ -201,25 +201,31 @@ func (s *Service) SaveInstance(ctx context.Context, in Instance) error {
 }
 
 // DeleteInstance removes one configured proxy instance.
-// The default instance is preserved by Store.DeleteInstance.
-func (s *Service) DeleteInstance(ctx context.Context, id string) error {
+// Storage is always updated; a sing-box apply failure is logged but does
+// not roll back the deletion — the user should be able to drop an inbound
+// even when the daemon is temporarily unavailable.
+// The returned applied flag is false when storage was updated but sing-box
+// could not be reloaded yet.
+func (s *Service) DeleteInstance(ctx context.Context, id string) (applied bool, err error) {
 	if id == "" {
-		return fmt.Errorf("instance id is empty")
+		return false, fmt.Errorf("instance id is empty")
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	prev := s.d.Store.Snapshot()
-
 	if err := s.d.Store.DeleteInstance(id); err != nil {
-		return err
+		return false, err
 	}
 	if err := s.applyInstancesLocked(ctx); err != nil {
-		_ = s.restoreSnapshot(ctx, prev)
-		return err
+		s.appLog.Warn("delete-instance", id, "apply after delete failed: "+err.Error())
+		if s.d.Bus != nil {
+			s.d.Bus.Publish("resource:invalidated", events.ResourceInvalidatedEvent{Resource: "deviceproxy.config"})
+			s.d.Bus.Publish("resource:invalidated", events.ResourceInvalidatedEvent{Resource: "deviceproxy.runtime"})
+		}
+		return false, nil
 	}
-	return nil
+	return true, nil
 }
 
 // buildInstanceSpec builds an ExternalInstanceSpec from a stored Instance.

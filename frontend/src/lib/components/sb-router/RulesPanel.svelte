@@ -9,23 +9,32 @@
 
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
+  import { get } from 'svelte/store';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
   import { SectionLabel, Button, ConfirmModal } from '$lib/components/ui';
-  import { openAddWizard } from './addWizardStore';
+  import { openAddWizard, openEditWizard } from './addWizardStore';
   import RuleCard from './RuleCard.svelte';
   import { isSystemRule, singboxRuleToCard } from './adapters';
+  import { classifyRuleSimplicity } from './simpleRule';
+  import { prefillWizardFromRule } from './ruleWizardPrefill';
+  import { setTemplateSelection } from './templatesStore';
   import { presetCatalog } from '$lib/stores/presets';
+  import { subscriptionsStore } from '$lib/stores/subscriptions';
+  import { singboxProxies } from '$lib/stores/singboxProxies';
+  import { singboxTunnels } from '$lib/stores/singbox';
   import RuleEditModal from '$lib/components/routing/singboxRouter/RuleEditModal.svelte';
   import RuleSetAddModal from '$lib/components/routing/singboxRouter/RuleSetAddModal.svelte';
-  import { computeRuleSetUsage } from '$lib/components/routing/singboxRouter';
-  import type { SingboxRouterRuleSet } from '$lib/types';
+  import type { SingboxRouterRule, SingboxRouterRuleSet } from '$lib/types';
   import { api } from '$lib/api/client';
   import { notifications } from '$lib/stores/notifications';
   import { syncTunnelDnsRule } from './emptyStateActions';
   import { pluralize, RULE_WORDS } from '$lib/utils/pluralize';
+  import { displayRuleSetTag } from '$lib/utils/singboxInlineRules';
+  import { findScrollContainer } from '$lib/utils/findScrollContainer';
   import type { RuleCardData } from './types';
 
   const rules = singboxRouterStore.rules;
+  const ruleUiKeys = singboxRouterStore.ruleUiKeys;
   const ruleSets = singboxRouterStore.ruleSets;
   const outbounds = singboxRouterStore.outbounds;
   const presets = singboxRouterStore.presets;
@@ -38,7 +47,7 @@
   let rulesetLabels: Record<string, string> = $derived.by(() => {
     const labels: Record<string, string> = {};
     for (const rs of $ruleSets) {
-      if (rs.tag) labels[rs.tag] = rs.tag;
+      if (rs.tag) labels[rs.tag] = displayRuleSetTag(rs.tag);
     }
     return labels;
   });
@@ -47,7 +56,20 @@
 
   let cards: RuleCardData[] = $derived.by(() =>
     $rules.map((r, i) =>
-      singboxRuleToCard(r, i, $outbounds, rulesetLabels, $presets, $options, $presetCatalog),
+      singboxRuleToCard(
+        r,
+        i,
+        $outbounds,
+        rulesetLabels,
+        $presets,
+        $options,
+        $presetCatalog,
+        $ruleSets,
+        $subscriptionsStore.data,
+        $singboxProxies.data ?? [],
+        $singboxTunnels.data ?? [],
+        $ruleUiKeys[i],
+      ),
     ),
   );
 
@@ -68,15 +90,39 @@
   let dragGhostLeft = $state(0);
   let dragGhostWidth = $state(0);
   let measuredSlots = $state<Array<{ index: number; top: number; bottom: number; mid: number }>>([]);
+  let panelEl = $state<HTMLElement | null>(null);
+  let dropAt = $state<number | 'end' | null>(null);
+  let dropExpanded = $state(false);
+  let collapsingDropAt = $state<number | 'end' | null>(null);
+  let collapsingWasExpanded = $state(false);
+  let collapsePhaseActive = $state(false);
+
+  let scrollContainer: HTMLElement | null = null;
+  let lastPointerY = 0;
+  let autoScrollRaf: number | null = null;
+  let dropSkeletonTimer: ReturnType<typeof setTimeout> | null = null;
+  let collapseDropTimer: ReturnType<typeof setTimeout> | null = null;
+  let sourceExitCollapsed = $state(false);
+  let hasMovedFromSource = $state(false);
+  let dropCommitPending = $state(false);
+  let dropCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  let moveInFlight = $state(false);
 
   const DRAG_THRESHOLD = 7;
+  const SCROLL_EDGE = 84;
+  const SCROLL_MAX_SPEED = 14;
+  const DROP_SKELETON_DELAY_MS = 680;
+  const DROP_SLOT_MOTION_MS = 360;
+  const DROP_LINE_COLLAPSE_MS = 240;
+  const SLOT_EASE = 'cubic-bezier(0.45, 0.05, 0.55, 0.95)';
+  const CARD_GAP = 6;
 
   let count = $derived(cards.length);
 
   let deleteIndex = $state<number | null>(null);
   let deleteTarget = $state<{ index: number; summary: string } | null>(null);
   let deleteBusy = $state(false);
-  let editIndex = $state<number | null>(null);
+  let textMatchersEditIndex = $state<number | null>(null);
   let rsEditTag = $state<string | null>(null);
 
   const rsEditTarget = $derived<SingboxRouterRuleSet | undefined>(
@@ -115,19 +161,52 @@
   }
 
   function requestEdit(index: number) {
-    if (isSystemRule($rules[index])) return;
+    const rule = $rules[index];
+    if (!rule || isSystemRule(rule)) return;
+    const info = classifyRuleSimplicity(rule, $ruleSets);
+    if (!info.simple) return;
     cancelDrag();
-    editIndex = index;
+    const prefill = prefillWizardFromRule(rule, $presets, $ruleSets, $outbounds);
+    if (!prefill.editMode) return;
+    setTemplateSelection(prefill.templateIds);
+    openEditWizard(index, {
+      editMode: prefill.editMode,
+      rulesList: prefill.rulesList,
+      outboundCategory: prefill.outboundCategory,
+      tunnelTags: prefill.tunnelTags,
+      existingInlineRuleSetTag: prefill.existingInlineRuleSetTag,
+      wasInlineText: prefill.wasInlineText,
+    });
+  }
+
+  function requestTextMatchersEdit(index: number) {
+    const rule = $rules[index];
+    if (!rule) return;
+    const info = classifyRuleSimplicity(rule, $ruleSets);
+    if (!info.simple || info.kind !== 'inline-text') return;
+    cancelDrag();
+    textMatchersEditIndex = index;
+  }
+
+  function requestInlineListEdit(index: number) {
+    const rule = $rules[index];
+    if (!rule) return;
+    const info = classifyRuleSimplicity(rule, $ruleSets);
+    if (!info.simple || info.kind !== 'inline-set' || !info.inlineRuleSetTag) return;
+    requestRulesetEdit(info.inlineRuleSetTag);
   }
 
   function requestRulesetEdit(tag: string) {
     cancelDrag();
-    const rs = $ruleSets.find((r) => r.tag === tag);
+    // Чип несёт display-тег (без -srs); если inline-база удалена, а компаньон
+    // ещё не вычищен, в $ruleSets остался только тег с суффиксом — ищем по нему.
+    const rs = $ruleSets.find((r) => r.tag === tag)
+      ?? $ruleSets.find((r) => !!r.tag && displayRuleSetTag(r.tag) === tag);
     if (!rs) {
       notifications.error(`Набор «${tag}» не найден в конфигурации`);
       return;
     }
-    rsEditTag = tag;
+    rsEditTag = rs.tag;
   }
 
   async function handleRsEditSave(rs: SingboxRouterRuleSet) {
@@ -164,22 +243,13 @@
     }
   }
 
-  const editRuleSetUsage = $derived(
-    editIndex === null ? new Map<string, number>() : computeRuleSetUsage($rules, editIndex),
-  );
-
-  async function handleEditSave(rule: (typeof $rules)[number]) {
-    if (editIndex === null) return;
+  async function handleTextMatchersSave(rule: (typeof $rules)[number]) {
+    if (textMatchersEditIndex === null) return;
     try {
-      await api.singboxRouterUpdateRule(editIndex, rule);
-      try {
-        await syncTunnelDnsRule();
-      } catch (e) {
-        notifications.error(`DNS sync: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      await api.singboxRouterUpdateRule(textMatchersEditIndex, rule);
       await singboxRouterStore.loadAll();
-      notifications.success('Правило обновлено');
-      editIndex = null;
+      notifications.success('Адреса обновлены');
+      textMatchersEditIndex = null;
     } catch (e) {
       notifications.error(`Ошибка: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -209,11 +279,276 @@
     };
   }
 
+  function canScrollWindow(): boolean {
+    if (typeof document === 'undefined' || typeof window === 'undefined') return false;
+    return document.documentElement.scrollHeight > window.innerHeight + 1;
+  }
+
+  function isInScrollEdge(y: number): boolean {
+    if (scrollContainer) {
+      const rect = scrollContainer.getBoundingClientRect();
+      const distTop = y - rect.top;
+      const distBottom = rect.bottom - y;
+      if (distTop >= 0 && distTop < SCROLL_EDGE) return true;
+      if (distBottom >= 0 && distBottom < SCROLL_EDGE) return true;
+      return false;
+    }
+    if (!canScrollWindow()) return false;
+    return y < SCROLL_EDGE || y > window.innerHeight - SCROLL_EDGE;
+  }
+
+  function stopAutoScroll() {
+    if (autoScrollRaf !== null) {
+      cancelAnimationFrame(autoScrollRaf);
+      autoScrollRaf = null;
+    }
+  }
+
+  function clearDropSkeletonTimer() {
+    if (dropSkeletonTimer !== null) {
+      clearTimeout(dropSkeletonTimer);
+      dropSkeletonTimer = null;
+    }
+  }
+
+  function resolvesToSourceIndex(targetInsertion: number): boolean {
+    if (!dragState) return false;
+    return normalizeDropTarget(dragState.fromIndex, targetInsertion) === dragState.fromIndex;
+  }
+
+  function clearCollapseDropTimer() {
+    if (collapseDropTimer !== null) {
+      clearTimeout(collapseDropTimer);
+      collapseDropTimer = null;
+    }
+  }
+
+  function sourceDropVisualAt(fromIndex: number): number | 'end' {
+    return fromIndex < cards.length - 1 ? fromIndex + 1 : 'end';
+  }
+
+  function targetDropAt(idx: number | null): number | 'end' | null {
+    if (idx === null || !dragState?.started) return null;
+
+    const from = dragState.fromIndex;
+
+    if (resolvesToSourceIndex(idx)) {
+      if (!hasMovedFromSource) return null;
+      return sourceDropVisualAt(from);
+    }
+
+    if (idx >= cards.length) return 'end';
+    return idx;
+  }
+
+  function scheduleDropSkeleton() {
+    const target = targetDropAt(insertionIndex);
+    if (!dragState?.started || target === null || target !== dropAt) {
+      dropExpanded = false;
+      clearDropSkeletonTimer();
+      return;
+    }
+    // Цель не менялась: раскрытый скелетон не схлопываем (раскрытие сдвигает
+    // геометрию → insertionIndex меняется → безусловный сброс рушил только что
+    // показанный скелетон), идущий таймер не перезапускаем.
+    if (dropExpanded || dropSkeletonTimer !== null) return;
+    dropSkeletonTimer = setTimeout(() => {
+      if (dragState?.started && targetDropAt(insertionIndex) === dropAt && dropAt !== null) {
+        dropExpanded = true;
+        requestAnimationFrame(() => {
+          if (!dragState?.started) return;
+          measureSlots();
+          applyInsertionAtPointer(lastPointerY);
+        });
+      }
+      dropSkeletonTimer = null;
+    }, DROP_SKELETON_DELAY_MS);
+  }
+
+  function reconcileDropDisplay() {
+    const next = targetDropAt(insertionIndex);
+    if (next === dropAt) {
+      if (next !== null) scheduleDropSkeleton();
+      return;
+    }
+
+    const prev = dropAt;
+    const wasExpanded = dropExpanded && prev !== null;
+
+    clearDropSkeletonTimer();
+    dropExpanded = false;
+
+    if (prev !== null && prev !== next) {
+      collapsingDropAt = prev;
+      collapsingWasExpanded = wasExpanded;
+      collapsePhaseActive = false;
+      clearCollapseDropTimer();
+      requestAnimationFrame(() => {
+        if (collapsingDropAt !== prev) return;
+        collapsePhaseActive = true;
+        const collapseMs = wasExpanded ? DROP_SLOT_MOTION_MS : DROP_LINE_COLLAPSE_MS;
+        collapseDropTimer = setTimeout(() => {
+          collapsingDropAt = null;
+          collapsingWasExpanded = false;
+          collapsePhaseActive = false;
+          collapseDropTimer = null;
+        }, collapseMs);
+      });
+    }
+
+    dropAt = next;
+    if (next !== null) scheduleDropSkeleton();
+  }
+
+  function setInsertionIndex(next: number | null) {
+    if (insertionIndex === next) return;
+    insertionIndex = next;
+    reconcileDropDisplay();
+  }
+
+  function applyInsertionAtPointer(y: number) {
+    const nextInsertion = calculateInsertionIndex(y);
+    const firstMovable = firstUserRuleIndex();
+    const normalized = firstMovable >= 0 ? Math.max(firstMovable, nextInsertion) : nextInsertion;
+
+    if (resolvesToSourceIndex(normalized)) {
+      if (!hasMovedFromSource) {
+        setInsertionIndex(null);
+        return;
+      }
+    } else {
+      hasMovedFromSource = true;
+    }
+
+    setInsertionIndex(normalized);
+  }
+
+  function tickAutoScroll() {
+    autoScrollRaf = null;
+    if (!dragState?.started) return;
+
+    const y = lastPointerY;
+    let scrolled = false;
+
+    if (scrollContainer) {
+      const rect = scrollContainer.getBoundingClientRect();
+      const distTop = y - rect.top;
+      const distBottom = rect.bottom - y;
+      if (distTop >= 0 && distTop < SCROLL_EDGE) {
+        scrollContainer.scrollTop -= SCROLL_MAX_SPEED * (1 - distTop / SCROLL_EDGE);
+        scrolled = true;
+      } else if (distBottom >= 0 && distBottom < SCROLL_EDGE) {
+        scrollContainer.scrollTop += SCROLL_MAX_SPEED * (1 - distBottom / SCROLL_EDGE);
+        scrolled = true;
+      }
+    } else if (canScrollWindow()) {
+      if (y < SCROLL_EDGE) {
+        window.scrollBy(0, -SCROLL_MAX_SPEED * (1 - y / SCROLL_EDGE));
+        scrolled = true;
+      } else if (y > window.innerHeight - SCROLL_EDGE) {
+        window.scrollBy(0, SCROLL_MAX_SPEED * (1 - (window.innerHeight - y) / SCROLL_EDGE));
+        scrolled = true;
+      }
+    }
+
+    if (scrolled) {
+      measureSlots();
+      applyInsertionAtPointer(y);
+    }
+
+    if (isInScrollEdge(y)) {
+      autoScrollRaf = requestAnimationFrame(tickAutoScroll);
+    }
+  }
+
+  function updateAutoScroll(y: number) {
+    lastPointerY = y;
+    if (!dragState?.started) return;
+    if (isInScrollEdge(y)) {
+      if (autoScrollRaf === null) {
+        autoScrollRaf = requestAnimationFrame(tickAutoScroll);
+      }
+    } else {
+      stopAutoScroll();
+    }
+  }
+
+  function beginSourceExit() {
+    sourceExitCollapsed = false;
+    requestAnimationFrame(() => {
+      if (!dragState?.started) return;
+      sourceExitCollapsed = true;
+    });
+  }
+
+  function clearDropCommitTimer() {
+    if (dropCommitTimer !== null) {
+      clearTimeout(dropCommitTimer);
+      dropCommitTimer = null;
+    }
+  }
+
+  function reorderRules(all: SingboxRouterRule[], from: number, to: number): SingboxRouterRule[] {
+    if (from === to) return all;
+    const next = all.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    return next;
+  }
+
+  async function commitDrop(fromIndex: number, to: number) {
+    moveInFlight = true;
+    const snapshot = get(rules);
+    singboxRouterStore.applyRules(reorderRules(snapshot, fromIndex, to));
+    cleanupDrag();
+    try {
+      await api.singboxRouterMoveRule(fromIndex, to);
+      await singboxRouterStore.loadAll();
+    } catch (e) {
+      singboxRouterStore.applyRules(snapshot);
+      notifications.error(`Ошибка перемещения: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      moveInFlight = false;
+    }
+  }
+
+  function detachDragInteraction() {
+    const current = dragState;
+    if (current?.started && current.handleEl.hasPointerCapture?.(current.pointerId)) {
+      current.handleEl.releasePointerCapture(current.pointerId);
+    }
+    stopAutoScroll();
+    clearDropSkeletonTimer();
+    dragGhostCard = null;
+    if (typeof document !== 'undefined') {
+      document.body.classList.remove('sbr-dragging');
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pointermove', onDragPointerMove);
+      window.removeEventListener('pointerup', onDragPointerUp);
+      window.removeEventListener('pointercancel', cancelDrag);
+      window.removeEventListener('keydown', onDragKeyDown);
+    }
+  }
+
   function cleanupDrag() {
     const current = dragState;
     if (current?.started && current.handleEl.hasPointerCapture?.(current.pointerId)) {
       current.handleEl.releasePointerCapture(current.pointerId);
     }
+    stopAutoScroll();
+    clearDropSkeletonTimer();
+    clearCollapseDropTimer();
+    clearDropCommitTimer();
+    dropCommitPending = false;
+    sourceExitCollapsed = false;
+    hasMovedFromSource = false;
+    dropAt = null;
+    dropExpanded = false;
+    collapsingDropAt = null;
+    collapsingWasExpanded = false;
+    collapsePhaseActive = false;
+    scrollContainer = null;
     dragState = null;
     insertionIndex = null;
     draggingIndex = null;
@@ -277,7 +612,10 @@
     dragGhostLeft = dragState.rect.left;
     dragGhostWidth = dragState.rect.width;
     dragGhostTop = event.clientY - dragState.grabOffsetY;
-    insertionIndex = dragState.fromIndex;
+    scrollContainer = findScrollContainer(panelEl);
+    beginSourceExit();
+    hasMovedFromSource = false;
+    setInsertionIndex(null);
     measureSlots();
     if (typeof document !== 'undefined') {
       document.body.classList.add('sbr-dragging');
@@ -295,10 +633,9 @@
 
     event.preventDefault();
     dragGhostTop = event.clientY - dragState.grabOffsetY;
-    const nextInsertion = calculateInsertionIndex(event.clientY);
-    const firstMovable = firstUserRuleIndex();
-    const normalized = firstMovable >= 0 ? Math.max(firstMovable, nextInsertion) : nextInsertion;
-    if (normalized !== insertionIndex) insertionIndex = normalized;
+    measureSlots();
+    applyInsertionAtPointer(event.clientY);
+    updateAutoScroll(event.clientY);
   }
 
   function normalizeDropTarget(fromIndex: number, targetInsertion: number): number {
@@ -310,30 +647,51 @@
   }
 
   async function onDragPointerUp(event: PointerEvent) {
-    if (!dragState) return;
+    if (!dragState || dropCommitPending) return;
     if (event.pointerId !== dragState.pointerId) return;
+
     const state = dragState;
     const started = state.started;
     const fromIndex = state.fromIndex;
     const targetInsertion = insertionIndex ?? fromIndex;
-    cleanupDrag();
-    if (!started) return;
     const to = normalizeDropTarget(fromIndex, targetInsertion);
-    if (to === fromIndex) return;
-    if (!canMoveIndexToTarget(fromIndex, to)) return;
-    try {
-      await api.singboxRouterMoveRule(fromIndex, to);
-      await singboxRouterStore.loadAll();
-    } catch (e) {
-      notifications.error(`Ошибка перемещения: ${e instanceof Error ? e.message : String(e)}`);
+
+    if (!started) {
+      cleanupDrag();
+      return;
     }
+
+    if (to === fromIndex || !canMoveIndexToTarget(fromIndex, to)) {
+      cleanupDrag();
+      return;
+    }
+
+    if (dropAt !== null && !dropExpanded) {
+      clearDropCommitTimer();
+      clearDropSkeletonTimer();
+      dropCommitPending = true;
+      detachDragInteraction();
+      requestAnimationFrame(() => {
+        if (!dropCommitPending) return;
+        dropExpanded = true;
+        dropCommitTimer = setTimeout(async () => {
+          dropCommitTimer = null;
+          dropCommitPending = false;
+          await commitDrop(fromIndex, to);
+        }, DROP_SLOT_MOTION_MS);
+      });
+      return;
+    }
+
+    await commitDrop(fromIndex, to);
   }
 
   function handleDragPointerDown(index: number, card: RuleCardData, event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
+    if (moveInFlight || dropCommitPending) return;
     if (card.isSystem) return;
-    if (deleteBusy || editIndex !== null || rsEditTag !== null || deleteTarget) return;
+    if (deleteBusy || textMatchersEditIndex !== null || rsEditTag !== null || deleteTarget) return;
     if (event.button !== 0) return;
     const shell = rowElements.get(card.id);
     const handleEl = event.currentTarget as HTMLElement | null;
@@ -357,18 +715,56 @@
     window.addEventListener('keydown', onDragKeyDown);
   }
 
-  function isDropBefore(index: number): boolean {
-    if (!dragState?.started || insertionIndex === null) return false;
-    return insertionIndex === index;
+  function showsDropBefore(index: number): boolean {
+    return dropAt === index || collapsingDropAt === index;
   }
 
-  function isDropAtEnd(): boolean {
-    if (!dragState?.started || insertionIndex === null) return false;
-    return insertionIndex >= cards.length;
+  function showsDropAtEnd(): boolean {
+    return dropAt === 'end' || collapsingDropAt === 'end';
+  }
+
+  function dropBeforeExpanded(index: number): boolean {
+    if (collapsingDropAt === index) return collapsingWasExpanded;
+    return dropAt === index && dropExpanded;
+  }
+
+  function dropBeforeCollapsing(index: number): boolean {
+    return collapsingDropAt === index && collapsePhaseActive;
+  }
+
+  function dropEndExpanded(): boolean {
+    if (collapsingDropAt === 'end') return collapsingWasExpanded;
+    return dropAt === 'end' && dropExpanded;
+  }
+
+  function dropEndCollapsing(): boolean {
+    return collapsingDropAt === 'end' && collapsePhaseActive;
+  }
+
+  function isDragSource(index: number): boolean {
+    return draggingIndex === index && (!!dragState?.started || dropCommitPending);
+  }
+
+  function isDragActive(): boolean {
+    return !!dragState?.started || dropCommitPending;
+  }
+
+  function cardsMotionStyle(): string {
+    return [
+      `--card-gap:${CARD_GAP}px`,
+      `--drop-slot-motion-ms:${DROP_SLOT_MOTION_MS}ms`,
+      `--drop-line-collapse-ms:${DROP_LINE_COLLAPSE_MS}ms`,
+      `--slot-ease:${SLOT_EASE}`,
+    ].join(';');
+  }
+
+  function dropIndicatorStyle(): string {
+    const height = dragState?.rect.height ?? 0;
+    return `--drop-height:${height}px;--card-gap:${CARD_GAP}px`;
   }
 </script>
 
-<section class="rules-panel">
+<section class="rules-panel" bind:this={panelEl}>
   <header class="panel-header">
     <div class="title-group">
       <h2 class="title">Что и куда отправлять</h2>
@@ -393,37 +789,48 @@
       </p>
     </div>
   {:else}
-    <div class="cards" class:is-dragging={dragState?.started} role="list">
+    <div class="cards" class:is-dragging={isDragActive()} style={cardsMotionStyle()} role="list">
       {#each cards as card, i (card.id)}
         <div
           data-rule-index={i}
           role="listitem"
           class="card-shell"
-          class:drag-source={draggingIndex === i}
+          class:drag-source-exiting={isDragSource(i)}
+          class:drag-source-collapsed={isDragSource(i) && sourceExitCollapsed}
+          style={isDragSource(i) ? dropIndicatorStyle() : undefined}
           use:rowNode={card.id}
         >
-          {#if isDropBefore(i)}
-            <div class="insert-line"></div>
+          {#if showsDropBefore(i)}
+            <div
+              class="drop-indicator"
+              class:expanded={dropBeforeExpanded(i)}
+              class:collapsing={dropBeforeCollapsing(i)}
+              style={dropIndicatorStyle()}
+            ></div>
           {/if}
 
-          {#if draggingIndex === i && dragState?.started}
-            <div class="drag-placeholder" style={`height:${dragState.rect.height}px`}></div>
-          {:else}
-            <RuleCard
-              {card}
-              index={i}
-              dragging={draggingIndex === i}
-              onEdit={() => requestEdit(i)}
-              onRulesetClick={requestRulesetEdit}
-              {knownRulesetTags}
-              onDelete={() => requestDelete(i)}
-              onDragHandlePointerDown={(e) => handleDragPointerDown(i, card, e)}
-            />
-          {/if}
+          <RuleCard
+            {card}
+            index={i}
+            dragging={draggingIndex === i}
+            dragDisabled={moveInFlight || dropCommitPending}
+            onEdit={() => requestEdit(i)}
+            onTextMatchersClick={() => requestTextMatchersEdit(i)}
+            onInlineListClick={() => requestInlineListEdit(i)}
+            onRulesetClick={requestRulesetEdit}
+            {knownRulesetTags}
+            onDelete={() => requestDelete(i)}
+            onDragHandlePointerDown={(e) => handleDragPointerDown(i, card, e)}
+          />
         </div>
       {/each}
-      {#if isDropAtEnd()}
-        <div class="insert-line insert-line-end"></div>
+      {#if showsDropAtEnd()}
+        <div
+          class="drop-indicator drop-indicator-end"
+          class:expanded={dropEndExpanded()}
+          class:collapsing={dropEndCollapsing()}
+          style={dropIndicatorStyle()}
+        ></div>
       {/if}
     </div>
   {/if}
@@ -438,14 +845,14 @@
   onClose={() => { if (!deleteBusy) { deleteIndex = null; deleteTarget = null; } }}
 />
 
-{#if editIndex !== null && $rules[editIndex]}
+{#if textMatchersEditIndex !== null && $rules[textMatchersEditIndex]}
   <RuleEditModal
-    rule={$rules[editIndex]}
+    rule={$rules[textMatchersEditIndex]}
     outboundOptions={$options}
     availableRuleSets={$ruleSets}
-    ruleSetUsage={editRuleSetUsage}
-    onClose={() => (editIndex = null)}
-    onSave={handleEditSave}
+    matchersOnly
+    onClose={() => (textMatchersEditIndex = null)}
+    onSave={handleTextMatchersSave}
   />
 {/if}
 
@@ -518,7 +925,7 @@
   .cards {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--card-gap, 6px);
     min-width: 0;
   }
   .cards.is-dragging {
@@ -527,20 +934,106 @@
   .card-shell {
     position: relative;
   }
-  .insert-line {
-    height: 2px;
+  .card-shell.drag-source-exiting {
+    overflow: hidden;
+    height: var(--drop-height);
+    opacity: 1;
+    transition:
+      height var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      opacity var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      margin var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95));
+  }
+  .card-shell.drag-source-exiting.drag-source-collapsed {
+    height: 0;
+    max-height: 0;
+    opacity: 0;
+    margin-bottom: calc(-1 * var(--card-gap, 6px));
+  }
+  .drop-indicator {
+    box-sizing: border-box;
+    overflow: hidden;
+    border: 1px solid transparent;
     border-radius: 999px;
     background: var(--accent);
     box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
-    margin: 2px 0;
+    opacity: 1;
+    pointer-events: none;
+    transition:
+      height var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      margin var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      border-radius calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      background calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      box-shadow calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      border-color calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      opacity calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95));
   }
-  .insert-line-end {
-    margin-top: 2px;
+  .drop-indicator:not(.expanded):not(.collapsing) {
+    position: absolute;
+    top: calc(-1 * var(--card-gap, 6px) / 2 - 1px);
+    left: 0;
+    right: 0;
+    height: 2px;
+    margin: 0;
+    z-index: 2;
   }
-  .drag-placeholder {
-    border: 1px dashed var(--accent-line, var(--accent));
+  .drop-indicator.expanded:not(.collapsing) {
+    position: static;
+    top: auto;
+    height: var(--drop-height);
+    margin: 0 0 var(--card-gap, 6px);
     border-radius: var(--radius);
     background: color-mix(in srgb, var(--accent) 6%, transparent);
+    border-color: var(--accent-line, var(--accent));
+    border-style: dashed;
+    box-shadow: none;
+  }
+  .drop-indicator.collapsing {
+    margin: 0 !important;
+    opacity: 0;
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+  .drop-indicator.collapsing.expanded {
+    position: static;
+    height: 0 !important;
+    transition:
+      height var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      margin var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      border-radius calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      background calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      box-shadow calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      border-color calc(var(--drop-slot-motion-ms, 360ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      opacity var(--drop-slot-motion-ms, 360ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95));
+  }
+  /* Тонкая линия: держим top/height, иначе при .collapsing теряется :not(.collapsing)
+     и absolute-блок прыгает к верху card-shell → «точка» ниже щели между карточками. */
+  .drop-indicator.collapsing:not(.expanded) {
+    position: absolute;
+    top: calc(-1 * var(--card-gap, 6px) / 2 - 1px);
+    left: 0;
+    right: 0;
+    height: 2px !important;
+    z-index: 2;
+    transition:
+      opacity var(--drop-line-collapse-ms, 240ms) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      box-shadow calc(var(--drop-line-collapse-ms, 240ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      background calc(var(--drop-line-collapse-ms, 240ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95)),
+      border-color calc(var(--drop-line-collapse-ms, 240ms) * 0.85) var(--slot-ease, cubic-bezier(0.45, 0.05, 0.55, 0.95));
+  }
+  .drop-indicator-end.collapsing:not(.expanded) {
+    position: relative;
+    top: auto;
+    left: auto;
+    right: auto;
+    height: 2px !important;
+    margin: calc(-1 * var(--card-gap, 6px) / 2 - 1px) 0 0 !important;
+  }
+  .drop-indicator-end:not(.expanded):not(.collapsing) {
+    position: relative;
+    top: auto;
+    height: 2px;
+    margin: calc(-1 * var(--card-gap, 6px) / 2 - 1px) 0 0;
   }
   .drag-ghost {
     position: fixed;

@@ -13,8 +13,10 @@
 	interface Props {
 		value?: string;
 		showPreview?: boolean;
+		/** Компактный geo-picker (половинная высота списка тегов). */
+		compactGeoPicker?: boolean;
 	}
-	let { value = $bindable(''), showPreview = true }: Props = $props();
+	let { value = $bindable(''), showPreview = true, compactGeoPicker = true }: Props = $props();
 
 	// ── constants ────────────────────────────────────────────────
 	const RULES_LIST_PLACEHOLDER = `# Домены и все поддомены
@@ -144,6 +146,7 @@ geosite:xai`;
 		<HrNeoGeoTagPicker
 			kind="geosite"
 			files={geositeFiles}
+			compact={compactGeoPicker}
 			onpick={appendGeositeLine}
 			onclose={() => (geositePickerOpen = false)}
 		/>
@@ -152,6 +155,7 @@ geosite:xai`;
 		<HrNeoGeoTagPicker
 			kind="geoip"
 			files={geoipFiles}
+			compact={compactGeoPicker}
 			onpick={(t) => appendRulesLine(t)}
 			onclose={() => (geoipPickerOpen = false)}
 		/>
@@ -293,23 +297,25 @@ geosite:xai`;
 		min-width: 0;
 	}
 	.lbl {
-		font-size: 0.75rem;
-		color: var(--muted-text);
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary, var(--text));
 	}
 	.lbl-expanding {
 		color: var(--accent, #3b82f6);
+		font-weight: 600;
 	}
 	.list-toolbar {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
 		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.35rem 0.75rem;
 	}
 	.list-toolbar-actions {
 		display: flex;
-		gap: 0.35rem;
 		flex-wrap: wrap;
+		gap: 0.35rem;
+		margin-left: auto;
 	}
 	.hint {
 		font-size: 0.75rem;
@@ -442,12 +448,15 @@ geosite:xai`;
 		overflow: hidden;
 		min-width: 0;
 		align-items: stretch;
+		background: var(--sbr-control-bg, var(--bg-tertiary, var(--bg)));
+		border: 1px solid var(--sbr-control-border, var(--border));
+		border-radius: var(--sbr-control-radius, 4px);
 	}
 	.line-numbers {
 		margin: 0;
 		padding: 0.5rem 0.45rem 0.5rem 0.55rem;
-		border-right: 1px solid var(--border);
-		background: var(--bg);
+		border-right: 1px solid var(--sbr-control-border, var(--border));
+		background: color-mix(in srgb, var(--sbr-control-bg, var(--bg-tertiary, var(--bg))) 85%, var(--sbr-control-border, var(--border)));
 		color: var(--muted-text);
 		font-family: ui-monospace, monospace;
 		font-size: 0.8rem;

@@ -31,6 +31,7 @@
 
 	/** Cursor restore after programmatic value edits (bind:value resets selection). */
 	let restoreSelection: { start: number; end: number } | null = null;
+	let composing = $state(false);
 
 	function keyContext(): CodeTextareaKeyContext | null {
 		if (!textareaRef) return null;
@@ -73,16 +74,20 @@
 		onscroll?.();
 	}
 
+	function reapplySelectionAndScroll(): void {
+		if (!textareaRef || composing) return;
+		const start = restoreSelection?.start ?? textareaRef.selectionStart;
+		const end = restoreSelection?.end ?? textareaRef.selectionEnd;
+		restoreSelection = null;
+		// Re-apply selection so the browser scrolls the caret into view (native Enter on
+		// the last visible line otherwise leaves the caret painted above the fold).
+		textareaRef.setSelectionRange(start, end);
+		syncScroll();
+	}
+
 	$effect(() => {
 		value;
-		void tick().then(() => {
-			if (restoreSelection && textareaRef) {
-				textareaRef.selectionStart = restoreSelection.start;
-				textareaRef.selectionEnd = restoreSelection.end;
-				restoreSelection = null;
-			}
-			syncScroll();
-		});
+		void tick().then(reapplySelectionAndScroll);
 	});
 
 	$effect(() => {
@@ -106,6 +111,11 @@
 		autocomplete="off"
 		autocapitalize="off"
 		onkeydown={onKeydown}
+		oncompositionstart={() => (composing = true)}
+		oncompositionend={() => {
+			composing = false;
+			reapplySelectionAndScroll();
+		}}
 		onscroll={syncScroll}
 		oninput={syncScroll}
 	></textarea>

@@ -1195,3 +1195,163 @@ func TestSetNATMode_InternetOnlyToFull_EnablesNATBeforeStaticRemove(t *testing.T
 		t.Errorf("NAT must be enabled (idx %d) BEFORE static removed (idx %d) — egress gap", natEnableIdx, staticRemoveIdx)
 	}
 }
+
+// findInterfaceMTUPost scans posts for interface.<name>.ip.mtu and returns
+// the last value seen.
+func findInterfaceMTUPost(posts []map[string]interface{}, name string) (int, bool) {
+	val, found := 0, false
+	for _, post := range posts {
+		iface, ok := post["interface"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		row, ok := iface[name].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ip, ok := row["ip"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if m, ok := ip["mtu"].(int); ok {
+			val, found = m, true
+		}
+	}
+	return val, found
+}
+
+func TestService_Create_SetsInterfaceMTU(t *testing.T) {
+	svc, _ := newCreateTestService(t)
+
+	srv, err := svc.Create(context.Background(), CreateServerRequest{
+		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820, MTU: 1400,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	poster := svc.transport.(*recordingPoster)
+	got, found := findInterfaceMTUPost(poster.posts, srv.InterfaceName)
+	if !found {
+		t.Fatalf("expected ip.mtu in create transaction; posts=%v", poster.posts)
+	}
+	if got != 1400 {
+		t.Errorf("interface ip.mtu = %d, want 1400", got)
+	}
+}
+
+func TestService_Create_DefaultInterfaceMTU(t *testing.T) {
+	svc, _ := newCreateTestService(t)
+
+	srv, err := svc.Create(context.Background(), CreateServerRequest{
+		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	poster := svc.transport.(*recordingPoster)
+	got, found := findInterfaceMTUPost(poster.posts, srv.InterfaceName)
+	if !found {
+		t.Fatalf("expected ip.mtu in create transaction; posts=%v", poster.posts)
+	}
+	if got != DefaultMTU {
+		t.Errorf("interface ip.mtu = %d, want default %d", got, DefaultMTU)
+	}
+}
+
+func TestUpdate_MTUSet_PostsInterfaceMTU(t *testing.T) {
+	svc, store, poster := newLANSegmentsTestService(t)
+	const ifaceName = "Wireguard0"
+	// Legacy server: stored MTU=0, interface never had MTU applied.
+	if err := store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: ifaceName, Address: "10.66.66.1", Mask: "255.255.255.0",
+		ListenPort: 51820,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	poster.mu.Lock()
+	poster.posts = nil
+	poster.mu.Unlock()
+
+	mtu := 1400
+	if err := svc.Update(context.Background(), ifaceName, UpdateServerRequest{
+		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820, MTU: &mtu,
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	poster.mu.Lock()
+	posts := append([]map[string]interface{}{}, poster.posts...)
+	poster.mu.Unlock()
+	got, found := findInterfaceMTUPost(posts, ifaceName)
+	if !found {
+		t.Fatalf("expected ip.mtu POST on update; posts=%v", posts)
+	}
+	if got != 1400 {
+		t.Errorf("interface ip.mtu = %d, want 1400", got)
+	}
+	saved, _ := store.GetManagedServerByID(ifaceName)
+	if saved.MTU != 1400 {
+		t.Errorf("storage MTU = %d, want 1400", saved.MTU)
+	}
+}
+
+func TestUpdate_MTUCleared_PostsDefaultMTU(t *testing.T) {
+	svc, store, poster := newLANSegmentsTestService(t)
+	const ifaceName = "Wireguard0"
+	if err := store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: ifaceName, Address: "10.66.66.1", Mask: "255.255.255.0",
+		ListenPort: 51820, MTU: 1400,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	poster.mu.Lock()
+	poster.posts = nil
+	poster.mu.Unlock()
+
+	zero := 0
+	if err := svc.Update(context.Background(), ifaceName, UpdateServerRequest{
+		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820, MTU: &zero,
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	poster.mu.Lock()
+	posts := append([]map[string]interface{}{}, poster.posts...)
+	poster.mu.Unlock()
+	got, found := findInterfaceMTUPost(posts, ifaceName)
+	if !found {
+		t.Fatalf("expected ip.mtu POST on cleared MTU; posts=%v", posts)
+	}
+	if got != DefaultMTU {
+		t.Errorf("interface ip.mtu = %d, want default %d", got, DefaultMTU)
+	}
+}
+
+func TestUpdate_MTUAbsent_NoInterfaceMTUPost(t *testing.T) {
+	svc, store, poster := newLANSegmentsTestService(t)
+	const ifaceName = "Wireguard0"
+	if err := store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: ifaceName, Address: "10.66.66.1", Mask: "255.255.255.0",
+		ListenPort: 51820, MTU: 1400,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	poster.mu.Lock()
+	poster.posts = nil
+	poster.mu.Unlock()
+
+	if err := svc.Update(context.Background(), ifaceName, UpdateServerRequest{
+		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820,
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	poster.mu.Lock()
+	posts := append([]map[string]interface{}{}, poster.posts...)
+	poster.mu.Unlock()
+	if _, found := findInterfaceMTUPost(posts, ifaceName); found {
+		t.Errorf("ip.mtu must not be posted when req.MTU is nil; posts=%v", posts)
+	}
+}

@@ -55,6 +55,9 @@ type WireguardServerDTO struct {
 	NATMode       string                   `json:"natMode,omitempty" example:"full"`
 	Policy        string                   `json:"policy,omitempty" example:"Policy0"`
 	KeenDNSDomain string                   `json:"keenDnsDomain,omitempty" example:"home.keenetic.pro"`
+	// Endpoint is the user-configured connect host for client .conf files.
+	// Empty = WAN IP at generation time.
+	Endpoint      string                   `json:"endpoint,omitempty" example:"203.0.113.42"`
 	BuiltIn       bool                     `json:"builtIn,omitempty" example:"true"`
 	// NATModeKnown/PolicyKnown are false when the corresponding NDMS read
 	// failed (e.g. transient router error). The frontend must render an

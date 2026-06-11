@@ -59,6 +59,9 @@ const NAME_ALIASES: Record<string, string> = {
 	'ip-чекер': 'lucide-globe',
 	ipcheckers: 'lucide-globe',
 	ipchecker: 'lucide-globe',
+	'российские сервисы': 'rkn',
+	'russian services': 'rkn',
+	'роскомнадзор': 'rkn',
 };
 
 function normalizeKey(s: string): string {

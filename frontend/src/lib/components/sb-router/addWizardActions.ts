@@ -1,10 +1,22 @@
 import { api } from '$lib/api/client';
-import type { SingboxRouterRule, SingboxRouterRuleSet } from '$lib/types';
+import type {
+  SingboxRouterOutbound,
+  SingboxRouterPreset,
+  SingboxRouterRule,
+  SingboxRouterRuleSet,
+} from '$lib/types';
+import {
+  buildWizardCompositeOutbound,
+  findMatchingComposite,
+  nextCustomCompositeTag,
+} from './wizardCompositeOutbound';
 import { parseInlineRuleList, isInlineRuleListEmpty } from '$lib/utils/singboxInlineRules';
 import { expandGeoLinesInInput } from '$lib/utils/singboxInlineGeoExpand';
 import { submitTemplates, type SubmitResult } from './templatesActions';
-import type { TemplateGroup } from './templatesData';
+import type { TemplateGroup, TemplateItem } from './templatesData';
 import type { CustomMatcherFields, OutboundCategory } from './addWizardStore';
+import type { WizardEditMode } from './ruleWizardPrefill';
+import { singleRuleSetTagFromTemplateId } from './simpleRule';
 
 export class ValidationError extends Error {
   constructor(message: string) {
@@ -13,13 +25,28 @@ export class ValidationError extends Error {
   }
 }
 
-export function resolveOutbound(
+export async function resolveTunnelOutbound(
+  tunnelTags: string[],
+  existingOutbounds: SingboxRouterOutbound[],
+): Promise<string> {
+  if (tunnelTags.length === 0) throw new ValidationError('Выберите туннель');
+  if (tunnelTags.length === 1) return tunnelTags[0]!;
+
+  const existing = findMatchingComposite(existingOutbounds, tunnelTags);
+  if (existing) return existing.tag;
+
+  const tag = nextCustomCompositeTag(existingOutbounds.map((o) => o.tag));
+  await api.singboxRouterAddOutbound(buildWizardCompositeOutbound(tag, tunnelTags));
+  return tag;
+}
+
+export async function resolveOutbound(
   category: OutboundCategory,
-  tunnelTag: string | null,
-): string {
+  tunnelTags: string[],
+  existingOutbounds: SingboxRouterOutbound[] = [],
+): Promise<string> {
   if (category === 'tunnel') {
-    if (!tunnelTag) throw new ValidationError('Выберите туннель');
-    return tunnelTag;
+    return resolveTunnelOutbound(tunnelTags, existingOutbounds);
   }
   if (category === 'direct') return 'direct';
   return 'block';
@@ -50,13 +77,18 @@ export interface SubmitWizardArgs {
   selectedTemplates: string[];
   customFields: CustomMatcherFields;
   outboundCategory: OutboundCategory;
-  tunnelTag: string | null;
+  tunnelTags: string[];
   groups: TemplateGroup[];
   existingRuleSetTags: string[];
+  existingOutbounds: SingboxRouterOutbound[];
 }
 
 export async function submitWizard(args: SubmitWizardArgs): Promise<SubmitResult> {
-  const outbound = resolveOutbound(args.outboundCategory, args.tunnelTag);
+  const outbound = await resolveOutbound(
+    args.outboundCategory,
+    args.tunnelTags,
+    args.existingOutbounds,
+  );
   const hasCustom = !isInlineRuleListEmpty(args.customFields.rulesList);
 
   if (args.selectedTemplates.length === 0 && !hasCustom) {
@@ -93,4 +125,79 @@ export async function submitWizard(args: SubmitWizardArgs): Promise<SubmitResult
   }
 
   return combined;
+}
+
+function findTemplateItem(groups: TemplateGroup[], id: string): TemplateItem | undefined {
+  for (const g of groups) {
+    const found = g.items.find((it) => it.id === id);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function ruleSetTagFromTemplateId(
+  templateId: string,
+  groups: TemplateGroup[],
+  presets: SingboxRouterPreset[],
+): string | undefined {
+  const fromPreset = singleRuleSetTagFromTemplateId(templateId, presets);
+  if (fromPreset) return fromPreset;
+  const item = findTemplateItem(groups, templateId);
+  if (item?.category === 'rulesets') return item.tag;
+  return undefined;
+}
+
+function buildRoutedRule(outbound: string, ruleSetTags: string[]): SingboxRouterRule {
+  if (outbound === 'block') {
+    return { rule_set: ruleSetTags, action: 'reject' };
+  }
+  return { rule_set: ruleSetTags, action: 'route', outbound };
+}
+
+export interface SubmitWizardEditArgs {
+  ruleIndex: number;
+  editMode: WizardEditMode;
+  selectedTemplates: string[];
+  customFields: CustomMatcherFields;
+  outboundCategory: OutboundCategory;
+  tunnelTags: string[];
+  groups: TemplateGroup[];
+  presets: SingboxRouterPreset[];
+  existingRuleSetTags: string[];
+  existingOutbounds: SingboxRouterOutbound[];
+  existingInlineRuleSetTag?: string | null;
+  wasInlineText?: boolean;
+}
+
+/** Сохраняет простое правило из визарда редактирования. */
+export async function submitWizardEdit(args: SubmitWizardEditArgs): Promise<void> {
+  const outbound = await resolveOutbound(
+    args.outboundCategory,
+    args.tunnelTags,
+    args.existingOutbounds,
+  );
+
+  if (args.editMode === 'external') {
+    if (args.selectedTemplates.length !== 1) {
+      throw new ValidationError('Выберите один шаблон');
+    }
+    const tag = ruleSetTagFromTemplateId(args.selectedTemplates[0]!, args.groups, args.presets);
+    if (!tag) throw new ValidationError('Шаблон не найден');
+    await api.singboxRouterUpdateRule(args.ruleIndex, buildRoutedRule(outbound, [tag]));
+    return;
+  }
+
+  const customRules = await parseCustomList(args.customFields.rulesList);
+
+  if (args.existingInlineRuleSetTag && !args.wasInlineText) {
+    const tag = args.existingInlineRuleSetTag;
+    await api.singboxRouterUpdateRuleSet(tag, { tag, type: 'inline', rules: customRules });
+    await api.singboxRouterUpdateRule(args.ruleIndex, buildRoutedRule(outbound, [tag]));
+    return;
+  }
+
+  const tag = nextCustomRuleSetTag(args.existingRuleSetTags);
+  const rs: SingboxRouterRuleSet = { tag, type: 'inline', rules: customRules };
+  await api.singboxRouterAddRuleSet(rs);
+  await api.singboxRouterUpdateRule(args.ruleIndex, buildRoutedRule(outbound, [tag]));
 }

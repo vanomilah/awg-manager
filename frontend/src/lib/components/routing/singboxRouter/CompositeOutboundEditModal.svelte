@@ -1,7 +1,10 @@
 <script lang="ts">
-	import { Button, Dropdown, SideDrawer, type DropdownOption } from '$lib/components/ui';
+	import { Button, Dropdown, SegmentedControl, type DropdownOption } from '$lib/components/ui';
+	import type { SegmentedOption } from '$lib/components/ui/segmentedControl';
+	import SingboxSettingsModal from './SingboxSettingsModal.svelte';
 	import type { SingboxRouterOutbound, SingboxRouterWANInterface } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
+	import { isSubscriptionOutbound } from '$lib/components/sb-router/outboundLabel';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
 	import { resolveMemberLabel } from '$lib/utils/memberLabel';
 	import { api } from '$lib/api/client';
@@ -88,11 +91,18 @@
 		}
 	});
 
+	const subsData = $derived($subscriptionsStore?.data ?? []);
+	const isSubscription = $derived(
+		outbound ? isSubscriptionOutbound(outbound, subsData) : false,
+	);
+
 	const isDirty = $derived.by(() => {
+		const membersChanged =
+			!isSubscription && [...members].join(',') !== [...initialMembers].join(',');
 		return (
 			type !== initialType ||
 			tag !== initialTag ||
-			[...members].join(',') !== [...initialMembers].join(',') ||
+			membersChanged ||
 			url !== initialUrl ||
 			interval !== initialInterval ||
 			tolerance !== initialTolerance ||
@@ -128,7 +138,6 @@
 	// Default-picker options: only members already chosen. Подписочные
 	// тэги (sub-XXX-YYY) и awg-XXX тэги резолвим в человеческие labels —
 	// тот же UX, что и на карточке composite outbound (issue #214).
-	const subsData = $derived($subscriptionsStore?.data ?? []);
 	function memberLabel(tag: string): string {
 		return resolveMemberLabel(tag, subsData, outboundOptions);
 	}
@@ -137,6 +146,7 @@
 	);
 
 	function addMember(v: string): void {
+		if (isSubscription) return;
 		if (!v) return;
 		if (members.includes(v)) return;
 		members = [...members, v];
@@ -145,6 +155,7 @@
 	}
 
 	function removeMember(v: string): void {
+		if (isSubscription) return;
 		members = members.filter((m) => m !== v);
 		if (defaultOutbound === v) defaultOutbound = '';
 	}
@@ -168,7 +179,8 @@
 				}
 				built = { type: 'direct', tag: tag.trim(), bind_interface: bindInterface };
 			} else {
-				if (members.length < 2) {
+				const memberList = isSubscription && outbound ? [...(outbound.outbounds ?? [])] : [...members];
+				if (memberList.length < 2) {
 					error = 'Нужно минимум 2 члена';
 					busy = false;
 					return;
@@ -176,8 +188,11 @@
 				built = {
 					type,
 					tag: tag.trim(),
-					outbounds: [...members],
+					outbounds: memberList,
 				};
+				if (outbound?.source === 'subscription') {
+					built.source = 'subscription';
+				}
 				if (type === 'urltest') {
 					built.url = url;
 					built.interval = interval;
@@ -195,6 +210,14 @@
 		}
 	}
 
+	type OutboundType = 'urltest' | 'selector' | 'direct';
+
+	const typeOptions = $derived<SegmentedOption<OutboundType>[]>([
+		{ value: 'urltest', label: 'URLTest', disabled: !!outbound && outbound.type === 'direct' },
+		{ value: 'selector', label: 'Selector', disabled: !!outbound && outbound.type === 'direct' },
+		{ value: 'direct', label: 'Интерфейс', disabled: !!outbound && outbound.type !== 'direct' },
+	]);
+
 	const typeDescription = $derived(
 		type === 'direct'
 			? 'Прямое соединение через выбранный интерфейс (IPSec/IKEv2/др. VPN). Трафик правила пойдёт через этот интерфейс.'
@@ -204,21 +227,23 @@
 	);
 </script>
 
-<SideDrawer
-	open
-	onClose={onClose}
+<SingboxSettingsModal
 	title={outbound ? 'Редактировать outbound' : 'Новый outbound'}
-	width={620}
-	footer={drawerFooter}
+	onClose={onClose}
+	size="lg"
+	hasUnsavedChanges={() => isDirty}
 >
 	<div class="form">
-		<div class="section-label">Тип</div>
-		<div class="segment">
-			<button class:active={type === 'urltest'} onclick={() => (type = 'urltest')} type="button" disabled={!!outbound && outbound.type === 'direct'}>URLTest</button>
-			<button class:active={type === 'selector'} onclick={() => (type = 'selector')} type="button" disabled={!!outbound && outbound.type === 'direct'}>Selector</button>
-			<button class:active={type === 'direct'} onclick={() => (type = 'direct')} type="button" disabled={!!outbound && outbound.type !== 'direct'}>Интерфейс</button>
+		<div class="field type-field">
+			<div class="lbl">Тип</div>
+			<SegmentedControl
+				value={type}
+				options={typeOptions}
+				ariaLabel="Тип outbound"
+				onchange={(next) => (type = next)}
+			/>
+			<div class="type-hint">{typeDescription}</div>
 		</div>
-		<div class="type-hint">{typeDescription}</div>
 
 		<label class="field">
 			<div class="lbl">Tag (имя)</div>
@@ -230,7 +255,7 @@
 
 		{#if type !== 'direct'}
 			<div class="field">
-				<div class="lbl">Members (минимум 2)</div>
+				<div class="lbl">{isSubscription ? 'Участники' : 'Members (минимум 2)'}</div>	
 				<div class="member-chips" class:empty={members.length === 0}>
 					{#if members.length === 0}
 						<span class="chips-placeholder">Участники не выбраны</span>
@@ -238,29 +263,36 @@
 						{#each members as m (m)}
 							<span class="member-chip" title={m}>
 								<span class="member-chip-label">{memberLabel(m)}</span>
-								<button
-									type="button"
-									class="member-chip-remove"
-									aria-label={`Удалить ${m}`}
-									title="Удалить"
-									onclick={() => removeMember(m)}
-								>
-									<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-										<line x1="18" y1="6" x2="6" y2="18" />
-										<line x1="6" y1="6" x2="18" y2="18" />
-									</svg>
-								</button>
+								{#if !isSubscription}
+									<button
+										type="button"
+										class="member-chip-remove"
+										aria-label={`Удалить ${m}`}
+										title="Удалить"
+										onclick={() => removeMember(m)}
+									>
+										<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+											<line x1="18" y1="6" x2="6" y2="18" />
+											<line x1="6" y1="6" x2="18" y2="18" />
+										</svg>
+									</button>
+								{/if}
 							</span>
 						{/each}
 					{/if}
 				</div>
-				<Dropdown
-					value={memberPicker}
-					options={memberDropdownOptions}
-					placeholder="Добавить участника"
-					onchange={addMember}
-					fullWidth
-				/>
+				{#if isSubscription}
+					<div class="type-hint">Список редактируется в разделе «Туннели» -> «Sing-box подписки»</div>
+				{/if}
+				{#if !isSubscription}
+					<Dropdown
+						value={memberPicker}
+						options={memberDropdownOptions}
+						placeholder="Добавить участника"
+						onchange={addMember}
+						fullWidth
+					/>
+				{/if}
 			</div>
 
 			{#if type === 'urltest'}
@@ -307,174 +339,11 @@
 
 		{#if error}<div class="error">{error}</div>{/if}
 	</div>
-</SideDrawer>
 
-{#snippet drawerFooter()}
-	<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
-	<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
-		Сохранить
-	</Button>
-{/snippet}
-
-<style>
-	.form {
-		display: grid;
-		gap: 0.6rem;
-		min-width: 0;
-	}
-	.section-label {
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--muted-text);
-	}
-	.type-hint {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-		background: var(--bg);
-		padding: 0.5rem 0.75rem;
-		border-radius: 4px;
-		line-height: 1.5;
-	}
-
-	.tag-warn {
-		margin-top: 0.35rem;
-		font-size: 0.75rem;
-		line-height: 1.4;
-		color: var(--warning, #d97706);
-	}
-	.field {
-		display: grid;
-		gap: 0.25rem;
-	}
-	.lbl {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-	}
-	.field input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.4rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-		width: 100%;
-		box-sizing: border-box;
-	}
-	.segment {
-		display: flex;
-		width: 100%;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		overflow: hidden;
-	}
-	.segment button {
-		flex: 1 1 0;
-		min-width: 0;
-		background: transparent;
-		border: none;
-		padding: 0.4rem 0.9rem;
-		font-size: 0.85rem;
-		cursor: pointer;
-		color: var(--muted-text);
-		text-align: center;
-		white-space: nowrap;
-	}
-	.segment button + button {
-		border-left: 1px solid var(--border);
-	}
-	.segment button.active {
-		background: var(--accent, #3b82f6);
-		color: var(--color-accent-contrast, #ffffff);
-		font-weight: 600;
-	}
-	.row2 {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 0.5rem;
-	}
-	.error {
-		color: var(--danger, #dc2626);
-		font-size: 0.85rem;
-	}
-
-	.member-chips {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-		padding: 0.4rem 0.5rem;
-		min-height: 2.1rem;
-		background: var(--bg);
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		align-items: center;
-	}
-	.member-chips.empty {
-		justify-content: flex-start;
-	}
-	.chips-placeholder {
-		font-size: 0.78rem;
-		color: var(--muted-text);
-		font-style: italic;
-	}
-	.member-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-		background: var(--color-accent-tint, var(--bg));
-		color: var(--color-accent, var(--text));
-		border: 1px solid var(--color-accent-border, var(--border));
-		border-radius: 999px;
-		padding: 0.15rem 0.25rem 0.15rem 0.6rem;
-		font-family: ui-monospace, monospace;
-		font-size: 0.78rem;
-		line-height: 1.3;
-		max-width: 100%;
-	}
-	.member-chip-label {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.member-chip-remove {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.1rem;
-		height: 1.1rem;
-		padding: 0;
-		background: transparent;
-		border: none;
-		border-radius: 999px;
-		color: inherit;
-		opacity: 0.7;
-		cursor: pointer;
-		transition: opacity var(--t-fast, 120ms) ease, background var(--t-fast, 120ms) ease;
-	}
-	.member-chip-remove:hover {
-		opacity: 1;
-		background: rgba(0, 0, 0, 0.12);
-	}
-	.member-chip-remove svg {
-		width: 12px;
-		height: 12px;
-	}
-
-	@media (max-width: 640px) {
-		.segment {
-			display: grid;
-			grid-template-columns: repeat(3, minmax(0, 1fr));
-			width: 100%;
-		}
-		.segment button {
-			width: 100%;
-			min-width: 0;
-			padding: 0.5rem 0.35rem;
-			font-size: 0.78rem;
-		}
-		.row2 {
-			grid-template-columns: minmax(0, 1fr);
-		}
-	}
-</style>
+	{#snippet actions()}
+		<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
+		<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
+			Сохранить
+		</Button>
+	{/snippet}
+</SingboxSettingsModal>

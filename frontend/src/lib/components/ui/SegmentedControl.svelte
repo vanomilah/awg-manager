@@ -23,8 +23,13 @@
 
 	const isIcon = $derived(variant === 'icon' || options.some((o) => o.icon != null));
 
+	function isOptionDisabled(option: SegmentedOption<T>): boolean {
+		return disabled || !!option.disabled;
+	}
+
 	function select(next: T) {
-		if (disabled || next === value) return;
+		const option = options.find((o) => o.value === next);
+		if (!option || isOptionDisabled(option) || next === value) return;
 		onchange(next);
 	}
 </script>
@@ -43,7 +48,7 @@
 			aria-pressed={value === option.value}
 			aria-label={isIcon ? option.label : undefined}
 			title={isIcon ? option.label : undefined}
-			{disabled}
+			disabled={isOptionDisabled(option)}
 			onclick={() => select(option.value)}
 		>
 			{#if option.icon}

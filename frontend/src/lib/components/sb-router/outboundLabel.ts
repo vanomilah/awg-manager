@@ -5,6 +5,14 @@ export interface OutboundDisplay {
 	subtitle: string;
 }
 
+export function isSubscriptionOutbound(
+	o: SingboxRouterOutbound,
+	subscriptions: Subscription[] | undefined | null = null,
+): boolean {
+	if (o.source === 'subscription') return true;
+	return subscriptions?.some((s) => s.selectorTag === o.tag) ?? false;
+}
+
 function typeSubtitle(o: SingboxRouterOutbound): string {
 	if (o.type === 'direct') return o.bind_interface ? `direct · → ${o.bind_interface}` : 'direct';
 	return o.type; // selector / urltest / loadbalance
@@ -23,9 +31,9 @@ export function outboundDisplay(
 	o: SingboxRouterOutbound,
 	subscriptions: Subscription[] | undefined | null,
 ): OutboundDisplay {
-	if (o.source === 'subscription') {
+	if (isSubscriptionOutbound(o, subscriptions)) {
 		const sub = subscriptions?.find((s) => s.selectorTag === o.tag);
-		return { title: sub?.label || o.tag, subtitle: 'подписка' };
+		return { title: sub?.label || o.tag, subtitle: typeSubtitle(o) };
 	}
 	return { title: o.tag, subtitle: typeSubtitle(o) };
 }

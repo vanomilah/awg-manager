@@ -1,6 +1,14 @@
 <script lang="ts">
-	import Modal from '$lib/components/ui/Modal.svelte';
-	import { Button, Dropdown, ChipMultiSelect, type DropdownOption, type ChipOption } from '$lib/components/ui';
+	import SingboxSettingsModal from './SingboxSettingsModal.svelte';
+	import {
+		Button,
+		Dropdown,
+		ChipMultiSelect,
+		SegmentedControl,
+		type DropdownOption,
+		type ChipOption,
+		type SegmentedOption,
+	} from '$lib/components/ui';
 	import type { SingboxRouterRule, SingboxRouterRuleSet } from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
 
@@ -21,6 +29,8 @@
 		 * is fine — all sets render as unused.
 		 */
 		ruleSetUsage?: Map<string, number>;
+		/** Только domain_suffix и ip_cidr; outbound/action не меняются. */
+		matchersOnly?: boolean;
 		onClose: () => void;
 		onSave: (rule: SingboxRouterRule) => Promise<void> | void;
 	}
@@ -30,6 +40,7 @@
 		availableRuleSets,
 		initialRuleSetTags,
 		ruleSetUsage,
+		matchersOnly = false,
 		onClose,
 		onSave,
 	}: Props = $props();
@@ -63,6 +74,11 @@
 	let action: 'route' | 'reject' = $state((rule?.action === 'reject' ? 'reject' : 'route'));
 	// svelte-ignore state_referenced_locally
 	let outbound = $state(rule?.outbound ?? '');
+
+	const actionOptions: SegmentedOption<'route' | 'reject'>[] = [
+		{ value: 'route', label: 'Направить' },
+		{ value: 'reject', label: 'Заблокировать' },
+	];
 
 	let busy = $state(false);
 	let error = $state('');
@@ -147,15 +163,25 @@
 				return;
 			}
 
-			const built: SingboxRouterRule = {
-				domain_suffix: domain_suffix.length ? domain_suffix : undefined,
-				ip_cidr: ip_cidr.length ? ip_cidr : undefined,
-				source_ip_cidr: source_ip_cidr.length ? source_ip_cidr : undefined,
-				rule_set: rule_set.length ? rule_set : undefined,
-				port: port.length ? port : undefined,
-				action,
-				outbound: action === 'route' ? outbound : undefined,
-			};
+			let built: SingboxRouterRule;
+			if (matchersOnly && rule) {
+				built = {
+					domain_suffix: domain_suffix.length ? domain_suffix : undefined,
+					ip_cidr: ip_cidr.length ? ip_cidr : undefined,
+					action: rule.action === 'reject' ? 'reject' : 'route',
+					outbound: rule.action === 'reject' ? undefined : rule.outbound,
+				};
+			} else {
+				built = {
+					domain_suffix: domain_suffix.length ? domain_suffix : undefined,
+					ip_cidr: ip_cidr.length ? ip_cidr : undefined,
+					source_ip_cidr: source_ip_cidr.length ? source_ip_cidr : undefined,
+					rule_set: rule_set.length ? rule_set : undefined,
+					port: port.length ? port : undefined,
+					action,
+					outbound: action === 'route' ? outbound : undefined,
+				};
+			}
 
 			await onSave(built);
 		} catch (e) {
@@ -166,7 +192,11 @@
 	}
 </script>
 
-<Modal open onclose={onClose} title={rule ? 'Редактировать правило' : 'Новое правило'} hasUnsavedChanges={() => isDirty}>
+<SingboxSettingsModal
+	title={matchersOnly ? 'Домены и адреса' : rule ? 'Редактировать правило' : 'Новое правило'}
+	onClose={onClose}
+	hasUnsavedChanges={() => isDirty}
+>
 	<div class="form">
 		<div class="section-label">Matchers (минимум один)</div>
 
@@ -196,55 +226,59 @@
 			<textarea bind:value={ipCidrStr} rows="6" placeholder="142.250.0.0/15"></textarea>
 		</label>
 
-		<label class="field">
-			<div class="field-head">
-				<span class="lbl">Source IP CIDR</span>
-				{#if sourceIPsCount > 0}
-					<span class="count-chip">
-						{sourceIPsCount}
-						{sourceIPsCount === 1 ? 'источник' : sourceIPsCount < 5 ? 'источника' : 'источников'}
-					</span>
+		{#if !matchersOnly}
+			<label class="field">
+				<div class="field-head">
+					<span class="lbl">Source IP CIDR</span>
+					{#if sourceIPsCount > 0}
+						<span class="count-chip">
+							{sourceIPsCount}
+							{sourceIPsCount === 1 ? 'источник' : sourceIPsCount < 5 ? 'источника' : 'источников'}
+						</span>
+					{/if}
+				</div>
+				<textarea bind:value={sourceIpCidrStr} rows="6" placeholder="192.168.1.50"></textarea>
+			</label>
+
+			<div class="field">
+				<div class="lbl">Rule sets</div>
+				<ChipMultiSelect
+					values={ruleSetTags}
+					options={ruleSetOptions}
+					onchange={(next) => (ruleSetTags = next)}
+					placeholder="не выбрано"
+					allowOrphans
+				/>
+				<div class="hint">
+					Готовые наборы (geosite/geoip). Для своих доменов и подсетей используйте поля выше.
+				</div>
+			</div>
+
+			<label class="field">
+				<div class="lbl">Порты (через запятую)</div>
+				<input bind:value={portStr} placeholder="443, 80" />
+				<div class="hint">
+					Необязательно. Дополнительно ограничивает правило конкретными портами.
+				</div>
+			</label>
+
+			<div class="action-section">
+				<div class="section-label">Действие</div>
+				<SegmentedControl
+					value={action}
+					options={actionOptions}
+					ariaLabel="Действие правила маршрутизации"
+					onchange={(next) => (action = next)}
+				/>
+
+				{#if action === 'route'}
+					<label class="field">
+						<div class="lbl">Куда направить</div>
+						<Dropdown bind:value={outbound} options={outboundDropdownOptions} fullWidth />
+					</label>
 				{/if}
 			</div>
-			<textarea bind:value={sourceIpCidrStr} rows="6" placeholder="192.168.1.50"></textarea>
-		</label>
-
-		<div class="field">
-			<div class="lbl">Rule sets</div>
-			<ChipMultiSelect
-				values={ruleSetTags}
-				options={ruleSetOptions}
-				onchange={(next) => (ruleSetTags = next)}
-				placeholder="не выбрано"
-				allowOrphans
-			/>
-			<div class="hint">
-				Готовые наборы (geosite/geoip). Для своих доменов и подсетей используйте поля выше.
-			</div>
-		</div>
-
-		<label class="field">
-			<div class="lbl">Порты (через запятую)</div>
-			<input bind:value={portStr} placeholder="443, 80" />
-			<div class="hint">
-				Необязательно. Дополнительно ограничивает правило конкретными портами.
-			</div>
-		</label>
-
-		<div class="action-section">
-			<div class="section-label">Действие</div>
-			<div class="segment">
-				<button class:active={action === 'route'} onclick={() => (action = 'route')} type="button">Направить</button>
-				<button class:active={action === 'reject'} onclick={() => (action = 'reject')} type="button">Заблокировать</button>
-			</div>
-
-			{#if action === 'route'}
-				<label class="field">
-					<div class="lbl">Куда направить</div>
-					<Dropdown bind:value={outbound} options={outboundDropdownOptions} fullWidth />
-				</label>
-			{/if}
-		</div>
+		{/if}
 
 		{#if error}<div class="error">{error}</div>{/if}
 	</div>
@@ -255,117 +289,4 @@
 			Сохранить
 		</Button>
 	{/snippet}
-</Modal>
-
-<style>
-	.form {
-		display: grid;
-		gap: 0.6rem;
-		min-width: 0;
-	}
-	.section-label {
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--muted-text);
-		margin-bottom: 0.25rem;
-	}
-	.field {
-		display: grid;
-		gap: 0.25rem;
-	}
-	.lbl {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-	}
-	.field-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-	.count-chip {
-		font-size: 0.7rem;
-		color: var(--muted-text);
-		padding: 0.1rem 0.45rem;
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		font-family: ui-monospace, monospace;
-		white-space: nowrap;
-	}
-	.hint {
-		font-size: 0.72rem;
-		color: var(--muted-text);
-		line-height: 1.4;
-		margin-top: 0.15rem;
-	}
-	.field textarea,
-	.field input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.4rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-		box-sizing: border-box;
-		width: 100%;
-		resize: vertical;
-	}
-	.action-section {
-		border-top: 1px solid var(--border);
-		padding-top: 0.75rem;
-		margin-top: 0.25rem;
-		display: grid;
-		gap: 0.5rem;
-	}
-	.segment {
-		display: inline-flex;
-		border: 1px solid var(--border);
-		border-radius: 4px;
-		overflow: hidden;
-		width: fit-content;
-	}
-	.segment button {
-		background: transparent;
-		border: none;
-		padding: 0.4rem 0.9rem;
-		font-size: 0.85rem;
-		cursor: pointer;
-		color: var(--muted-text);
-	}
-	.segment button + button {
-		border-left: 1px solid var(--border);
-	}
-	.segment button.active {
-		background: var(--accent, #3b82f6);
-		color: var(--color-accent-contrast, #ffffff);
-		font-weight: 600;
-	}
-
-	@media (max-width: 640px) {
-		.segment {
-			display: grid;
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-			width: 100%;
-			border-radius: 0.375rem;
-		}
-
-		.segment button {
-			min-width: 0;
-			width: 100%;
-			min-height: 2.375rem;
-			padding: 0.5rem 0.625rem;
-			text-align: center;
-			white-space: nowrap;
-		}
-
-		.segment button + button {
-			border-left: 1px solid var(--border);
-		}
-	}
-	.error {
-		color: var(--danger, #dc2626);
-		font-size: 0.85rem;
-	}
-</style>
+</SingboxSettingsModal>

@@ -4,26 +4,45 @@
 -->
 
 <script lang="ts">
-  import type { SingboxRouterRule, SingboxRouterOutbound } from '$lib/types';
+  import type {
+    SingboxProxyGroup,
+    SingboxRouterRule,
+    SingboxRouterOutbound,
+    SingboxTunnel,
+    Subscription,
+  } from '$lib/types';
   import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
   import { Badge } from '$lib/components/ui';
   import { ChevronUp, ChevronDown, Edit3, Trash2 } from 'lucide-svelte';
-  import { isSystemRule, systemRuleTooltip } from './adapters';
-  import { resolveMemberLabel } from '$lib/utils/memberLabel';
-
-  const AWG_OPTION_GROUPS = new Set(['AWG туннели', 'Системные WireGuard']);
+  import { isSystemRule, mapRuleAction, resolveOutboundDisplay, systemRuleTooltip } from './adapters';
+  import OutboundTile from './OutboundTile.svelte';
+  import type { OutboundDisplay } from './types';
 
   interface Props {
     rules: SingboxRouterRule[];
     outbounds: SingboxRouterOutbound[];
     outboundOptions?: OutboundGroup[];
+    subscriptions?: Subscription[] | null;
+    proxyGroups?: SingboxProxyGroup[];
+    singboxTunnels?: SingboxTunnel[];
     onEdit: (idx: number) => void;
     onDelete: (idx: number) => void;
     onMove: (idx: number, dir: 'up' | 'down') => void;
     bare?: boolean;
   }
 
-  let { rules, outboundOptions = [], onEdit, onDelete, onMove, bare = false }: Props = $props();
+  let {
+    rules,
+    outbounds,
+    outboundOptions = [],
+    subscriptions = null,
+    proxyGroups = [],
+    singboxTunnels = [],
+    onEdit,
+    onDelete,
+    onMove,
+    bare = false,
+  }: Props = $props();
 
   type ActionLabel = 'SNIFF' | 'HIJACK' | 'BYPASS' | 'REJECT' | 'ROUTE';
   type ActionVariant = 'default' | 'accent' | 'success' | 'error' | 'warning' | 'info' | 'muted';
@@ -34,10 +53,7 @@
     actionLabel: ActionLabel;
     actionVariant: ActionVariant;
     matchers: string;
-    outbound: string;
-    outboundLabel: string;
-    outboundVariant: 'accent' | 'purple';
-    outboundKind: 'route' | 'direct' | 'reject' | 'none';
+    outboundDisplay: OutboundDisplay | null;
     tooltip?: string;
   }
 
@@ -79,30 +95,32 @@
     return { label: 'ROUTE', variant: 'success' };
   }
 
+  function outboundForRule(r: SingboxRouterRule): OutboundDisplay | null {
+    const action = mapRuleAction(r);
+    if (action === 'sniff' || action === 'hijack-dns') return null;
+    if (action === 'route' && !r.outbound) return null;
+    return resolveOutboundDisplay(
+      r.outbound,
+      action,
+      outbounds,
+      outboundOptions,
+      subscriptions,
+      proxyGroups,
+      singboxTunnels,
+    );
+  }
+
   const rowData = $derived<RowData[]>(
     rules.map((r, idx) => {
       const sys = isSystemRule(r);
       const a = actionDisplay(r);
-      const outbound = r.outbound ?? (r.action === 'reject' ? 'reject' : '—');
-      const outboundKind: RowData['outboundKind'] = outbound === '—' ? 'none'
-        : outbound === 'direct' ? 'direct'
-        : outbound === 'reject' ? 'reject' : 'route';
-      const outboundLabel = outboundKind === 'route'
-        ? resolveMemberLabel(outbound, null, outboundOptions)
-        : outbound;
-      const outboundVariant = outboundOptions.some((g) =>
-        AWG_OPTION_GROUPS.has(g.group) && g.items.some((i) => i.value === outbound)
-      ) ? 'purple' : 'accent';
       return {
         idx,
         sys,
         actionLabel: a.label,
         actionVariant: a.variant,
         matchers: compileMatchers(r),
-        outbound,
-        outboundLabel,
-        outboundVariant,
-        outboundKind,
+        outboundDisplay: outboundForRule(r),
         tooltip: sys ? systemRuleTooltip(r) : undefined,
       };
     }),
@@ -115,14 +133,14 @@
     <div>Порядок</div>
     <div>Действие</div>
     <div>Условия</div>
-    <div>Выход</div>
+    <div class="outbound-head">Выход</div>
     <div class="actions-col">Действия</div>
   </div>
   {#each rowData as row (row.idx)}
     <div
       class="row"
       class:sys={row.sys}
-      class:route={!row.sys && row.outboundKind === 'route'}
+      class:route={!row.sys && row.outboundDisplay?.kind !== 'direct' && row.outboundDisplay?.kind !== 'block'}
       title={row.tooltip}
     >
       <div class="idx">{row.idx}</div>
@@ -160,14 +178,10 @@
       </div>
       <div class="outbound-cell">
         <span class="mobile-label">Выход</span>
-        {#if row.outboundKind === 'none'}
-          <span class="dash">—</span>
-        {:else if row.outboundKind === 'direct'}
-          <Badge variant="muted" mono size="sm">direct</Badge>
-        {:else if row.outboundKind === 'reject'}
-          <Badge variant="error" mono size="sm">reject</Badge>
+        {#if row.outboundDisplay}
+          <OutboundTile outbound={row.outboundDisplay} size="compact" />
         {:else}
-          <Badge variant={row.outboundVariant} mono size="sm" title={row.outbound}>{row.outboundLabel}</Badge>
+          <span class="dash">—</span>
         {/if}
       </div>
       <div class="actions-col actions">
@@ -208,10 +222,16 @@
     border-radius: var(--radius);
     overflow: hidden;
   }
+  .empty {
+    padding: 14px;
+    color: var(--text-muted);
+    text-align: center;
+    font-size: 12px;
+  }
   .header,
   .row {
     display: grid;
-    grid-template-columns: 24px 64px 92px minmax(0, 1fr) minmax(72px, 160px) 88px;
+    grid-template-columns: 24px 64px 92px minmax(0, 1fr) minmax(72px, 140px) 88px;
     align-items: center;
     gap: 8px;
     padding: 8px 14px;
@@ -231,17 +251,13 @@
   .header > div:nth-child(2),
   .header > div:nth-child(3),
   .row > .reorder,
-  .row > .action-badge-cell,
-  .header > div:nth-child(5),
-  .row > .outbound-cell {
+  .row > .action-badge-cell {
     text-align: center;
   }
-  .header > div:nth-child(5),
+  .outbound-head,
   .row > .outbound-cell {
+    text-align: left;
     min-width: 0;
-  }
-  .row > .outbound-cell {
-    justify-self: center;
   }
   .row > .matchers {
     min-width: 0;
@@ -301,17 +317,18 @@
   .outbound-cell {
     min-width: 0;
     display: flex;
-    justify-content: center;
+    justify-content: flex-start;
     align-items: center;
     overflow: hidden;
   }
-  .action-badge-cell :global(.badge),
-  .outbound-cell :global(.badge) {
+  .outbound-cell :global(.tone-chip) {
     max-width: 100%;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  }
+  .outbound-cell :global(.chip-label) {
+    min-width: 0;
+    max-width: 100%;
   }
   .dash {
     color: var(--text-muted);
@@ -325,12 +342,6 @@
     align-items: center;
     justify-content: flex-end;
     gap: 4px;
-  }
-  .empty {
-    padding: 14px;
-    color: var(--text-muted);
-    text-align: center;
-    font-size: 12px;
   }
   @media (max-width: 768px) {
     .table {
@@ -417,12 +428,10 @@
       justify-content: flex-start;
       text-align: left;
     }
-    .outbound-cell :global(.badge) {
+    .outbound-cell :global(.tone-chip) {
       max-width: 100%;
       min-width: 0;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
     .reorder {
       order: 4;

@@ -39,6 +39,46 @@ var validRejectMethods = map[string]bool{
 	"": true, "default": true, "drop": true,
 }
 
+const managedDNSDirectTag = "dns-direct"
+
+// scrubDNSServerDetourStored normalizes only values that must never be kept in
+// the editable router config (explicit direct → empty). Legacy detour on
+// dns-direct is preserved so the UI can warn until the user saves.
+func scrubDNSServerDetourStored(s *DNSServer) {
+	if strings.TrimSpace(s.Detour) == "direct" {
+		s.Detour = ""
+	}
+}
+
+// scrubDNSServerDetourForSingbox clears detour values that must not reach
+// sing-box: empty, explicit "direct", and any detour on dns-direct.
+func scrubDNSServerDetourForSingbox(s *DNSServer) {
+	d := strings.TrimSpace(s.Detour)
+	if d == "" || d == "direct" || s.Tag == managedDNSDirectTag {
+		s.Detour = ""
+	}
+}
+
+// SanitizeDNSConfigForSingbox prepares DNS servers for 20-router.json / sing-box.
+func SanitizeDNSConfigForSingbox(cfg *RouterConfig) {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.DNS.Servers {
+		scrubDNSServerDetourForSingbox(&cfg.DNS.Servers[i])
+	}
+}
+
+// SanitizeDNSConfig normalizes stored router config after load (direct only).
+func SanitizeDNSConfig(cfg *RouterConfig) {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.DNS.Servers {
+		scrubDNSServerDetourStored(&cfg.DNS.Servers[i])
+	}
+}
+
 func validateDNSServer(s DNSServer) error {
 	if strings.TrimSpace(s.Tag) == "" {
 		return fmt.Errorf("dns server tag is required")
@@ -118,6 +158,7 @@ func (c *RouterConfig) dnsServerTags() map[string]bool {
 }
 
 func (c *RouterConfig) AddDNSServer(s DNSServer) error {
+	scrubDNSServerDetourForSingbox(&s)
 	if err := validateDNSServer(s); err != nil {
 		return err
 	}
@@ -134,6 +175,7 @@ func (c *RouterConfig) AddDNSServer(s DNSServer) error {
 }
 
 func (c *RouterConfig) UpdateDNSServer(tag string, s DNSServer) error {
+	scrubDNSServerDetourForSingbox(&s)
 	if err := validateDNSServer(s); err != nil {
 		return err
 	}

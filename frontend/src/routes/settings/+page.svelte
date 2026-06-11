@@ -24,6 +24,8 @@
 		PukhososPatrol,
 		SettingsSectionLabel,
 	} from "$lib/components/settings";
+	import { experimentalSettingsUnlocked } from "$lib/stores/experimentalSettingsUnlocked";
+	import { settingsUpdateHighlight } from "$lib/stores/settingsUpdateHighlight";
 	import { setSettings as setGlobalSettings } from "$lib/stores/settings";
 	import {
 		downloadOutbounds,
@@ -50,8 +52,6 @@
 	import { waitForBackendRestart } from "$lib/restartRecovery";
 	import { hasDevelopChannelQuizPassed } from "$lib/utils/developChannelGate";
 	import { developFeedbackFabVisible } from "$lib/stores/developFeedbackFab";
-	import { experimentalSettingsUnlocked } from "$lib/stores/experimentalSettingsUnlocked";
-	import { settingsUpdateHighlight } from "$lib/stores/settingsUpdateHighlight";
 	import { pluralize, AVAILABLE_WORDS, TUNNEL_WORDS } from "$lib/utils/pluralize";
 	import {
 		CircleArrowDown,

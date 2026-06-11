@@ -1,18 +1,18 @@
 <!--
-  Выезжающий drawer настроек inbound (device proxy). Переиспользует SettingsCard
+  Модалка настроек inbound (device proxy). Переиспользует SettingsCard
   + чистые хелперы из $lib/utils/deviceProxyInstance. Открывается из панели Inbounds.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { SideDrawer } from '$lib/components/ui';
-  import SettingsCard from '$lib/components/deviceproxy/SettingsCard.svelte';
+  import { Button } from '$lib/components/ui';
+  import SingboxSettingsModal from '$lib/components/routing/singboxRouter/SingboxSettingsModal.svelte';
+	import SettingsCard from '$lib/components/deviceproxy/SettingsCard.svelte';
   import { api } from '$lib/api/client';
   import { deviceProxyOutbounds } from '$lib/stores/deviceproxy';
   import { configFromInstance, mergeInstanceConfig } from '$lib/utils/deviceProxyInstance';
   import type { DeviceProxyInstance, DeviceProxyConfig } from '$lib/types';
 
   interface Props {
-    /** Редактируемый inbound; для создания нового передавайте newDeviceProxyInstance(...). */
     instance: DeviceProxyInstance;
     open: boolean;
     onClose: () => void;
@@ -24,6 +24,9 @@
   const outbounds = $derived(outboundsSnap.data ?? []);
 
   let bridgeInterfaces = $state<{ id: string; label: string }[]>([]);
+  let settingsCard = $state<SettingsCard | null>(null);
+  let saving = $state(false);
+
   onMount(async () => {
     try {
       const choices = await api.getDeviceProxyListenChoices();
@@ -43,9 +46,17 @@
   }
 </script>
 
-<SideDrawer {open} onClose={onClose} title="Настройки inbound">
+<SingboxSettingsModal
+  title="Настройки inbound"
+  {open}
+  onClose={onClose}
+  size="md"
+>
   <SettingsCard
+    bind:this={settingsCard}
+    bind:saving
     embedded
+    hideFooter
     {config}
     {outbounds}
     {bridgeInterfaces}
@@ -53,4 +64,18 @@
     onSaved={() => {}}
     onCancel={onClose}
   />
-</SideDrawer>
+
+  {#snippet actions()}
+    <Button variant="ghost" size="md" onclick={onClose} disabled={saving} type="button">Отмена</Button>
+    <Button
+      variant="primary"
+      size="md"
+      onclick={() => void settingsCard?.save()}
+      disabled={saving}
+      loading={saving}
+      type="button"
+    >
+      Сохранить
+    </Button>
+  {/snippet}
+</SingboxSettingsModal>

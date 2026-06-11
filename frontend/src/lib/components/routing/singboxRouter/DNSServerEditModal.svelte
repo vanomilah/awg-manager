@@ -1,11 +1,20 @@
 <script lang="ts">
-	import { Button, Dropdown, SideDrawer, type DropdownOption } from '$lib/components/ui';
+	import { Button, Dropdown, type DropdownOption } from '$lib/components/ui';
+	import { OctagonAlert } from 'lucide-svelte';
+	import SingboxSettingsModal from './SingboxSettingsModal.svelte';
 	import type {
 		SingboxRouterDNSServer,
 		SingboxRouterDNSType,
 		SingboxRouterDNSStrategy,
 	} from '$lib/types';
 	import type { OutboundGroup } from './outboundOptions';
+	import {
+		DNS_DIRECT_SERVER_TAG,
+		getDnsDirectLegacyDetour,
+		normalizeDnsServerDetour,
+		sanitizeDnsServerForApi,
+	} from '$lib/utils/dnsServerDetour';
+	import { dnsServerDetourDisplay } from '$lib/components/sb-router/dnsServerDetourDisplay';
 
 	interface Props {
 		server?: SingboxRouterDNSServer;
@@ -34,16 +43,34 @@
 	];
 
 	const detourOptions = $derived<DropdownOption[]>([
-		{ value: '', label: '— через route (по умолчанию) —' },
+		{ value: '', label: 'Напрямую' },
 		...outboundOptions.flatMap((g) =>
 			g.items
-				.filter((i) => server != null || i.value !== 'direct')
+				.filter((i) => i.value !== 'direct')
 				.map((i) => ({ value: i.value, label: i.label, group: g.group })),
 		),
 	]);
 
+	const dnsDirectDetourOptions = $derived<DropdownOption[]>([
+		{ value: '', label: 'Напрямую' },
+	]);
+
+	const legacyDnsDirectDetour = $derived(server ? getDnsDirectLegacyDetour(server) : null);
+
+	const legacyDnsDirectDisplay = $derived.by(() => {
+		if (!server || !legacyDnsDirectDetour) return null;
+		return dnsServerDetourDisplay(server, [], outboundOptions);
+	});
+
+	const dnsDirectLegacyDetourOptions = $derived<DropdownOption[]>(
+		legacyDnsDirectDetour && legacyDnsDirectDisplay
+			? [{ value: legacyDnsDirectDetour, label: legacyDnsDirectDisplay.label }]
+			: dnsDirectDetourOptions,
+	);
+
 	// svelte-ignore state_referenced_locally
 	let tag = $state(server?.tag ?? '');
+	const isManagedDnsDirect = $derived(tag.trim() === DNS_DIRECT_SERVER_TAG);
 	// svelte-ignore state_referenced_locally
 	let type = $state<SingboxRouterDNSType>(server?.type ?? 'udp');
 	// svelte-ignore state_referenced_locally
@@ -53,7 +80,11 @@
 	// svelte-ignore state_referenced_locally
 	let path = $state(server?.path ?? '');
 	// svelte-ignore state_referenced_locally
-	let detour = $state(server?.detour ?? '');
+	let detour = $state(
+		server?.tag === DNS_DIRECT_SERVER_TAG
+			? ''
+			: (normalizeDnsServerDetour(server?.detour) ?? ''),
+	);
 	// svelte-ignore state_referenced_locally
 	let strategy = $state<SingboxRouterDNSStrategy>(server?.domain_strategy ?? '');
 	// svelte-ignore state_referenced_locally
@@ -86,7 +117,10 @@
 			initialServerAddr = server.server;
 			initialServerPort = server.server_port ?? '';
 			initialPath = server.path ?? '';
-			initialDetour = server.detour ?? '';
+			initialDetour =
+				server.tag === DNS_DIRECT_SERVER_TAG
+					? ''
+					: (normalizeDnsServerDetour(server.detour) ?? '');
 			initialStrategy = server.domain_strategy ?? '';
 			initialResolverEnabled = server.domain_resolver != null;
 			initialResolverServer = server.domain_resolver?.server ?? '';
@@ -107,12 +141,13 @@
 
 	const isDirty = $derived.by(() => {
 		return (
+			!!legacyDnsDirectDetour ||
 			tag !== initialTag ||
 			type !== initialType ||
 			serverAddr !== initialServerAddr ||
 			serverPort !== initialServerPort ||
 			path !== initialPath ||
-			detour !== initialDetour ||
+			(detour !== initialDetour && !isManagedDnsDirect) ||
 			strategy !== initialStrategy ||
 			resolverEnabled !== initialResolverEnabled ||
 			resolverServer !== initialResolverServer ||
@@ -153,11 +188,15 @@
 				}
 			}
 			if (type !== 'local') {
-				if (detour) built.detour = detour;
 				if (strategy) built.domain_strategy = strategy;
 			}
 
-			await onSave(built);
+			const payload =
+				type === 'local'
+					? built
+					: sanitizeDnsServerForApi({ ...built, detour: detour || undefined });
+
+			await onSave(payload);
 		} catch (e) {
 			error = (e as Error).message;
 		} finally {
@@ -166,12 +205,11 @@
 	}
 </script>
 
-<SideDrawer
-	open
-	onClose={onClose}
+<SingboxSettingsModal
 	title={server ? 'Редактировать DNS сервер' : 'Новый DNS сервер'}
-	width={620}
-	footer={drawerFooter}
+	onClose={onClose}
+	size="lg"
+	hasUnsavedChanges={() => isDirty}
 >
 	<div class="form">
 		<div class="fields-grid">
@@ -210,22 +248,47 @@
 		</div>
 
 		{#if type !== 'local'}
-			<section class="form-section">
+			<section class="form-section form-section-divided">
 				<div class="section-label">Маршрутизация</div>
 
-				<label class="field">
-					<div class="lbl">Detour (outbound)</div>
-					<Dropdown bind:value={detour} options={detourOptions} fullWidth />
-					<div class="hint">
-						{#if server}
-							Через какой outbound сам сервер отправляет запросы. <code>direct</code> — через провайдера,
-							выбранный туннель — через VPN (шифрованный DNS без утечек).
+				{#if isManagedDnsDirect}
+					<label class="field">
+						<div class="lbl">Detour (outbound)</div>
+						<div class="detour-legacy-wrap" class:detour-legacy-invalid={!!legacyDnsDirectDetour}>
+							{#if legacyDnsDirectDetour}
+								<OctagonAlert size={16} strokeWidth={2} aria-hidden={true} class="detour-legacy-icon" />
+							{/if}
+							<div class="detour-legacy-dropdown">
+								<Dropdown
+									value={legacyDnsDirectDetour ?? ''}
+									options={dnsDirectLegacyDetourOptions}
+									disabled
+									fullWidth
+								/>
+							</div>
+						</div>
+						{#if legacyDnsDirectDetour}
+							<div class="warn">
+								Сейчас в конфиге указан недопустимый detour. Должно быть «Напрямую» — будет
+								исправлено при сохранении.
+							</div>
 						{:else}
-							Через какой outbound сам сервер отправляет запросы.
-							Выбранный туннель — через VPN (шифрованный DNS без утечек).
+							<div class="hint">
+								Final DNS — запросы к резолверу идут <strong>напрямую</strong> (WAN). Ключ
+								<code>detour</code> в конфиг не пишется.
+							</div>
 						{/if}
-					</div>
-				</label>
+					</label>
+				{:else}
+					<label class="field">
+						<div class="lbl">Detour (outbound)</div>
+						<Dropdown bind:value={detour} options={detourOptions} fullWidth />
+						<div class="hint">
+							Через какой outbound DNS-сервер достучится до IP резолвера. «Напрямую» — с роутера
+							(WAN), ключ <code>detour</code> в конфиг не пишется.
+						</div>
+					</label>
+				{/if}
 
 				<label class="field">
 					<div class="lbl">Стратегия (IPv4/IPv6)</div>
@@ -266,121 +329,11 @@
 
 		{#if error}<div class="error">{error}</div>{/if}
 	</div>
-</SideDrawer>
 
-{#snippet drawerFooter()}
-	<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
-	<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
-		Сохранить
-	</Button>
-{/snippet}
-
-<style>
-	.form {
-		display: grid;
-		gap: 0.875rem;
-		min-width: 0;
-	}
-	.fields-grid {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 0.5rem 0.6rem;
-	}
-	.span-full {
-		grid-column: 1 / -1;
-	}
-	.form-section {
-		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
-		padding-top: 0.5rem;
-		border-top: 1px solid var(--border);
-		min-width: 0;
-	}
-	.section-label {
-		font-size: 0.7rem;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--muted-text);
-		margin: 0;
-	}
-	.resolver-fields {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 0.5rem;
-	}
-	@media (max-width: 520px) {
-		.fields-grid,
-		.resolver-fields {
-			grid-template-columns: 1fr;
-		}
-		.span-full {
-			grid-column: auto;
-		}
-	}
-	.field {
-		display: grid;
-		gap: 0.25rem;
-	}
-	.lbl {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-	}
-	.req {
-		color: var(--danger, #dc2626);
-	}
-	.field input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.4rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-family: ui-monospace, monospace;
-		font-size: 0.85rem;
-		box-sizing: border-box;
-		width: 100%;
-	}
-	.hint {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-		line-height: 1.4;
-	}
-	.hint code {
-		background: var(--bg);
-		padding: 0.05rem 0.25rem;
-		border-radius: 2px;
-		font-family: ui-monospace, monospace;
-	}
-	.toggle {
-		display: flex;
-		align-items: flex-start;
-		gap: 0.5rem;
-		font-size: 0.85rem;
-		color: var(--text);
-		cursor: pointer;
-		line-height: 1.4;
-	}
-	.toggle input {
-		margin-top: 0.15rem;
-		flex-shrink: 0;
-	}
-	.warn {
-		padding: 0.5rem 0.7rem;
-		background: rgba(224, 175, 104, 0.12);
-		border-left: 3px solid var(--warning, #e0af68);
-		border-radius: 3px;
-		font-size: 0.8rem;
-		color: var(--muted-text);
-		line-height: 1.4;
-	}
-	.warn code {
-		background: var(--bg);
-		padding: 0.05rem 0.25rem;
-		border-radius: 2px;
-		font-family: ui-monospace, monospace;
-	}
-	.error {
-		color: var(--danger, #dc2626);
-		font-size: 0.85rem;
-	}
-</style>
+	{#snippet actions()}
+		<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
+		<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
+			Сохранить
+		</Button>
+	{/snippet}
+</SingboxSettingsModal>

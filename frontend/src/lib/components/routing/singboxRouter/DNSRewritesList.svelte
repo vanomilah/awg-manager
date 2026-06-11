@@ -59,8 +59,8 @@
 {/if}
 
 {#if rewrites.length === 0}
-	<div class="empty-mild">
-		Перезаписей нет. «Перезапись» возвращает заданный IP для домена/паттерна.
+	<div class="empty">
+		Нет перезаписей. «Перезапись» возвращает заданный IP для домена/паттерна.
 	</div>
 {:else}
 	{#if !hideColumnHeader}
@@ -170,12 +170,11 @@
 		color: var(--muted-text);
 		font-size: 0.85rem;
 	}
-	.empty-mild {
-		padding: 0.6rem 0.9rem;
-		background: var(--surface-bg);
-		border-radius: 4px;
-		color: var(--muted-text);
-		font-size: 0.85rem;
+	.empty {
+		padding: 14px;
+		color: var(--text-muted);
+		text-align: center;
+		font-size: 12px;
 	}
 	.col-header {
 		display: grid;

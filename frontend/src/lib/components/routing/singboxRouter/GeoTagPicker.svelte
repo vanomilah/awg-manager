@@ -11,10 +11,11 @@
 		files: string[];
 		selected: string[];
 		maxelem?: number;
+		compact?: boolean;
 		onToggle: (tag: string) => void;
 	}
 
-	let { kind, files, selected, maxelem = 0, onToggle }: Props = $props();
+	let { kind, files, selected, maxelem = 0, compact = false, onToggle }: Props = $props();
 
 	let query = $state('');
 	let allTags = $state<Array<{ tag: GeoTag; file: string }>>([]);
@@ -50,7 +51,7 @@
 	}
 </script>
 
-<div class="picker" aria-label="Выбор {kind} тегов">
+<div class="picker" class:compact aria-label="Выбор {kind} тегов">
 	<div class="picker-header">
 		<input
 			class="form-input picker-search"
@@ -188,5 +189,34 @@
 		color: var(--text-muted);
 		font-size: 0.6875rem;
 		white-space: nowrap;
+	}
+
+	.picker.compact {
+		padding: 6px;
+		gap: 4px;
+		margin-bottom: 4px;
+	}
+
+	.picker.compact .picker-header {
+		gap: 4px;
+	}
+
+	.picker.compact .picker-empty {
+		padding: 8px;
+		font-size: 0.75rem;
+	}
+
+	.picker.compact .picker-results {
+		max-height: 160px;
+		gap: 1px;
+	}
+
+	.picker.compact .picker-result {
+		padding: 4px 8px;
+		border-radius: 4px;
+	}
+
+	.picker.compact .result-meta {
+		font-size: 0.625rem;
 	}
 </style>

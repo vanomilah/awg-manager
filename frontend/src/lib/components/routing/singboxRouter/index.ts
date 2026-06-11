@@ -1,3 +1,5 @@
+export { default as DNSGlobalsEditModal } from './DNSGlobalsEditModal.svelte';
+export { default as SingboxSettingsModal } from './SingboxSettingsModal.svelte';
 export { default as RuleEditModal } from './RuleEditModal.svelte';
 export { default as RuleSetAddModal } from './RuleSetAddModal.svelte';
 export { default as InlineRuleListEditor } from './InlineRuleListEditor.svelte';

@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { Button, SideDrawer } from '$lib/components/ui';
+	import { Button } from '$lib/components/ui';
+	import SingboxSettingsModal from './SingboxSettingsModal.svelte';
 	import type { SingboxRouterDNSRewrite } from '$lib/types';
 
 	interface Props {
@@ -33,12 +34,10 @@
 	}
 </script>
 
-<SideDrawer
-	open
-	onClose={onClose}
+<SingboxSettingsModal
 	title={rewrite ? 'Редактировать перезапись' : 'Новая перезапись'}
-	width={520}
-	footer={drawerFooter}
+	onClose={onClose}
+	size="md"
 >
 	<div class="form">
 		<label class="field">
@@ -55,50 +54,17 @@
 		</label>
 		{#if error}<div class="error">{error}</div>{/if}
 	</div>
-</SideDrawer>
 
-{#snippet drawerFooter()}
-	<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
-	<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
-		Сохранить
-	</Button>
-{/snippet}
+	{#snippet actions()}
+		<Button variant="ghost" size="md" onclick={onClose} type="button">Отмена</Button>
+		<Button variant="primary" size="md" onclick={save} disabled={busy} loading={busy} type="button">
+			Сохранить
+		</Button>
+	{/snippet}
+</SingboxSettingsModal>
 
 <style>
-	.form {
-		display: grid;
-		gap: 0.875rem;
-		min-width: 0;
-	}
-	.field {
-		display: grid;
-		gap: 0.35rem;
-		min-width: 0;
-	}
-	.lbl {
-		font-size: 0.75rem;
-		color: var(--muted-text);
-	}
 	.mono {
 		font-family: ui-monospace, monospace;
-	}
-	.field input {
-		background: var(--bg);
-		border: 1px solid var(--border);
-		padding: 0.4rem 0.6rem;
-		border-radius: 4px;
-		color: var(--text);
-		font-size: 0.85rem;
-		box-sizing: border-box;
-		width: 100%;
-	}
-	.hint {
-		font-size: 0.75rem;
-		color: var(--text-muted);
-		line-height: 1.35;
-	}
-	.error {
-		color: var(--danger, #dc2626);
-		font-size: 0.85rem;
 	}
 </style>

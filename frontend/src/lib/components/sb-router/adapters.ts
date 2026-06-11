@@ -10,7 +10,17 @@
  * (всё остальное где outbound найден в списке).
  */
 
-import type { CatalogPreset, SingboxRouterPreset, SingboxRouterRule, SingboxRouterOutbound } from '$lib/types';
+import type {
+  CatalogPreset,
+  SingboxProxyGroup,
+  SingboxRouterPreset,
+  SingboxRouterRule,
+  SingboxRouterRuleSet,
+  SingboxRouterOutbound,
+  SingboxTunnel,
+  Subscription,
+} from '$lib/types';
+import { displayRuleSetTag, resolveRuleSetByTag } from '$lib/utils/singboxInlineRules';
 import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
 import type {
   MatcherChip,
@@ -19,14 +29,19 @@ import type {
   RuleCardData,
 } from './types';
 import { detectService } from './serviceDetection';
+import { resolveRuleSetDisplayType } from '$lib/utils/ruleSetType';
+import { formatIpCidrForList } from '$lib/utils/singboxInlineRules';
+import { COMPOSITE_OUTBOUND_TYPES, resolveCompositeOutboundView } from './compositeOutboundDisplay';
+import {
+  classifyRuleSimplicity,
+  isCustomInlineRuleSetTag,
+  isSystemRule,
+  type RuleSimplicity,
+} from './simpleRule';
 
 /* ─── System rule detection ─────────────────────────────────────────── */
 
-export function isSystemRule(rule: SingboxRouterRule): boolean {
-  if (rule.action === 'sniff' || rule.action === 'hijack-dns') return true;
-  if (rule.ip_is_private && rule.outbound === 'direct') return true;
-  return false;
-}
+export { isSystemRule };
 
 /** Пояснение для системных правил — тултип в простом и экспертном режиме. */
 export function systemRuleTooltip(rule: SingboxRouterRule): string | undefined {
@@ -44,7 +59,7 @@ export function systemRuleTooltip(rule: SingboxRouterRule): string | undefined {
 
 /* ─── Action mapping ────────────────────────────────────────────────── */
 
-function mapAction(rule: SingboxRouterRule): RuleAction {
+export function mapRuleAction(rule: SingboxRouterRule): RuleAction {
   if (rule.action === 'reject') return 'block';
   if (rule.action === 'sniff') return 'sniff';
   if (rule.action === 'hijack-dns') return 'hijack-dns';
@@ -54,7 +69,7 @@ function mapAction(rule: SingboxRouterRule): RuleAction {
 
 /* ─── Outbound display ──────────────────────────────────────────────── */
 
-const COMPOSITE_TYPES = new Set(['selector', 'urltest']);
+const COMPOSITE_TYPES = COMPOSITE_OUTBOUND_TYPES;
 const AWG_OPTION_GROUPS = new Set(['AWG туннели', 'Системные WireGuard']);
 
 function findOutboundOption(
@@ -68,44 +83,117 @@ function findOutboundOption(
   return null;
 }
 
+import { splitParenMeta } from './outboundLabelFormat';
+
+const SINGBOX_TUNNEL_GROUP = 'Sing-box туннели';
+
+function proxyMetaSuffix(tag: string, tunnels: SingboxTunnel[]): string | undefined {
+  return tunnels.find((t) => t.tag === tag)?.proxyInterface;
+}
+
+function mapCompositeOutbound(
+  expanded: NonNullable<ReturnType<typeof resolveCompositeOutboundView>>,
+  singboxTunnels: SingboxTunnel[] = [],
+): OutboundDisplay {
+  const isSubscription = expanded.isSubscription;
+  return {
+    name: expanded.groupTitle,
+    label: expanded.groupTitle,
+    metaSuffix: isSubscription ? 'sub' : undefined,
+    kind: isSubscription ? 'subscription' : 'composite',
+    tone: isSubscription ? 'subscription' : 'composite',
+    compositeType: expanded.compositeType,
+    activeMemberLabel: expanded.activeMemberLabel,
+    activeMemberTitle: expanded.activeMemberTag,
+    activeMemberMetaSuffix: proxyMetaSuffix(expanded.activeMemberTag, singboxTunnels),
+    otherMemberLabels: expanded.otherMemberLabels,
+    otherMemberTitles: expanded.otherMemberTags,
+  };
+}
+
 export function resolveOutboundDisplay(
   name: string | undefined,
   action: RuleAction,
   outbounds: SingboxRouterOutbound[],
   outboundOptions: OutboundGroup[] = [],
+  subscriptions: Subscription[] | null = null,
+  proxyGroups: SingboxProxyGroup[] = [],
+  singboxTunnels: SingboxTunnel[] = [],
 ): OutboundDisplay {
   // System actions — render as mono badges instead of destination tile.
   if (action === 'sniff') {
-    return { name: name ?? 'sniff', label: 'SNIFF', kind: 'sniff' };
+    return { name: name ?? 'sniff', label: 'SNIFF', kind: 'sniff', tone: 'system' };
   }
   if (action === 'hijack-dns') {
-    return { name: name ?? 'hijack-dns', label: 'HIJACK-DNS', kind: 'hijack-dns' };
+    return { name: name ?? 'hijack-dns', label: 'HIJACK-DNS', kind: 'hijack-dns', tone: 'system' };
   }
 
   if (action === 'block') {
-    return { name: name ?? 'block', label: 'Блок', kind: 'block' };
+    return { name: name ?? 'block', label: 'Блок', kind: 'block', tone: 'block' };
   }
 
   if (!name || name === 'direct') {
-    return { name: 'direct', label: 'Прямо', kind: 'direct' };
+    return { name: 'direct', label: 'Прямо', kind: 'direct', tone: 'direct' };
   }
   if (name === 'block' || name === 'reject') {
-    return { name, label: 'Блок', kind: 'block' };
+    return { name, label: 'Блок', kind: 'block', tone: 'block' };
   }
 
   const option = findOutboundOption(name, outboundOptions);
   const ob = outbounds.find((o) => (o as { tag?: string }).tag === name);
   if (option && AWG_OPTION_GROUPS.has(option.group)) {
-    return { name, label: option.label, kind: 'awg' };
+    const parsed = splitParenMeta(option.label);
+    return { name, label: parsed.label, metaSuffix: parsed.metaSuffix, kind: 'awg', tone: 'awg' };
+  }
+  if (option?.group === SINGBOX_TUNNEL_GROUP) {
+    return {
+      name,
+      label: option.label,
+      metaSuffix: proxyMetaSuffix(name, singboxTunnels),
+      kind: 'proxy',
+      tone: 'proxy',
+    };
   }
   if (!ob) {
-    return { name, label: option?.label ?? name, kind: option ? 'tunnel' : 'unknown' };
+    const expanded = resolveCompositeOutboundView(name, outbounds, outboundOptions, subscriptions, proxyGroups);
+    if (expanded) {
+      return { ...mapCompositeOutbound(expanded, singboxTunnels), name };
+    }
+    const baseLabel = option?.label ?? name;
+    const isSingboxProxy = option?.group === SINGBOX_TUNNEL_GROUP
+      || singboxTunnels.some((t) => t.tag === name);
+    return {
+      name,
+      label: baseLabel,
+      metaSuffix: isSingboxProxy ? proxyMetaSuffix(name, singboxTunnels) : undefined,
+      kind: isSingboxProxy ? 'proxy' : option ? 'tunnel' : 'unknown',
+      tone: isSingboxProxy || option ? 'proxy' : 'unknown',
+    };
   }
   const obType = (ob as { type?: string }).type ?? '';
   if (COMPOSITE_TYPES.has(obType)) {
-    return { name, label: option?.label ?? name, kind: 'composite' };
+    const expanded = resolveCompositeOutboundView(name, outbounds, outboundOptions, subscriptions, proxyGroups);
+    if (expanded) {
+      return { ...mapCompositeOutbound(expanded, singboxTunnels), name };
+    }
+    return {
+      name,
+      label: option?.label ?? name,
+      kind: 'composite',
+      tone: 'composite',
+      compositeType: obType as OutboundDisplay['compositeType'],
+    };
   }
-  return { name, label: option?.label ?? name, kind: 'tunnel' };
+  const baseLabel = option?.label ?? name;
+  const isSingboxProxy = option?.group === SINGBOX_TUNNEL_GROUP
+    || singboxTunnels.some((t) => t.tag === name);
+  return {
+    name,
+    label: baseLabel,
+    metaSuffix: isSingboxProxy ? proxyMetaSuffix(name, singboxTunnels) : undefined,
+    kind: isSingboxProxy ? 'proxy' : 'tunnel',
+    tone: 'proxy',
+  };
 }
 
 /* ─── Matcher chip extraction ───────────────────────────────────────── */
@@ -113,8 +201,12 @@ export function resolveOutboundDisplay(
 export function extractMatcherChips(
   rule: SingboxRouterRule,
   rulesetLabels: Record<string, string>,
+  ruleSets: SingboxRouterRuleSet[] = [],
 ): MatcherChip[] {
   const chips: MatcherChip[] = [];
+  const rulesetTypes = new Map(
+    ruleSets.filter((rs) => rs.tag).map((rs) => [rs.tag, resolveRuleSetDisplayType(rs)] as const),
+  );
 
   for (const d of rule.domain_suffix ?? []) {
     chips.push({ kind: 'domain', label: d });
@@ -129,7 +221,14 @@ export function extractMatcherChips(
     chips.push({ kind: 'port', label: String(p), mono: true });
   }
   for (const rs of rule.rule_set ?? []) {
-    chips.push({ kind: 'ruleset', label: rulesetLabels[rs] ?? rs, rulesetTag: rs });
+    const resolved = resolveRuleSetByTag(rs, ruleSets);
+    const displayTag = displayRuleSetTag(resolved?.tag ?? rs);
+    chips.push({
+      kind: 'ruleset',
+      label: rulesetLabels[displayTag] ?? displayTag,
+      rulesetTag: displayTag,
+      rulesetType: resolved ? rulesetTypes.get(resolved.tag) : rulesetTypes.get(rs),
+    });
   }
   if (rule.protocol) {
     chips.push({ kind: 'protocol', label: rule.protocol });
@@ -139,6 +238,91 @@ export function extractMatcherChips(
   }
 
   return chips;
+}
+
+/** Первый домен из inline rules (domain_suffix, затем domain) — для custom-N карточек. */
+export function firstDomainFromInlineRules(rules: Record<string, unknown>[] | undefined): string | undefined {
+  if (!Array.isArray(rules)) return undefined;
+  for (const r of rules) {
+    const suffixes = r['domain_suffix'];
+    if (Array.isArray(suffixes)) {
+      for (const s of suffixes) {
+        if (typeof s === 'string' && s.trim()) return s.trim();
+      }
+    }
+    const domains = r['domain'];
+    if (Array.isArray(domains)) {
+      for (const d of domains) {
+        if (typeof d === 'string' && d.trim()) return d.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
+function chipsFromInlineRules(rules: Record<string, unknown>[] | undefined): MatcherChip[] {
+  const chips: MatcherChip[] = [];
+  if (!Array.isArray(rules)) return chips;
+
+  for (const r of rules) {
+    const suffixes = r['domain_suffix'];
+    if (Array.isArray(suffixes)) {
+      for (const s of suffixes) {
+        if (typeof s === 'string') chips.push({ kind: 'domain', label: s });
+      }
+    }
+    const domains = r['domain'];
+    if (Array.isArray(domains)) {
+      for (const d of domains) {
+        if (typeof d === 'string') chips.push({ kind: 'domain', label: d });
+      }
+    }
+    const cidrs = r['ip_cidr'];
+    if (Array.isArray(cidrs)) {
+      for (const c of cidrs) {
+        if (typeof c === 'string') {
+          chips.push({ kind: 'ip', label: formatIpCidrForList(c), mono: true });
+        }
+      }
+    }
+  }
+  return chips;
+}
+
+/** Matcher chips с учётом простого режима (разворот custom-N inline). */
+export function extractMatchersForCard(
+  rule: SingboxRouterRule,
+  simplicity: RuleSimplicity,
+  rulesetLabels: Record<string, string>,
+  ruleSets: SingboxRouterRuleSet[] = [],
+): MatcherChip[] {
+  if (!simplicity.simple) {
+    return extractMatcherChips(rule, rulesetLabels, ruleSets);
+  }
+
+  if (simplicity.kind === 'inline-text') {
+    const chips: MatcherChip[] = [];
+    for (const d of rule.domain_suffix ?? []) {
+      chips.push({ kind: 'domain', label: d });
+    }
+    for (const c of rule.ip_cidr ?? []) {
+      chips.push({ kind: 'ip', label: c, mono: true });
+    }
+    return chips;
+  }
+
+  if (simplicity.kind === 'inline-set' && simplicity.inlineRuleSetTag) {
+    const tag = simplicity.inlineRuleSetTag;
+    if (isCustomInlineRuleSetTag(tag)) {
+      const rs = ruleSets.find((r) => r.tag === tag);
+      if (rs?.type === 'inline' && rs.rules?.length) {
+        return chipsFromInlineRules(rs.rules);
+      }
+    }
+    return extractMatcherChips(rule, rulesetLabels, ruleSets);
+  }
+
+  return extractMatcherChips(rule, rulesetLabels, ruleSets);
 }
 
 /* ─── Title fallback ────────────────────────────────────────────────── */
@@ -158,7 +342,7 @@ function fallbackTitle(
   if (rule.action === 'hijack-dns') return 'Перехват DNS';
   if (rule.domain_suffix?.length) return rule.domain_suffix[0];
   if (rule.ip_cidr?.length) return rule.ip_cidr[0];
-  if (rule.rule_set?.length) return rule.rule_set[0];
+  if (rule.rule_set?.length) return displayRuleSetTag(rule.rule_set[0]);
   return `Правило #${index + 1}`;
 }
 
@@ -173,15 +357,11 @@ function systemSubtitle(rule: SingboxRouterRule): string | undefined {
 
 /* ─── Stable id ─────────────────────────────────────────────────────── */
 
-function ruleId(rule: SingboxRouterRule, index: number): string {
-  const sig = [
-    rule.domain_suffix?.[0],
-    rule.ip_cidr?.[0],
-    rule.rule_set?.[0],
-    rule.protocol,
-    rule.ip_is_private ? 'priv' : null,
-  ].filter(Boolean).join('|');
-  return `${index}:${rule.outbound ?? 'no-ob'}:${sig || 'empty'}`;
+function ruleId(rule: SingboxRouterRule, index: number, uiKey?: string): string {
+  if (uiKey) return uiKey;
+  const payload = JSON.stringify(rule);
+  if (!payload || payload === '{}') return `rule:idx-${index}`;
+  return `rule:idx-${index}:${payload.length}`;
 }
 
 /* ─── Main adapter ──────────────────────────────────────────────────── */
@@ -194,14 +374,46 @@ export function singboxRuleToCard(
   routerPresets: SingboxRouterPreset[] = [],
   outboundOptions: OutboundGroup[] = [],
   catalog: CatalogPreset[] = [],
+  ruleSets: SingboxRouterRuleSet[] = [],
+  subscriptions: Subscription[] | null = null,
+  proxyGroups: SingboxProxyGroup[] = [],
+  singboxTunnels: SingboxTunnel[] = [],
+  uiKey?: string,
 ): RuleCardData {
-  const detected = detectService(rule, routerPresets, catalog);
+  const simplicity = classifyRuleSimplicity(rule, ruleSets);
+
+  let customInlineFirstDomain: string | undefined;
+  if (
+    simplicity.simple
+    && simplicity.kind === 'inline-set'
+    && simplicity.inlineRuleSetTag
+    && isCustomInlineRuleSetTag(simplicity.inlineRuleSetTag)
+  ) {
+    const rs = ruleSets.find((r) => r.tag === simplicity.inlineRuleSetTag);
+    if (rs?.type === 'inline') {
+      customInlineFirstDomain = firstDomainFromInlineRules(rs.rules);
+    }
+  }
+
+  const detected = customInlineFirstDomain
+    ? detectService({ domain_suffix: [customInlineFirstDomain] }, routerPresets, catalog)
+    : detectService(rule, routerPresets, catalog);
   const serviceKey = detected.iconSlug;
-  const action = mapAction(rule);
-  const outbound = resolveOutboundDisplay(rule.outbound, action, outbounds, outboundOptions);
-  const matchers = extractMatcherChips(rule, rulesetLabels);
+  const action = mapRuleAction(rule);
+  const outbound = resolveOutboundDisplay(
+    rule.outbound,
+    action,
+    outbounds,
+    outboundOptions,
+    subscriptions,
+    proxyGroups,
+    singboxTunnels,
+  );
+  const matchers = extractMatchersForCard(rule, simplicity, rulesetLabels, ruleSets);
   const isSystem = isSystemRule(rule);
-  const title = fallbackTitle(rule, serviceKey, index, detected.displayName);
+  const title = customInlineFirstDomain
+    ? customInlineFirstDomain
+    : fallbackTitle(rule, serviceKey, index, detected.displayName);
   const subtitle = isSystem
     ? systemSubtitle(rule)
     : matchers.length > 4
@@ -209,7 +421,7 @@ export function singboxRuleToCard(
       : undefined;
 
   return {
-    id: ruleId(rule, index),
+    id: ruleId(rule, index, uiKey),
     serviceKey,
     title,
     subtitle,
@@ -217,6 +429,7 @@ export function singboxRuleToCard(
     action,
     outbound,
     isSystem,
+    simplicity,
     tooltip: isSystem ? systemRuleTooltip(rule) : undefined,
   };
 }

@@ -54,6 +54,7 @@ func TestDisplayStatus(t *testing.T) {
 		{"nwg broken, within window -> starting", tunnel.StateInfo{State: tunnel.StateBroken, BackendType: "nativewg"}, future, "starting"},
 		{"kernel broken -> broken", tunnel.StateInfo{State: tunnel.StateBroken, BackendType: "kernel"}, time.Time{}, "broken"},
 		{"disabled -> disabled", tunnel.StateInfo{State: tunnel.StateDisabled, BackendType: "nativewg"}, time.Time{}, "disabled"},
+		{"not_created -> not_created", tunnel.StateInfo{State: tunnel.StateNotCreated, BackendType: "kernel"}, time.Time{}, "not_created"},
 		{"running -> running", tunnel.StateInfo{State: tunnel.StateRunning, BackendType: "kernel"}, time.Time{}, "running"},
 	}
 

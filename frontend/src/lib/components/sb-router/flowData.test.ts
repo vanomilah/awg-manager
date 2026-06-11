@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { deriveRoutingSummary } from './flowData';
+import { deriveRoutingSummary, formatWanInterfaceLabel, resolveDefaultWanLabel } from './flowData';
+import type { SingboxRouterWANInterface } from '$lib/types';
 import type { SingboxRouterRule, SingboxRouterDNSServer, SingboxRouterDNSGlobals } from '$lib/types';
 import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
 
@@ -11,6 +12,37 @@ const globals: SingboxRouterDNSGlobals = { final: 'dns-direct', strategy: 'ipv4_
 const outboundOptions: OutboundGroup[] = [
   { group: 'AWG туннели', items: [{ value: 'awg-awg10', label: 'Office VPN (t2s10)' }] },
 ];
+
+const wanIfaces: SingboxRouterWANInterface[] = [
+  { name: 'ppp0', id: '1', label: 'Beeline', up: true, priority: 1 },
+  { name: 'eth3', id: '2', label: 'Ethernet', up: false, priority: 2 },
+];
+
+describe('resolveDefaultWanLabel', () => {
+  it('manual WAN → label (interface)', () => {
+    expect(
+      resolveDefaultWanLabel({ wanAutoDetect: false, wanInterface: 'ppp0' }, wanIfaces, 'direct'),
+    ).toBe('Beeline (ppp0)');
+  });
+
+  it('auto-detect → primary up WAN by priority', () => {
+    expect(resolveDefaultWanLabel({ wanAutoDetect: true, wanInterface: '' }, wanIfaces, 'direct')).toBe(
+      'Beeline (ppp0)',
+    );
+  });
+
+  it('skipped when route final is not direct', () => {
+    expect(
+      resolveDefaultWanLabel({ wanAutoDetect: false, wanInterface: 'ppp0' }, wanIfaces, 'wg-nl'),
+    ).toBeNull();
+  });
+});
+
+describe('formatWanInterfaceLabel', () => {
+  it('falls back to interface name when label empty', () => {
+    expect(formatWanInterfaceLabel({ name: 'ppp0', label: '' })).toBe('ppp0 (ppp0)');
+  });
+});
 
 describe('deriveRoutingSummary', () => {
   it('1 туннель + 2 сервиса: defaultLabel Напрямую, dns по веткам', () => {

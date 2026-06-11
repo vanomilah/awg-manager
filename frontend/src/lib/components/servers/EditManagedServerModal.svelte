@@ -3,6 +3,7 @@
 	import { Modal, Button } from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
+	import { isValidEndpointHost } from '$lib/utils/endpoint';
 	import { servers } from '$lib/stores/servers';
 
 	interface Props {
@@ -64,17 +65,9 @@
 		return String(bits);
 	}
 
-	function isValidEndpoint(val: string): boolean {
-		if (!val) return true; // empty = use WAN IP
-		// IP address
-		if (/^(\d{1,3}\.){3}\d{1,3}$/.test(val)) return true;
-		// Domain name
-		if (/^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/.test(val)) return true;
-		return false;
-	}
 
 	async function handleSave() {
-		if (!isValidEndpoint(endpoint)) {
+		if (!isValidEndpointHost(endpoint)) {
 			notifications.error('Endpoint должен быть IP-адресом или доменным именем');
 			return;
 		}
@@ -91,9 +84,10 @@
 			if (endpoint !== (server.endpoint ?? '')) {
 				payload.endpoint = endpoint;
 			}
-			if (mtu !== (server.mtu || 1376)) {
-				payload.mtu = mtu;
-			}
+			// MTU всегда включается в payload: backend применяет его к интерфейсу
+			// роутера идемпотентно, и это догоняет legacy-серверы, созданные до
+			// того, как MTU начал ставиться на интерфейс.
+			payload.mtu = mtu;
 			const fresh = await api.updateManagedServer(serverId, payload);
 			servers.applyMutationResponse(fresh);
 			notifications.success('Сервер обновлён');
@@ -157,6 +151,7 @@
 		<div class="form-group">
 			<label class="label" for="ems-mtu">MTU</label>
 			<input type="number" id="ems-mtu" class="input" bind:value={mtu} min={1280} max={1500} />
+			<span class="field-hint">Применяется к интерфейсу сервера и конфигам клиентов</span>
 		</div>
 	</div>
 
