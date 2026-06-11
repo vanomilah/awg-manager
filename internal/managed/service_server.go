@@ -48,8 +48,8 @@ func (s *Service) Create(ctx context.Context, req CreateServerRequest) (*storage
 	}
 
 	// Configure all properties in a single RCI call:
-	// description, security-level, listen-port, ip address, name-servers, tcp adjust-mss, up
-	if err := s.rciConfigureServer(ctx, ifaceName, description, req.Address, mask, req.ListenPort); err != nil {
+	// description, security-level, listen-port, ip address, mtu, name-servers, tcp adjust-mss, up
+	if err := s.rciConfigureServer(ctx, ifaceName, description, req.Address, mask, req.ListenPort, effectiveMTU(req.MTU)); err != nil {
 		s.cleanupInterface(ctx, ifaceName)
 		return nil, fmt.Errorf("configure interface: %w", err)
 	}
@@ -164,6 +164,13 @@ func (s *Service) Update(ctx context.Context, id string, req UpdateServerRequest
 		changes.oldMask = server.Mask
 		changes.newAddress = req.Address
 		changes.newMask = mask
+	}
+	// MTU follows the documented pointer contract: non-nil = set. The set is
+	// emitted unconditionally (idempotent) — comparing against storage would
+	// skip legacy servers whose interface never had an MTU applied.
+	if req.MTU != nil {
+		changes.mtuSet = true
+		changes.mtu = effectiveMTU(*req.MTU)
 	}
 	if err := s.rciUpdateServer(ctx, server.InterfaceName, changes); err != nil {
 		return fmt.Errorf("update server: %w", err)

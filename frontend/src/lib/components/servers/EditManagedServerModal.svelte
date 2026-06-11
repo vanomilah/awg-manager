@@ -84,9 +84,10 @@
 			if (endpoint !== (server.endpoint ?? '')) {
 				payload.endpoint = endpoint;
 			}
-			if (mtu !== (server.mtu || 1376)) {
-				payload.mtu = mtu;
-			}
+			// MTU всегда включается в payload: backend применяет его к интерфейсу
+			// роутера идемпотентно, и это догоняет legacy-серверы, созданные до
+			// того, как MTU начал ставиться на интерфейс.
+			payload.mtu = mtu;
 			const fresh = await api.updateManagedServer(serverId, payload);
 			servers.applyMutationResponse(fresh);
 			notifications.success('Сервер обновлён');
@@ -150,6 +151,7 @@
 		<div class="form-group">
 			<label class="label" for="ems-mtu">MTU</label>
 			<input type="number" id="ems-mtu" class="input" bind:value={mtu} min={1280} max={1500} />
+			<span class="field-hint">Применяется к интерфейсу сервера и конфигам клиентов</span>
 		</div>
 	</div>
 

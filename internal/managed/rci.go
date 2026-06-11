@@ -57,7 +57,7 @@ func (s *Service) rciDeleteInterface(ctx context.Context, name string) error {
 }
 
 // rciConfigureServer sets all server interface properties in a single RCI call.
-func (s *Service) rciConfigureServer(ctx context.Context, name, description, address, mask string, port int) error {
+func (s *Service) rciConfigureServer(ctx context.Context, name, description, address, mask string, port, mtu int) error {
 	return s.rciPost(ctx, map[string]interface{}{
 		"interface": map[string]interface{}{
 			name: map[string]interface{}{
@@ -75,6 +75,7 @@ func (s *Service) rciConfigureServer(ctx context.Context, name, description, add
 						"address": address,
 						"mask":    mask,
 					},
+					"mtu":          mtu,
 					"name-servers": true,
 					"tcp": map[string]interface{}{
 						"adjust-mss": map[string]interface{}{
@@ -113,6 +114,9 @@ type updateServerChanges struct {
 	addressChanged      bool
 	oldAddress, oldMask string
 	newAddress, newMask string
+
+	mtuSet bool
+	mtu    int
 }
 
 // rciUpdateServer applies multiple managed-server property changes in a
@@ -136,13 +140,18 @@ func (s *Service) rciUpdateServer(ctx context.Context, ifaceName string, c updat
 			},
 		}
 	}
+	ip := map[string]interface{}{}
 	if c.addressChanged {
-		iface["ip"] = map[string]interface{}{
-			"address": []map[string]interface{}{
-				{"no": true, "address": c.oldAddress, "mask": c.oldMask},
-				{"address": c.newAddress, "mask": c.newMask},
-			},
+		ip["address"] = []map[string]interface{}{
+			{"no": true, "address": c.oldAddress, "mask": c.oldMask},
+			{"address": c.newAddress, "mask": c.newMask},
 		}
+	}
+	if c.mtuSet {
+		ip["mtu"] = c.mtu
+	}
+	if len(ip) > 0 {
+		iface["ip"] = ip
 	}
 	if len(iface) == 0 {
 		return nil

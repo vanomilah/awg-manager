@@ -223,6 +223,7 @@
 		<div class="form-group">
 			<label class="label" for="ms-mtu">MTU</label>
 			<input type="number" id="ms-mtu" class="input" bind:value={mtu} min={1280} max={1500} />
+			<span class="field-hint">Применяется к интерфейсу сервера и конфигам клиентов</span>
 		</div>
 
 		<div class="form-group">
@@ -265,6 +266,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1rem;
+	}
+
+	.field-hint {
+		font-size: 0.6875rem;
+		color: var(--text-muted);
 	}
 
 	.form-group {
