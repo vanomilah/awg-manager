@@ -20,6 +20,7 @@
     EmptyState,
     ExpertPanel,
     mode as sbMode,
+    type RouterMode,
   } from '$lib/components/sb-router';
 
   let activeSingboxSub = $derived($page.url.searchParams.get('sub'));
@@ -78,6 +79,21 @@
     if (sub === 'connections') {
       resetSingboxOverlayState();
     }
+  });
+
+  // Эксперт → простой: не возвращать в визард добавления, если правила уже есть.
+  let prevMode = $state<RouterMode | null>(null);
+  $effect(() => {
+    const current = $sbMode;
+    if (
+      prevMode === 'expert'
+      && current === 'beginner'
+      && $addWizardOpen
+      && singboxRulesCount > 0
+    ) {
+      closeAddWizard();
+    }
+    prevMode = current;
   });
 
   let inSubView = $derived(activeSingboxSub === 'connections');

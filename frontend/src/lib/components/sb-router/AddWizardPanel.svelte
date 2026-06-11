@@ -104,6 +104,48 @@
   // Бамп для remount CustomMatcherForm после «добавить ещё одно»:
   // визард не уничтожается, поэтому локальный value формы надо сбросить вместе со стором.
   let customResetKey = $state(0);
+  let wizardEl = $state<HTMLElement | null>(null);
+
+  function findScrollContainer(start: HTMLElement | null): HTMLElement | null {
+    let el = start?.parentElement ?? null;
+    while (el) {
+      const { overflowY } = getComputedStyle(el);
+      if (
+        (overflowY === 'auto' || overflowY === 'scroll')
+        && el.scrollHeight > el.clientHeight + 1
+      ) {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  const STICKY_HEADER_OFFSET = 72;
+
+  async function scrollWizardToTop(): Promise<void> {
+    if (typeof window === 'undefined' || !wizardEl) return;
+    (document.activeElement as HTMLElement | null)?.blur?.();
+
+    const anchor = wizardEl.querySelector('.title') ?? wizardEl;
+    const container = findScrollContainer(wizardEl);
+
+    if (container) {
+      const top =
+        container.scrollTop
+        + anchor.getBoundingClientRect().top
+        - container.getBoundingClientRect().top
+        - STICKY_HEADER_OFFSET;
+      container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    } else {
+      const top = anchor.getBoundingClientRect().top + window.scrollY - STICKY_HEADER_OFFSET;
+      window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 400);
+    });
+  }
 
   async function syncDnsAfterSave() {
     if (get(mode) !== 'beginner') return;
@@ -160,10 +202,10 @@
         if (continueAfter) {
           notifications.success(`Создано ${pluralize(created, RULE_WORDS)}. Можно добавить ещё одно.`);
           clearSelection();
+          await scrollWizardToTop();
           resetWizardState();
           customResetKey++;
           await singboxRouterStore.loadAll();
-          if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' });
         } else {
           notifications.success(`Создано ${pluralize(created, RULE_WORDS)}`);
           clearSelection();
@@ -197,7 +239,7 @@
 {#snippet iconBlock()}<ShieldOff size={18} />{/snippet}
 
 {#if $addWizardOpen}
-  <div class="wizard">
+  <div class="wizard" bind:this={wizardEl}>
     <div class="bc">
       <button type="button" class="bc-back" onclick={closeAddWizard}>
         <ArrowLeft size={12} /> Маршрутизация
@@ -554,8 +596,11 @@
   }
   @media (max-width: 768px) {
     .wizard {
-      padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + 72px);
-      max-width: none;
+      min-width: 0;
+      max-width: 100%;
+      padding: 0.875rem;
+      padding-bottom: calc(0.875rem + 72px);
+      overflow: hidden;
     }
     .title {
       font-size: 20px;
