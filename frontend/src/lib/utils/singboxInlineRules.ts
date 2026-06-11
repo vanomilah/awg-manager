@@ -1,3 +1,5 @@
+import type { SingboxRouterRule, SingboxRouterRuleSet } from '$lib/types';
+
 export interface InlineRuleParseResult {
 	rules: Record<string, unknown>[];
 	warnings: string[];
@@ -551,6 +553,66 @@ function isValidSimpleIpv6(addr: string): boolean {
 
 /** Reserved for AWG-compiled inline → local .srs companion (see ruleset_materializer). */
 export const INLINE_RULE_SET_SRS_SUFFIX = '-srs';
+
+/** Strip compiled companion suffix; mirrors backend rewriteSRSSuffixRuleSetRefs. */
+export function inlineTagFromSRSTag(tag: string): string | null {
+	if (!tag.endsWith(INLINE_RULE_SET_SRS_SUFFIX)) return null;
+	const base = tag.slice(0, -INLINE_RULE_SET_SRS_SUFFIX.length);
+	return base || null;
+}
+
+/** UI label — never show the reserved -srs companion suffix. */
+export function displayRuleSetTag(tag: string): string {
+	return inlineTagFromSRSTag(tag) ?? tag;
+}
+
+/** Resolve inline base tag when rule_set[] briefly references the compiled companion. */
+export function resolveRuleSetByTag(
+	tag: string,
+	ruleSets: { tag: string; type?: string }[],
+): { tag: string; type?: string } | undefined {
+	const byTag = new Map(ruleSets.filter((rs) => rs.tag).map((rs) => [rs.tag, rs] as const));
+	const direct = byTag.get(tag);
+	const base = inlineTagFromSRSTag(tag);
+
+	if (base) {
+		const inline = byTag.get(base);
+		if (inline?.type === 'inline') return inline;
+	}
+
+	if (direct) return direct;
+	if (base) return byTag.get(base);
+	return undefined;
+}
+
+export function isCompiledSRSCompanion(rs: { tag: string; type?: string }): boolean {
+	return rs.type === 'local' && inlineTagFromSRSTag(rs.tag) !== null;
+}
+
+/** Strip -srs refs from route rules (defense in depth for SSE / staging races). */
+export function normalizeRuleForUI(rule: SingboxRouterRule): SingboxRouterRule {
+	const tags = rule.rule_set;
+	if (!tags?.length) return rule;
+	const next = tags.map(displayRuleSetTag);
+	if (next.every((t, i) => t === tags[i])) return rule;
+	return { ...rule, rule_set: next };
+}
+
+export function normalizeRulesForUI(rules: SingboxRouterRule[]): SingboxRouterRule[] {
+	return rules.map(normalizeRuleForUI);
+}
+
+/** Hide compiled .srs companions when the inline base is already listed. */
+export function normalizeRuleSetsForUI(ruleSets: SingboxRouterRuleSet[]): SingboxRouterRuleSet[] {
+	const inlineTags = new Set(
+		ruleSets.filter((rs) => rs.type === 'inline' && rs.tag).map((rs) => rs.tag),
+	);
+	return ruleSets.filter((rs) => {
+		if (!isCompiledSRSCompanion(rs)) return true;
+		const base = inlineTagFromSRSTag(rs.tag);
+		return !(base && inlineTags.has(base));
+	});
+}
 
 /** JSON rules → smart-list для визарда / редактора простых правил. */
 export function stringifyInlineRuleListForWizard(

@@ -1,4 +1,5 @@
 import type { SingboxRouterPreset, SingboxRouterRule, SingboxRouterRuleSet } from '$lib/types';
+import { resolveRuleSetByTag } from '$lib/utils/singboxInlineRules';
 
 export function isSystemRule(rule: SingboxRouterRule): boolean {
   if (rule.action === 'sniff' || rule.action === 'hijack-dns') return true;
@@ -59,10 +60,6 @@ function hasRuleLevelComplexFields(rule: SingboxRouterRule): boolean {
   return false;
 }
 
-function ruleSetByTag(ruleSets: SingboxRouterRuleSet[]): Map<string, SingboxRouterRuleSet> {
-  return new Map(ruleSets.filter((rs) => rs.tag).map((rs) => [rs.tag, rs] as const));
-}
-
 /** Эвристика «простое правило» для beginner UI (ничего не храним в конфиге). */
 export function classifyRuleSimplicity(
   rule: SingboxRouterRule,
@@ -83,14 +80,14 @@ export function classifyRuleSimplicity(
   }
 
   const tag = tags[0]!;
-  const rs = ruleSetByTag(ruleSets).get(tag);
+  const rs = resolveRuleSetByTag(tag, ruleSets);
   if (!rs) return { simple: false };
 
   if (rs.type === 'inline') {
-    return { simple: true, kind: 'inline-set', inlineRuleSetTag: tag };
+    return { simple: true, kind: 'inline-set', inlineRuleSetTag: rs.tag };
   }
 
-  return { simple: true, kind: 'external', externalRuleSetTag: tag };
+  return { simple: true, kind: 'external', externalRuleSetTag: rs.tag };
 }
 
 /** Один rule_set тег из выбранного шаблона (без applyPreset). */

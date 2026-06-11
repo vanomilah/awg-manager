@@ -1,9 +1,14 @@
-import { writable, derived } from 'svelte/store';
+import { writable, derived, get } from 'svelte/store';
 import { api } from '$lib/api/client';
 import { awgTags } from './awgTags';
 import { subscriptionsStore } from './subscriptions';
 import { singboxTunnels } from './singbox';
 import { buildOutboundOptions, type OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
+import { reconcileRuleUiKeys } from '$lib/utils/ruleUiKeys';
+import {
+	normalizeRulesForUI,
+	normalizeRuleSetsForUI,
+} from '$lib/utils/singboxInlineRules';
 import type {
 	SingboxRouterStatus,
 	SingboxRouterSettings,
@@ -22,6 +27,7 @@ function createSingboxRouterStore() {
 	const status = writable<SingboxRouterStatus | null>(null);
 	const settings = writable<SingboxRouterSettings | null>(null);
 	const rules = writable<SingboxRouterRule[]>([]);
+	const ruleUiKeys = writable<string[]>([]);
 	const ruleSets = writable<SingboxRouterRuleSet[]>([]);
 	const outbounds = writable<SingboxRouterOutbound[]>([]);
 	const presets = writable<SingboxRouterPreset[]>([]);
@@ -64,6 +70,18 @@ function createSingboxRouterStore() {
 		},
 	);
 
+	function setRulesWithKeys(nextRules: SingboxRouterRule[]): void {
+		const normalized = normalizeRulesForUI(nextRules);
+		const prevRules = get(rules);
+		const prevKeys = get(ruleUiKeys);
+		ruleUiKeys.set(reconcileRuleUiKeys(normalized, prevRules, prevKeys));
+		rules.set(normalized);
+	}
+
+	function setRuleSetsForUI(next: SingboxRouterRuleSet[]): void {
+		ruleSets.set(normalizeRuleSetsForUI(next));
+	}
+
 	async function loadAll(): Promise<void> {
 		loading.set(true);
 		error.set(null);
@@ -82,8 +100,8 @@ function createSingboxRouterStore() {
 			]);
 			status.set(st);
 			settings.set(s);
-			rules.set(r);
-			ruleSets.set(rs);
+			setRulesWithKeys(r);
+			setRuleSetsForUI(rs);
 			outbounds.set(o);
 			presets.set(p);
 			dnsServers.set(ds);
@@ -118,8 +136,8 @@ function createSingboxRouterStore() {
 				api.singboxRouterListOutbounds(),
 				api.singboxRouterStatus(),
 			]);
-			rules.set(r);
-			ruleSets.set(rs);
+			setRulesWithKeys(r);
+			setRuleSetsForUI(rs);
 			outbounds.set(o);
 			status.set(st);
 		} catch {
@@ -140,11 +158,11 @@ function createSingboxRouterStore() {
 	}
 
 	function applyRules(data: SingboxRouterRule[]): void {
-		rules.set(data);
+		setRulesWithKeys(data);
 	}
 
 	function applyRuleSets(data: SingboxRouterRuleSet[]): void {
-		ruleSets.set(data);
+		setRuleSetsForUI(data);
 	}
 
 	function applyOutbounds(data: SingboxRouterOutbound[]): void {
@@ -171,6 +189,7 @@ function createSingboxRouterStore() {
 		status: { subscribe: status.subscribe },
 		settings: { subscribe: settings.subscribe },
 		rules: { subscribe: rules.subscribe },
+		ruleUiKeys: { subscribe: ruleUiKeys.subscribe },
 		ruleSets: { subscribe: ruleSets.subscribe },
 		outbounds: { subscribe: outbounds.subscribe },
 		presets: { subscribe: presets.subscribe },

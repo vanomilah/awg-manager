@@ -275,4 +275,15 @@ describe('detectServiceKey', () => {
   it('returns custom for geosite rule_set without router presets and no catalog match', () => {
     expect(detectServiceKey(rule({ rule_set: ['geosite-unknownservice'] }), undefined, catalog)).toBe('custom');
   });
+
+  it('detects service from compiled companion tag (geosite-*-srs)', () => {
+    const presets = [{
+      id: 'samsung',
+      name: 'Samsung',
+      iconSlug: 'samsung',
+      ruleSets: [{ tag: 'geosite-samsung', url: 'https://example/samsung.srs' }],
+      rules: [{ ruleSetRef: 'geosite-samsung', actionTarget: 'tunnel' as const }],
+    }];
+    expect(detectServiceKey(rule({ rule_set: ['geosite-samsung-srs'] }), presets, catalog)).toBe('samsung');
+  });
 });

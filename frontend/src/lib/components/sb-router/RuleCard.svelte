@@ -26,6 +26,7 @@
     knownRulesetTags?: Set<string>;
     onDragHandlePointerDown?: (event: PointerEvent) => void;
     dragging?: boolean;
+    dragDisabled?: boolean;
   }
   let {
     card,
@@ -38,6 +39,7 @@
     knownRulesetTags,
     onDragHandlePointerDown,
     dragging = false,
+    dragDisabled = false,
   }: Props = $props();
 
   const MAX_CHIPS = 4;
@@ -125,9 +127,11 @@
       <button
         type="button"
         class="drag-handle"
+        class:is-busy={dragDisabled}
+        aria-disabled={dragDisabled}
         aria-label={`Перетащить правило #${orderStr}`}
-        title={`Перетащить правило #${orderStr}`}
-        onpointerdown={onDragHandlePointerDown}
+        title={dragDisabled ? 'Подождите, правило перемещается…' : `Перетащить правило #${orderStr}`}
+        onpointerdown={dragDisabled ? undefined : onDragHandlePointerDown}
       >
         <GripVertical size={16} />
       </button>
@@ -268,12 +272,23 @@
     justify-content: center;
     touch-action: none;
     border-radius: 4px;
-    transition: color 0.15s;
+    opacity: 1;
+    transition:
+      color 0.28s ease,
+      opacity 0.28s ease;
   }
   .drag-handle:hover {
     color: var(--text-primary);
   }
   .drag-handle:active { cursor: grabbing; }
+  .drag-handle.is-busy {
+    cursor: wait;
+    opacity: 0.42;
+    pointer-events: none;
+  }
+  .drag-handle.is-busy:hover {
+    color: var(--text-muted);
+  }
   .handle-disabled {
     width: 20px;
     height: 20px;

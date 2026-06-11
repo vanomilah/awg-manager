@@ -20,7 +20,7 @@ import type {
   SingboxTunnel,
   Subscription,
 } from '$lib/types';
-import { hashString } from '$lib/utils/letter-icon-color';
+import { displayRuleSetTag, resolveRuleSetByTag } from '$lib/utils/singboxInlineRules';
 import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
 import type {
   MatcherChip,
@@ -221,11 +221,13 @@ export function extractMatcherChips(
     chips.push({ kind: 'port', label: String(p), mono: true });
   }
   for (const rs of rule.rule_set ?? []) {
+    const resolved = resolveRuleSetByTag(rs, ruleSets);
+    const displayTag = displayRuleSetTag(resolved?.tag ?? rs);
     chips.push({
       kind: 'ruleset',
-      label: rulesetLabels[rs] ?? rs,
-      rulesetTag: rs,
-      rulesetType: rulesetTypes.get(rs),
+      label: rulesetLabels[displayTag] ?? displayTag,
+      rulesetTag: displayTag,
+      rulesetType: resolved ? rulesetTypes.get(resolved.tag) : rulesetTypes.get(rs),
     });
   }
   if (rule.protocol) {
@@ -340,7 +342,7 @@ function fallbackTitle(
   if (rule.action === 'hijack-dns') return 'Перехват DNS';
   if (rule.domain_suffix?.length) return rule.domain_suffix[0];
   if (rule.ip_cidr?.length) return rule.ip_cidr[0];
-  if (rule.rule_set?.length) return rule.rule_set[0];
+  if (rule.rule_set?.length) return displayRuleSetTag(rule.rule_set[0]);
   return `Правило #${index + 1}`;
 }
 
@@ -355,10 +357,11 @@ function systemSubtitle(rule: SingboxRouterRule): string | undefined {
 
 /* ─── Stable id ─────────────────────────────────────────────────────── */
 
-function ruleId(rule: SingboxRouterRule, index: number): string {
+function ruleId(rule: SingboxRouterRule, index: number, uiKey?: string): string {
+  if (uiKey) return uiKey;
   const payload = JSON.stringify(rule);
   if (!payload || payload === '{}') return `rule:idx-${index}`;
-  return `rule:${hashString(payload)}`;
+  return `rule:idx-${index}:${payload.length}`;
 }
 
 /* ─── Main adapter ──────────────────────────────────────────────────── */
@@ -375,6 +378,7 @@ export function singboxRuleToCard(
   subscriptions: Subscription[] | null = null,
   proxyGroups: SingboxProxyGroup[] = [],
   singboxTunnels: SingboxTunnel[] = [],
+  uiKey?: string,
 ): RuleCardData {
   const simplicity = classifyRuleSimplicity(rule, ruleSets);
 
@@ -417,7 +421,7 @@ export function singboxRuleToCard(
       : undefined;
 
   return {
-    id: ruleId(rule, index),
+    id: ruleId(rule, index, uiKey),
     serviceKey,
     title,
     subtitle,

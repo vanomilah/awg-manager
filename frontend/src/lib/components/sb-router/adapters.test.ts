@@ -469,11 +469,40 @@ describe('singboxRuleToCard', () => {
     expect(card.action).toBe('direct');
   });
 
-  it('generates a stable id for the same input', () => {
+  it('uses uiKey when provided', () => {
     const r: SingboxRouterRule = { domain_suffix: ['netflix.com'], outbound: 'warp' };
-    const a = singboxRuleToCard(r, 0, [], {});
-    const b = singboxRuleToCard(r, 0, [], {});
-    expect(a.id).toBe(b.id);
+    const card = singboxRuleToCard(r, 0, [], {}, undefined, [], [], [], null, [], [], 'ui-key-1');
+    expect(card.id).toBe('ui-key-1');
+  });
+
+  it('hides -srs companion suffix on ruleset chip during materialization', () => {
+    const card = singboxRuleToCard(
+      { rule_set: ['geosite-samsung-srs'], outbound: 'direct' },
+      0,
+      [],
+      {},
+      [],
+      [],
+      [],
+      [{ tag: 'geosite-samsung', type: 'inline', rules: [{ domain_suffix: ['samsung.com'] }] }],
+    );
+    const rsChip = card.matchers.find((m) => m.kind === 'ruleset');
+    expect(rsChip?.label).toBe('geosite-samsung');
+    expect(rsChip?.rulesetTag).toBe('geosite-samsung');
+  });
+
+  it('title never shows -srs companion suffix', () => {
+    const card = singboxRuleToCard(
+      { rule_set: ['geosite-samsung-srs'], outbound: 'direct' },
+      0,
+      [],
+      {},
+      [],
+      [],
+      [],
+      [{ tag: 'geosite-samsung', type: 'inline', rules: [{ domain_suffix: ['samsung.com'] }] }],
+    );
+    expect(card.title).not.toContain('-srs');
   });
 
   it('sniff system rule — title/subtitle по дизайну', () => {

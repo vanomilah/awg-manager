@@ -13,6 +13,7 @@
 
 import { isPresetIconResolvable } from '$lib/utils/resolve-icon-slug';
 import type { CatalogPreset, SingboxRouterPreset, SingboxRouterRule } from '$lib/types';
+import { displayRuleSetTag } from '$lib/utils/singboxInlineRules';
 
 function suffixMatches(domain: string, suffix: string): boolean {
   const d = domain.toLowerCase();
@@ -78,7 +79,8 @@ function detectFromRuleSets(
 ): DetectedService | null {
   const index = routerPresets?.length ? buildRuleSetIndex(routerPresets) : undefined;
 
-  for (const rs of sets) {
+  for (const raw of sets) {
+    const rs = displayRuleSetTag(raw);
     if (routerPresets?.length) {
       const hit = lookupRouterPreset(rs, routerPresets, index);
       if (hit) return hit;

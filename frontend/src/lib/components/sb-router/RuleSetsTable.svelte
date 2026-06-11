@@ -10,6 +10,7 @@
     datInfo,
     resolveRuleSetDisplayType,
   } from '$lib/utils/ruleSetType';
+  import { displayRuleSetTag } from '$lib/utils/singboxInlineRules';
 
   type RsFilter = 'all' | 'remote' | 'local' | 'inline' | 'dat';
 
@@ -71,7 +72,7 @@
     </div>
     {#each filtered as rs (rs.tag)}
       <div class="row">
-        <div class="tag">{rs.tag}</div>
+        <div class="tag">{displayRuleSetTag(rs.tag)}</div>
         <div>
           <RuleSetTypeBadge type={resolveRuleSetDisplayType(rs)} />
         </div>

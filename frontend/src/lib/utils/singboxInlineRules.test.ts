@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
 	analyzeInlineRuleListLossy,
+	displayRuleSetTag,
 	isInlineRuleListEmpty,
+	normalizeRuleForUI,
+	normalizeRuleSetsForUI,
 	parseInlineRuleList,
+	resolveRuleSetByTag,
 	stringifyInlineRuleList,
 	toAsciiHostname,
 	validateRuleSetTag,
@@ -393,5 +397,40 @@ describe('validateRuleSetTag', () => {
 
 	it('allows base tag', () => {
 		expect(validateRuleSetTag('geosite-samsung')).toBeNull();
+	});
+});
+
+describe('displayRuleSetTag', () => {
+	it('strips compiled companion suffix', () => {
+		expect(displayRuleSetTag('geosite-samsung-srs')).toBe('geosite-samsung');
+		expect(displayRuleSetTag('geosite-samsung')).toBe('geosite-samsung');
+	});
+});
+
+describe('resolveRuleSetByTag', () => {
+	it('prefers inline base over compiled companion ref', () => {
+		const rs = resolveRuleSetByTag('geosite-samsung-srs', [
+			{ tag: 'geosite-samsung', type: 'inline' },
+			{ tag: 'geosite-samsung-srs', type: 'local' },
+		]);
+		expect(rs?.tag).toBe('geosite-samsung');
+	});
+});
+
+describe('normalizeRuleForUI', () => {
+	it('strips -srs from rule_set refs', () => {
+		expect(
+			normalizeRuleForUI({ rule_set: ['geosite-samsung-srs'], outbound: 'direct' }).rule_set,
+		).toEqual(['geosite-samsung']);
+	});
+});
+
+describe('normalizeRuleSetsForUI', () => {
+	it('hides local companion when inline base exists', () => {
+		const out = normalizeRuleSetsForUI([
+			{ tag: 'geosite-samsung', type: 'inline', rules: [] },
+			{ tag: 'geosite-samsung-srs', type: 'local', path: '/tmp/x.srs' },
+		]);
+		expect(out.map((rs) => rs.tag)).toEqual(['geosite-samsung']);
 	});
 });

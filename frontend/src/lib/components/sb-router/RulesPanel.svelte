@@ -29,9 +29,11 @@
   import { notifications } from '$lib/stores/notifications';
   import { syncTunnelDnsRule } from './emptyStateActions';
   import { pluralize, RULE_WORDS } from '$lib/utils/pluralize';
+  import { displayRuleSetTag } from '$lib/utils/singboxInlineRules';
   import type { RuleCardData } from './types';
 
   const rules = singboxRouterStore.rules;
+  const ruleUiKeys = singboxRouterStore.ruleUiKeys;
   const ruleSets = singboxRouterStore.ruleSets;
   const outbounds = singboxRouterStore.outbounds;
   const presets = singboxRouterStore.presets;
@@ -44,7 +46,7 @@
   let rulesetLabels: Record<string, string> = $derived.by(() => {
     const labels: Record<string, string> = {};
     for (const rs of $ruleSets) {
-      if (rs.tag) labels[rs.tag] = rs.tag;
+      if (rs.tag) labels[rs.tag] = displayRuleSetTag(rs.tag);
     }
     return labels;
   });
@@ -65,6 +67,7 @@
         $subscriptionsStore.data,
         $singboxProxies.data ?? [],
         $singboxTunnels.data ?? [],
+        $ruleUiKeys[i],
       ),
     ),
   );
@@ -102,6 +105,7 @@
   let hasMovedFromSource = $state(false);
   let dropCommitPending = $state(false);
   let dropCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  let moveInFlight = $state(false);
 
   const DRAG_THRESHOLD = 7;
   const SCROLL_EDGE = 84;
@@ -323,11 +327,6 @@
     return normalizeDropTarget(dragState.fromIndex, targetInsertion) === dragState.fromIndex;
   }
 
-  function isEffectiveDrop(targetInsertion: number | null): boolean {
-    if (targetInsertion === null || !dragState) return false;
-    return !resolvesToSourceIndex(targetInsertion);
-  }
-
   function clearCollapseDropTimer() {
     if (collapseDropTimer !== null) {
       clearTimeout(collapseDropTimer);
@@ -503,6 +502,7 @@
   }
 
   async function commitDrop(fromIndex: number, to: number) {
+    moveInFlight = true;
     const snapshot = get(rules);
     singboxRouterStore.applyRules(reorderRules(snapshot, fromIndex, to));
     cleanupDrag();
@@ -512,6 +512,8 @@
     } catch (e) {
       singboxRouterStore.applyRules(snapshot);
       notifications.error(`Ошибка перемещения: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      moveInFlight = false;
     }
   }
 
@@ -691,6 +693,7 @@
   function handleDragPointerDown(index: number, card: RuleCardData, event: PointerEvent) {
     event.preventDefault();
     event.stopPropagation();
+    if (moveInFlight || dropCommitPending) return;
     if (card.isSystem) return;
     if (deleteBusy || textMatchersEditIndex !== null || rsEditTag !== null || deleteTarget) return;
     if (event.button !== 0) return;
@@ -814,6 +817,7 @@
             {card}
             index={i}
             dragging={draggingIndex === i}
+            dragDisabled={moveInFlight || dropCommitPending}
             onEdit={() => requestEdit(i)}
             onTextMatchersClick={() => requestTextMatchersEdit(i)}
             onInlineListClick={() => requestInlineListEdit(i)}
