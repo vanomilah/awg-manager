@@ -77,8 +77,12 @@ func TestParseHysteria2_Obfs(t *testing.T) {
 	}
 }
 
-func TestParseHysteria2_PinSHA256(t *testing.T) {
-	link := "hy2://p@example.com:8443?sni=h&pinSHA256=ABC123DEF456"
+func TestParseHysteria2_PinSHA256Ignored(t *testing.T) {
+	// pinSHA256 (hex-отпечаток сертификата hysteria) не имеет эквивалента в
+	// sing-box: certificate_public_key_sha256 — это base64 sha256 от SPKI
+	// публичного ключа, любое реальное значение pinSHA256 валит decode
+	// всего конфига (issue #350) — параметр игнорируется.
+	link := "hy2://p@example.com:8443?sni=h&pinSHA256=random"
 	got, err := ParseLink(link)
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -86,8 +90,8 @@ func TestParseHysteria2_PinSHA256(t *testing.T) {
 	var ob map[string]any
 	json.Unmarshal(got.Outbound, &ob)
 	tls := ob["tls"].(map[string]any)
-	if tls["certificate_public_key_sha256"] != "ABC123DEF456" {
-		t.Errorf("certificate_public_key_sha256 missing or wrong: %v", tls["certificate_public_key_sha256"])
+	if v, ok := tls["certificate_public_key_sha256"]; ok {
+		t.Errorf("certificate_public_key_sha256 must not be emitted, got %v", v)
 	}
 }
 

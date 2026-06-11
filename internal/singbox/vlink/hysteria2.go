@@ -68,9 +68,10 @@ func parseHysteria2(input string) (*ParsedOutbound, error) {
 	if boolish(q.Get("insecure")) {
 		tls["insecure"] = true
 	}
-	if pin := q.Get("pinSHA256"); pin != "" {
-		tls["certificate_public_key_sha256"] = pin
-	}
+	// pinSHA256 намеренно игнорируется: hysteria пинит hex-отпечаток всего
+	// сертификата, sing-box certificate_public_key_sha256 — base64 sha256
+	// от SPKI публичного ключа. Эквивалента нет, а сырое значение валит
+	// decode всего конфига (issue #350).
 	if boolish(q.Get("ech")) {
 		tls["ech"] = map[string]any{"enabled": true}
 	}
