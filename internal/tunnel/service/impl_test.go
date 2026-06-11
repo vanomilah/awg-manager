@@ -236,6 +236,47 @@ func TestUpdate_RejectsIDMismatch(t *testing.T) {
 	}
 }
 
+func TestUpdate_KernelAddressChangeBeforeFirstStart(t *testing.T) {
+	dir := t.TempDir()
+	oldConfDir := confDir
+	confDir = dir
+	t.Cleanup(func() { confDir = oldConfDir })
+
+	sm := NewMockStateManager()
+	sm.SetState("awg10", tunnel.StateInfo{State: tunnel.StateNotCreated})
+	s := &ServiceImpl{state: sm}
+
+	old := &storage.AWGTunnel{ID: "awg10", Backend: "kernel", Interface: storage.AWGInterface{Address: "10.0.0.1/32", MTU: 1420}}
+	new_ := &storage.AWGTunnel{ID: "awg10", Backend: "kernel", Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420}}
+	if err := s.Update(context.Background(), old, new_); err != nil {
+		t.Fatalf("expected address change before first start to succeed, got: %v", err)
+	}
+}
+
+func TestUpdate_KernelAddressChangeRejectedWhenOpkgTunExists(t *testing.T) {
+	sm := NewMockStateManager()
+	sm.SetState("awg10", tunnel.StateInfo{State: tunnel.StateStopped, OpkgTunExists: true})
+	s := &ServiceImpl{state: sm}
+
+	old := &storage.AWGTunnel{ID: "awg10", Backend: "kernel", Interface: storage.AWGInterface{Address: "10.0.0.1/32", MTU: 1420}}
+	new_ := &storage.AWGTunnel{ID: "awg10", Backend: "kernel", Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420}}
+	if err := s.Update(context.Background(), old, new_); err == nil {
+		t.Fatal("expected error when OpkgTun exists")
+	}
+}
+
+func TestUpdate_KernelAddressChangeRejectedWhenProcessRunning(t *testing.T) {
+	sm := NewMockStateManager()
+	sm.SetState("awgm0", tunnel.StateInfo{State: tunnel.StateRunning, ProcessRunning: true})
+	s := &ServiceImpl{state: sm}
+
+	old := &storage.AWGTunnel{ID: "awgm0", Backend: "kernel", Interface: storage.AWGInterface{Address: "10.0.0.1/32", MTU: 1420}}
+	new_ := &storage.AWGTunnel{ID: "awgm0", Backend: "kernel", Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420}}
+	if err := s.Update(context.Background(), old, new_); err == nil {
+		t.Fatal("expected error when backend process is running")
+	}
+}
+
 // === Diff helper tests ===
 
 func TestAWGInterfaceEqual_SameValues(t *testing.T) {

@@ -374,10 +374,12 @@ func (s *ServiceImpl) Update(ctx context.Context, oldStored, newStored *storage.
 		return fmt.Errorf("MTU must be > 0")
 	}
 
-	// Block Address change in kernel mode (NDMS cannot rename kernel iface).
-	if !s.isNativeWG(newStored) {
+	// Block address change in kernel mode once OpkgTun or the backend process
+	// exists — NDMS/kernel cannot rename the live interface. Before first
+	// start (not_created / no iface) only the .conf is updated.
+	if !s.isNativeWG(newStored) && newStored.Interface.Address != oldStored.Interface.Address {
 		stateInfo := s.state.GetState(ctx, tunnelID)
-		if stateInfo.BackendType == "kernel" && newStored.Interface.Address != oldStored.Interface.Address {
+		if stateInfo.OpkgTunExists || stateInfo.ProcessRunning {
 			return fmt.Errorf("address change is not supported in kernel mode")
 		}
 	}

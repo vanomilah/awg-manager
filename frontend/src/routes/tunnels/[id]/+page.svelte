@@ -84,11 +84,14 @@
 
 	let tunnelId = $derived($page.params.id ?? '');
 
-	// Address editable: NativeWG always (NDMS SyncAddressMTU); kernel — only before first start
+	// Address editable: NativeWG always (NDMS SyncAddressMTU); kernel — only before OpkgTun/process exist
 	let addressDisabled = $derived.by(() => {
 		if (!tunnel) return true;
 		if (tunnel.backend === 'nativewg') return false;
-		return tunnel.state !== 'not_created';
+		if (tunnel.state === 'not_created') return false;
+		const info = tunnel.stateInfo;
+		if (info && !info.opkgTunExists && !info.processRunning) return false;
+		return true;
 	});
 
 	let ispValue = $derived(tunnel?.ispInterface || 'auto');
@@ -360,8 +363,8 @@
 							<label class="field-label" for="address-v6">IPv6 адрес</label>
 							<input type="text" id="address-v6" class="field-input" bind:value={ipv6Address} disabled={addressDisabled} placeholder="fd00::2/128 (необязательно)" />
 						</div>
-						{#if addressDisabled}
-							<p class="field-hint">Адрес нельзя изменить для запущенного туннеля в режиме kernel</p>
+						{#if addressDisabled && tunnel?.backend !== 'nativewg'}
+							<p class="field-hint">Адрес нельзя изменить после первого запуска туннеля в режиме kernel</p>
 						{/if}
 						{#if $errors.address}<p class="text-xs text-error-500 mt-1">{$errors.address}</p>{/if}
 						<div class="flex flex-col gap-1.5" style="margin-top:12px">

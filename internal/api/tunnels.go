@@ -221,14 +221,18 @@ func isValidTunnelID(id string) bool {
 }
 
 // stateToStatus converts a tunnel State to the status string sent to the frontend.
-// Covers all v2 states: running, starting, broken, needs_start, needs_stop, disabled.
-// Unknown/legacy states default to "stopped".
 func stateToStatus(s tunnel.State) string {
 	switch s {
+	case tunnel.StateNotCreated:
+		return "not_created"
 	case tunnel.StateRunning:
 		return "running"
 	case tunnel.StateStarting:
 		return "starting"
+	case tunnel.StateStopping:
+		return "stopping"
+	case tunnel.StateStopped:
+		return "stopped"
 	case tunnel.StateBroken:
 		return "broken"
 	case tunnel.StateNeedsStart:
