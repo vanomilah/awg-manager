@@ -17,14 +17,18 @@ const (
 	CaptchaSolveModeManual
 )
 
-func CaptchaSolveModeForAttempt(attempt int, manualOnly bool) (CaptchaSolveMode, bool) {
+// captchaAutoRounds — число auto-попыток до optional manual fallback (WDTT-style
+// orchestrator без WebView: несколько Go-раундов с ротацией browser persona).
+const captchaAutoRounds = 5
+
+func CaptchaSolveModeForAttempt(attempt int, manualOnly, manualFallback bool) (CaptchaSolveMode, bool) {
 	if manualOnly {
 		return CaptchaSolveModeManual, attempt == 0
 	}
-	switch attempt {
-	case 0:
+	if attempt < captchaAutoRounds {
 		return CaptchaSolveModeAuto, true
-	case 1:
+	}
+	if manualFallback && attempt == captchaAutoRounds {
 		return CaptchaSolveModeManual, true
 	}
 	return 0, false

@@ -208,6 +208,40 @@ func (c *Client) engageLockout(d time.Duration) {
 	c.lockout.Store(time.Now().Add(d).Unix())
 }
 
+// globalCaptchaMu — один слот captcha на весь freeturn-client процесс.
+// При multi(4) иначе до 4 vk.Provider параллельно бьют VK → ERROR_LIMIT.
+var globalCaptchaMu sync.Mutex
+
+// acquireCaptchaLock ждёт host-level (между процессами) и in-process слот captcha.
+func (c *Client) acquireCaptchaLock(ctx context.Context, streamID int) (unlock func(), err error) {
+	hostRelease, err := acquireHostCaptchaLock(ctx, streamID, c.log)
+	if err != nil {
+		return nil, err
+	}
+	waiting := false
+	for {
+		if globalCaptchaMu.TryLock() {
+			if waiting {
+				c.log.Infof("[STREAM %d] [Captcha] Acquired captcha slot", streamID)
+			}
+			return func() {
+				globalCaptchaMu.Unlock()
+				hostRelease()
+			}, nil
+		}
+		if !waiting {
+			c.log.Infof("[STREAM %d] [Captcha] Waiting for captcha slot (serialized across streams)", streamID)
+			waiting = true
+		}
+		select {
+		case <-ctx.Done():
+			hostRelease()
+			return nil, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
 // fetchSerialized сериализует fetch и держит min-интервал между запросами (анти
 // rate-limit VK).
 func (c *Client) fetchSerialized(ctx context.Context, link string, streamID int) (string, string, []string, error) {

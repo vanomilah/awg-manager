@@ -115,28 +115,34 @@ func (c *Client) solveCaptcha(
 	link, escapedName, token1 string,
 	captchaErr *captcha.Error,
 ) (retryData string, err error) {
-	solveMode, hasSolveMode := CaptchaSolveModeForAttempt(attempt, c.manualOnly)
+	manualFallback := c.manualSolve != nil && !c.manualOnly
+	solveMode, hasSolveMode := CaptchaSolveModeForAttempt(attempt, c.manualOnly, manualFallback)
 	if !hasSolveMode {
 		c.log.Warnf("[STREAM %d] [Captcha] No more solve modes available (attempt %d)", streamID, attempt+1)
 		c.engageLockout(60 * time.Second)
 		if c.streamsFn() == 0 {
-			c.log.Errorf("[STREAM %d] [Captcha] FATAL: 0 connected streams and solve modes exhausted", streamID)
-			return "", ErrFatalCaptchaNoStreams
+			c.log.Warnf("[STREAM %d] [Captcha] Auto captcha exhausted with 0 connected streams; throttling (retry after lockout)", streamID)
 		}
 		return "", ErrCaptchaWaitRequired
 	}
+
+	unlock, err := c.acquireCaptchaLock(ctx, streamID)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 
 	var successToken string
 	var solveErr error
 
 	switch solveMode {
 	case CaptchaSolveModeAuto:
-		solveFn := c.autoSolver
-		if solveFn == nil {
-			solveFn = c.defaultAutoSolve
-		}
 		if captchaErr.SessionToken != "" && captchaErr.RedirectURI != "" {
-			successToken, solveErr = solveFn(ctx, captchaErr, streamID, httpClient, profile)
+			if c.autoSolver != nil {
+				successToken, solveErr = c.autoSolver(ctx, captchaErr, streamID, httpClient, profile)
+			} else {
+				successToken, solveErr = c.autoSolveRound(ctx, captchaErr, streamID, attempt, httpClient, profile)
+			}
 			if solveErr != nil {
 				c.log.Warnf("[STREAM %d] [Captcha] Auto captcha failed: %v", streamID, solveErr)
 			}
@@ -191,7 +197,7 @@ func (c *Client) solveCaptcha(
 	if solveErr != nil {
 		c.log.Warnf("[STREAM %d] [Captcha] %s failed (attempt %d): %v",
 			streamID, CaptchaSolveModeLabel(solveMode), attempt+1, solveErr)
-		nextSolveMode, hasNextSolveMode := CaptchaSolveModeForAttempt(attempt+1, c.manualOnly)
+		nextSolveMode, hasNextSolveMode := CaptchaSolveModeForAttempt(attempt+1, c.manualOnly, manualFallback)
 		if hasNextSolveMode {
 			c.log.Infof("[STREAM %d] [Captcha] Falling back to %s",
 				streamID, CaptchaSolveModeLabel(nextSolveMode))
@@ -199,8 +205,7 @@ func (c *Client) solveCaptcha(
 		}
 		c.engageLockout(60 * time.Second)
 		if c.streamsFn() == 0 {
-			c.log.Errorf("[STREAM %d] [Captcha] FATAL: 0 connected streams and manual captcha failed/timed out", streamID)
-			return "", ErrFatalCaptchaNoStreams
+			c.log.Warnf("[STREAM %d] [Captcha] Captcha solve failed with 0 connected streams; throttling (retry after lockout)", streamID)
 		}
 		return "", ErrCaptchaWaitRequired
 	}

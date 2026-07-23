@@ -99,8 +99,9 @@ const (
 type VKOpts struct {
 	Links          []string // -links (нормализованные join-коды); несколько = больше стримов
 	StreamsPerCred int      // -streams-per-cred
-	ManualCaptcha  bool     // -manual-captcha
-	Browser        Browser  // -browser: chrome | firefox | safari
+	ManualCaptcha         bool     // -manual-captcha: только ручная капча
+	ManualCaptchaFallback bool     // -captcha-manual-fallback: auto, затем :8765
+	Browser               Browser  // -browser: chrome | firefox | safari
 	Platform       Platform // -platform: desktop | mobile
 }
 
@@ -199,8 +200,9 @@ func ParseClient(args []string, errOut io.Writer) (*Client, error) {
 	obfTiming := fs.Duration("obf-timing", 0, "межпакетная задержка для RTP-мимикрии (напр. 20ms); 0=выкл")
 	streamsPerCred := fs.Int("streams-per-cred", defaultStreamsPerCache, "TURN-потоков на один кеш VK-creds; только -provider vk")
 	debug := fs.Bool("debug", false, "подробные debug-логи")
-	manualCaptcha := fs.Bool("manual-captcha", false, "ручная VK captcha в браузере вместо авто; только -provider vk")
-	browser := fs.String("browser", string(BrowserFirefox), "браузерный профиль VK-auth: chrome | firefox | safari; только -provider vk")
+	manualCaptcha := fs.Bool("manual-captcha", false, "только ручная VK captcha в браузере; только -provider vk")
+	manualCaptchaFallback := fs.Bool("captcha-manual-fallback", false, "после auto-раундов открыть :8765 для ручной captcha; только -provider vk")
+	browser := fs.String("browser", string(BrowserChrome), "браузерный профиль VK-auth: chrome | firefox | safari; только -provider vk")
 	platform := fs.String("platform", string(PlatformDesktop), "класс устройства персоны VK-auth: desktop | mobile; только -provider vk")
 	dnsMode := fs.String("dns-mode", dnsModeAuto, "резолвер клиента: plain | doh | auto")
 	dnsServers := fs.String("dns-servers", "", "свои UDP/53 DNS через запятую: ip[:port][,ip[:port]...]")
@@ -232,10 +234,11 @@ func ParseClient(args []string, errOut io.Writer) (*Client, error) {
 			Name: *provider,
 		},
 		VK: VKOpts{
-			StreamsPerCred: *streamsPerCred,
-			ManualCaptcha:  *manualCaptcha,
-			Browser:        Browser(*browser),
-			Platform:       Platform(*platform),
+			StreamsPerCred:        *streamsPerCred,
+			ManualCaptcha:         *manualCaptcha,
+			ManualCaptchaFallback: *manualCaptchaFallback,
+			Browser:               Browser(*browser),
+			Platform:              Platform(*platform),
 		},
 		DNS: DNSOpts{
 			Mode: *dnsMode,

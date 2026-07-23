@@ -23,7 +23,7 @@ type Config struct {
 	ManualOnly bool
 
 	// Browser - браузерный профиль control-plane: "chrome" | "firefox" | "safari".
-	// Пустое -> firefox
+	// Пустое -> chrome
 	Browser string
 
 	// Platform - класс устройства персоны: "desktop" | "mobile". Пустое -> desktop.

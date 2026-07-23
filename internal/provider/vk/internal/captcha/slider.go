@@ -133,6 +133,9 @@ func parseSliderPuzzle(raw map[string]any) (*sliderPuzzle, error) {
 		return nil, fmt.Errorf("invalid slider content response: %v", raw)
 	}
 	status := captchaStringifyAny(resp["status"])
+	if strings.EqualFold(status, "error") {
+		return nil, fmt.Errorf("%w: slider getContent status: %s", errCaptchaSessionDead, status)
+	}
 	if !strings.EqualFold(status, "ok") {
 		return nil, fmt.Errorf("slider getContent status: %s", status)
 	}

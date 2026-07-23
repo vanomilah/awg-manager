@@ -16,8 +16,8 @@ func TestKindFromString(t *testing.T) {
 		{"chrome", Chrome},
 		{"firefox", Firefox},
 		{"safari", Safari},
-		{"", Firefox},
-		{"unknown", Firefox},
+		{"", Chrome},
+		{"unknown", Chrome},
 	}
 	for _, tc := range cases {
 		if got := KindFromString(tc.in); got != tc.want {

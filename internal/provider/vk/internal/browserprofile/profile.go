@@ -20,16 +20,18 @@ const (
 	Mobile  Platform = "mobile"
 )
 
-// KindFromString мапит строку флага -browser в Kind. Пустое/неизвестное - Firefox
-// (дефолт продукта).
+// KindFromString мапит строку флага -browser в Kind. Пустое/неизвестное - Chrome.
 func KindFromString(s string) Kind {
 	switch s {
 	case string(Chrome):
 		return Chrome
 	case string(Safari):
 		return Safari
+	case string(Firefox):
+		return Firefox
+	default:
+		return Chrome
 	}
-	return Firefox
 }
 
 // PlatformFromString мапит строку флага -platform в Platform. Пустое/неизвестное -

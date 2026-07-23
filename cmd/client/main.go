@@ -196,6 +196,10 @@ func buildProvider(cfg *config.Client, dialer net.Dialer, connected *atomic.Int3
 			return nil, fmt.Errorf("vk: no links configured")
 		}
 		newVK := func(link string) (provider.Provider, error) {
+			manualSolver := vk.DefaultManualSolver
+			if !cfg.VK.ManualCaptcha && !cfg.VK.ManualCaptchaFallback {
+				manualSolver = nil
+			}
 			return vk.New(vk.Config{
 				Link:            link,
 				Dialer:          dialer,
@@ -206,7 +210,7 @@ func buildProvider(cfg *config.Client, dialer net.Dialer, connected *atomic.Int3
 				StreamsAlive:    connected.Load,
 				Log:             logger,
 				Debug:           cfg.Log.Debug,
-			}, vk.DefaultManualSolver)
+			}, manualSolver)
 		}
 		if len(cfg.VK.Links) == 1 {
 			return newVK(cfg.VK.Links[0])

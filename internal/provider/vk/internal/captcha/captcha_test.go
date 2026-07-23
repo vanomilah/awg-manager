@@ -3,6 +3,7 @@ package captcha
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -185,6 +186,14 @@ func TestReverseSwapPairs(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("reverseSwapPairs = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestParseSliderPuzzleSessionDead(t *testing.T) {
+	raw := map[string]any{"response": map[string]any{"status": "ERROR"}}
+	_, err := parseSliderPuzzle(raw)
+	if !errors.Is(err, errCaptchaSessionDead) {
+		t.Fatalf("parseSliderPuzzle = %v, want errCaptchaSessionDead", err)
 	}
 }
 

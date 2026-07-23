@@ -45,10 +45,11 @@ var (
 	reCaptchaScriptSrc  = regexp.MustCompile(`src="(https://[^"]+not_robot_captcha[^"]+)"`)
 	reCaptchaDebugInfo  = regexp.MustCompile(`debug_info:(?:[^"]*\|\|)?"([a-fA-F0-9]{64})"`)
 
-	errCaptchaRateLimit = errors.New("captcha session rate limit reached")
-	errCaptchaBot       = errors.New("captcha bot challenge")
+	errCaptchaRateLimit   = errors.New("captcha session rate limit reached")
+	errCaptchaBot         = errors.New("captcha bot challenge")
+	errCaptchaSessionDead = errors.New("captcha session expired")
 
-	captchaMaxAttempts = 2
+	captchaMaxAttempts = 4
 
 	// debugInfoCache кэширует 64-hex debug_info по URL JS-бандла (константа виджета,
 	// одна на всех).
@@ -101,6 +102,10 @@ func (e *captchaShowTypeError) Error() string {
 	return "captcha show type mismatch: " + e.ShowType
 }
 
+func isCheckboxRetryableStatus(status string) bool {
+	return strings.EqualFold(status, "bot") || strings.EqualFold(status, "error")
+}
+
 type captchaSession struct {
 	ctx     context.Context
 	client  tlsclient.HttpClient
@@ -139,8 +144,28 @@ func Solve(
 			return token, nil
 		}
 		l.Warnf("[STREAM %d] [Captcha] solve attempt %d failed: %v", streamID, attempt, solveErr)
-		if errors.Is(solveErr, errCaptchaRateLimit) || errors.Is(solveErr, errCaptchaBot) {
+		if errors.Is(solveErr, errCaptchaRateLimit) {
+			if attempt < captchaMaxAttempts {
+				wait := time.Duration(2+randx.Intn(4)) * time.Second
+				l.Infof("[STREAM %d] [Captcha] rate limit on attempt %d, backing off %v", streamID, attempt, wait)
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return "", ctx.Err()
+				case <-timer.C:
+				}
+				continue
+			}
 			return "", solveErr
+		}
+		if errors.Is(solveErr, errCaptchaSessionDead) {
+			l.Infof("[STREAM %d] [Captcha] session burned on attempt %d, need fresh VK challenge", streamID, attempt)
+			return "", solveErr
+		}
+		if errors.Is(solveErr, errCaptchaBot) {
+			l.Infof("[STREAM %d] [Captcha] retryable rejection on attempt %d, rotating browser_fp", streamID, attempt)
+			continue
 		}
 
 		backoffSteps := min(attempt, 10)
@@ -206,6 +231,17 @@ func (s *captchaSession) solveOnce(captchaErr *Error) (string, error) {
 		token, err = s.solveSliderCaptcha(captchaErr.SessionToken, browserFP, hash, sliderContent, debugInfo)
 	case "checkbox", "":
 		token, err = s.solveCheckboxCaptcha(captchaErr.SessionToken, browserFP, hash, debugInfo)
+		if err != nil && sliderContent.Value != "" {
+			trySlider := errors.Is(err, errCaptchaBot)
+			var showTypeErr *captchaShowTypeError
+			if errors.As(err, &showTypeErr) && strings.EqualFold(showTypeErr.ShowType, "slider") {
+				trySlider = true
+			}
+			if trySlider {
+				s.logger().Infof("[Captcha] checkbox rejected (bot/error/slider), trying slider")
+				token, err = s.solveSliderCaptcha(captchaErr.SessionToken, browserFP, hash, sliderContent, debugInfo)
+			}
+		}
 	default:
 		return "", fmt.Errorf("unsupported captcha type: %s", showType)
 	}
@@ -495,12 +531,15 @@ func (s *captchaSession) solveCheckboxCaptcha(
 		return "", err
 	}
 	if check.ShowType != "" && !strings.EqualFold(check.ShowType, "checkbox") {
+		if strings.EqualFold(check.ShowType, "slider") {
+			return "", fmt.Errorf("%w: checkbox redirected to slider (status=%s)", errCaptchaBot, check.Status)
+		}
 		return "", &captchaShowTypeError{ShowType: check.ShowType}
 	}
 	if strings.EqualFold(check.Status, "error_limit") {
 		return "", errCaptchaRateLimit
 	}
-	if strings.EqualFold(check.Status, "bot") {
+	if isCheckboxRetryableStatus(check.Status) {
 		return "", fmt.Errorf("%w: checkbox captcha rejected: status=%s", errCaptchaBot, check.Status)
 	}
 	if !strings.EqualFold(check.Status, "ok") {
