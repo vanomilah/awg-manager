@@ -122,7 +122,7 @@ func outboundFingerprint(ob map[string]any) string {
 		secret, _ = ob["uuid"].(string)
 	case "trojan", "hysteria2", "shadowsocks":
 		secret, _ = ob["password"].(string)
-	case "naive":
+	case "naive", "trusttunnel":
 		u, _ := ob["username"].(string)
 		p, _ := ob["password"].(string)
 		secret = u + ":" + p
@@ -187,13 +187,17 @@ func nextFreeListenPortSlot(cfg *Config, reserved map[int]bool) int {
 }
 
 // parseTunnelLinksInput разбирает пользовательский ввод AddTunnels. Обычный
-// путь — построчный ParseBatch по share-link'ам, но канонический JSON-конфиг
-// клиента mieru (экспорт панелей, формат mieru apply config) — это единый
-// многострочный документ: line-split его убивает, поэтому сначала проверяем
-// тело целиком.
+// путь — построчный ParseBatch по share-link'ам, но канонические конфиги
+// mieru JSON (экспорт панелей) и TrustTunnel TOML (экспорт CLI/мобильных
+// клиентов) — единые многострочные документы: line-split их убивает,
+// поэтому сначала проверяем тело целиком.
 func parseTunnelLinksInput(linksText string) vlink.BatchResult {
-	if body := []byte(linksText); vlink.IsMieruClientJSON(body) {
+	body := []byte(linksText)
+	if vlink.IsMieruClientJSON(body) {
 		return vlink.ParseMieruClientJSON(body)
+	}
+	if vlink.IsTrustTunnelTOML(body) {
+		return vlink.ParseTrustTunnelTOML(body)
 	}
 	return vlink.ParseBatch(strings.Split(linksText, "\n"))
 }

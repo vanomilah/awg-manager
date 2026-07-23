@@ -74,7 +74,7 @@
 	<div class="term-singbox">
 		<textarea
 			class="term-singbox-input"
-			placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland\nmierus://user:pass@host?profile=default&port=443&protocol=TCP`}
+			placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland\nmierus://user:pass@host?profile=default&port=443&protocol=TCP\nTrustTunnel TOML ([endpoint] секция)`}
 			rows="5"
 			bind:value={input}
 		></textarea>

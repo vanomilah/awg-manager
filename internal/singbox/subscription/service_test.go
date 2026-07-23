@@ -1934,6 +1934,37 @@ func TestCreate_InlineMieruClientJSON(t *testing.T) {
 	}
 }
 
+// TestCreate_InlineTrustTunnelTOML: вставка канонического TrustTunnel client
+// config TOML как inline-тела подписки материализует один trusttunnel outbound.
+func TestCreate_InlineTrustTunnelTOML(t *testing.T) {
+	svc, mut := newTestService(t)
+	inline := `[endpoint]
+hostname = "nl3.trutun.online"
+addresses = ["nl3.trutun.online:443"]
+username = "user_1353818979"
+password = "8eOprVpaxQx6"
+upstream_protocol = "http3"
+custom_sni = "nl3.trutun.online"
+`
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "trusttunnel", Inline: inline, Enabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sub.Members) != 1 {
+		t.Fatalf("members=%d want 1", len(sub.Members))
+	}
+	m := sub.Members[0]
+	if m.Protocol != "trusttunnel" {
+		t.Errorf("member protocol=%q want trusttunnel", m.Protocol)
+	}
+	if m.Server != "nl3.trutun.online" || m.Port != 443 {
+		t.Errorf("member server/port=%q:%d", m.Server, m.Port)
+	}
+	if !mut.addedOutbound(m.Tag) {
+		t.Errorf("member %s not materialized", m.Tag)
+	}
+}
+
 // TestCreate_InlineUnrecognizedJSON: JSON без outbounds и без profiles —
 // точная ошибка формата, упоминающая оба поддерживаемых JSON-варианта.
 func TestCreate_InlineUnrecognizedJSON(t *testing.T) {

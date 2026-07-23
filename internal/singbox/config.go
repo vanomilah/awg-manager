@@ -541,6 +541,11 @@ func detectTransport(ob map[string]any) string {
 		return "https"
 	case "mieru":
 		return strings.ToLower(strOr(ob["transport"], "tcp"))
+	case "trusttunnel":
+		if quic, _ := ob["quic"].(bool); quic {
+			return "quic"
+		}
+		return "http2"
 	}
 	if tr, ok := ob["transport"].(map[string]any); ok {
 		return strOr(tr["type"], "tcp")

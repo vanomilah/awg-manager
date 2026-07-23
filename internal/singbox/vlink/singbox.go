@@ -30,6 +30,7 @@ var supportedSingboxTypes = map[string]bool{
 	"shadowsocks": true,
 	"hysteria2":   true,
 	"mieru":       true,
+	"trusttunnel": true,
 }
 
 // servicedSingboxTypes is the set of outbound types that are infrastructural
@@ -309,6 +310,20 @@ func validateSingboxOutbound(ob map[string]any, typ string) error {
 		ports, hasServerPorts := ob["server_ports"].([]any)
 		if !hasServerPort && (!hasServerPorts || len(ports) == 0) {
 			return fmt.Errorf("missing server_port or server_ports")
+		}
+	case "trusttunnel":
+		if asString(ob["username"]) == "" {
+			return fmt.Errorf("missing username")
+		}
+		if asString(ob["password"]) == "" {
+			return fmt.Errorf("missing password")
+		}
+		tls, _ := ob["tls"].(map[string]any)
+		if tls == nil {
+			return fmt.Errorf("missing tls")
+		}
+		if enabled, _ := tls["enabled"].(bool); !enabled {
+			return fmt.Errorf("tls must be enabled")
 		}
 	}
 	return nil

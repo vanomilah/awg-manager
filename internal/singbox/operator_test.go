@@ -2186,6 +2186,25 @@ func TestParseTunnelLinksInput(t *testing.T) {
 		}
 	}
 
+	trustTunnelTOML := `[endpoint]
+hostname = "nl3.trutun.online"
+addresses = ["nl3.trutun.online:443"]
+username = "user_1353818979"
+password = "8eOprVpaxQx6"
+upstream_protocol = "http3"
+custom_sni = "nl3.trutun.online"
+`
+	res = parseTunnelLinksInput(trustTunnelTOML)
+	if len(res.Errors) != 0 {
+		t.Fatalf("trusttunnel errors: %+v", res.Errors)
+	}
+	if len(res.Outbounds) != 1 {
+		t.Fatalf("trusttunnel outbounds=%d want 1", len(res.Outbounds))
+	}
+	if res.Outbounds[0].Protocol != "trusttunnel" || res.Outbounds[0].Server != "nl3.trutun.online" {
+		t.Fatalf("unexpected trusttunnel outbound: %+v", res.Outbounds[0])
+	}
+
 	// Обычные share-link'и — прежний построчный путь.
 	res = parseTunnelLinksInput("vless://3a3b1c2e-9999-4321-aaaa-1234567890ab@h.example:443?security=tls&sni=h#A\ntrojan://p@h.example:444?security=tls&sni=h#B")
 	if len(res.Errors) != 0 {
