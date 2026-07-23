@@ -15,11 +15,11 @@ Forked for router-friendly **auto-only** VK Smart Captcha.
    - BOT and `status=ERROR` retry with new identity instead of blind backoff
    - Checkbox BOT/ERROR → fallback to slider when settings available
 
-3. **Captcha solver (awg.3–awg.4)**
+3. **Captcha solver**
    - Checkbox `show_type=slider` / `status=BOT` → slider without "show type mismatch" dead-end
    - `ERROR_LIMIT` → backoff 2–5s and retry within round (not instant fail)
-   - `getContent status=ERROR` → session burned: fail fast, request fresh VK challenge (awg.4)
-   - **Host captcha lock** (`/tmp/freeturn-vk-captcha.lock`): one captcha slot across freeturn **processes** on the same router (awg.4)
+   - `getContent status=ERROR` → session burned: fail fast, request fresh VK challenge
+   - **Host captcha lock** (`/tmp/freeturn-vk-captcha.lock`): one captcha slot across freeturn **processes** on the same router
 
 4. **No fatal on cold start**
    - Exhausted auto captcha with 0 connected streams → 60s lockout + `CAPTCHA_WAIT_REQUIRED` (retry), not process kill
@@ -40,4 +40,4 @@ From awg-manager repo root:
 
 Output: `prebuilt/freeturn/client-linux-*` and `server-linux-*`
 
-Version baked in: `1.8.0-awg.4` (`main.version` ldflag)
+Version baked in: `1.8.0-1` (`main.version` ldflag)
