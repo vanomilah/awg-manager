@@ -24,12 +24,12 @@ Forked for router-friendly **auto-only** VK Smart Captcha.
 4. **No fatal on cold start**
    - Exhausted auto captcha with 0 connected streams → 60s lockout + `CAPTCHA_WAIT_REQUIRED` (retry), not process kill
 
-4. **Manual captcha disabled by default**
+5. **Manual captcha disabled by default**
    - No `:8765` HTTP server unless `-captcha-manual-fallback` or `-manual-captcha`
    - `-manual-captcha` = manual-only (legacy)
    - `-captcha-manual-fallback` = auto rounds then browser on localhost (not recommended on Keenetic)
 
-5. **Log timestamps in router TZ (`internal/tzfix`)**
+6. **Log timestamps in router TZ (`internal/tzfix`)**
    - awg-manager launches freeturn with `TZ=<POSIX string from Keenetic /etc/TZ>`, e.g. `MSK-3` — not an IANA name.
    - Go `time.Local` does not parse POSIX-TZ from env, and the router has no zoneinfo (embedded-tzdata does not help: tzdata has no zone named `MSK-3`), so `time.Local` stays UTC and stdlib-log timestamps lag by the zone offset.
    - `tzfix.Apply()` parses the first (std) offset from the POSIX string and sets `time.Local = time.FixedZone(...)`. Called first line in `cmd/client/main.go` and `cmd/server/main.go` (before logger/goroutines — `time.Local` write is a race otherwise).
@@ -47,4 +47,4 @@ From awg-manager repo root:
 
 Output: `prebuilt/freeturn/client-linux-*` and `server-linux-*`
 
-Version baked in: `1.8.0-1` (`main.version` ldflag)
+Version baked in: `1.8.0-2` (`main.version` ldflag)
