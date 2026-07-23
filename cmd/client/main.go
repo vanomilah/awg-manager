@@ -29,6 +29,7 @@ import (
 	"github.com/samosvalishe/free-turn-proxy/internal/proxy/udprelay"
 	"github.com/samosvalishe/free-turn-proxy/internal/sub"
 	"github.com/samosvalishe/free-turn-proxy/internal/transport/dtlsdial"
+	"github.com/samosvalishe/free-turn-proxy/internal/tzfix"
 	"github.com/samosvalishe/free-turn-proxy/internal/wire/rtpopus"
 )
 
@@ -38,6 +39,8 @@ var version = "dev"
 const dtlsHandshakeConcurrency = 3
 
 func main() {
+	tzfix.Apply() // до логгера/горутин: TZ роутера — POSIX, Go его из env не парсит
+
 	args := os.Args[1:]
 
 	// -sub: тянем список серверов до парсинга и подсовываем URI первой ноды

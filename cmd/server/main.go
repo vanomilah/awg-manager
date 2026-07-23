@@ -21,6 +21,7 @@ import (
 	"github.com/samosvalishe/free-turn-proxy/internal/proxy/tcpfwdserver"
 	"github.com/samosvalishe/free-turn-proxy/internal/proxy/udpserver"
 	"github.com/samosvalishe/free-turn-proxy/internal/transport/dtlsdial"
+	"github.com/samosvalishe/free-turn-proxy/internal/tzfix"
 	"github.com/samosvalishe/free-turn-proxy/internal/wire"
 	"github.com/samosvalishe/free-turn-proxy/internal/wire/rtpopus"
 )
@@ -29,6 +30,8 @@ import (
 var version = "dev"
 
 func main() {
+	tzfix.Apply() // до логгера/горутин: TZ роутера — POSIX, Go его из env не парсит
+
 	if len(os.Args) >= 2 && os.Args[1] == "clients" {
 		handleClientsCommand(os.Args[2:])
 		return

@@ -29,6 +29,13 @@ Forked for router-friendly **auto-only** VK Smart Captcha.
    - `-manual-captcha` = manual-only (legacy)
    - `-captcha-manual-fallback` = auto rounds then browser on localhost (not recommended on Keenetic)
 
+5. **Log timestamps in router TZ (`internal/tzfix`)**
+   - awg-manager launches freeturn with `TZ=<POSIX string from Keenetic /etc/TZ>`, e.g. `MSK-3` — not an IANA name.
+   - Go `time.Local` does not parse POSIX-TZ from env, and the router has no zoneinfo (embedded-tzdata does not help: tzdata has no zone named `MSK-3`), so `time.Local` stays UTC and stdlib-log timestamps lag by the zone offset.
+   - `tzfix.Apply()` parses the first (std) offset from the POSIX string and sets `time.Local = time.FixedZone(...)`. Called first line in `cmd/client/main.go` and `cmd/server/main.go` (before logger/goroutines — `time.Local` write is a race otherwise).
+   - Limitation: DST rules ignored (first offset only); fine for DST-free router TZs (Russia).
+   - Changed files: `internal/tzfix/tzfix.go`, `internal/tzfix/tzfix_test.go`, `cmd/client/main.go`, `cmd/server/main.go`.
+
 ## Build
 
 From awg-manager repo root:
