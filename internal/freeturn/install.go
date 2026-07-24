@@ -28,20 +28,20 @@ type ArchSpecs struct {
 // PinnedVersion is the free-turn-proxy release this build installs.
 // Bump procedure: update the constant, URLs, SHA256 (from the release's
 // checksums.txt) and sizes below.
-const PinnedVersion = "1.8.0-2"
+const PinnedVersion = "1.8.0-3"
 
 // releaseBase — прод-доставка с зеркала (паритет с
 // internal/singbox/installer/embedded.go — GitHub из RU у части пользователей
 // недоступен). Канонический источник сборки:
-// https://github.com/hoaxisr/free-turn-proxy релиз v1.8.0-1.
+// https://github.com/hoaxisr/free-turn-proxy ветка awg, релиз 1.8.0-3 (VKCalls).
 const releaseBase = "http://repo.hoaxisr.ru/ft/" + PinnedVersion + "/"
 
 // EmbeddedBinaries maps the awg-manager build arch (detectArch(): e.g.
 // "mipsel-3.4") to pinned freeturn assets. SHA256/Size — из checksums.txt
-// релиза hoaxisr/free-turn-proxy v1.8.0-1.
+// релиза hoaxisr/free-turn-proxy v1.8.0-3.
 var EmbeddedBinaries = map[string]ArchSpecs{
 	"aarch64-3.10": {
-		Client: BinarySpec{Version: PinnedVersion, URL: releaseBase + "ft-client-linux-arm64", SHA256: "5115087b6cb9d11cb1304e008172a8fefb62782814669787bf3f12d15d484630", Size: 14680226},
+		Client: BinarySpec{Version: PinnedVersion, URL: releaseBase + "ft-client-linux-arm64", SHA256: "7f256fdcb67e5ea83031fee3a7ed138dbdbb6220377ef8026694b575b41ba145", Size: 14745762},
 		Server: BinarySpec{Version: PinnedVersion, URL: releaseBase + "ft-server-linux-arm64", SHA256: "8c46c3dbff02686d8992f6f3374d7baee2eca0b5efa2ed25e664f63d4a3537d0", Size: 6160546},
 	},
 	"mipsel-3.4": {
