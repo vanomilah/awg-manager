@@ -268,6 +268,24 @@ func (c *Client) fetch(ctx context.Context, link string, streamID int) (string, 
 		return "", "", nil, fmt.Errorf("%w: %w", ErrCaptchaWaitRequired, ErrLockoutActive)
 	}
 
+	if !vkAuthModeLegacy() {
+		user, pass, addrs, err := c.getVKCredsViaVKCallsPath(ctx, link, streamID)
+		if err == nil {
+			c.log.Infof("[STREAM %d] [VK Auth] Success via VK Calls path", streamID)
+			return user, pass, addrs, nil
+		}
+		if term := vkCallsTerminalLinkError(err); term != nil {
+			c.log.Warnf("[STREAM %d] [VK Auth] VK Calls path terminal: %v", streamID, term)
+			return "", "", nil, term
+		}
+		if errors.Is(err, ErrInvalidJoinLink) || errors.Is(err, ErrAnonymousBlocked) || errors.Is(err, ErrCallFull) {
+			return "", "", nil, err
+		}
+		c.log.Infof("[STREAM %d] [VK Auth] VK Calls path failed (%v), falling back to legacy", streamID, err)
+	} else {
+		c.log.Infof("[STREAM %d] [VK Auth] Legacy mode (FREETURN_VK_AUTH_MODE=legacy)", streamID)
+	}
+
 	var lastErr error
 	jar := tlsclient.NewCookieJar()
 	for _, creds := range c.credentials {
