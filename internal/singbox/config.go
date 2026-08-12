@@ -645,10 +645,14 @@ func detectFingerprint(ob map[string]any) string {
 // рабочие mieru-подключения. Здесь только теги, подтверждённые файлом
 // include/<type>_outbound.go в исходниках sing-box.
 func outboundRequiresFeature(obType string) string {
-	if obType == "naive" {
+	switch obType {
+	case "naive":
 		return "with_naive_outbound"
+	case "trusttunnel":
+		return "with_trusttunnel_outbound"
+	default:
+		return ""
 	}
-	return ""
 }
 
 // OutboundTypeRequiresFeature exposes outboundRequiresFeature for
