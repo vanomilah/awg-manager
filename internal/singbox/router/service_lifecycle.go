@@ -12,6 +12,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
+	"github.com/hoaxisr/awg-manager/internal/proxyengine"
 	"github.com/hoaxisr/awg-manager/internal/singbox/heavyop"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -482,7 +483,8 @@ func (s *ServiceImpl) healDetachedTun(iface, scope string, slot orchestrator.Slo
 }
 
 func (s *ServiceImpl) waitForSingbox(ctx context.Context, timeout time.Duration) error {
-	if s.deps.Singbox == nil {
+	engine := s.routingEngineController()
+	if engine == nil {
 		return nil
 	}
 
@@ -511,10 +513,11 @@ func (s *ServiceImpl) waitForSingbox(ctx context.Context, timeout time.Duration)
 		}
 		if fn := s.transitionReadinessProgress; fn != nil && time.Since(lastHeartbeat) >= 2*time.Second {
 			elapsed := time.Since(start).Round(time.Second)
-			running, _ := s.deps.Singbox.IsRunning()
-			msg := fmt.Sprintf("запуск sing-box… %s", elapsed)
+			running, _ := engine.IsRunning()
+			engineName := s.routingEngineName()
+			msg := fmt.Sprintf("запуск %s… %s", engineName, elapsed)
 			if running {
-				msg = fmt.Sprintf("sing-box работает, ожидаем inbounds… %s", elapsed)
+				msg = fmt.Sprintf("%s работает, ожидаем inbounds… %s", engineName, elapsed)
 			}
 			fn(msg)
 			lastHeartbeat = time.Now()
@@ -548,7 +551,11 @@ func (s *ServiceImpl) waitForSingbox(ctx context.Context, timeout time.Duration)
 // enableFakeIPTun), never as a flaky gate. ctx is unused now that the live DNS
 // probe is out of the gate; kept on the signature for the tproxy/test callers.
 func (s *ServiceImpl) singboxReady(_ context.Context, tunMode bool) bool {
-	running, _ := s.deps.Singbox.IsRunning()
+	engine := s.routingEngineController()
+	if engine == nil {
+		return false
+	}
+	running, _ := engine.IsRunning()
 	if !running {
 		return false
 	}
@@ -569,6 +576,29 @@ func (s *ServiceImpl) singboxReady(_ context.Context, tunMode bool) bool {
 		return false
 	}
 	return tunReadyProbe(iface)
+}
+
+// routingEngineController returns the engine that owns the shared transparent
+// interception ports. Production wires DynamicEngine here; tests and legacy
+// callers that only provide Singbox keep the historical fallback.
+func (s *ServiceImpl) routingEngineController() proxyengine.Engine {
+	if s.deps.Engine != nil {
+		return s.deps.Engine
+	}
+	if engine, ok := s.deps.Singbox.(proxyengine.Engine); ok {
+		return engine
+	}
+	return nil
+}
+
+func (s *ServiceImpl) routingEngineName() string {
+	if s.deps.Settings != nil {
+		if settings, err := s.deps.Settings.Load(); err == nil && settings != nil &&
+			settings.SingboxRouter.RoutingEngine == "mihomo" {
+			return "Mihomo"
+		}
+	}
+	return "sing-box"
 }
 
 // tunModeIface returns the kernel tun iface of the active tun-inbound mode:
@@ -660,9 +690,11 @@ func (s *ServiceImpl) enableLocked(ctx context.Context, clearManualStop bool) er
 	// user-initiated Enable: a drift-heal reconcile (clearManualStop=false) must
 	// NOT wipe a user's master-Stop. The nil guard keeps test wirings that omit
 	// Singbox working.
-	if clearManualStop && s.deps.Singbox != nil {
-		if err := s.deps.Singbox.ClearManualStop(); err != nil {
-			return fmt.Errorf("clear manual-stop intent: %w", err)
+	if clearManualStop {
+		if engine := s.routingEngineController(); engine != nil {
+			if err := engine.ClearManualStop(); err != nil {
+				return fmt.Errorf("clear manual-stop intent: %w", err)
+			}
 		}
 	}
 
@@ -733,16 +765,16 @@ func (s *ServiceImpl) enableLocked(ctx context.Context, clearManualStop bool) er
 	}
 	cfg.EnsureRouteWAN(sr.WANAutoDetect, sr.WANInterface)
 
-	// Promote SlotRouter to active FIRST so persistConfigDirect's
-	// orch.Save targets the active path (it keys on the slot's enabled
-	// flag). SetEnabled also triggers the orchestrator's debounced cold-
-	// start — sing-box will read the active config we are about to write.
-	// Legacy fallback (tests) keeps the explicit Start call.
+	// Only sing-box consumes SlotRouter directly. Mihomo translates the same
+	// persisted data into config.yaml, so its source slot must stay parked;
+	// otherwise sing-box binds the shared 51271/51272 ports and steals TCP
+	// REDIRECT while UDP happens to remain on Mihomo.
+	mihomoPrimary := sr.RoutingEngine == "mihomo"
 	if s.deps.Orch != nil {
-		if err := s.deps.Orch.SetEnabled(orchestrator.SlotRouter, true); err != nil {
-			return fmt.Errorf("orchestrator enable router: %w", err)
+		if err := s.deps.Orch.SetEnabled(orchestrator.SlotRouter, !mihomoPrimary); err != nil {
+			return fmt.Errorf("orchestrator set router slot state: %w", err)
 		}
-	} else {
+	} else if !mihomoPrimary {
 		if running, _ := s.deps.Singbox.IsRunning(); !running {
 			if err := s.deps.Singbox.Start(); err != nil {
 				return fmt.Errorf("sing-box start: %w", err)
@@ -767,6 +799,19 @@ func (s *ServiceImpl) enableLocked(ctx context.Context, clearManualStop bool) er
 	s.notifyRoutingSlotsChanged()
 	if err := s.orchestratorApplyNow(); err != nil {
 		return fmt.Errorf("orchestrator reload after enable: %w", err)
+	}
+	// Reloading the parked sing-box slot normally triggers DynamicEngine's
+	// mirror hook. Keep an explicit convergence fallback for boot, legacy
+	// orchestrators and missed hooks; Reload starts Mihomo when it is not yet
+	// running and regenerates its translated configuration first.
+	if mihomoPrimary && !s.singboxReady(ctx, false) {
+		engine := s.routingEngineController()
+		if engine == nil {
+			return fmt.Errorf("Mihomo routing engine is unavailable")
+		}
+		if err := engine.Reload(); err != nil {
+			return fmt.Errorf("start Mihomo routing engine: %w", err)
+		}
 	}
 
 	// Wait for sing-box to be listening before iptables start redirecting
@@ -1118,7 +1163,10 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 		// "TPROXY jumps present"). No live DNS query here: that would add
 		// per-poll latency, and the route-presence check is enough once Enable
 		// has finished wiring routes (waitForSingbox already gated on live DNS).
-		running, _ := s.deps.Singbox.IsRunning()
+		running := false
+		if engine := s.routingEngineController(); engine != nil {
+			running, _ = engine.IsRunning()
+		}
 		if iface, _, fakeipNet, ok := s.fakeIPReadyInputs(); ok {
 			active = running && tunReadyProbe(iface) && fakeIPPoolRoutePresent(iface, fakeipNet)
 		}
@@ -1129,7 +1177,10 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 		// этом режиме появляются только под классы QoS и о режиме не говорят.
 		installed = policyTunNDMSName != ""
 		if policyTunNDMSName != "" {
-			running, _ := s.deps.Singbox.IsRunning()
+			running := false
+			if engine := s.routingEngineController(); engine != nil {
+				running, _ = engine.IsRunning()
+			}
 			if running && tunReadyProbe(policyTunIfaceName) {
 				active, _ = policyTunDefaultRoutePresent(policyTunLines, policyTunNDMSName)
 			}
@@ -1142,8 +1193,10 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 	// meant to be up but isn't (СБОЙ). lastError is cleared by the operator
 	// on a successful (re)start, so a healthy engine reports empty.
 	lastError := ""
-	if sr.Enabled && !active && s.deps.Singbox != nil {
-		lastError = s.deps.Singbox.LastError()
+	if sr.Enabled && !active {
+		if engine := s.routingEngineController(); engine != nil {
+			lastError = engine.LastError()
+		}
 	}
 	// Crash observability (#456): счётчик недавних падений, причина
 	// последнего и пауза авто-перезапуска. Заполняется всегда (omitempty
@@ -1153,8 +1206,8 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 	lastCrashReason := ""
 	restartSuppressedUntil := ""
 	var suppressedUntil time.Time
-	if s.deps.Singbox != nil {
-		n, reason, until := s.deps.Singbox.CrashStats()
+	if engine := s.routingEngineController(); engine != nil {
+		n, reason, until := engine.CrashStats()
 		crashCount = n
 		lastCrashReason = reason
 		if !until.IsZero() {
@@ -1169,20 +1222,23 @@ func (s *ServiceImpl) GetStatus(ctx context.Context) (Status, error) {
 	// видит только конфиг, поэтому этот runtime-issue собирается здесь, где
 	// уже есть probe и crash-статистика. Только tproxy: у fakeip-tun нет
 	// iptables-перехвата.
-	if sr.Enabled && sr.RoutingMode != "fakeip-tun" && jumps && s.deps.Singbox != nil {
-		if running, _ := s.deps.Singbox.IsRunning(); !running {
-			msg := "Движок остановлен, но перехват трафика активен — трафик политик не ходит."
-			if !suppressedUntil.IsZero() {
-				msg += fmt.Sprintf(" Автоперезапуск приостановлен до %s (падений за 10 мин: %d).",
-					suppressedUntil.Local().Format("15:04"), crashCount)
-			} else {
-				msg += " Автоперезапуск: при следующей проверке (до 30 с)."
+	if sr.Enabled && sr.RoutingMode != "fakeip-tun" && jumps {
+		engine := s.routingEngineController()
+		if engine != nil {
+			if running, _ := engine.IsRunning(); !running {
+				msg := "Движок остановлен, но перехват трафика активен — трафик политик не ходит."
+				if !suppressedUntil.IsZero() {
+					msg += fmt.Sprintf(" Автоперезапуск приостановлен до %s (падений за 10 мин: %d).",
+						suppressedUntil.Local().Format("15:04"), crashCount)
+				} else {
+					msg += " Автоперезапуск: при следующей проверке (до 30 с)."
+				}
+				issues = append(issues, Issue{
+					Severity: "error",
+					Kind:     "engine-dead-interception",
+					Message:  msg,
+				})
 			}
-			issues = append(issues, Issue{
-				Severity: "error",
-				Kind:     "engine-dead-interception",
-				Message:  msg,
-			})
 		}
 	}
 	// Эксперт-редактор (90-user.json): если последний reload пропущен из-за
@@ -1500,12 +1556,17 @@ func (s *ServiceImpl) Reconcile(ctx context.Context) error {
 	// идём в reconcileInstalled (DROP сразу), watchdog оживляет процесс, и
 	// следующий тик при живом движке перепромоутит слот.
 	engineUp := true
-	if s.deps.Singbox != nil {
-		engineUp, _ = s.deps.Singbox.IsRunning()
+	if engine := s.routingEngineController(); engine != nil {
+		engineUp, _ = engine.IsRunning()
 	}
-	routerSlotParked := s.deps.Orch != nil && !s.routerSlotEnabled()
+	routerSlotEnabled := s.deps.Orch != nil && s.routerSlotEnabled()
+	// sing-box needs the router slot active; Mihomo needs the exact same slot
+	// parked because it translates it and owns the shared intercept ports itself.
+	routerSlotDrift := s.deps.Orch != nil &&
+		((sr.RoutingEngine == "mihomo" && routerSlotEnabled) ||
+			(sr.RoutingEngine != "mihomo" && !routerSlotEnabled && engineUp))
 	switch {
-	case sr.Enabled && (!installedComplete || (routerSlotParked && engineUp)):
+	case sr.Enabled && (!installedComplete || routerSlotDrift || (sr.RoutingEngine == "mihomo" && !engineUp)):
 		// Drift-heal, NOT user-initiated: must honour a prior master-Stop, so
 		// do not clear the sticky intent (clearManualStop=false).
 		return s.enableLocked(ctx, false)
