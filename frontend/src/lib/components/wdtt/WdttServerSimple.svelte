@@ -171,7 +171,7 @@
 		server.directListen = setListenPort(`${host}:${port}`, port, host);
 	}
 
-	const step1Done = $derived(!!server.password.trim());
+	const step1Done = $derived(!!server.password?.trim());
 	const step2Done = $derived(step1Done && !!server.listen.trim());
 	const canSave = $derived(step1Done && !saving && !starting);
 	const canStart = $derived(step2Done && !saving && !starting);

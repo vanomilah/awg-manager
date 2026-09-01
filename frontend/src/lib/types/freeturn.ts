@@ -13,8 +13,6 @@ export interface FreeTurnClientConfig {
 	transport: 'tcp' | 'udp';
 	mode: 'udp' | 'tcp';
 	bond: boolean;
-	turnHost?: string;
-	turnPort?: number;
 	obfProfile: 'none' | 'rtpopus' | 'rtpopus2' | 'rtpopus3';
 	obfKey?: string;
 	obfKeySet?: boolean;
@@ -24,6 +22,8 @@ export interface FreeTurnClientConfig {
 	dnsServers?: string;
 	clientId?: string;
 	sub?: string;
+	/** Legacy field kept for compatibility with the retired standalone editor. */
+	turnHost?: string;
 	debug: boolean;
 }
 
@@ -64,7 +64,7 @@ export interface FreeTurnConfig {
 export interface FreeTurnProcessStatus {
 	running: boolean;
 	pid?: number;
-	orphanedPid?: number;
+	orphanedPid?: boolean;
 	startedAt?: string;
 	lastError?: string;
 	log?: string;

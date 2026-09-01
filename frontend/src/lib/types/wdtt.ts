@@ -3,6 +3,11 @@ export interface WdttClientConfig {
 	listen: string;
 	peer: string;
 	password: string;
+	/**
+	 * Пароль задан на бэкенде. Значение секрета наружу не отдаётся (Н5), а
+	 * пустое поле в теле правки означает «не менять» — по нему же считается
+	 * «инстанс настроен».
+	 */
 	passwordSet?: boolean;
 	vkHashes: string;
 	workers: number;
@@ -29,31 +34,35 @@ export interface WdttClientConfig {
 export interface WdttClientInstance {
 	id: string;
 	name: string;
-	seededFrom?: string;
 	config: WdttClientConfig;
+	/** Имя старого конфига, из которого запись перенёс посев; пусто у заведённых через UI. */
+	seededFrom?: string;
 }
 
 export interface WdttServerConfig {
 	enabled?: boolean;
 	listen: string;
 	wgPort: number;
-	password: string;
+	/** Legacy standalone-editor fields; ProxyRT keeps credentials in its user store. */
+	password?: string;
 	passwordSet?: boolean;
-	configDir?: string;
 	adminId?: string;
 	botToken?: string;
 	botTokenSet?: boolean;
+	configDir?: string;
 	debug?: boolean;
 	natMode?: 'full' | 'internet-only' | 'none';
 	natStaticWan?: string;
+	/** Выходы static-NAT для internet-only. Источник правды бэкенда —
+	 *  StaticNATList(): список старше одиночки. Мигрированная с post-#750
+	 *  конфигом запись несёт ТОЛЬКО его. */
+	natStaticWans?: string[];
 	policy?: string;
 	lanSegments?: string[];
-	exposeToPolicies?: boolean;
 	ingressEnabled?: boolean;
-	natIface?: string;
 	/** Kernel WG dev (opkgtunN); пусто → legacy wdtt0 */
 	wgIface?: string;
-	/** Raw iface dev (opkgtunN) for raw relay */
+	/** Kernel raw dev (opkgtunN); пусто → legacy wdttraw0 (`kernelRawIface`) */
 	rawIface?: string;
 	/** NDMS id (OpkgTun17..49) when registered in router */
 	ndmsIface?: string;
@@ -63,28 +72,27 @@ export interface WdttServerConfig {
 	relayMode?: 'wg' | 'raw';
 	/** UDP-порт Raw (-listen-raw). Пусто → DTLS+1 */
 	rawListen?: string;
-	/** WG peer-порт (-listen-direct, WRAP без DTLS). Пусто → DTLS-порт */
+	/** Третий порт WG-половины без DTLS (-listen-direct). Пусто → выключено */
 	directListen?: string;
-	/** Клиенты сервера — источник правды, panel.db собирается из них */
-	clients?: WdttServerClient[];
 	/** peer и VK-хеши последней ссылки: чтобы wdtt:// восстанавливалась */
 	linkPeer?: string;
 	linkVkHashes?: string;
 	/** server.log (JSON ~2 с): ram (default), off, disk */
 	statsLog?: 'ram' | 'off' | 'disk';
-}
-
-export interface WdttServerClient {
-	password: string;
-	comment?: string;
-	vkHash?: string;
+	/**
+	 * Показывать интерфейсы сервера роутеру как подключения (public + `ip
+	 * global`) — тогда он предлагает их в политиках доступа. Применяется на
+	 * старте: живой сервер от смены не перезапускается (`internal/wdtt/types.go`).
+	 */
+	exposeToPolicies?: boolean;
 }
 
 export interface WdttServerInstance {
 	id: string;
 	name: string;
-	seededFrom?: string;
 	config: WdttServerConfig;
+	/** Имя старого конфига, из которого запись перенёс посев; пусто у заведённых через UI. */
+	seededFrom?: string;
 }
 
 export interface WdttConfig {
@@ -96,7 +104,6 @@ export interface WdttConfig {
 export interface WdttProcessStatus {
 	running: boolean;
 	pid?: number;
-	orphanedPid?: number;
 	startedAt?: string;
 	lastError?: string;
 	log?: string;
@@ -104,11 +111,27 @@ export interface WdttProcessStatus {
 	rawClientIp?: string;
 	rawIface?: string;
 	ndmsIface?: string;
+	/** NDMS-имя raw-интерфейса сервера; пусто на старом бинаре (без -raw-iface) */
 	rawNdmsIface?: string;
-	appliedExposeToPolicies?: string[];
+	/**
+	 * Значение `exposeToPolicies`, с которым РЕАЛЬНО стартовал живой процесс.
+	 *
+	 * Производителя больше нет: прокси-рантайм применяет тумблер
+	 * реконсиляцией, а не «на старте», и понятия «значение, с которым
+	 * стартовали» у него не существует. Поле всегда пусто — расхождение с
+	 * выбранным показывать не из чего, и бейдж SH-56 молчит.
+	 */
+	appliedExposeToPolicies?: boolean;
 	dtlsConnections?: number;
 	binary: string;
 	binaryPresent: boolean;
+	/**
+	 * Процесс наш и живой, но pid-файл унаследован: startedAt нет, надзор слеп.
+	 *
+	 * Производителя больше нет: усыновление по pid-файлу заменил управляющий
+	 * сокет — процесс либо отвечает по нему, либо не наш. Поле всегда пусто.
+	 */
+	orphanedPid?: boolean;
 }
 
 export interface WdttInstanceStatus {
@@ -122,9 +145,10 @@ export interface WdttStatus {
 	servers: WdttInstanceStatus[];
 	client: WdttProcessStatus;
 	server: WdttProcessStatus;
-	binariesPresent?: boolean;
 	/** Собирается ли wdtt-server под арку роутера (на mips/mipsel — нет). */
 	serverSupported?: boolean;
+	/** Бинари подсистемы на диске. Принадлежит ПОДСИСТЕМЕ, а не инстансу. */
+	binariesPresent?: boolean;
 	installAvailable: boolean;
 	installVersion?: string;
 	installedVersion?: string;
@@ -171,16 +195,22 @@ export interface WdttPanelUserEntry {
 	password: string;
 	comment?: string;
 	vkHash?: string;
-	isMain: boolean;
+	/** Compatibility metadata returned by older WDTT endpoints. */
+	isMain?: boolean;
 	isMainPassword?: boolean;
-	isAuto?: boolean;
 	isExpired?: boolean;
-	isDeactivated: boolean;
-	deviceCount: number;
+	isDeactivated?: boolean;
+	deviceCount?: number;
 	lastSeenAt?: number;
+	/** Абонента завёл инвариант непустоты списка */
+	isAuto: boolean;
 }
 
-export type WdttServerClientsReload = 'delivered' | 'failed' | 'not-needed' | 'stopped';
+/**
+ * Судьба SIGHUP после изменения состава абонентов. Заполняют только мутации
+ * состава (добавление, удаление); у чтения и переименования поля нет.
+ */
+export type WdttServerClientsReload = 'delivered' | 'serverStopped' | 'failed';
 
 export interface WdttPanelUsersStatus {
 	panelDbPath?: string;
