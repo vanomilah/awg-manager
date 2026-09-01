@@ -64,12 +64,23 @@
 
     let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip' | 'mihomo'>('dns');
 
+    const singboxInitializedStore = singboxRouterStore.initialized;
+    const singboxSettings = singboxRouterStore.settings;
+
     // ?policy=Policy1 — прямой переход из настроек sing-box в редактор
     // конкретной политики (#573).
     let deepLinkPolicy = $derived($page.url.searchParams.get('policy'));
 
     let isOS5 = $derived($systemInfo.data?.isOS5 ?? false);
-    let isMihomo = $derived($systemInfo.data?.routingEngine === 'mihomo');
+    // The router settings store is the source of truth used by the editor to
+    // choose between Sing-box and Mihomo. systemInfo is refreshed separately
+    // and may briefly report the previous engine, which used to make the
+    // Sing-box draft guard appear while editing Mihomo (whose mutations are
+    // applied immediately by the native API).
+    let isMihomo = $derived(
+        $singboxSettings?.routingEngine === 'mihomo'
+        || (!$singboxSettings && $systemInfo.data?.routingEngine === 'mihomo'),
+    );
     let hydrarouteInstalled = $derived($routing.hydrarouteStatus?.installed ?? false);
     let hasDnsEngine = $derived(isOS5 || hydrarouteInstalled);
     let singboxInstalled = $derived($systemInfo.data?.singbox?.installed ?? false);
@@ -136,8 +147,6 @@
     // (the same condition that renders the tab) so we never select a tab that
     // isn't there — fakeip-tun implies sing-box installed, but this keeps the
     // selection from racing ahead of systemInfo arriving.
-    const singboxInitializedStore = singboxRouterStore.initialized;
-    const singboxSettings = singboxRouterStore.settings;
     let fakeipAutoSelected = false;
     $effect(() => {
         if (!browser) return;
