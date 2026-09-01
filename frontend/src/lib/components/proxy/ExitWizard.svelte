@@ -186,7 +186,7 @@
 				ftPayload = payload;
 				protocol = 'freeturn';
 				mode = 'wg';
-				fields = fieldsFromFtPayload(payload, candidateListen('freeturn'));
+				fields = fieldsFromFtPayload(payload, candidateListen('freeturn'), [...usedListens.wdtt, ...usedListens.freeturn]);
 				return;
 			}
 			const res = await api.decodeWdttLink(text);
@@ -217,7 +217,7 @@
 
 	function applyProfile(payload: WdttImportPayload, fromSub: boolean) {
 		mode = payload.connMode === 'raw' ? 'raw' : 'wg';
-		fields = fieldsFromWdttPayload(payload, candidateListen('wdtt'), fromSub);
+		fields = fieldsFromWdttPayload(payload, candidateListen('wdtt'), fromSub, [...usedListens.wdtt, ...usedListens.freeturn]);
 	}
 
 	function onLinkInput(v: string) {

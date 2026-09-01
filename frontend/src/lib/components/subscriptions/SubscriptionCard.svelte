@@ -203,7 +203,9 @@
 						dotVariant={statusDot.variant}
 						dotPulse={statusDot.pulse}
 						staticTitle
-					/>
+					>
+						{#snippet badges()}<Badge variant="accent" size="sm">Sing-box</Badge>{/snippet}
+					</TunnelTitleRow>
 					<TunnelMetaText>
 						<span>{subscription.memberTags.length} серверов</span>
 						<span class="meta-dot" aria-hidden="true">·</span>
@@ -306,6 +308,7 @@
 		<div class="inactive-header-main">
 			<div class="inactive-title-row">
 				<h3 class="inactive-title">{subscription.label || subscription.url}</h3>
+				<Badge variant="accent" size="sm">Sing-box</Badge>
 				<Badge variant="accent" size="sm">{sourceKindLabel}</Badge>
 			</div>
 			<div class="inactive-meta-dense mono">
@@ -396,6 +399,7 @@
 				<span class="inactive-kind">{modeLabel}</span>
 			</div>
 			<div class="inactive-note">
+				<Badge variant="accent" size="sm">Sing-box</Badge>
 				<Badge variant="accent" size="sm">{sourceKindLabel}</Badge>
 				<span class="meta-dot" aria-hidden="true">·</span>
 				:{subscription.listenPort}

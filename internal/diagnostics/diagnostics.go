@@ -58,6 +58,7 @@ type SystemInfo struct {
 	IsOS5         bool                      `json:"isOS5"`
 	Arch          string                    `json:"arch"`
 	Backend       string                    `json:"backend"`
+	RoutingEngine string                    `json:"routingEngine,omitempty"`
 	KernelModule  KernelModuleInfo          `json:"kernelModule"`
 	TotalMemoryMB int                       `json:"totalMemoryMB"`
 	Uptime        string                    `json:"uptime"`
@@ -431,6 +432,7 @@ type Deps struct {
 	TunnelStore          *storage.AWGTunnelStore
 	LogService           LogServiceForDiag
 	AppVersion           string
+	RoutingEngine        func() string
 	PingCheckFacade      PingCheckForDiag
 	Singbox              SingboxForDiag
 	SingboxSubMembers    func() []SingboxSubMember

@@ -5,22 +5,24 @@
 	interface Props {
 		value: T;
 		options: SegmentedOption<T>[];
-		ariaLabel: string;
+		ariaLabel?: string;
 		disabled?: boolean;
 		/** Icon-only buttons (28px); label used for aria-label and title. */
 		variant?: 'text' | 'icon';
 		/** Растянуть на ширину контейнера, кнопки делят её поровну. */
 		fullWidth?: boolean;
-		onchange: (value: T) => void;
+		size?: 'sm' | 'md' | 'lg';
+		onchange?: (value: T) => void;
 	}
 
 	let {
-		value,
+		value = $bindable(),
 		options,
-		ariaLabel,
+		ariaLabel = 'Выбор режима',
 		disabled = false,
 		variant = 'text',
 		fullWidth = false,
+		size = 'md',
 		onchange,
 	}: Props = $props();
 
@@ -33,7 +35,8 @@
 	function select(next: T) {
 		const option = options.find((o) => o.value === next);
 		if (!option || isOptionDisabled(option) || next === value) return;
-		onchange(next);
+		value = next;
+		onchange?.(next);
 	}
 </script>
 

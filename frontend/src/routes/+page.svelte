@@ -36,6 +36,7 @@
 	import { usageLevel } from '$lib/stores/settings';
 	import { isSectionVisible, isTunnelDashboardAvailable } from '$lib/types/usageLevel';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
+	import { mihomoNativeResources } from '$lib/stores/mihomoNative';
 	import SubscriptionsTabSection from '$lib/components/subscriptions/SubscriptionsTabSection.svelte';
 	import SingboxTunnelsTabSection from '$lib/components/singbox/SingboxTunnelsTabSection.svelte';
 	import AwgTunnelsTabSection from '$lib/components/tunnels/AwgTunnelsTabSection.svelte';
@@ -385,18 +386,34 @@
 	let unsubSingboxStatus: (() => void) | undefined;
 	let unsubSingboxTunnels: (() => void) | undefined;
 	let unsubAwg3Tunnels: (() => void) | undefined;
+	let unsubMihomoNative: (() => void) | undefined;
 	onMount(() => {
 		unsubSingboxStatus = singboxStatus.subscribe(() => {});
 		unsubSingboxTunnels = singboxTunnels.subscribe(() => {});
 		unsubAwg3Tunnels = awg3Tunnels.subscribe(() => {});
+		unsubMihomoNative = mihomoNativeResources.subscribe(() => {});
 	});
 	onDestroy(() => {
 		unsubSingboxStatus?.();
 		unsubSingboxTunnels?.();
 		unsubAwg3Tunnels?.();
+		unsubMihomoNative?.();
 	});
 
 	let singboxTunnelsList = $derived($singboxTunnels.data ?? []);
+	let mihomoNativeSnapshot = $derived($mihomoNativeResources.data);
+	let mihomoStandaloneProxies = $derived(
+		(mihomoNativeSnapshot?.proxies ?? []).filter(
+			(proxy) => !proxy.sourceId && proxy.selectedEngine === 'mihomo',
+		),
+	);
+	let mihomoSubscriptions = $derived(
+		(mihomoNativeSnapshot?.subscriptions ?? []).filter(
+			(subscription) => subscription.enginePreference !== 'sing-box',
+		),
+	);
+	let mihomoRuntimeProxies = $derived(mihomoNativeSnapshot?.runtimeProxies ?? {});
+	let mihomoRuntimeProviders = $derived(mihomoNativeSnapshot?.runtimeProviders ?? {});
 	let awg3List = $derived($awg3Tunnels.data ?? []);
 	let awg3InitialLoading = $derived(
 		$awg3Tunnels.data === null &&
@@ -680,15 +697,15 @@
 		return value === 'cards' || value === 'compact' || value === 'list';
 	}
 
-	// AWG | Sing-box ▾ (Туннели / Подписки / WG endpoints) | FreeTurn · WDTT
+	// AWG | Прокси ▾ (Туннели / Подписки / WG endpoints)
 	const showSingboxTunnelTabs = $derived(isSectionVisible($usageLevel, 'singboxTunnels'));
 	const singboxMenuChildren = $derived(
 		[
 			showSingboxTunnelTabs
-				? { id: 'singbox', label: 'Туннели', badge: singboxTunnelsList.length }
+				? { id: 'singbox', label: 'Туннели', badge: singboxTunnelsList.length + mihomoStandaloneProxies.length }
 				: null,
 			showSingboxTunnelTabs
-				? { id: 'subscriptions', label: 'Подписки', badge: subscriptionsList.length }
+				? { id: 'subscriptions', label: 'Подписки', badge: subscriptionsList.length + mihomoSubscriptions.length }
 				: null,
 			awg3Visible ? { id: 'awg3', label: 'WG endpoints', badge: awg3List.length } : null,
 		].filter((c): c is { id: string; label: string; badge: number } => c !== null),
@@ -701,7 +718,7 @@
 				singboxTabCluster
 					? {
 							id: singboxMenuChildren[0].id,
-							label: 'Sing-box',
+							label: 'Прокси',
 							separatorBefore: true,
 							children: singboxMenuChildren,
 						}
@@ -1724,12 +1741,14 @@
 				{sortedFilteredSingboxTunnels}
 				{singboxTunnelListStats}
 				{singboxTunnelsSourceRowCount}
-				{singboxTunnelsSearchEmpty}
 				{singboxAutoDelayCheckNonce}
 				{showSingboxGridListToggle}
 				{effectiveSingboxTunnelsEffectiveLayout}
 				{effectiveSingboxTunnelsRenderMode}
 				{subscriptionsActiveCards}
+				mihomoProxies={mihomoStandaloneProxies}
+				{mihomoRuntimeProxies}
+				{mihomoRuntimeProviders}
 				bind:singboxTunnelsSearchQuery
 				bind:singboxTunnelsLayoutMode
 				{handleSingboxTunnelSortChange}
@@ -1741,7 +1760,7 @@
 
 		{#if dashboardTypeSections && dashboardSubscriptionsCount > 0}
 			<TunnelSectionHeader
-				title="Sing-box подписки"
+				title="Подписки"
 				count={dashboardSubscriptionsCount}
 				countLabel={pluralForm(dashboardSubscriptionsCount, SUBSCRIPTION_WORDS)}
 			/>
@@ -1760,7 +1779,6 @@
 				{sortedFilteredSubscriptionsListRows}
 				{singboxSubscriptionsTrafficStats}
 				{singboxSubscriptionsSourceRowCount}
-				{singboxSubscriptionsSearchEmpty}
 				{singboxInstalled}
 				{singboxStatusLoading}
 				{singboxAutoDelayCheckNonce}
@@ -1768,6 +1786,9 @@
 				{effectiveSingboxSubscriptionsEffectiveLayout}
 				{effectiveSingboxSubscriptionsRenderMode}
 				{liveActives}
+				{mihomoSubscriptions}
+				{mihomoRuntimeProxies}
+				{mihomoRuntimeProviders}
 				bind:singboxSubscriptionsSearchQuery
 				bind:singboxSubscriptionsLayoutMode
 				{handleSubscriptionSortChange}

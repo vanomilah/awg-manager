@@ -45,6 +45,17 @@ import type {
 	SystemProcessItem,
 	SystemProcSummary,
 	SystemProcSnapshot,
+	TrafficDevice,
+	TrafficSession,
+	TrafficDomainGroup,
+	TrafficSnapshot,
+	TrafficExportRequest,
+	TrafficExportResponse,
+	AIAssistantState,
+	AIModelConfig,
+	AIModelConfigUpdate,
+	AIEmbeddedStatus,
+	AIEmbeddedConfig,
 } from '$lib/types';
 import { readDiagnosticsSanitizedPreference } from './clientCore';
 import { TunnelsClient } from './clientTunnels';
@@ -63,6 +74,12 @@ export type {
 	SystemProcessItem,
 	SystemProcSummary,
 	SystemProcSnapshot,
+	TrafficDevice,
+	TrafficSession,
+	TrafficDomainGroup,
+	TrafficSnapshot,
+	TrafficExportRequest,
+	TrafficExportResponse,
 } from '$lib/types';
 
 export class SystemClient extends TunnelsClient {
@@ -404,7 +421,7 @@ export class SystemClient extends TunnelsClient {
 		return this.request(`/logs${qs ? '?' + qs : ''}`);
 	}
 
-	async clearLogs(bucket: 'app' | 'singbox' = 'app'): Promise<void> {
+	async clearLogs(bucket: 'app' | 'singbox' | 'mihomo' = 'app'): Promise<void> {
 		await this.request(`/logs/clear?bucket=${bucket}`, { method: 'POST' });
 	}
 
@@ -663,6 +680,43 @@ export class SystemClient extends TunnelsClient {
 	// #region System tools (expert)
 	// ─────────────────────────────────────────────
 
+	async systemAIStatus(): Promise<AIAssistantState> {
+		return this.request('/system/ai/status');
+	}
+
+	async systemAIDiagnose(question: string): Promise<AIAssistantState> {
+		return this.request('/system/ai/diagnose', {
+			method: 'POST',
+			body: JSON.stringify({ question }),
+		});
+	}
+
+	async systemAIConfig(): Promise<AIModelConfig> {
+		return this.request('/system/ai/config');
+	}
+
+	async systemAIApplyAction(proposalId: string): Promise<AIAssistantState> {
+		return this.request('/system/ai/action/apply', {
+			method: 'POST',
+			body: JSON.stringify({ proposalId }),
+		});
+	}
+
+	async systemAISaveConfig(config: AIModelConfigUpdate): Promise<AIModelConfig> {
+		return this.request('/system/ai/config', {
+			method: 'PUT',
+			body: JSON.stringify(config),
+		});
+	}
+
+	async systemAIEmbedded(): Promise<AIEmbeddedStatus> {
+		return this.request('/system/ai/embedded');
+	}
+
+	async systemAIEmbeddedStop(): Promise<AIEmbeddedStatus> {
+		return this.request('/system/ai/embedded/stop', { method: 'POST' });
+	}
+
 	async systemFilesRoots(): Promise<SystemFileRoot[]> {
 		return this.request('/system/files/roots');
 	}
@@ -902,6 +956,21 @@ export class SystemClient extends TunnelsClient {
 		return this.request('/system/proc/kill', {
 			method: 'POST',
 			body: JSON.stringify(params),
+		});
+	}
+
+	async systemTrafficDevices(): Promise<TrafficDevice[]> {
+		return this.request('/system/traffic/devices');
+	}
+
+	async systemTrafficSnapshot(deviceIP: string): Promise<TrafficSnapshot> {
+		return this.request(`/system/traffic/snapshot?device=${encodeURIComponent(deviceIP)}`);
+	}
+
+	async systemTrafficExport(req: TrafficExportRequest): Promise<TrafficExportResponse> {
+		return this.request('/system/traffic/export', {
+			method: 'POST',
+			body: JSON.stringify(req),
 		});
 	}
 

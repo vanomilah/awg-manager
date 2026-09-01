@@ -43,10 +43,12 @@ import ServerClients from './ServerClients.svelte';
 function user(p: Partial<WdttPanelUserEntry> & { password: string }): WdttPanelUserEntry {
 	return {
 		comment: '',
+		isMain: false,
 		isDeactivated: false,
 		isExpired: false,
 		isMainPassword: false,
 		isAuto: false,
+		deviceCount: 0,
 		...p,
 	};
 }

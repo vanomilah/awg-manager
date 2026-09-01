@@ -49,7 +49,7 @@ func WdttClientArgs(c WdttClientConfig) []string {
 // Адреса шлюзов — константы старого мира (internal/wdtt/types.go:174-195).
 const (
 	wdttServerGatewayAddr = "10.66.0.1"
-	rawServerProcessAddr  = "10.70.66.1"
+	rawServerProcessAddr  = "10.70.0.1"
 )
 
 func WdttServerArgs(c WdttServerConfig) []string {

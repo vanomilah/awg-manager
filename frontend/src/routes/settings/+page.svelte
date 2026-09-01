@@ -39,8 +39,8 @@
 		SystemInfo,
 		Settings,
 		UpdateInfo,
+		DownloadRoute,
 	} from "$lib/types";
-	import { proxyInstallStatus, type ProxySubsystem } from "$lib/stores/proxyInstall";
 	import {
 		USAGE_LEVEL_LABELS,
 		isAppearanceSettingsVisible,
@@ -97,7 +97,6 @@
 	let restartConfirmOpen = $state(false);
 	let hydraBusy = $state(false);
 	let singboxInstalling = $state(false);
-	let singboxUninstalling = $state(false);
 	let singboxInstallError = $state<string | null>(null);
 	let singboxUpdating = $state(false);
 	let singboxUpdateError = $state<string | null>(null);
@@ -209,19 +208,6 @@
 		}
 	}
 
-	async function uninstallSingbox() {
-		singboxUninstalling = true;
-		try {
-			const fresh = await api.singboxUninstall();
-			singboxStatus.applyMutationResponse(fresh);
-			notifications.success('Sing-box удалён');
-		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : 'Не удалось удалить sing-box');
-		} finally {
-			singboxUninstalling = false;
-		}
-	}
-
 	async function updateSingbox() {
 		singboxUpdating = true;
 		singboxUpdateError = null;
@@ -278,7 +264,7 @@
 		);
 	}
 
-	async function selectDownloadRoute(routeTag: string, routeKind?: 'direct' | 'awg' | 'singbox' | 'subscription') {
+	async function selectDownloadRoute(routeTag: string, routeKind?: DownloadRoute['kind']) {
 		if (!settings) return;
 		saving = true;
 		try {
@@ -312,71 +298,6 @@
 			document.getElementById("feedback-fab")?.scrollIntoView({ behavior: "smooth", block: "center" });
 		});
 	}
-
-	// ── подсистемы прокси (WDTT, FreeTurn) ──────────────────────────
-	// Бинари ставятся и снимаются целиком подсистемой: version-файл у половин
-	// общий, а раздельный снос сделал бы статус неоднозначным.
-	//
-	// Статус живёт в polling-store, подписанном на `proxyrt.instances`: удаление
-	// инстанса в другой вкладке иначе оставило бы кнопку «Удалить» запертой до
-	// перезагрузки страницы.
-	const PROXY_SUBSYSTEMS = [
-		{ key: 'wdtt' as const, label: 'WDTT' },
-		{ key: 'freeturn' as const, label: 'FreeTurn' },
-	];
-	let proxyBusy = $state<Record<string, boolean>>({});
-
-	// Автоподписка `$store` работает только с идентификатором, поэтому оба
-	// store'а разложены по переменным.
-	const wdttInstallStore = proxyInstallStatus.wdtt;
-	const freeturnInstallStore = proxyInstallStatus.freeturn;
-	const proxyStatuses = $derived({
-		wdtt: $wdttInstallStore.data,
-		freeturn: $freeturnInstallStore.data,
-	});
-
-	async function runProxyBinaries(
-		subsystem: ProxySubsystem,
-		action: () => Promise<void>,
-		okMessage: string,
-		failMessage: string,
-	) {
-		proxyBusy = { ...proxyBusy, [subsystem]: true };
-		try {
-			await action();
-			notifications.success(okMessage);
-		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : failMessage);
-		} finally {
-			proxyBusy = { ...proxyBusy, [subsystem]: false };
-			await proxyInstallStatus[subsystem].refetch();
-		}
-	}
-
-	const proxyBinaryRows = $derived(
-		PROXY_SUBSYSTEMS.map(({ key, label }) => {
-			const st = proxyStatuses[key];
-			return {
-				key,
-				label,
-				present: st?.binariesPresent === true,
-				installAvailable: st?.installAvailable === true,
-				updateAvailable: st?.updateAvailable === true,
-				installedVersion: st?.installedVersion,
-				installVersion: st?.installVersion,
-				instances: st?.instances ?? 0,
-				busy: proxyBusy[key] === true,
-				oninstall: () =>
-					void runProxyBinaries(key, () => api.proxyInstall(key),
-						`${label}: бинари установлены`, `Не удалось установить ${label}`),
-				onuninstall: () =>
-					void runProxyBinaries(key, () => api.proxyUninstall(key),
-						`${label}: бинари удалены`, `Не удалось удалить ${label}`),
-			};
-		// Подсистема без статуса и без возможности установки — не наша арка:
-		// строка была бы мёртвой.
-		}).filter((row) => row.present || row.installAvailable),
-	);
 
 onMount(() => {
 	const timer = setInterval(() => {
@@ -604,52 +525,6 @@ $effect(() => {
 		}
 	}
 
-	let savingBootstrapDNS = $state(false);
-
-	// Bootstrap-DNS применяется бэкендом сразу: он переписывает адрес в
-	// 00-base.json и перечитывает конфиг sing-box без перезапуска.
-	async function saveBootstrapDNS(value: string) {
-		if (!settings) return;
-		savingBootstrapDNS = true;
-		try {
-			settings = await api.updateSettings({ ...settings, singboxBootstrapDNS: value });
-			setGlobalSettings(settings);
-			notifications.success(
-				value
-					? `Bootstrap-DNS: ${value}`
-					: "Bootstrap-DNS больше не навязывается — адрес в конфигурации остаётся прежним",
-			);
-		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : "Ошибка сохранения bootstrap-DNS");
-		} finally {
-			savingBootstrapDNS = false;
-		}
-	}
-
-	let savingClashPort = $state(false);
-	let clashPortError = $state<string | null>(null);
-
-	// Порт Clash API применяется бэкендом сразу: он переписывает
-	// external_controller в 00-base.json, перечитывает конфиг sing-box и
-	// переставляет собственного клиента. Отказ по занятости порта приходит
-	// текстом ошибки и показывается прямо под полем.
-	async function saveClashPort(value: number) {
-		if (!settings) return;
-		savingClashPort = true;
-		clashPortError = null;
-		try {
-			settings = await api.updateSettings({ ...settings, singboxClashPort: value });
-			setGlobalSettings(settings);
-			notifications.success(`Порт Clash API: ${value}`);
-		} catch (e) {
-			const msg = e instanceof Error ? e.message : "Ошибка сохранения порта Clash API";
-			clashPortError = msg;
-			notifications.error(msg);
-		} finally {
-			savingClashPort = false;
-		}
-	}
-
 	async function toggleUpdateCheck(enabled: boolean) {
 		if (!settings) return;
 		saving = true;
@@ -868,18 +743,8 @@ $effect(() => {
 					{singboxUpdateError}
 					oninstallSingbox={installSingbox}
 					onupdateSingbox={updateSingbox}
-					onuninstallSingbox={uninstallSingbox}
-					{singboxUninstalling}
 					showSingbox={showSingboxIntegration}
 					showHydra={showHydraIntegration}
-					bootstrapDNS={settings.singboxBootstrapDNS ?? ''}
-					bootstrapSaving={savingBootstrapDNS}
-					onsaveBootstrapDNS={saveBootstrapDNS}
-					clashPort={settings.singboxClashPort ?? 0}
-					clashPortSaving={savingClashPort}
-					{clashPortError}
-					onsaveClashPort={saveClashPort}
-					proxyBinaries={proxyBinaryRows}
 				/>
 				</div>
 			</aside>

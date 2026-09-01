@@ -56,6 +56,14 @@ export class WdttClient extends FreeturnClient {
 		return toWdttConfig(await this.proxyList());
 	}
 
+	async updateWdttClientConfig(config: WdttClientConfig): Promise<WdttSaveClientResult> {
+		return this.updateWdttClientInstance('default', config);
+	}
+
+	async ensureWdttRawTunnel(id: string): Promise<WdttEnsureWgResult> {
+		return this.ensureWdttWgTunnel(id);
+	}
+
 	/**
 	 * `sub` едет ОТДЕЛЬНЫМ полем тела, а не внутри конфига: URL подписки живёт
 	 * на самой записи (у freeturn-клиента он поле роли, у wdtt — нет).

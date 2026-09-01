@@ -111,6 +111,7 @@ func (a *app) setupServer() {
 			Bus:                 a.eventBus,
 			HydraService:        a.hydraService,
 			SingboxHandler:      a.singboxHandler,
+			MihomoHandler:       a.mihomoHandler,
 			SingboxOrch:         a.sbOrch,
 			ClashProxy:          a.clashProxy,
 			SingboxConnsHandler: a.singboxConnsHandler,
@@ -296,9 +297,31 @@ func (a *app) setupRouter() {
 			Warn("reserve-ports", "", "зарезервировать порты инбаундов: "+err.Error())
 	}
 	bindableAdapter := &routerWANInterfaceAdapter{store: a.ndmsQueries.Interfaces, nativeProxies: a.singboxOp.ListNativeProxies}
+	dynEngine := NewDynamicEngine(a.singboxOp, a.mihomoOp, a.settingsStore)
+	dynEngine.MihomoSidecarNeeded = a.mihomoSidecarNeeded
+	dynEngine.OnMihomoPrepare = func() error {
+		if a.mihomoBridgeRuntime == nil || a.mihomoNativeStore == nil {
+			return nil
+		}
+		return a.mihomoBridgeRuntime.prepare(context.Background(), a.mihomoNativeStore.ListBridges())
+	}
+	dynEngine.OnMihomoReady = func() error {
+		if a.mihomoBridgeRuntime == nil {
+			return nil
+		}
+		return a.mihomoBridgeRuntime.activate(context.Background())
+	}
+	dynEngine.OnMihomoUnavailable = func() error {
+		if a.mihomoBridgeRuntime == nil {
+			return nil
+		}
+		return a.mihomoBridgeRuntime.deactivate(context.Background())
+	}
+	a.dynamicEngine = dynEngine
 	routerSvc := router.NewService(router.Deps{
 		AppLog:                 a.loggingService,
 		Settings:               a.settingsStore,
+		Engine:                 dynEngine,
 		Singbox:                a.singboxOp,
 		Policies:               &routerAccessPolicyAdapter{svc: a.accessPolicySvc, wan: a.wanModel},
 		Events:                 a.eventBus,
@@ -307,6 +330,8 @@ func (a *app) setupRouter() {
 		AWGOutboundsRefresh:    a.awgoutboundsSvc.Reconcile,
 		SingboxTunnels:         &routerSingboxTunnelAdapter{src: a.singboxOp},
 		SubscriptionComposites: router.NewSubscriptionCompositesAdapter(a.subAdapter),
+		MihomoNativeProxies:    a.mihomoNativeStore,
+		MihomoConfigDir:        a.mihomoOp.ConfigDir(),
 		Orch:                   a.sbOrch,
 		WANInterfaces:          &routerWANInterfaceAdapter{store: a.ndmsQueries.Interfaces},
 		BindableInterfaces:     bindableAdapter,
@@ -335,6 +360,21 @@ func (a *app) setupRouter() {
 			p.CachePath = singbox.DefaultCacheDBPath()
 			return p
 		}(),
+		DeviceProxyInstances: func() []router.DeviceProxyInstance {
+			if a.deviceProxySvc == nil {
+				return nil
+			}
+			var out []router.DeviceProxyInstance
+			for _, inst := range a.deviceProxySvc.GetSnapshot().Instances {
+				out = append(out, router.DeviceProxyInstance{
+					ID:               inst.ID,
+					Port:             inst.Port,
+					SelectedOutbound: inst.SelectedOutbound,
+					Enabled:          inst.Enabled,
+				})
+			}
+			return out
+		},
 		// Синхронный мост «роутер → device-proxy»: после перепарковки слотов
 		// маршрутизации (Enable/Disable/смена режима) слот 30 перегенерируется
 		// ДО ближайшего reload — селекторы device-proxy деградируют ссылки на
@@ -348,6 +388,13 @@ func (a *app) setupRouter() {
 			}
 		},
 	})
+	dynEngine.OnMihomoReload = routerSvc.GenerateMihomoConfig
+	if a.mihomoHandler != nil {
+		a.mihomoHandler.SetRouterService(routerSvc)
+		a.mihomoHandler.SetReloadFunc(dynEngine.Reload)
+		a.mihomoHandler.SetMutationTransaction(dynEngine.nativeMutationTransition, dynEngine.reloadWithinTransition)
+		a.mihomoHandler.SetReloadPublishesNativeBridges(true)
+	}
 	a.routerSvc = routerSvc
 	a.subSvc.SetBindInterfaceValidator(subscriptionBindValidator{adapter: bindableAdapter})
 	// Health-check бинаря ipset пишет вердикты в журнал (битый Entware-бинарь

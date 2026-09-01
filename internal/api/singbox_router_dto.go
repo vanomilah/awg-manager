@@ -137,6 +137,8 @@ type SingboxRouterSettingsData struct {
 	// source-preserve (см. GET /singbox/router/policy-tun/nat-preview).
 	// Обнуляется бэкендом при policyTunSourcePreserve=false.
 	PolicyTunNATSegments []string `json:"policyTunNatSegments,omitempty" example:"Home"`
+	KeeneticCloudTunnel   bool     `json:"keeneticCloudTunnel,omitempty" example:"true"`
+	KeeneticCloudOutbound string   `json:"keeneticCloudOutbound,omitempty" example:"VOX"`
 }
 
 // SingboxRouterQoSClassDTO mirrors storage.SingboxQoSClass — one DSCP-based

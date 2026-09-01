@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"net/http"
+	"path/filepath"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/aiassistant"
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/connections"
 	"github.com/hoaxisr/awg-manager/internal/diagnostics"
@@ -12,6 +14,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/openapi"
 	"github.com/hoaxisr/awg-manager/internal/response"
 	sysports "github.com/hoaxisr/awg-manager/internal/sys/ports"
+	systraffic "github.com/hoaxisr/awg-manager/internal/sys/traffic"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
 )
@@ -39,6 +42,8 @@ type routeHandlers struct {
 	dnsRouteHandler      *api.DNSRouteHandler
 	diagRunner           *diagnostics.Runner
 	diagHandler          *api.DiagnosticsHandler
+	aiAssistantHandler   *api.AIAssistantHandler
+	trafficHandler       *systraffic.Handler
 	connectionsService   *connections.Service
 	connectionsHandler   *api.ConnectionsHandler
 	signatureHandler     *api.SignatureHandler
@@ -162,6 +167,14 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		TunnelStore:          s.tunnels,
 		LogService:           &diagLogAdapter{svc: s.loggingService},
 		AppVersion:           s.config.Version,
+		RoutingEngine: func() string {
+			if s.settings != nil {
+				if cfg, err := s.settings.Get(); err == nil && cfg != nil {
+					return cfg.SingboxRouter.RoutingEngine
+				}
+			}
+			return ""
+		},
 		PingCheckFacade:      s.pingCheckService,
 		Singbox:              s.singboxOp,
 		SingboxSubMembers:    s.singboxSubMembersFn,
@@ -169,6 +182,51 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		AppLogger:            s.loggingService,
 	})
 	h.diagHandler = api.NewDiagnosticsHandler(h.diagRunner)
+
+	aiService := aiassistant.NewService(h.diagRunner)
+	aiService.SetTools(aiassistant.NewToolRegistry())
+	actionHandlers := aiassistant.ActionHandlers{}
+	if s.singboxOrch != nil {
+		actionHandlers.RestartSingbox = func(ctx context.Context) error {
+			return s.singboxOrch.ReloadNow()
+		}
+	}
+	if s.mihomoHandler != nil {
+		actionHandlers.RestartMihomo = func(ctx context.Context) error {
+			return s.mihomoHandler.Restart()
+		}
+		actionHandlers.ReloadMihomo = func(ctx context.Context) error {
+			return s.mihomoHandler.Reload()
+		}
+	}
+	if s.tunnelService != nil {
+		actionHandlers.RestartTunnel = func(ctx context.Context, tunnelID string) error {
+			return s.tunnelService.Restart(ctx, tunnelID)
+		}
+	}
+	if s.dnsRouteService != nil {
+		actionHandlers.FlushDNS = func(ctx context.Context) error {
+			return s.dnsRouteService.RefreshAllSubscriptions(ctx)
+		}
+	}
+	aiService.SetActions(aiassistant.NewActionRegistry(actionHandlers))
+	h.aiAssistantHandler = api.NewAIAssistantHandler(aiService)
+	h.aiAssistantHandler.SetRoutes(s.downloadSvc)
+	if s.settings != nil {
+		aiConfig, err := aiassistant.NewConfigStore(filepath.Join(s.settings.DataDir(), "ai-assistant.json"))
+		if err != nil {
+			s.loggingService.AppLog(logging.LevelWarn, logging.GroupSystem, "ai-assistant", "config-load", "", err.Error())
+		} else {
+			embeddedMgr := aiassistant.NewEmbeddedManager(aiConfig)
+			aiService.SetModel(aiConfig, aiassistant.NewRoutedResponsesClient(s.downloadSvc))
+			aiService.SetEmbedded(embeddedMgr)
+			h.aiAssistantHandler.SetConfigStore(aiConfig)
+			h.aiAssistantHandler.SetEmbedded(embeddedMgr)
+		}
+	}
+
+	trafficSvc := systraffic.NewService(s.accessPolicyService, s.ndmsTransport, s.loggingService)
+	h.trafficHandler = systraffic.NewHandler(trafficSvc)
 
 	// Connections viewer
 	h.connectionsService = connections.NewService(s.catalog, s.ndmsTransport, s.dnsRouteService, s.loggingService)
@@ -805,6 +863,15 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 	}
 	if s.singboxInboundsHandler != nil {
 		mux.HandleFunc("/api/singbox/inbounds", h.guarded(s.singboxInboundsHandler.List))
+	}
+	if s.mihomoHandler != nil {
+		s.mihomoHandler.RegisterRoutes(mux, h.guarded)
+	}
+	if h.aiAssistantHandler != nil {
+		h.aiAssistantHandler.RegisterRoutes(mux, h.guarded)
+	}
+	if h.trafficHandler != nil {
+		h.trafficHandler.RegisterRoutes(mux, h.guarded)
 	}
 	if s.clashProxy != nil {
 		mux.HandleFunc("/api/singbox/clash/", h.guarded(s.clashProxy.ServeHTTP))

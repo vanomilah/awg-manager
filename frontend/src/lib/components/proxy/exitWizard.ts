@@ -135,24 +135,35 @@ export function nextLocalListen(listens: string[], protocol: ExitProtocol = 'wdt
 
 /**
  * Порт из подписки одинаков для всех стран — у каждого клиента он свой,
- * поэтому берётся подсказка, а не значение документа (оговорка унаследована из
- * старого импорта прокси-вкладки главной).
+ * поэтому берётся подсказка, а не значение документа. Если порт в ссылке
+ * уже занят другим клиентом, также берётся свободный кандидат.
  */
-function listenFromPayload(payloadListen: string | undefined, candidate: string, fromSub: boolean) {
+function listenFromPayload(
+	payloadListen: string | undefined,
+	candidate: string,
+	fromSub: boolean,
+	occupiedListens?: string[],
+) {
 	if (fromSub) return candidate;
-	return payloadListen?.trim() || candidate;
+	const clean = payloadListen?.trim();
+	if (!clean) return candidate;
+	if (occupiedListens && occupiedListens.includes(clean)) {
+		return candidate;
+	}
+	return clean;
 }
 
 export function fieldsFromWdttPayload(
 	p: WdttImportPayload,
 	candidateListen: string,
 	fromSub = false,
+	occupiedListens?: string[],
 ): ExitWizardFields {
 	return {
 		name: p.name?.trim() ?? '',
 		peer: p.peer ?? '',
 		password: p.password ?? '',
-		listen: listenFromPayload(p.listen, candidateListen, fromSub),
+		listen: listenFromPayload(p.listen, candidateListen, fromSub, occupiedListens),
 		vkHashes: (p.vkHashes ?? []).join(','),
 		workers: p.workers && p.workers > 0 ? String(p.workers) : DEFAULT_WORKERS,
 	};
@@ -161,12 +172,13 @@ export function fieldsFromWdttPayload(
 export function fieldsFromFtPayload(
 	p: FreeTurnLinkPayload,
 	candidateListen: string,
+	occupiedListens?: string[],
 ): ExitWizardFields {
 	return {
 		name: p.name?.trim() ?? '',
 		peer: p.peer ?? '',
 		password: '',
-		listen: listenFromPayload(p.listen, candidateListen, false),
+		listen: listenFromPayload(p.listen, candidateListen, false, occupiedListens),
 		vkHashes: '',
 		workers: p.n && p.n > 0 ? String(p.n) : DEFAULT_FT_STREAMS,
 	};

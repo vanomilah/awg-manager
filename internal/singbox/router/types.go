@@ -389,3 +389,10 @@ type RouterConfig struct {
 	Route        Route         `json:"route"`
 	Experimental *Experimental `json:"experimental,omitempty"`
 }
+
+type DeviceProxyInstance struct {
+	ID               string
+	Port             int
+	SelectedOutbound string
+	Enabled          bool
+}

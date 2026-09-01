@@ -14,8 +14,10 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 	"github.com/hoaxisr/awg-manager/internal/presets"
+	"github.com/hoaxisr/awg-manager/internal/proxyengine"
 	"github.com/hoaxisr/awg-manager/internal/singbox/heavyop"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router/bypassset"
@@ -260,7 +262,8 @@ type AWGTagCatalog interface {
 
 // AWGTag is router's local projection of awgoutbounds.TagInfo.
 type AWGTag struct {
-	Tag string
+	Tag   string
+	Iface string
 }
 
 // SingboxTunnelCatalog returns the outbound tags for sing-box tunnels
@@ -282,11 +285,25 @@ type StagingEventBus interface {
 	Publish(event string, data any)
 }
 
+type MihomoNativeProxySource interface {
+	ConfigProxies() []map[string]interface{}
+	ConfigProviders() map[string]map[string]interface{}
+	ConfigProviderGroups() []map[string]interface{}
+	ConfigBridgeListeners() []mihomonative.BridgeListener
+	ConfigRules() []string
+	HasGroups() bool
+	HasRules() bool
+	ConfigRuleProviders() map[string]map[string]interface{}
+	ImportLegacyGroups([]storage.ProxyGroup) error
+	ImportLegacyRules([]string) error
+}
+
 type Deps struct {
 	AppLog   logging.AppLogger
 	Settings *storage.SettingsStore
 	// PresetCatalog is the unified preset catalog. Required for ListPresets and ApplyPreset.
 	PresetCatalog *presets.Catalog
+	Engine        proxyengine.Engine
 	Singbox       SingboxController
 	Policies      AccessPolicyProvider
 	Events        *events.Bus
@@ -301,6 +318,12 @@ type Deps struct {
 	// subscription slot (40-subscriptions.json). Optional — when nil,
 	// ListCompositeOutbounds returns only this service's own composites.
 	SubscriptionComposites *SubscriptionCompositesAdapter
+	MihomoNativeProxies    MihomoNativeProxySource
+	// MihomoConfigDir is the concrete Mihomo directory used by sidecar mode
+	// even when DynamicEngine currently selects sing-box.
+	MihomoConfigDir string
+	// DeviceProxyInstances returns active device proxy instances for Mihomo config.
+	DeviceProxyInstances func() []DeviceProxyInstance
 	// Orch is the config.d orchestrator. When non-nil (production),
 	// persistConfig writes 20-router.json through the slot writer and
 	// Enable / Disable toggle SlotRouter so the file moves between
@@ -733,6 +756,14 @@ func parseRouterConfigBytes(data []byte) (*RouterConfig, error) {
 	if cfg.Route.Rules == nil {
 		cfg.Route.Rules = []Rule{}
 	}
+	// Older builds could append the same generated routing block every time
+	// the engine/configuration was applied. Apart from wasting space, those
+	// duplicates make the routing UI render dozens (or hundreds) of identical
+	// cards and can effectively freeze a low-powered router browser session.
+	// Keep the first byte-equivalent rule and preserve ordering. Deliberately do
+	// not merge similar rules: a rule with even one different matcher remains a
+	// distinct user rule.
+	cfg.Route.Rules = deduplicateExactRules(cfg.Route.Rules)
 	if cfg.DNS.Servers == nil {
 		cfg.DNS.Servers = []DNSServer{}
 	}
@@ -741,6 +772,31 @@ func parseRouterConfigBytes(data []byte) (*RouterConfig, error) {
 	}
 	SanitizeDNSConfig(cfg)
 	return cfg, nil
+}
+
+func deduplicateExactRules(rules []Rule) []Rule {
+	if len(rules) < 2 {
+		return rules
+	}
+	seen := make(map[string]struct{}, len(rules))
+	result := make([]Rule, 0, len(rules))
+	for _, rule := range rules {
+		keyBytes, err := json.Marshal(rule)
+		if err != nil {
+			// Rule is JSON-backed and therefore expected to marshal. In the
+			// unlikely event a future field changes that contract, retaining the
+			// rule is safer than silently dropping user configuration.
+			result = append(result, rule)
+			continue
+		}
+		key := string(keyBytes)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, rule)
+	}
+	return result
 }
 
 // loadRouterConfigForMode returns the routing config for the active mode:

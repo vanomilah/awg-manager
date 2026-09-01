@@ -2,7 +2,7 @@ import { writable } from 'svelte/store';
 import type { LogEntry } from '$lib/types';
 import type { LogEntryEvent } from '$lib/api/events';
 
-export type LogBucket = 'app' | 'singbox';
+export type LogBucket = 'app' | 'singbox' | 'mihomo';
 
 const MAX_ENTRIES = 5000;
 // Кап скана при upsert повтора — зеркало backend coalesceScanLimit:
@@ -152,7 +152,7 @@ export const appLogEntries = createLogStore('app');
 export const singboxLogEntries = createLogStore('singbox');
 
 export function logStoreFor(bucket: LogBucket): LogStore {
-  return bucket === 'singbox' ? singboxLogEntries : appLogEntries;
+  return (bucket === 'singbox' || bucket === 'mihomo') ? singboxLogEntries : appLogEntries;
 }
 
 /** Backwards-compat alias for callers that haven't migrated yet. */

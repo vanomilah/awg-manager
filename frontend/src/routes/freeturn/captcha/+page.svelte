@@ -3,6 +3,6 @@
 	import { goto } from '$app/navigation';
 
 	onMount(() => {
-		goto('/proxy?tab=exit', { replaceState: true });
+		goto('/?tab=freeturn', { replaceState: true });
 	});
 </script>

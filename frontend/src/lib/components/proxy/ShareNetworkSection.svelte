@@ -164,7 +164,6 @@
 					policy={wdttServer.policy ?? 'none'}
 					disabled={busy}
 					onchange={onpolicy}
-					labelless
 				/>
 			</FormRow>
 

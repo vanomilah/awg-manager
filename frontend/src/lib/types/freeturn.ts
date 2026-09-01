@@ -17,7 +17,6 @@ export interface FreeTurnClientConfig {
 	turnPort?: number;
 	obfProfile: 'none' | 'rtpopus' | 'rtpopus2' | 'rtpopus3';
 	obfKey?: string;
-	/** Ключ обфускации задан на бэкенде — значение наружу не отдаётся (Н5). */
 	obfKeySet?: boolean;
 	streamsPerCred: number;
 	platform: 'desktop' | 'mobile';
@@ -35,7 +34,6 @@ export interface FreeTurnServerConfig {
 	mode: 'udp' | 'tcp';
 	obfProfile: 'none' | 'rtpopus' | 'rtpopus2' | 'rtpopus3';
 	obfKey?: string;
-	/** Ключ обфускации задан на бэкенде — значение наружу не отдаётся (Н5). */
 	obfKeySet?: boolean;
 	clientsFile?: string;
 	debug: boolean;
@@ -46,17 +44,15 @@ export interface FreeTurnServerConfig {
 export interface FreeTurnClientInstance {
 	id: string;
 	name: string;
-	config: FreeTurnClientConfig;
-	/** Имя старого конфига, из которого запись перенёс посев; пусто у заведённых через UI. */
 	seededFrom?: string;
+	config: FreeTurnClientConfig;
 }
 
 export interface FreeTurnServerInstance {
 	id: string;
 	name: string;
-	config: FreeTurnServerConfig;
-	/** Имя старого конфига, из которого запись перенёс посев; пусто у заведённых через UI. */
 	seededFrom?: string;
+	config: FreeTurnServerConfig;
 }
 
 export interface FreeTurnConfig {
@@ -68,17 +64,13 @@ export interface FreeTurnConfig {
 export interface FreeTurnProcessStatus {
 	running: boolean;
 	pid?: number;
+	orphanedPid?: number;
 	startedAt?: string;
 	lastError?: string;
 	log?: string;
 	dtlsConnections?: number;
 	binary: string;
 	binaryPresent: boolean;
-	/**
-	 * Процесс наш и живой, но pid-файл унаследован. Производителя больше нет:
-	 * усыновление по pid-файлу заменил управляющий сокет. Поле всегда пусто.
-	 */
-	orphanedPid?: boolean;
 }
 
 export interface FreeTurnInstanceStatus {
@@ -94,7 +86,6 @@ export interface FreeTurnStatus {
 	client: FreeTurnProcessStatus;
 	/** Legacy mirror of default server instance */
 	server: FreeTurnProcessStatus;
-	/** Бинари подсистемы на диске. Принадлежит ПОДСИСТЕМЕ, а не инстансу. */
 	binariesPresent?: boolean;
 	installAvailable: boolean;
 	installVersion?: string;

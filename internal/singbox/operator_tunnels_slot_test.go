@@ -133,10 +133,10 @@ func (f *fakeProxies) RemoveProxy(_ context.Context, index int) error {
 	f.removed = append(f.removed, index)
 	return nil
 }
-func (f *fakeProxies) RemoveOrphanSingboxProxies(context.Context, map[string]bool, map[int]bool, map[int]bool) error {
+func (f *fakeProxies) RemoveOrphanSingboxProxiesOwned(context.Context, map[string]bool, map[int]bool, map[int]bool, map[int]map[string]bool) error {
 	return nil
 }
-func (f *fakeProxies) ListNativeProxies(context.Context, map[string]bool, map[int]bool, map[int]bool) ([]string, error) {
+func (f *fakeProxies) ListNativeProxiesOwned(context.Context, map[string]bool, map[int]bool, map[int]bool, map[int]map[string]bool) ([]string, error) {
 	return nil, nil
 }
 func (f *fakeProxies) SyncProxies(context.Context, []TunnelInfo) error { return nil }

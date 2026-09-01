@@ -62,13 +62,14 @@
         unsubRouting?.();
     });
 
-    let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip'>('dns');
+    let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip' | 'mihomo'>('dns');
 
     // ?policy=Policy1 — прямой переход из настроек sing-box в редактор
     // конкретной политики (#573).
     let deepLinkPolicy = $derived($page.url.searchParams.get('policy'));
 
     let isOS5 = $derived($systemInfo.data?.isOS5 ?? false);
+    let isMihomo = $derived($systemInfo.data?.routingEngine === 'mihomo');
     let hydrarouteInstalled = $derived($routing.hydrarouteStatus?.installed ?? false);
     let hasDnsEngine = $derived(isOS5 || hydrarouteInstalled);
     let singboxInstalled = $derived($systemInfo.data?.singbox?.installed ?? false);
@@ -77,7 +78,7 @@
 
     function requestTab(id: string): void {
         if (modeSwitchBusy(get(modeSwitch))) return;
-        const hasDraft = get(singboxRouterStore.staging)?.hasDraft ?? false;
+        const hasDraft = !isMihomo && (get(singboxRouterStore.staging)?.hasDraft ?? false);
         if (activeTab === 'singbox' && id !== 'singbox' && hasDraft) {
             pendingTab = id;
             return;
@@ -235,6 +236,7 @@
         hrneo: 'hrNeo',
         geodata: 'geoData',
         singbox: 'singboxRouter',
+        mihomo: 'singboxRouter',
     };
 
     function tabVisible(localId: string, level?: UsageLevel): boolean {
@@ -273,6 +275,9 @@
         ).filter((c): c is TabChildItem => c !== null),
     );
 
+    const currentEngine = $derived($singboxSettings?.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box');
+    const routingTabLabel = $derived(currentEngine === 'mihomo' ? 'Mihomo' : 'Sing-box');
+
     let tabItems = $derived(
         ([
             // NDMS dns-proxy with object-group fqdn is OS5-only — gate the
@@ -282,16 +287,16 @@
             { id: 'ip', label: 'IP-адреса', badge: ipActiveCount },
             { id: 'clientvpn', label: 'VPN для устройств', badge: clientActiveCount },
             { id: 'policy', label: 'Политики доступа', badge: policyCount },
-            // Sing-box modes as one dropdown chip (same pattern as tunnels page).
+            // Sing-box / Mihomo router modes as one dropdown chip
             singboxMenuChildren.length > 0
                 ? {
                         id: singboxMenuChildren[0].id,
-                        label: 'Sing-box',
+                        label: routingTabLabel,
                         separatorBefore: true,
                         children: singboxMenuChildren,
                     }
                 : null,
-            // HR Neo is a separate routing engine (not sing-box) — divider before it.
+            // HR Neo is a separate routing engine — divider before it.
             hydrarouteInstalled ? { id: 'hrneo', label: 'HR Neo', badge: hrRuleCount, separatorBefore: true } : null,
             (hydrarouteInstalled || singboxInstalled)
                 ? { id: 'geodata', label: 'Гео-данные', badge: geoFileCount, separatorBefore: true }
@@ -326,7 +331,7 @@
 
         if (
             !systemKnown &&
-            (activeTab === 'dns' || activeTab === 'singbox' || activeTab === 'fakeip') &&
+            (activeTab === 'dns' || activeTab === 'singbox' || activeTab === 'fakeip' || activeTab === 'mihomo') &&
             !tabsInclude(items, activeTab)
         ) {
             return;

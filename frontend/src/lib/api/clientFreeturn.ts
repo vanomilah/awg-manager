@@ -171,6 +171,14 @@ export class FreeturnClient extends SubscriptionsClient {
 		return toFreeTurnConfig(await this.proxyList());
 	}
 
+	async updateFreeTurnClientConfig(config: FreeTurnClientConfig): Promise<FreeTurnClientConfig> {
+		return this.updateFreeTurnClientInstance('default', config);
+	}
+
+	async updateFreeTurnServerConfig(config: FreeTurnServerConfig): Promise<FreeTurnServerConfig> {
+		return this.updateFreeTurnServerInstance('default', config);
+	}
+
 	async updateFreeTurnClientInstance(
 		id: string,
 		config: FreeTurnClientConfig

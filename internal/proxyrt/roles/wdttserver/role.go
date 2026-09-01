@@ -27,7 +27,7 @@ const (
 	rawGatewayAddr = "10.70.0.1"
 	rawGatewayMask = "255.255.0.0"
 	rawPeerCIDR    = "10.70.0.0/16"
-	rawProcessAddr = "10.70.66.1" // адрес самого wdtt-server на raw-TUN
+	rawProcessAddr = "10.70.0.1" // адрес роутера на raw-TUN
 	wgMTU          = 1280
 	rawMTU         = 1300
 )

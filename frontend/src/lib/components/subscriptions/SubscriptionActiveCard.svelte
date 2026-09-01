@@ -251,7 +251,9 @@
                         dotVariant={statusDot.variant}
                         dotPulse={statusDot.pulse}
                         staticTitle
-                    />
+                    >
+                        {#snippet badges()}<Badge variant="accent" size="sm">Sing-box</Badge>{/snippet}
+                    </TunnelTitleRow>
                     <TunnelMetaText>
                         <span>{subscription.memberTags.length} серверов</span>
                         <span class="meta-dot" aria-hidden="true">·</span>
@@ -356,6 +358,7 @@
                     staticTitle
                 >
                     {#snippet badges()}
+                        <Badge variant="accent" size="sm">Sing-box</Badge>
                         <Badge variant="accent" size="sm">{sourceKindLabel}</Badge>
                     {/snippet}
                 </TunnelTitleRow>
@@ -534,6 +537,7 @@
             staticTitle
         >
             {#snippet badges()}
+                <Badge variant="accent" size="sm">Sing-box</Badge>
                 <Badge variant="accent" size="sm">{sourceKindLabel}</Badge>
             {/snippet}
         </TunnelTitleRow>

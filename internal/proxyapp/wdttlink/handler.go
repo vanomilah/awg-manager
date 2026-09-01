@@ -437,6 +437,9 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 	if normalizeConnMode(cfg.Mode) == ConnModeRaw {
+		if cleaner := h.deps.Cleaners[rec.Kind]; cleaner != nil {
+			cleaner.DeleteLinked(r.Context(), rec.ID)
+		}
 		response.Success(w, EnsureWGTunnelResponse{
 			Created: false,
 			Message: "Режим Raw: AWG-туннель не используется — трафик идёт через OpkgTun (NDMS)",

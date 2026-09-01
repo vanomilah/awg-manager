@@ -198,7 +198,9 @@
 	// только на старте процесса, и с чем тот стартовал, знает один бэкенд.
 	// `undefined` — не знает и он (сервер не запускался, остановлен, процесс
 	// усыновлён); тогда расхождения не показываем (SH-56 молчит).
-	const exposeApplied = $derived(wdttStatus?.appliedExposeToPolicies);
+	const exposeApplied = $derived(
+		wdttStatus?.appliedExposeToPolicies ? wdttStatus.appliedExposeToPolicies.length > 0 : undefined,
+	);
 
 	// Каталог пиров общий со «Сетью»: стор один, второго запроса не будет.
 	// Отдельным эффектом, а не в onMount: асинхронный onMount отписку не вернёт.

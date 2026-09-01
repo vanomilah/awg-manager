@@ -5,6 +5,7 @@
 	import { singboxStatus, singboxTunnels } from '$lib/stores/singbox';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
 	import { singboxRouter } from '$lib/stores/singboxRouter';
+	import { mihomoNativeResources } from '$lib/stores/mihomoNative';
 	import {
 		DEFAULT_SUBSCRIPTION_URLTEST,
 		type SubscriptionMode,
@@ -45,6 +46,7 @@
 	let kind = $state<WizardKind | 'choose'>('choose');
 	let submitting = $state(false);
 	let error = $state('');
+	let targetEngine = $state<'sing-box' | 'mihomo'>('sing-box');
 
 	// "Один сервер" state — paste of N share-links, each becomes its
 	// own sing-box tunnel via /singbox/import-links.
@@ -56,6 +58,7 @@
 	let url = $state('');
 	let inlineText = $state('');
 	let headersText = $state(DEFAULT_PRESET);
+	const MIHOMO_HEADERS_PRESET = 'User-Agent: Mihomo';
 	let refreshHoursStr = $state('24');
 	let refreshHours = $state(24);
 	let enabled = $state(true);
@@ -215,6 +218,7 @@
 		lastDetectedUrl = '';
 		lastNormalizedUrl = '';
 		error = '';
+		targetEngine = 'sing-box';
 	}
 
 	function close(): void {
@@ -302,6 +306,22 @@
 		url: 'Подписка по URL',
 	};
 
+	function selectTargetEngine(engine: 'sing-box' | 'mihomo'): void {
+		const headersWereAutomatic = headersText === DEFAULT_PRESET || detectedNotice !== '' || lastDetectedUrl !== '' || lastNormalizedUrl !== '';
+		if (engine === 'mihomo' && headersWereAutomatic) headersText = MIHOMO_HEADERS_PRESET;
+		if (engine === 'sing-box' && headersText === MIHOMO_HEADERS_PRESET) headersText = DEFAULT_PRESET;
+		targetEngine = engine;
+		urlStep = 'form';
+		previewMembers = [];
+		excludedKeys = new Set();
+		detectSeq++;
+		detectingHeaders = false;
+		detectedNotice = '';
+		detectStatus = 'ok';
+		lastDetectedUrl = '';
+		lastNormalizedUrl = '';
+	}
+
 	async function submitSingle(): Promise<void> {
 		singleLinks = normalizeSpaceSeparatedShareLinks(singleLinks);
 		if (!singleLinks.trim() || submitting) return;
@@ -309,6 +329,24 @@
 		error = '';
 		singleResult = null;
 		try {
+			if (targetEngine === 'mihomo') {
+				const links = singleLinks.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+				const created = [];
+				try {
+					for (const link of links) created.push(...(await api.mihomoNativeCreateProxy(link, 'mihomo')).items);
+				} catch (createError) {
+					for (const proxy of [...created].reverse()) {
+						await api.mihomoNativeDeleteProxy(proxy.id).catch(() => undefined);
+					}
+					throw createError;
+				}
+				await mihomoNativeResources.refetch();
+				singleResult = { imported: links.length, errors: [] };
+				open = false;
+				reset();
+				goto('/?tab=singbox');
+				return;
+			}
 			const res = await api.singboxImportLinks(singleLinks);
 			singboxTunnels.applyMutationResponse(res.tunnels);
 			singleResult = {
@@ -390,6 +428,25 @@
 		submitting = true;
 		error = '';
 		try {
+			if (targetEngine === 'mihomo') {
+				await api.mihomoNativeCreateSubscription({
+					name: label.trim() || (isInline ? 'Mihomo group' : new URL(url).hostname),
+					url: isInline ? undefined : url.trim(),
+					inline: isInline ? inlineText.trim() : undefined,
+					format: isInline ? 'share-links' : 'mihomo-provider',
+					enginePreference: 'mihomo', refreshHours: isInline ? 0 : refreshHours, enabled,
+					headers: isInline ? undefined : parseHeadersText(headersText),
+					mode,
+					testUrl: mode === 'urltest' ? utUrl : undefined,
+					testInterval: mode === 'urltest' ? utIntervalSec : undefined,
+					testTolerance: mode === 'urltest' ? utToleranceMs : undefined,
+				});
+				await mihomoNativeResources.refetch();
+				open = false;
+				reset();
+				goto('/?tab=subscriptions');
+				return;
+			}
 			const sub = await api.createSubscription({
 				label,
 				url: isInline ? undefined : url,
@@ -422,6 +479,14 @@
 	}
 </script>
 
+{#snippet enginePicker()}
+	<div class="engine-picker" role="group" aria-label="Движок прокси">
+		<span>Создать через</span>
+		<button type="button" class:active={targetEngine === 'sing-box'} onclick={() => selectTargetEngine('sing-box')}>sing-box</button>
+		<button type="button" class:active={targetEngine === 'mihomo'} onclick={() => selectTargetEngine('mihomo')}>Mihomo</button>
+	</div>
+{/snippet}
+
 <Modal
 	{open}
 	title={titleByKind[kind]}
@@ -437,7 +502,7 @@
 				<div class="kind-title">Один сервер</div>
 				<div class="kind-desc">
 					Вставь одну или несколько share-link'ов — каждая станет
-					отдельным sing-box туннелем со своим Proxy NDMS.
+					отдельным прокси-туннелем. Движок выбирается на следующем шаге.
 				</div>
 			</button>
 			<button type="button" class="kind-card" onclick={() => (kind = 'inline')}>
@@ -475,8 +540,9 @@
 				void submitSingle();
 			}}
 		>
+			{@render enginePicker()}
 			<p class="lead">
-				Каждая строка — отдельный sing-box туннель со своим Proxy NDMS.
+				Каждая строка — отдельный {targetEngine === 'mihomo' ? 'прокси Mihomo в общем TProxy/TUN' : 'sing-box туннель со своим Proxy NDMS'}.
 				Поддерживаются <code>vless://</code>, <code>hy2://</code>,
 				<code>trojan://</code>, <code>ss://</code>, <code>hysteria2://</code>,
 				<code>mieru://</code>, <code>mierus://</code>,
@@ -486,7 +552,7 @@
 				<code>mieru apply config</code>) и TOML-конфиг TrustTunnel (AdGuard).
 				Список через пробел при вставке разбивается на строки автоматически.
 			</p>
-			{#if !singboxInstalled}
+			{#if targetEngine === 'sing-box' && !singboxInstalled}
 				<div class="warn">
 					Sing-box не установлен — установи в настройках перед добавлением туннелей.
 				</div>
@@ -495,7 +561,7 @@
 				bind:value={singleLinks}
 				placeholder={`vless://uuid@host:443?...#Germany\nhysteria2://pass@host:8443#Finland\nmierus://user:pass@host?profile=default&port=443&protocol=TCP\ntrusttunnel://user:pass@host:443?sni=...#Moscow`}
 				rows={6}
-				disabled={!singboxInstalled || submitting}
+				disabled={(targetEngine === 'sing-box' && !singboxInstalled) || submitting}
 				onpaste={(e) => onShareListPaste(e, () => singleLinks, (v) => (singleLinks = v))}
 			/>
 			<RoutingImportDropZone
@@ -534,16 +600,19 @@
 			class="form"
 			onsubmit={(e) => {
 				e.preventDefault();
-				if (kind === 'url') void fetchPreview();
+				if (kind === 'url' && targetEngine === 'sing-box') void fetchPreview();
 				else void submitSubscription();
 			}}
 		>
+			{@render enginePicker()}
 			{#if kind === 'url'}
 				<div class="steps" aria-hidden="true">
 					<span class="step current">URL и заголовки</span>
 					<span class="step-sep">›</span>
-					<span class="step">Выбор серверов</span>
-					<span class="step-sep">›</span>
+					{#if targetEngine === 'sing-box'}
+						<span class="step">Выбор серверов</span>
+						<span class="step-sep">›</span>
+					{/if}
 					<span class="step">Готово</span>
 				</div>
 			{/if}
@@ -562,7 +631,7 @@
 						onpaste={() => setTimeout(() => triggerDetectHeaders(url, true), 0)}
 						onblur={() => triggerDetectHeaders(url, true)}
 						oninput={() => triggerDetectHeaders(url)}
-						placeholder="https://provider.example/sub/abc или happ://..."
+						placeholder={'https://provider.example/sub/abc или happ://...'}
 					/>
 					{#if detectingHeaders}
 						<div class="detect-badge detect-loading">
@@ -612,7 +681,10 @@
 						onpaste={(e) => onShareListPaste(e, () => inlineText, (v) => (inlineText = v))}
 					/>
 					<span class="hint">
-						Поддерживаются share-link'и, Clash YAML, sing-box JSON,
+						Поддерживаются share-link'и, ссылки TrustTunnel
+						(<code>https://trustunnel.ru/connect/?d=…</code>, <code>tt://</code>),
+						TOML TrustTunnel (можно вставить после ссылок в том же поле),
+						Clash YAML, sing-box JSON,
 						JSON-конфиг mieru (экспорт панелей, формат mieru apply config)
 						и TOML-конфиг TrustTunnel (AdGuard).
 						Список ссылок через пробел при вставке разбивается на строки.
@@ -658,7 +730,7 @@
 					>
 						<div class="mode-title">Автовыбор по скорости</div>
 						<div class="mode-desc">
-							Sing-box сам пингует серверы и держит самый быстрый.
+							{targetEngine === 'mihomo' ? 'Mihomo' : 'Sing-box'} сам пингует серверы и держит самый быстрый.
 						</div>
 						{#if mode === 'urltest'}
 							<span class="mode-check" aria-hidden="true">
@@ -712,12 +784,12 @@
 			<Button
 				variant="primary"
 				onclick={submitSingle}
-				disabled={submitting || !singleLinks.trim() || !singboxInstalled}
+				disabled={submitting || !singleLinks.trim() || (targetEngine === 'sing-box' && !singboxInstalled)}
 				loading={submitting}
 			>
 				{submitting ? 'Импорт...' : 'Импортировать'}
 			</Button>
-		{:else if kind === 'url' && urlStep === 'form'}
+		{:else if kind === 'url' && urlStep === 'form' && targetEngine === 'sing-box'}
 			<Button
 				variant="primary"
 				onclick={fetchPreview}
@@ -760,6 +832,10 @@
 />
 
 <style>
+	.engine-picker{display:flex;align-items:center;gap:6px;padding:8px;border:1px solid var(--color-border);border-radius:8px;background:var(--color-bg-secondary)}
+	.engine-picker span{margin-right:auto;color:var(--color-text-secondary);font-size:12px;font-weight:600}
+	.engine-picker button{padding:6px 12px;border:1px solid var(--color-border);border-radius:6px;background:var(--color-bg-primary);color:var(--color-text-secondary);font:inherit;font-size:12px;cursor:pointer}
+	.engine-picker button.active{border-color:var(--color-primary);background:var(--color-primary-light,var(--accent-soft));color:var(--color-primary)}
 	.lead { color: var(--color-text-muted); font-size: 0.85rem; line-height: 1.5; margin: 0 0 0.8rem; }
 	.lead code {
 		background: var(--color-bg-tertiary, var(--color-bg-primary));

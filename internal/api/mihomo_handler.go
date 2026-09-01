@@ -1,0 +1,896 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/hoaxisr/awg-manager/internal/mihomonative"
+	"github.com/hoaxisr/awg-manager/internal/proxyengine"
+	"github.com/hoaxisr/awg-manager/internal/response"
+	"github.com/hoaxisr/awg-manager/internal/singbox/router"
+	"github.com/hoaxisr/awg-manager/internal/storage"
+)
+
+// MihomoHandler provides REST API endpoints for managing the Mihomo engine.
+type MihomoHandler struct {
+	op            proxyengine.Engine
+	settingsStore *storage.SettingsStore
+	routerSvc     router.Service
+	reloadFn      func() error
+	nativeStore   *mihomonative.Store
+	nativeBridge  *mihomonative.BridgeManager
+	bridgePrepare func(context.Context, []mihomonative.BridgeRef) error
+	bridgeReady   func(context.Context) error
+	bridgeDown    func(context.Context) error
+	// reloadPublishesBridge is true for production DynamicEngine, whose
+	// prepare/readiness hooks already own the bridge commit. Unit/simple engine
+	// wiring leaves it false and the handler performs that boundary itself.
+	reloadPublishesBridge bool
+	mutationTx            func(func() error) error
+	mutationReloadFn      func() error
+	nativeMu              sync.Mutex
+}
+
+func NewMihomoHandler(op proxyengine.Engine) *MihomoHandler {
+	return &MihomoHandler{
+		op: op,
+	}
+}
+
+func (h *MihomoHandler) SetSettingsStore(store *storage.SettingsStore) {
+	h.settingsStore = store
+}
+
+func (h *MihomoHandler) SetRouterService(svc router.Service) {
+	h.routerSvc = svc
+}
+
+func (h *MihomoHandler) Restart() error {
+	if h.op == nil {
+		return errors.New("mihomo engine is unavailable")
+	}
+	if err := h.op.Stop(); err != nil {
+		return err
+	}
+	time.Sleep(500 * time.Millisecond)
+	return h.op.Start()
+}
+
+func (h *MihomoHandler) Reload() error {
+	if h.reloadFn != nil {
+		return h.reloadFn()
+	}
+	if h.op != nil {
+		return h.op.Reload()
+	}
+	return errors.New("mihomo engine is unavailable")
+}
+
+func (h *MihomoHandler) SetReloadFunc(fn func() error) {
+	h.reloadFn = fn
+}
+
+func (h *MihomoHandler) SetMutationTransaction(tx func(func() error) error, reloadInsideTx func() error) {
+	h.mutationTx = tx
+	h.mutationReloadFn = reloadInsideTx
+}
+
+func (h *MihomoHandler) SetReloadPublishesNativeBridges(enabled bool) {
+	h.reloadPublishesBridge = enabled
+}
+
+func (h *MihomoHandler) SetNativeStore(store *mihomonative.Store) {
+	h.nativeStore = store
+}
+
+func (h *MihomoHandler) NativeStore() *mihomonative.Store {
+	return h.nativeStore
+}
+
+func (h *MihomoHandler) RouterService() router.Service {
+	return h.routerSvc
+}
+
+func (h *MihomoHandler) SetNativeBridgeManager(manager *mihomonative.BridgeManager) {
+	h.nativeBridge = manager
+}
+
+func (h *MihomoHandler) BatchSaveRules(ctx context.Context, rules []mihomonative.Rule) error {
+	_, err := h.withNativeMutation(ctx, true, func() (interface{}, error) {
+		return h.nativeStore.SaveRulesBatch(rules)
+	})
+	return err
+}
+
+// SetNativeBridgeLifecycle installs the process-aware publication boundary for
+// native ProxyN exports. prepare may allocate listener identities but must not
+// advertise them; ready runs only after Mihomo has accepted the new config;
+// down withdraws exports when apply/readiness fails.
+func (h *MihomoHandler) SetNativeBridgeLifecycle(
+	prepare func(context.Context, []mihomonative.BridgeRef) error,
+	ready func(context.Context) error,
+	down func(context.Context) error,
+) {
+	h.bridgePrepare = prepare
+	h.bridgeReady = ready
+	h.bridgeDown = down
+}
+
+func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.HandlerFunc) http.HandlerFunc) {
+	if guarded == nil {
+		guarded = func(next http.HandlerFunc) http.HandlerFunc { return next }
+	}
+	mux.HandleFunc("GET /api/mihomo/status", guarded(h.handleStatus))
+	mux.HandleFunc("GET /api/mihomo/config", guarded(h.handleConfig))
+	mux.HandleFunc("POST /api/mihomo/reload", guarded(h.handleReload))
+	if h.nativeStore != nil {
+		mux.HandleFunc("GET /api/mihomo/native/proxies", guarded(h.handleNativeProxyList))
+		mux.HandleFunc("POST /api/mihomo/native/proxies", guarded(h.handleNativeProxyCreate))
+		mux.HandleFunc("GET /api/mihomo/native/proxies/{id}", guarded(h.handleNativeProxyGet))
+		mux.HandleFunc("PUT /api/mihomo/native/proxies/{id}", guarded(h.handleNativeProxyUpdate))
+		mux.HandleFunc("DELETE /api/mihomo/native/proxies/{id}", guarded(h.handleNativeProxyDelete))
+		mux.HandleFunc("GET /api/mihomo/native/subscriptions", guarded(h.handleNativeSubscriptionList))
+		mux.HandleFunc("POST /api/mihomo/native/subscriptions", guarded(h.handleNativeSubscriptionCreate))
+		mux.HandleFunc("GET /api/mihomo/native/subscriptions/{id}", guarded(h.handleNativeSubscriptionGet))
+		mux.HandleFunc("PUT /api/mihomo/native/subscriptions/{id}", guarded(h.handleNativeSubscriptionUpdate))
+		mux.HandleFunc("DELETE /api/mihomo/native/subscriptions/{id}", guarded(h.handleNativeSubscriptionDelete))
+		mux.HandleFunc("POST /api/mihomo/native/subscriptions/{id}/refresh", guarded(h.handleNativeSubscriptionRefresh))
+		mux.HandleFunc("GET /api/mihomo/native/groups", guarded(h.handleNativeGroupList))
+		mux.HandleFunc("POST /api/mihomo/native/groups", guarded(h.handleNativeGroupSave))
+		mux.HandleFunc("PUT /api/mihomo/native/groups/{id}", guarded(h.handleNativeGroupSave))
+		mux.HandleFunc("DELETE /api/mihomo/native/groups/{id}", guarded(h.handleNativeGroupDelete))
+		mux.HandleFunc("GET /api/mihomo/native/rules", guarded(h.handleNativeRuleList))
+		mux.HandleFunc("POST /api/mihomo/native/rules", guarded(h.handleNativeRuleSave))
+		mux.HandleFunc("PUT /api/mihomo/native/rules/{id}", guarded(h.handleNativeRuleSave))
+		mux.HandleFunc("DELETE /api/mihomo/native/rules/{id}", guarded(h.handleNativeRuleDelete))
+		mux.HandleFunc("PUT /api/mihomo/native/rules/order", guarded(h.handleNativeRuleOrder))
+		mux.HandleFunc("GET /api/mihomo/native/rule-providers", guarded(h.handleNativeRuleProviderList))
+		mux.HandleFunc("POST /api/mihomo/native/rule-providers", guarded(h.handleNativeRuleProviderSave))
+		mux.HandleFunc("PUT /api/mihomo/native/rule-providers/{id}", guarded(h.handleNativeRuleProviderSave))
+		mux.HandleFunc("DELETE /api/mihomo/native/rule-providers/{id}", guarded(h.handleNativeRuleProviderDelete))
+		mux.HandleFunc("POST /api/mihomo/router/inspect", guarded(h.handleMihomoInspect))
+		mux.HandleFunc("GET /api/mihomo/router/inspect/stream", guarded(h.handleMihomoInspectStream))
+		mux.HandleFunc("POST /api/mihomo/native/reset", guarded(h.handleNativeReset))
+	}
+
+	// Mount the clash proxy under /api/mihomo/clash/
+	clashProxy := NewMihomoClashProxy(h.op)
+	mux.HandleFunc("/api/mihomo/clash", guarded(clashProxy.ServeHTTP))
+	mux.HandleFunc("/api/mihomo/clash/", guarded(clashProxy.ServeHTTP))
+}
+
+func (h *MihomoHandler) handleConfig(w http.ResponseWriter, _ *http.Request) {
+	data, err := os.ReadFile(filepath.Join(h.op.ConfigDir(), "config.yaml"))
+	if errors.Is(err, os.ErrNotExist) {
+		response.ErrorWithStatus(w, http.StatusNotFound, "mihomo config has not been generated yet", "CONFIG_NOT_FOUND")
+		return
+	}
+	if err != nil {
+		response.InternalError(w, fmt.Sprintf("read mihomo config: %v", err))
+		return
+	}
+	response.Success(w, map[string]string{"yaml": string(data)})
+}
+
+func (h *MihomoHandler) handleNativeGroupList(w http.ResponseWriter, _ *http.Request) {
+	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListGroups()})
+}
+func (h *MihomoHandler) handleNativeGroupSave(w http.ResponseWriter, r *http.Request) {
+	var group mihomonative.ProxyGroup
+	if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	if id := r.PathValue("id"); id != "" {
+		group.ID = id
+	}
+	apply := r.URL.Query().Get("apply") != "false"
+	result, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		saved, saveErr := h.nativeStore.SaveGroup(group)
+		if saveErr != nil {
+			return nil, nativeInputError{saveErr}
+		}
+		return saved, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_GROUP")
+		return
+	}
+	response.Success(w, result)
+}
+func (h *MihomoHandler) handleNativeGroupDelete(w http.ResponseWriter, r *http.Request) {
+	apply := r.URL.Query().Get("apply") != "false"
+	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		if deleteErr := h.nativeStore.DeleteGroup(r.PathValue("id")); deleteErr != nil {
+			return nil, deleteErr
+		}
+		return map[string]bool{"deleted": true}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_GROUP")
+		return
+	}
+	response.Success(w, map[string]bool{"deleted": true})
+}
+func (h *MihomoHandler) handleNativeRuleList(w http.ResponseWriter, _ *http.Request) {
+	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListRules()})
+}
+func (h *MihomoHandler) handleNativeRuleSave(w http.ResponseWriter, r *http.Request) {
+	var rule mihomonative.Rule
+	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	if id := r.PathValue("id"); id != "" {
+		rule.ID = id
+	}
+	apply := r.URL.Query().Get("apply") != "false"
+	result, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		saved, saveErr := h.nativeStore.SaveRule(rule)
+		if saveErr != nil {
+			return nil, nativeInputError{saveErr}
+		}
+		return saved, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_RULE")
+		return
+	}
+	response.Success(w, result)
+}
+func (h *MihomoHandler) handleNativeRuleDelete(w http.ResponseWriter, r *http.Request) {
+	apply := r.URL.Query().Get("apply") != "false"
+	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		if deleteErr := h.nativeStore.DeleteRule(r.PathValue("id")); deleteErr != nil {
+			return nil, deleteErr
+		}
+		return map[string]bool{"deleted": true}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_RULE")
+		return
+	}
+	response.Success(w, map[string]bool{"deleted": true})
+}
+func (h *MihomoHandler) handleNativeRuleOrder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	apply := r.URL.Query().Get("apply") != "false"
+	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		if reorderErr := h.nativeStore.ReorderRules(body.IDs); reorderErr != nil {
+			return nil, nativeInputError{reorderErr}
+		}
+		return map[string]bool{"reordered": true}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_RULE_ORDER")
+		return
+	}
+	response.Success(w, map[string]bool{"reordered": true})
+}
+func (h *MihomoHandler) handleNativeRuleProviderList(w http.ResponseWriter, _ *http.Request) {
+	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListRuleProviders()})
+}
+func (h *MihomoHandler) handleNativeRuleProviderSave(w http.ResponseWriter, r *http.Request) {
+	var provider mihomonative.RuleProvider
+	if err := json.NewDecoder(r.Body).Decode(&provider); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	if id := r.PathValue("id"); id != "" {
+		provider.ID = id
+	}
+	apply := r.URL.Query().Get("apply") != "false"
+	result, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		saved, saveErr := h.nativeStore.SaveRuleProvider(provider)
+		if saveErr != nil {
+			return nil, nativeInputError{saveErr}
+		}
+		return saved, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_RULE_PROVIDER")
+		return
+	}
+	response.Success(w, result)
+}
+func (h *MihomoHandler) handleNativeRuleProviderDelete(w http.ResponseWriter, r *http.Request) {
+	apply := r.URL.Query().Get("apply") != "false"
+	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		if deleteErr := h.nativeStore.DeleteRuleProvider(r.PathValue("id")); deleteErr != nil {
+			return nil, deleteErr
+		}
+		return map[string]bool{"deleted": true}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_RULE_PROVIDER")
+		return
+	}
+	response.Success(w, map[string]bool{"deleted": true})
+}
+
+type nativeProxyCreateRequest struct {
+	URI              string                         `json:"uri"`
+	EnginePreference mihomonative.EnginePreference  `json:"enginePreference"`
+	Manual           *mihomonative.ManualProxyInput `json:"manual,omitempty"`
+	Enabled          *bool                          `json:"enabled,omitempty"`
+}
+
+type nativeInputError struct{ err error }
+
+func (e nativeInputError) Error() string { return e.err.Error() }
+func (e nativeInputError) Unwrap() error { return e.err }
+
+func writeNativeMutationError(w http.ResponseWriter, err error, invalidCode string) {
+	if errors.Is(err, mihomonative.ErrNotFound) {
+		response.ErrorWithStatus(w, http.StatusNotFound, "Mihomo resource not found", "NOT_FOUND")
+		return
+	}
+	var inputErr nativeInputError
+	if errors.As(err, &inputErr) {
+		response.ErrorWithStatus(w, http.StatusBadRequest, inputErr.Error(), invalidCode)
+		return
+	}
+	response.InternalError(w, err.Error())
+}
+
+func (h *MihomoHandler) routingEngine() mihomonative.EnginePreference {
+	if h.settingsStore != nil {
+		if settings, err := h.settingsStore.Load(); err == nil && settings.SingboxRouter.RoutingEngine == "mihomo" {
+			return mihomonative.EngineMihomo
+		}
+	}
+	return mihomonative.EngineSingbox
+}
+
+func (h *MihomoHandler) applyNativeMutation(insideTx bool) error {
+	if h.settingsStore == nil {
+		return nil
+	}
+	settings, err := h.settingsStore.Load()
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	hasNativeListeners := h.nativeStore != nil && len(h.nativeStore.ConfigBridgeListeners()) > 0
+	sidecar := hasNativeListeners
+	if settings.SingboxRouter.RoutingEngine == "mihomo" && !settings.SingboxRouter.Enabled && !sidecar {
+		return h.op.Stop()
+	}
+	if settings.SingboxRouter.RoutingEngine != "mihomo" && h.reloadFn == nil {
+		if sidecar {
+			return h.op.Reload()
+		}
+		return h.op.Stop()
+	}
+	reload := h.reloadFn
+	if insideTx && h.mutationReloadFn != nil {
+		reload = h.mutationReloadFn
+	} else if reload == nil {
+		reload = h.op.Reload
+	}
+	return reload()
+}
+
+func (h *MihomoHandler) withNativeMutation(
+	ctx context.Context,
+	apply bool,
+	mutate func() (interface{}, error),
+) (interface{}, error) {
+	h.nativeMu.Lock()
+	defer h.nativeMu.Unlock()
+
+	body := func() (interface{}, error) {
+		snapshot, err := h.nativeStore.Snapshot()
+		if err != nil {
+			return nil, fmt.Errorf("snapshot Mihomo native store: %w", err)
+		}
+		beforeBridges := h.nativeStore.ListBridges()
+		result, err := mutate()
+		if err != nil {
+			if restoreErr := h.nativeStore.RestoreSnapshot(snapshot); restoreErr != nil {
+				return nil, fmt.Errorf("mutation failed: %v; rollback error: %w", err, restoreErr)
+			}
+			return nil, err
+		}
+		// Always pass the pre-mutation bridge set here. DynamicEngine's own prepare
+		// sees only the current store and cannot remove a ProxyN belonging to a
+		// just-deleted/disabled resource.
+		if h.bridgePrepare != nil {
+			if err = h.bridgePrepare(ctx, beforeBridges); err != nil {
+				return nil, h.rollbackNativeMutation(ctx, snapshot, err)
+			}
+		} else if h.nativeBridge != nil {
+			if err = h.nativeBridge.Reconcile(ctx, beforeBridges); err != nil {
+				return nil, h.rollbackNativeMutation(ctx, snapshot, err)
+			}
+		}
+		afterBridges := h.nativeStore.ListBridges()
+		if apply {
+			err = h.applyNativeMutation(h.mutationTx != nil)
+			if err == nil && !h.reloadPublishesBridge && h.bridgeReady != nil {
+				err = h.bridgeReady(ctx)
+			}
+		}
+		if err != nil {
+			if !h.reloadPublishesBridge && h.bridgeDown != nil {
+				_ = h.bridgeDown(ctx)
+			}
+			return nil, h.rollbackNativeMutationWithBridges(ctx, snapshot, afterBridges, err, apply)
+		}
+		return result, nil
+	}
+
+	if h.mutationTx != nil {
+		var res interface{}
+		var txErr error
+		err := h.mutationTx(func() error {
+			res, txErr = body()
+			return txErr
+		})
+		if err != nil {
+			return nil, err
+		}
+		return res, nil
+	}
+	return body()
+}
+
+func (h *MihomoHandler) rollbackNativeMutation(ctx context.Context, snapshot mihomonative.StoreSnapshot, cause error) error {
+	// A process-aware prepare may have already withdrawn obsolete/current
+	// ProxyN interfaces before failing. Reapply the restored config so
+	// DynamicEngine can run readiness and republish the old bridge set.
+	return h.rollbackNativeMutationWithBridges(ctx, snapshot, h.nativeStore.ListBridges(), cause, h.reloadPublishesBridge)
+}
+
+func (h *MihomoHandler) rollbackNativeMutationWithBridges(
+	ctx context.Context,
+	snapshot mihomonative.StoreSnapshot,
+	mutatedBridges []mihomonative.BridgeRef,
+	cause error,
+	reapply bool,
+) error {
+	if restoreErr := h.nativeStore.RestoreSnapshot(snapshot); restoreErr != nil {
+		return fmt.Errorf("%v; restore native store failed: %v", cause, restoreErr)
+	}
+	var rollbackErrors []string
+	if h.bridgePrepare != nil {
+		if bridgeErr := h.bridgePrepare(ctx, mutatedBridges); bridgeErr != nil {
+			rollbackErrors = append(rollbackErrors, "restore bridges: "+bridgeErr.Error())
+		}
+	} else if h.nativeBridge != nil {
+		if bridgeErr := h.nativeBridge.Reconcile(ctx, mutatedBridges); bridgeErr != nil {
+			rollbackErrors = append(rollbackErrors, "restore bridges: "+bridgeErr.Error())
+		}
+	}
+	if reapply {
+		if applyErr := h.applyNativeMutation(h.mutationTx != nil); applyErr != nil {
+			rollbackErrors = append(rollbackErrors, "reapply previous config: "+applyErr.Error())
+		}
+	}
+	if len(rollbackErrors) == 0 && !h.reloadPublishesBridge && h.bridgeReady != nil {
+		if bridgeErr := h.bridgeReady(ctx); bridgeErr != nil {
+			rollbackErrors = append(rollbackErrors, "restore bridge exports: "+bridgeErr.Error())
+		}
+	}
+	if len(rollbackErrors) > 0 {
+		return fmt.Errorf("%v; rollback failed: %s", cause, strings.Join(rollbackErrors, "; "))
+	}
+	return fmt.Errorf("%v; change was rolled back", cause)
+}
+
+func (h *MihomoHandler) handleNativeProxyList(w http.ResponseWriter, _ *http.Request) {
+	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListProxies()})
+}
+
+func (h *MihomoHandler) handleNativeProxyCreate(w http.ResponseWriter, r *http.Request) {
+	var req nativeProxyCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	result, err := h.withNativeMutation(r.Context(), true, func() (interface{}, error) {
+		if req.Manual != nil {
+			req.Manual.EnginePreference = req.EnginePreference
+			node, createErr := h.nativeStore.CreateManual(*req.Manual, h.routingEngine())
+			if createErr != nil {
+				return nil, nativeInputError{createErr}
+			}
+			return map[string]interface{}{"items": []mihomonative.ProxyNode{node}}, nil
+		}
+		nodes, createErr := h.nativeStore.CreateProxy(req.URI, req.EnginePreference, h.routingEngine())
+		if createErr != nil {
+			return nil, nativeInputError{createErr}
+		}
+		return map[string]interface{}{"items": nodes}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_PROXY")
+		return
+	}
+	response.Success(w, result)
+}
+
+func (h *MihomoHandler) handleNativeProxyGet(w http.ResponseWriter, r *http.Request) {
+	node, err := h.nativeStore.GetProxy(r.PathValue("id"))
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_PROXY")
+		return
+	}
+	response.Success(w, node)
+}
+
+func (h *MihomoHandler) handleNativeProxyUpdate(w http.ResponseWriter, r *http.Request) {
+	var req nativeProxyCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	result, err := h.withNativeMutation(r.Context(), true, func() (interface{}, error) {
+		node, updateErr := h.nativeStore.UpdateProxy(r.PathValue("id"), mihomonative.UpdateProxyInput{
+			URI: req.URI, Manual: req.Manual, EnginePreference: req.EnginePreference,
+			Enabled: enabled, RoutingEngine: h.routingEngine(),
+		})
+		if updateErr != nil {
+			if errors.Is(updateErr, mihomonative.ErrNotFound) {
+				return nil, updateErr
+			}
+			return nil, nativeInputError{updateErr}
+		}
+		return node, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_PROXY")
+		return
+	}
+	response.Success(w, result)
+}
+
+func (h *MihomoHandler) handleNativeProxyDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	_, err := h.withNativeMutation(r.Context(), r.URL.Query().Get("apply") != "false", func() (interface{}, error) {
+		if deleteErr := h.nativeStore.DeleteProxy(id); deleteErr != nil {
+			return nil, deleteErr
+		}
+		return map[string]bool{"deleted": true}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_PROXY")
+		return
+	}
+	response.Success(w, map[string]bool{"deleted": true})
+}
+
+type nativeSubscriptionCreateRequest struct {
+	Name             string                          `json:"name"`
+	URL              string                          `json:"url"`
+	Inline           string                          `json:"inline"`
+	Format           mihomonative.SubscriptionFormat `json:"format"`
+	EnginePreference mihomonative.EnginePreference   `json:"enginePreference"`
+	RefreshHours     int                             `json:"refreshHours"`
+	Enabled          bool                            `json:"enabled"`
+	Mode             string                          `json:"mode,omitempty"`
+	TestURL          string                          `json:"testUrl,omitempty"`
+	TestInterval     int                             `json:"testInterval,omitempty"`
+	TestTolerance    int                             `json:"testTolerance,omitempty"`
+	FilterInclude    string                          `json:"filterInclude,omitempty"`
+	FilterExclude    string                          `json:"filterExclude,omitempty"`
+	BindInterface    string                          `json:"bindInterface,omitempty"`
+	Headers          []struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	} `json:"headers"`
+}
+
+func (h *MihomoHandler) handleNativeSubscriptionList(w http.ResponseWriter, _ *http.Request) {
+	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListSubscriptions()})
+}
+
+func (h *MihomoHandler) handleNativeSubscriptionCreate(w http.ResponseWriter, r *http.Request) {
+	var req nativeSubscriptionCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	result, err := h.withNativeMutation(r.Context(), true, func() (interface{}, error) {
+		sub, createErr := h.nativeStore.CreateSubscription(mihomonative.CreateSubscriptionInput{
+			Name: req.Name, URL: req.URL, Inline: req.Inline, Format: req.Format,
+			EnginePreference: req.EnginePreference, RefreshHours: req.RefreshHours, Enabled: req.Enabled,
+			Mode: req.Mode, TestURL: req.TestURL, TestInterval: req.TestInterval, TestTolerance: req.TestTolerance,
+			FilterInclude: req.FilterInclude, FilterExclude: req.FilterExclude, BindInterface: req.BindInterface,
+			RoutingEngine: h.routingEngine(), Headers: nativeSubscriptionHeaders(req),
+		})
+		if createErr != nil {
+			return nil, nativeInputError{createErr}
+		}
+		return sub, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_SUBSCRIPTION")
+		return
+	}
+	response.Success(w, result)
+}
+
+func nativeSubscriptionHeaders(req nativeSubscriptionCreateRequest) map[string][]string {
+	headers := make(map[string][]string)
+	for _, header := range req.Headers {
+		name, value := strings.TrimSpace(header.Name), strings.TrimSpace(header.Value)
+		if name != "" && value != "" {
+			headers[name] = append(headers[name], value)
+		}
+	}
+	return headers
+}
+
+func (h *MihomoHandler) handleNativeSubscriptionGet(w http.ResponseWriter, r *http.Request) {
+	sub, err := h.nativeStore.GetSubscription(r.PathValue("id"))
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_SUBSCRIPTION")
+		return
+	}
+	response.Success(w, sub)
+}
+
+func (h *MihomoHandler) handleNativeSubscriptionUpdate(w http.ResponseWriter, r *http.Request) {
+	var req nativeSubscriptionCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	result, err := h.withNativeMutation(r.Context(), true, func() (interface{}, error) {
+		sub, updateErr := h.nativeStore.UpdateSubscription(r.PathValue("id"), mihomonative.UpdateSubscriptionInput{
+			Name: req.Name, URL: req.URL, Inline: req.Inline, Format: req.Format,
+			EnginePreference: req.EnginePreference, RefreshHours: req.RefreshHours, Enabled: req.Enabled,
+			Mode: req.Mode, TestURL: req.TestURL, TestInterval: req.TestInterval, TestTolerance: req.TestTolerance,
+			FilterInclude: req.FilterInclude, FilterExclude: req.FilterExclude, BindInterface: req.BindInterface,
+			RoutingEngine: h.routingEngine(), Headers: nativeSubscriptionHeaders(req),
+		})
+		if updateErr != nil {
+			if errors.Is(updateErr, mihomonative.ErrNotFound) {
+				return nil, updateErr
+			}
+			return nil, nativeInputError{updateErr}
+		}
+		return sub, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_SUBSCRIPTION")
+		return
+	}
+	response.Success(w, result)
+}
+
+func (h *MihomoHandler) handleNativeSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	_, err := h.withNativeMutation(r.Context(), r.URL.Query().Get("apply") != "false", func() (interface{}, error) {
+		if deleteErr := h.nativeStore.DeleteSubscription(id); deleteErr != nil {
+			return nil, deleteErr
+		}
+		return map[string]bool{"deleted": true}, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_SUBSCRIPTION")
+		return
+	}
+	response.Success(w, map[string]bool{"deleted": true})
+}
+
+func (h *MihomoHandler) handleNativeSubscriptionRefresh(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sub, err := h.nativeStore.GetSubscription(id)
+	if err != nil {
+		response.ErrorWithStatus(w, http.StatusNotFound, "subscription not found", "NOT_FOUND")
+		return
+	}
+	if sub.Format != mihomonative.FormatMihomoProvider || sub.ProviderName == "" {
+		response.ErrorWithStatus(w, http.StatusConflict, "only Mihomo provider subscriptions can be refreshed at runtime", "NOT_RUNTIME_PROVIDER")
+		return
+	}
+	target := "http://127.0.0.1:9090/providers/proxies/" + url.PathEscape(sub.ProviderName)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPut, target, nil)
+	if err == nil {
+		var upstream *http.Response
+		upstream, err = mihomoHTTPClient.Do(req)
+		if err == nil {
+			defer upstream.Body.Close()
+			if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
+				err = fmt.Errorf("mihomo provider refresh returned %s", upstream.Status)
+			}
+		}
+	}
+	recordErr := func() error {
+		h.nativeMu.Lock()
+		defer h.nativeMu.Unlock()
+		return h.nativeStore.RecordSubscriptionRefresh(id, err)
+	}()
+	if recordErr != nil && err == nil {
+		err = recordErr
+	}
+	if err != nil {
+		response.ErrorWithStatus(w, http.StatusBadGateway, err.Error(), "PROVIDER_REFRESH_FAILED")
+		return
+	}
+	response.Success(w, map[string]bool{"refreshed": true})
+}
+
+func (h *MihomoHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
+	running, pid := h.op.IsRunning()
+	status := map[string]interface{}{
+		"running": running,
+		"pid":     pid,
+		"binary":  h.op.Binary(),
+		"error":   h.op.LastError(),
+		"engine":  "mihomo",
+	}
+	if h.settingsStore != nil {
+		settings, err := h.settingsStore.Load()
+		if err != nil {
+			status["settingsError"] = err.Error()
+		} else {
+			selected := settings.SingboxRouter.RoutingEngine == "mihomo"
+			enabled := settings.SingboxRouter.Enabled
+			hasNativeListeners := h.nativeStore != nil && len(h.nativeStore.ConfigBridgeListeners()) > 0
+			status["selected"] = selected
+			status["enabled"] = enabled
+			status["active"] = (selected && enabled && running) || (running && hasNativeListeners)
+		}
+	}
+	response.Success(w, status)
+}
+
+func (h *MihomoHandler) handleReload(w http.ResponseWriter, r *http.Request) {
+	if h.settingsStore != nil {
+		settings, err := h.settingsStore.Load()
+		if err != nil {
+			response.InternalError(w, "load settings: "+err.Error())
+			return
+		}
+		selected := settings.SingboxRouter.RoutingEngine == "mihomo"
+		enabled := settings.SingboxRouter.Enabled
+		hasNativeListeners := h.nativeStore != nil && len(h.nativeStore.ConfigBridgeListeners()) > 0
+		if !((selected && enabled) || hasNativeListeners) {
+			response.ErrorWithStatus(w, http.StatusConflict, "mihomo is not active", "MIHOMO_INACTIVE")
+			return
+		}
+	}
+	reload := h.reloadFn
+	if reload == nil {
+		reload = h.op.Reload
+	}
+	if err := reload(); err != nil {
+		response.InternalError(w, err.Error())
+		return
+	}
+	response.Success(w, map[string]bool{"reloaded": true})
+}
+
+// MihomoClashProxy forwards /api/mihomo/clash/* to the Mihomo API.
+type MihomoClashProxy struct {
+	op proxyengine.Engine
+}
+
+func NewMihomoClashProxy(op proxyengine.Engine) *MihomoClashProxy {
+	return &MihomoClashProxy{op: op}
+}
+
+const mihomoClashPrefix = "/api/mihomo/clash"
+
+func (p *MihomoClashProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	upstreamPath := strings.TrimPrefix(r.URL.Path, mihomoClashPrefix)
+	if upstreamPath == "" {
+		upstreamPath = "/"
+	}
+
+	// Mihomo is configured to listen on 127.0.0.1:9090
+	addr := "127.0.0.1:9090"
+
+	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		p.proxyWebSocket(w, r, addr, upstreamPath)
+		return
+	}
+	p.proxyHTTP(w, r, addr, upstreamPath)
+}
+
+var mihomoHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+func (p *MihomoClashProxy) proxyHTTP(w http.ResponseWriter, r *http.Request, addr, path string) {
+	target := &url.URL{Scheme: "http", Host: addr, Path: path, RawQuery: r.URL.RawQuery}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	for k, vv := range r.Header {
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	resp, err := mihomoHTTPClient.Do(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func (p *MihomoClashProxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, addr, path string) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+		return
+	}
+	clientConn, bufrw, err := hj.Hijack()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer clientConn.Close()
+
+	upstream, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		clientConn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+		return
+	}
+	defer upstream.Close()
+
+	target := &url.URL{Scheme: "http", Host: addr, Path: path, RawQuery: r.URL.RawQuery}
+	req, _ := http.NewRequest(r.Method, target.String(), nil)
+	req.Header = r.Header
+
+	if err := req.Write(upstream); err != nil {
+		return
+	}
+
+	errc := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(upstream, bufrw)
+		errc <- err
+	}()
+	go func() {
+		_, err := io.Copy(clientConn, upstream)
+		errc <- err
+	}()
+	<-errc
+}
+
+func (h *MihomoHandler) handleNativeReset(w http.ResponseWriter, r *http.Request) {
+	if h.nativeStore == nil {
+		response.Error(w, "native store not initialized", "NATIVE_STORE_UNAVAILABLE")
+		return
+	}
+	_, err := h.withNativeMutation(r.Context(), true, func() (interface{}, error) {
+		return nil, h.nativeStore.Reset()
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "RESET_FAILED")
+		return
+	}
+	response.Success(w, map[string]interface{}{"success": true, "message": "Конфигурация Mihomo сброшена к заводским настройкам"})
+}

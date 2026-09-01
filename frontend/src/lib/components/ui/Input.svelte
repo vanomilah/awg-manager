@@ -49,18 +49,14 @@
   const fallbackId = `input-${Math.random().toString(36).slice(2, 8)}`;
   const fieldId = $derived(id ?? fallbackId);
 
-  // Значение переносится из DOM руками, а не `bind:value`: при type="number"
-  // Svelte коэрцил бы его в число и отдавал число переменной, объявленной
-  // строкой (`.trim()` на такой переменной падает). Наружу поле отдаёт СТРОКУ
-  // при любом типе.
   function handleInput(e: Event) {
-    value = (e.currentTarget as HTMLInputElement).value;
-    oninput?.(value);
+    // bind:value already syncs into `value`; just notify the consumer callback.
+    oninput?.((e.currentTarget as HTMLInputElement).value);
   }
 
   function handleChange(e: Event) {
-    value = (e.currentTarget as HTMLInputElement).value;
-    onchange?.(value);
+    const v = (e.currentTarget as HTMLInputElement).value;
+    onchange?.(v);
   }
 </script>
 
@@ -79,7 +75,7 @@
       {readonly}
       {autocomplete}
       {name}
-      {value}
+      bind:value
       oninput={handleInput}
       onchange={handleChange}
       class="input"

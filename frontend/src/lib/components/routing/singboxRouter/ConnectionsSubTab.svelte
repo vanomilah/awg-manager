@@ -1,6 +1,7 @@
 <!-- frontend/src/lib/components/routing/singboxRouter/ConnectionsSubTab.svelte -->
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { get } from 'svelte/store';
 	import type {
 		ClashConnectionsRaw,
 		ConnectionFilters,
@@ -119,7 +120,8 @@ const emptyStateText = $derived(
 	async function killOne(id: string): Promise<void> {
 		const removed = snapshot.connections.find((c) => c.id === id);
 		snapshot = { ...snapshot, connections: snapshot.connections.filter((c) => c.id !== id) };
-		const ok = await api.singboxKillConnection(id);
+		const engine = get(singboxRouterStore.settings)?.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
+		const ok = await api.clashKillConnection(engine, id);
 		if (ok) {
 			notifications.success('Соединение закрыто');
 		} else {
@@ -137,7 +139,8 @@ const emptyStateText = $derived(
 			...snapshot,
 			connections: snapshot.connections.filter((c) => !removedSet.has(c.id)),
 		};
-		const { ok, total } = await api.singboxKillConnections(ids);
+		const engine = get(singboxRouterStore.settings)?.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
+		const { ok, total } = await api.clashKillConnections(engine, ids);
 		const msg = `Закрыто ${ok} из ${total}`;
 		if (ok === total) notifications.success(msg);
 		else if (ok === 0) notifications.error(msg);
@@ -145,10 +148,11 @@ const emptyStateText = $derived(
 	}
 
 	onMount(() => {
+		const engine = get(singboxRouterStore.settings)?.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
 		void refetchClients();
 		clientsTimer = setInterval(refetchClients, 30_000);
 		wsClose = createClashWS<ClashConnectionsRaw>(
-			'/api/singbox/clash/connections',
+			engine === 'mihomo' ? '/api/mihomo/clash/connections' : '/api/singbox/clash/connections',
 			(raw) => {
 				snapshot = parseSnapshot(raw, clientsByIP);
 				lastMessageAt = Date.now();

@@ -9,7 +9,7 @@
 		triggerDelayCheck,
 	} from '$lib/stores/singbox';
 	import { untrack } from 'svelte';
-	import { Modal, Button, TrafficSparkline, TrafficChart } from '$lib/components/ui';
+	import { Badge, Modal, Button, TrafficSparkline, TrafficChart } from '$lib/components/ui';
 	import { TunnelListActions } from '$lib/components/ui';
 	import {
 		TunnelDelaySparkBars,
@@ -204,7 +204,9 @@
 					dotPulse={statusDot.pulse}
 					dotLabel={tunnel.tag}
 					onTitleClick={edit}
-				/>
+				>
+					{#snippet badges()}<Badge variant="accent" size="sm">Sing-box</Badge>{/snippet}
+				</TunnelTitleRow>
 				<TunnelMetaText mono>
 					<span>{tunnel.proxyInterface || 'via sing-box'}</span>
 					{#if tunnel.kernelInterface}
@@ -274,7 +276,9 @@
 					dotPulse={statusDot.pulse}
 					dense
 					onTitleClick={edit}
-				/>
+				>
+					{#snippet badges()}<Badge variant="accent" size="sm">Sing-box</Badge>{/snippet}
+				</TunnelTitleRow>
 			</div>
 			<div class="meta-tags-dense">
 				<span class="iface-dense" title="{tunnel.proxyInterface || 'via sing-box'}{tunnel.kernelInterface ? ` · ${tunnel.kernelInterface}` : ''}">
@@ -408,7 +412,9 @@
 			dotVariant={statusDot.variant}
 			dotPulse={statusDot.pulse}
 			onTitleClick={edit}
-		/>
+		>
+			{#snippet badges()}<Badge variant="accent" size="sm">Sing-box</Badge>{/snippet}
+		</TunnelTitleRow>
 		<TunnelSingboxPingButton layout="compact" label={latText} state={cardState} {checking} onclick={triggerCheck} />
 	</div>
 	<div class="iface">

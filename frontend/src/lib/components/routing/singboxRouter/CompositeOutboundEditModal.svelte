@@ -280,7 +280,7 @@
 					{/if}
 				</div>
 				{#if isSubscription}
-					<div class="type-hint">Список редактируется в разделе «Туннели» -> «Sing-box подписки»</div>
+					<div class="type-hint">Список редактируется в разделе «Туннели» → «Прокси» → «Подписки»</div>
 				{/if}
 				{#if !isSubscription}
 					<Dropdown

@@ -48,6 +48,15 @@ type ProxyRegistrar interface {
 	RemoveProxy(ctx context.Context, idx int) error
 }
 
+// ownedProxyRegistrar is the optional hardened extension implemented by the
+// production ProxyManager. Keeping it separate preserves compatibility with
+// older/test registrars while production CRUD gets atomic ownership checks.
+type ownedProxyRegistrar interface {
+	EnsureProxyIfOwned(ctx context.Context, idx, port int, owner string, legacyOwners ...string) (bool, error)
+	RemoveProxyIfOwnedBy(ctx context.Context, idx int, owner string, legacyOwners ...string) (bool, error)
+	ReleaseProxyIndex(idx int)
+}
+
 // ClashSelector is the narrow interface for switching a selector outbound's
 // active member via the sing-box Clash API. The real implementation is
 // *singbox.ClashClient. A local interface avoids circular import.
@@ -172,11 +181,17 @@ func NewOperatorAdapter(orch *orchestrator.Orchestrator, pm ProxyRegistrar, clas
 
 // LoadFromDisk reads an existing 40-subscriptions.json (if any) into the
 // in-memory config. Call once after orch.Bootstrap() so the adapter is
-// consistent with what is on disk. Missing file is treated as an empty
-// slot (not an error).
+// consistent with what is on disk. Older Mihomo builds parked the slot in
+// config.d/disabled, so startup must also load that copy; otherwise the next
+// refresh starts from an empty adapter and can overwrite a valid subscription.
+// Missing files are treated as an empty slot (not an error).
 func (a *OperatorAdapter) LoadFromDisk(configDir string) error {
 	path := fmt.Sprintf("%s/40-subscriptions.json", configDir)
 	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		path = fmt.Sprintf("%s/disabled/40-subscriptions.json", configDir)
+		b, err = os.ReadFile(path)
+	}
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -813,12 +828,38 @@ func (a *OperatorAdapter) EnsureProxy(ctx context.Context, idx, port int, descri
 	return a.pm.EnsureProxy(ctx, idx, port, description)
 }
 
+func (a *OperatorAdapter) EnsureProxyIfOwned(ctx context.Context, idx, port int, owner string, legacyOwners ...string) (bool, error) {
+	if a.pm == nil {
+		return false, fmt.Errorf("subscription adapter: ProxyRegistrar not configured")
+	}
+	if registrar, ok := a.pm.(ownedProxyRegistrar); ok {
+		return registrar.EnsureProxyIfOwned(ctx, idx, port, owner, legacyOwners...)
+	}
+	return true, a.pm.EnsureProxy(ctx, idx, port, owner)
+}
+
 // RemoveProxy tears down the NDMS ProxyN interface at the given index.
 func (a *OperatorAdapter) RemoveProxy(ctx context.Context, idx int) error {
 	if a.pm == nil {
 		return fmt.Errorf("subscription adapter: ProxyRegistrar not configured")
 	}
 	return a.pm.RemoveProxy(ctx, idx)
+}
+
+func (a *OperatorAdapter) RemoveProxyIfOwnedBy(ctx context.Context, idx int, owner string, legacyOwners ...string) (bool, error) {
+	if a.pm == nil {
+		return false, fmt.Errorf("subscription adapter: ProxyRegistrar not configured")
+	}
+	if registrar, ok := a.pm.(ownedProxyRegistrar); ok {
+		return registrar.RemoveProxyIfOwnedBy(ctx, idx, owner, legacyOwners...)
+	}
+	return true, a.pm.RemoveProxy(ctx, idx)
+}
+
+func (a *OperatorAdapter) ReleaseProxyIndex(idx int) {
+	if registrar, ok := a.pm.(ownedProxyRegistrar); ok {
+		registrar.ReleaseProxyIndex(idx)
+	}
 }
 
 // toAnyInt extracts an integer from json-decoded interface values (float64, int, int64).

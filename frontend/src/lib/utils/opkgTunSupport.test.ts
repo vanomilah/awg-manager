@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { opkgTunSupported } from './opkgTunSupport';
 import type { SystemInfo } from '$lib/types/system';
 
-const info = (supportsOpkgTun?: boolean) => ({ supportsOpkgTun }) as SystemInfo;
+const info = (supportsOpkgTun?: boolean) => ({ supportsOpkgTun }) as unknown as SystemInfo;
 
 describe('opkgTunSupported', () => {
 	it('прошивка умеет OpkgTun', () => {

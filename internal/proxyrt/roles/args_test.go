@@ -68,7 +68,7 @@ func TestWdttServerArgs(t *testing.T) {
 func TestWdttServerArgsRawRelayDNS(t *testing.T) {
 	c := WdttServerConfig{Listen: "0.0.0.0:56000", WgPort: 51820, Password: "x", RelayMode: "raw"}
 	got := strings.Join(WdttServerArgs(c), " ")
-	if !strings.Contains(got, "-dns 10.70.66.1") {
+	if !strings.Contains(got, "-dns 10.70.0.1") {
 		t.Fatalf("raw-relay: dns обязан быть адресом raw-шлюза, got %q", got)
 	}
 }

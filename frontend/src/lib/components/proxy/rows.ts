@@ -97,7 +97,7 @@ function toRow(
     autostart,
     pid: s.pid,
     startedAt: s.startedAt,
-    orphanedPid: s.orphanedPid === true,
+    orphanedPid: typeof s.orphanedPid === 'number' ? s.orphanedPid > 0 : !!s.orphanedPid,
     binaryPresent: s.binaryPresent,
     mode,
     seededFrom,

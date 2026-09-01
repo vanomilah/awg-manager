@@ -58,7 +58,7 @@
   // который сеть может уйти наружу, а не только на текущий выход в интернет.
   let egresses = $state<PolicyTunNATEgress[]>([]);
 
-  const tunName = $derived(ndmsName || 'туннель sing-box');
+  const tunName = $derived(ndmsName || (cfg?.routingEngine === 'mihomo' ? 'туннель Mihomo' : 'туннель sing-box'));
 
   async function openPicker() {
     pickerOpen = true;
@@ -173,7 +173,7 @@
 
   {#if !wanted}
     <p class="hint">
-      Сейчас sing-box видит все устройства под одним адресом tun-шлюза (172.18.0.1):
+      Сейчас {cfg?.routingEngine === 'mihomo' ? 'Mihomo' : 'sing-box'} видит все устройства под одним адресом tun-шлюза (172.18.0.1):
       правила по адресу устройства и разбивка соединений по клиентам не работают.
     </p>
   {:else}
@@ -203,7 +203,7 @@
     <p class="hint">Сегментов, которым можно сменить режим NAT, не найдено.</p>
   {:else}
     <p class="hint">
-      Отметьте сети, устройства которых sing-box должен видеть по их настоящим адресам.
+      Отметьте сети, устройства которых {cfg?.routingEngine === 'mihomo' ? 'Mihomo' : 'sing-box'} должен видеть по их настоящим адресам.
       В интернет они продолжат выходить через адрес роутера.
     </p>
 

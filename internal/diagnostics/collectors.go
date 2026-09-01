@@ -40,6 +40,9 @@ func (r *Runner) collectSystem(ctx context.Context) SystemInfo {
 		Arch:          runtime.GOARCH,
 		TotalMemoryMB: osdetect.GetTotalMemoryMB(),
 	}
+	if r.deps.RoutingEngine != nil {
+		info.RoutingEngine = r.deps.RoutingEngine()
+	}
 
 	info.Backend = "kernel"
 

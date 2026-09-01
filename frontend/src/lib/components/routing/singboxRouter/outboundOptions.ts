@@ -13,6 +13,7 @@ export function buildOutboundOptions(
 	includeSpecial = true,
 	subscriptions: Subscription[] | undefined | null = null,
 	excludeTag: string | null = null,
+	proxyGroups: import('$lib/types').ProxyGroup[] | undefined | null = null,
 ): OutboundGroup[] {
 	// Stores may yield undefined before initial load completes; treat as empty
 	// to avoid breaking the dropdown render. Same pattern as defensive `?? []`
@@ -20,6 +21,7 @@ export function buildOutboundOptions(
 	const tags = awgTags ?? [];
 	const sbTunnels = phase1Tunnels ?? [];
 	const composites = composite ?? [];
+	const pGroups = proxyGroups ?? [];
 
 	const groups: OutboundGroup[] = [];
 
@@ -89,6 +91,16 @@ export function buildOutboundOptions(
 				}
 				return { value: o.tag, label: `${o.tag} (${o.type})` };
 			}),
+		});
+	}
+
+	if (pGroups.length > 0) {
+		groups.push({
+			group: 'Proxy-группы (Mihomo)',
+			items: pGroups.map((g) => ({
+				value: g.name,
+				label: `${g.name} (${g.type})`,
+			})),
 		});
 	}
 

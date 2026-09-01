@@ -216,7 +216,8 @@ func (a *app) setupSingboxRuntime() {
 	// reflected after deviceProxySvc is constructed below.
 	if curSettings, err := a.settingsStore.Load(); err == nil && curSettings != nil {
 		mode := curSettings.SingboxRouter.RoutingMode
-		_ = a.sbOrch.SetEnabled(router.RouterSlotForMode(mode), curSettings.SingboxRouter.Enabled)
+		isSingboxRouter := curSettings.SingboxRouter.Enabled && curSettings.SingboxRouter.RoutingEngine != "mihomo"
+		_ = a.sbOrch.SetEnabled(router.RouterSlotForMode(mode), isSingboxRouter)
 		_ = a.sbOrch.SetEnabled(router.OtherRouterSlot(mode), false)
 		// Повторное примирение base здесь больше не нужно: разметка слотов
 		// меняет владельца dns.strategy, но дефолт лежит в 99-defaults.json —
@@ -238,6 +239,7 @@ func (a *app) setupSingboxRuntime() {
 		a.bootLog.Error("subscription-store", "", err.Error())
 	}
 	subProxyMgr := singbox.NewProxyManager(a.ndmsQueries, a.ndmsCommands)
+	a.ndmsProxyMgr = subProxyMgr
 	a.subAdapter = subscription.NewOperatorAdapter(a.sbOrch, subProxyMgr, a.singboxOp.Clash())
 	// Wire the Operator's cached sing-box build-tag probe into the
 	// subscription adapter so flush() Pass 1 can cheaply pre-filter

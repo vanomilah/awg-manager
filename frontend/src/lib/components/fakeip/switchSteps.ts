@@ -101,14 +101,14 @@ const DISABLE_STEPS: UIStepDef[] = [
 // readiness first, then iptables install.
 const TPROXY_ENABLE_STEPS: UIStepDef[] = [
 	{ milestone: 'teardown', title: 'Снят предыдущий режим', detail: 'прежние маршруты/перехват убраны (если были)' },
-	{ milestone: 'readiness', title: 'Перезапуск sing-box', detail: 'ожидаем inbounds (TPROXY/REDIRECT)' },
+	{ milestone: 'readiness', title: 'Перезапуск ядра маршрутизации', detail: 'ожидаем inbounds (TPROXY/REDIRECT)' },
 	{ milestone: 'provision', title: 'iptables TPROXY установлен', detail: 'jumps + AWGM-цепочки' },
 	{ milestone: 'ready', title: 'Проверка готовности', detail: 'TPROXY-перехват активен' },
 ];
 const TPROXY_DISABLE_STEPS: UIStepDef[] = [
 	{ milestone: 'teardown', title: 'Снят TPROXY-перехват', detail: 'iptables jumps + цепочки убраны' },
-	{ milestone: 'provision', title: 'sing-box перестроен', detail: 'без перехвата' },
-	{ milestone: 'readiness', title: 'Перезапуск sing-box', detail: 'ожидаем inbounds (TPROXY/REDIRECT)' },
+	{ milestone: 'provision', title: 'Конфигурация ядра обновлена', detail: 'без перехвата' },
+	{ milestone: 'readiness', title: 'Перезапуск ядра маршрутизации', detail: 'ожидаем inbounds (TPROXY/REDIRECT)' },
 	{ milestone: 'ready', title: 'Проверка готовности', detail: 'маршрутизация выключена' },
 ];
 
@@ -119,14 +119,14 @@ const POLICY_TUN_ENABLE_STEPS: UIStepDef[] = [
 	{ milestone: 'teardown', title: 'Снят предыдущий режим', detail: 'прежний перехват/маршруты убраны (если были)' },
 	{ milestone: 'provision', title: 'Интерфейс OpkgTun создан', detail: 'ip global · разрешён в списке доступа' },
 	{ milestone: 'provision', title: 'Дефолт-маршрут NDMS припаркован', detail: 'v4 (+v6) на интерфейс режима' },
-	{ milestone: 'provision', title: 'config.json записан', detail: 'tun inbound · правила маршрутизации' },
-	{ milestone: 'readiness', title: 'Перезапуск sing-box', detail: 'ожидаем tun-inbound' },
+	{ milestone: 'provision', title: 'Конфигурация ядра записана', detail: 'tun inbound · правила маршрутизации' },
+	{ milestone: 'readiness', title: 'Перезапуск ядра маршрутизации', detail: 'ожидаем tun-inbound' },
 	{ milestone: 'ready', title: 'Проверка готовности', detail: 'интерфейс поднят · маршруты на месте' },
 ];
 const POLICY_TUN_DISABLE_STEPS: UIStepDef[] = [
 	{ milestone: 'teardown', title: 'Снят policy-tun', detail: 'исходный NAT сегментов восстановлен' },
-	{ milestone: 'provision', title: 'Дефолт-маршрут снят, интерфейс удалён', detail: 'OpkgTun убран · sing-box перестроен' },
-	{ milestone: 'readiness', title: 'Перезапуск sing-box', detail: 'ожидаем inbounds' },
+	{ milestone: 'provision', title: 'Дефолт-маршрут снят, интерфейс удалён', detail: 'OpkgTun убран · ядро перестроено' },
+	{ milestone: 'readiness', title: 'Перезапуск ядра маршрутизации', detail: 'ожидаем inbounds' },
 	{ milestone: 'ready', title: 'Проверка готовности', detail: 'предыдущий режим восстановлен' },
 ];
 

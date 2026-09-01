@@ -122,8 +122,9 @@
   function initialFilter(): LogsFilter {
     const f = loadFilter();
     const singbox = new Set<string>(SINGBOX_GROUPS);
+    const isEngine = lockBucket === 'singbox' || lockBucket === 'mihomo';
     const groups = f.groups.filter((g) =>
-      lockBucket === 'singbox' ? singbox.has(g) : !singbox.has(g),
+      isEngine ? singbox.has(g) : !singbox.has(g),
     );
     if (groups.length === f.groups.length) return f;
     return { ...f, groups, subgroups: [] };
@@ -197,9 +198,9 @@
 
   // Initial fetch + every bucket switch: replace the entire active store.
   function buildLogQuery(limit: number, offset = 0): LogsQueryParams {
-    if (bucket === 'singbox') {
+    if (bucket === 'singbox' || bucket === 'mihomo') {
       return {
-        bucket,
+        bucket: 'singbox',
         groups: ['singbox'],
         subgroups: filter.groups,
         limit,
@@ -245,8 +246,8 @@
   }
 
   async function refreshSubgroups() {
-    if (bucket === 'singbox') {
-      // Sing-box bucket flattens subgroups as the user-facing "groups" in the
+    if (bucket === 'singbox' || bucket === 'mihomo') {
+      // Proxy engine bucket flattens subgroups as the user-facing "groups" in the
       // toolbar — no separate subgroup row needed.
       availableSubgroups = [];
       return;
@@ -396,7 +397,7 @@
       const set = new Set(filter.levels);
       arr = arr.filter((l) => set.has(l.level));
     }
-    if (bucket === 'singbox') {
+    if (bucket === 'singbox' || bucket === 'mihomo') {
       if (filter.groups.length > 0) {
         const set = new Set(filter.groups);
         arr = arr.filter((l) => set.has(l.subgroup));
@@ -431,7 +432,7 @@
   });
 
   async function handleClickScope(group: string, subgroup: string) {
-    if (bucket === 'singbox') {
+    if (bucket === 'singbox' || bucket === 'mihomo') {
       filter = { ...filter, groups: subgroup ? [subgroup] : [], subgroups: [] };
     } else {
       filter = { ...filter, groups: group ? [group] : [], subgroups: subgroup ? [subgroup] : [] };

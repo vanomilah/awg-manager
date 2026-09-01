@@ -2,7 +2,21 @@
 // #region Singbox Router (Phase 2 — TProxy routing engine)
 // ─────────────────────────────────────────────
 
+export interface MihomoStatus {
+	engine: 'mihomo';
+	running: boolean;
+	pid: number;
+	binary: string;
+	error: string;
+	version?: string;
+	selected?: boolean;
+	enabled?: boolean;
+	active?: boolean;
+	settingsError?: string;
+}
+
 export interface SingboxRouterSettings {
+	routingEngine?: 'sing-box' | 'mihomo';
 	enabled: boolean;
 	policyName: string;
 	deviceMode?: 'policy' | 'all';
@@ -13,6 +27,9 @@ export interface SingboxRouterSettings {
 	 */
 	routingMode?: 'tproxy' | 'fakeip-tun' | 'policy-tun';
 	snifferEnabled: boolean;
+	mihomoMixedPort?: number;
+	mihomoHttpPort?: number;
+	mihomoSocksPort?: number;
 	// WAN-binding discriminator (mirrors backend storage):
 	//   wanAutoDetect=true  + wanInterface=""    → sing-box auto_detect_interface
 	//   wanAutoDetect=false + wanInterface="X"   → sing-box default_interface=X
@@ -62,6 +79,19 @@ export interface SingboxRouterSettings {
 	 * wire → absent on legacy/mock payloads (treat undefined as []).
 	 */
 	qosClasses?: SingboxQosClass[];
+	keeneticCloudTunnel?: boolean;
+	keeneticCloudOutbound?: string;
+	proxyGroups?: ProxyGroup[];
+	mihomoTrafficMode?: 'rule' | 'global' | 'direct';
+	mihomoGlobalTarget?: string;
+}
+
+export interface ProxyGroup {
+	name: string;
+	type: 'fallback' | 'load-balance' | 'url-test' | 'select';
+	proxies: string[];
+	url?: string;
+	interval?: number;
 }
 
 /** One QoS/DSCP routing class (SingboxRouterSettings.qosClasses entry). */
@@ -302,6 +332,15 @@ export interface SingboxRouterInspectMatch {
 	reason?: string;
 }
 
+export interface SingboxRouterInspectDNSInfo {
+	matchedRule?: number;
+	server?: string;
+	serverAddress?: string;
+	reason?: string;
+	policy?: string;
+	isRemoteDNS?: boolean;
+}
+
 export interface SingboxRouterInspectResult {
 	input: string;
 	inputType: 'domain' | 'ip';
@@ -310,6 +349,7 @@ export interface SingboxRouterInspectResult {
 	matchedRule: number;
 	final: string;
 	note?: string;
+	dns?: SingboxRouterInspectDNSInfo;
 }
 
 export interface SingboxRouterInspectRequest {
@@ -711,4 +751,3 @@ export interface CatalogPreset {
 }
 
 // #endregion
-

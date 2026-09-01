@@ -12,6 +12,7 @@ vi.mock('$lib/api/client', () => ({
 		singboxRouterListPresets: vi.fn().mockResolvedValue([]),
 		singboxRouterListDNSServers: vi.fn().mockResolvedValue([]),
 		singboxRouterListDNSRules: vi.fn().mockResolvedValue([]),
+		singboxRouterListDNSRewrites: vi.fn().mockResolvedValue([]),
 		singboxRouterGetDNSGlobals: vi.fn().mockResolvedValue({ final: '', strategy: '' }),
 	},
 }));
@@ -51,5 +52,22 @@ describe('singboxRouter.staging', () => {
 		vi.mocked(api.singboxRouterStagingStatus).mockRejectedValue(new Error('boom'));
 		await singboxRouter.loadStaging();
 		expect(get(singboxRouter.staging)).toBeNull();
+	});
+
+	it('coalesces concurrent full snapshot loads', async () => {
+		let release!: () => void;
+		vi.mocked(api.singboxRouterStatus).mockImplementation(
+			() => new Promise((resolve) => {
+				release = () => resolve(null as any);
+			}),
+		);
+
+		const first = singboxRouter.loadAll();
+		const second = singboxRouter.loadAll();
+		expect(api.singboxRouterStatus).toHaveBeenCalledTimes(1);
+		release();
+		await Promise.all([first, second]);
+		expect(api.singboxRouterListRules).toHaveBeenCalledTimes(1);
+		expect(api.singboxRouterListDNSRules).toHaveBeenCalledTimes(1);
 	});
 });

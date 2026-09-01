@@ -87,8 +87,12 @@
 	async function handleToggleEnable(item: SystemServiceItem, enable: boolean) {
 		acting = item.script;
 		try {
-			await api.systemServicesToggleEnable(item.script, enable);
-			notifications.success(`${item.name}: автозапуск ${enable ? 'включен (S)' : 'выключен (K)'}`);
+			const res = await api.systemServicesToggleEnable(item.script, enable);
+			if (res.ok) {
+				notifications.success(`${item.name}: автозапуск ${enable ? 'включен (S)' : 'выключен (K)'}`);
+			} else {
+				notifications.error('Не удалось изменить автозапуск');
+			}
 			await load();
 		} catch (e) {
 			notifications.error(errorMessage(e, 'Не удалось изменить статус автозапуска'));

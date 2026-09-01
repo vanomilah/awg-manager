@@ -38,6 +38,9 @@ let clientsByIP = new Map<string, string>();
 let wsClose: (() => void) | null = null;
 let clientsTimer: ReturnType<typeof setInterval> | null = null;
 let bound = false;
+let currentPath = '';
+let currentStatus: { enabled?: boolean; active?: boolean } | null = null;
+let currentSettings: { enabled?: boolean; routingEngine?: string } | null = null;
 
 async function refetchClients(): Promise<void> {
 	try {
@@ -52,15 +55,17 @@ async function refetchClients(): Promise<void> {
 	}
 }
 
-function connect(): void {
-	if (wsClose) return;
+function connect(path: string): void {
+	if (wsClose && currentPath === path) return;
+	if (wsClose) disconnect();
+	currentPath = path;
 	wsStatus.set('connecting');
 	void refetchClients();
 	if (!clientsTimer) {
 		clientsTimer = setInterval(() => void refetchClients(), 30_000);
 	}
 	wsClose = createClashWS<ClashConnectionsRaw>(
-		'/api/singbox/clash/connections',
+		path,
 		(raw) => snapshot.set(parseSnapshot(raw, clientsByIP)),
 		(s) => wsStatus.set(s),
 	);
@@ -69,6 +74,7 @@ function connect(): void {
 function disconnect(): void {
 	wsClose?.();
 	wsClose = null;
+	currentPath = '';
 	if (clientsTimer) {
 		clearInterval(clientsTimer);
 		clientsTimer = null;
@@ -82,9 +88,24 @@ function disconnect(): void {
 export function bindLiveConnectionsStore(): void {
 	if (bound) return;
 	bound = true;
+	const reconcile = () => {
+		const mihomo = currentSettings?.routingEngine === 'mihomo';
+		const enabled = mihomo
+			? (currentSettings?.enabled ?? false)
+			: ((currentStatus?.enabled ?? false) && (currentStatus?.active ?? false));
+		if (enabled || isMockDevMode()) {
+			connect(mihomo ? '/api/mihomo/clash/connections' : '/api/singbox/clash/connections');
+		} else {
+			disconnect();
+		}
+	};
 	singboxRouter.status.subscribe((s) => {
-		if (s?.enabled || isMockDevMode()) connect();
-		else disconnect();
+		currentStatus = s;
+		reconcile();
+	});
+	singboxRouter.settings.subscribe((s) => {
+		currentSettings = s;
+		reconcile();
 	});
 }
 

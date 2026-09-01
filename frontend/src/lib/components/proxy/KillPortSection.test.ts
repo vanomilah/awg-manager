@@ -60,32 +60,27 @@ describe('KillPortSection: подтверждение освобождения �
 		apiMock.killProxyListener.mockResolvedValue({ pid: 15233, message: 'PID 15233 остановлен' });
 	});
 
-	it('в тексте — номер порта той строки, где нажали', async () => {
+	it('в подсказке кнопки — номер порта и PID', async () => {
 		mount([{ listen: '0.0.0.0:56000' }, { listen: '0.0.0.0:56001' }]);
 
-		const first = await pressRow(56000);
-		expect(
-			within(first).getByText('Освободить порт 56000? Процесс, занявший его, будет завершён.'),
-		).toBeTruthy();
-		await fireEvent.click(within(first).getByRole('button', { name: 'Отмена' }));
-		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-
-		const second = await pressRow(56001);
-		expect(
-			within(second).getByText('Освободить порт 56001? Процесс, занявший его, будет завершён.'),
-		).toBeTruthy();
+		await waitFor(() => {
+			expect(screen.getByTitle('Освободить порт 56000 (kill PID 15233)')).toBeTruthy();
+			expect(screen.getByTitle('Освободить порт 56001 (kill PID 15233)')).toBeTruthy();
+		});
 	});
 
 	it('порт освобождается только после подтверждения', async () => {
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 		mount([{ listen: '0.0.0.0:56000' }]);
 
-		const modal = await pressRow(56000);
+		const btn = await screen.findByTitle('Освободить порт 56000 (kill PID 15233)');
 		expect(apiMock.killProxyListener).not.toHaveBeenCalled();
 
-		await fireEvent.click(within(modal).getByRole('button', { name: 'Освободить порт' }));
+		await fireEvent.click(btn);
+		expect(confirmSpy).toHaveBeenCalled();
 		await waitFor(() =>
 			expect(apiMock.killProxyListener).toHaveBeenCalledWith('0.0.0.0', 56000, 'udp'),
 		);
-		await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+		confirmSpy.mockRestore();
 	});
 });

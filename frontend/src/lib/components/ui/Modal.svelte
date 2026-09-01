@@ -9,8 +9,7 @@
         /** When `fill`, body does not scroll — children manage their own scroll regions. */
         bodyLayout?: 'default' | 'fill';
         onclose: () => void;
-        /** Omitted = no body: the section is skipped so it can't leave an empty padded strip. */
-        children?: Snippet;
+        children: Snippet;
         actions?: Snippet;
         /**
          * Close the modal when the user clicks the dimmed backdrop.
@@ -163,15 +162,13 @@
                 </button>
             </header>
 
-            {#if children}
-                <section
-                    class="modal-body"
-                    class:modal-body-fill={bodyLayout === 'fill'}
-                    style={bodyMinHeight ? `min-height: ${bodyMinHeight}` : undefined}
-                >
-                    {@render children()}
-                </section>
-            {/if}
+            <section
+                class="modal-body"
+                class:modal-body-fill={bodyLayout === 'fill'}
+                style={bodyMinHeight ? `min-height: ${bodyMinHeight}` : undefined}
+            >
+                {@render children()}
+            </section>
 
             {#if actions}
                 <footer class="modal-footer">

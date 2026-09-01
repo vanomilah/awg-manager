@@ -29,15 +29,25 @@ type SingboxRouterInspectMatchDTO struct {
 	Reason     string   `json:"reason,omitempty" example:"совпало по: domain_suffix"`
 }
 
+type SingboxRouterInspectDNSInfoDTO struct {
+	MatchedRule   int    `json:"matchedRule"`
+	Server        string `json:"server"`
+	ServerAddress string `json:"serverAddress,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Policy        string `json:"policy,omitempty"`
+	IsRemoteDNS   bool   `json:"isRemoteDNS,omitempty"`
+}
+
 // SingboxRouterInspectData mirrors router.InspectResult.
 type SingboxRouterInspectData struct {
-	Input       string                         `json:"input" example:"google.com"`
-	InputType   string                         `json:"inputType" example:"domain"`
-	Matches     []SingboxRouterInspectMatchDTO `json:"matches"`
-	Destination string                         `json:"destination" example:"vpn"`
-	MatchedRule int                            `json:"matchedRule" example:"0"`
-	Final       string                         `json:"final" example:"direct"`
-	Note        string                         `json:"note,omitempty"`
+	Input       string                          `json:"input" example:"google.com"`
+	InputType   string                          `json:"inputType" example:"domain"`
+	Matches     []SingboxRouterInspectMatchDTO  `json:"matches"`
+	Destination string                          `json:"destination" example:"vpn"`
+	MatchedRule int                             `json:"matchedRule" example:"0"`
+	Final       string                          `json:"final" example:"direct"`
+	Note        string                          `json:"note,omitempty"`
+	DNS         *SingboxRouterInspectDNSInfoDTO `json:"dns,omitempty"`
 }
 
 // SingboxRouterInspectResponse is the envelope for POST /singbox/router/inspect.
