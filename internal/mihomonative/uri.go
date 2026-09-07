@@ -13,8 +13,23 @@ import (
 // compilers. One source link may describe multiple endpoints.
 func CompileURI(raw string, preference, routingEngine EnginePreference) ([]*ProxyNode, error) {
 	trimmed := strings.TrimSpace(raw)
-	if strings.HasPrefix(strings.ToLower(trimmed), "vless://") {
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "vless://") {
 		node, err := CompileVLESS(trimmed, preference, routingEngine)
+		if err != nil {
+			return nil, err
+		}
+		return []*ProxyNode{node}, nil
+	}
+	if strings.HasPrefix(lower, "vmess://") {
+		node, err := CompileVMess(trimmed, preference, routingEngine)
+		if err != nil {
+			return nil, err
+		}
+		return []*ProxyNode{node}, nil
+	}
+	if strings.HasPrefix(lower, "socks5://") || strings.HasPrefix(lower, "socks://") {
+		node, err := CompileSocks(trimmed, preference, routingEngine)
 		if err != nil {
 			return nil, err
 		}

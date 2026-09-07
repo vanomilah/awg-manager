@@ -70,7 +70,7 @@
 	let updateInfo = $state<UpdateInfo | null>(null);
 	/** idle | loading | done — чтобы в шапке не мигал бейдж при первом checkUpdate. */
 	let updateFetchState = $state<'idle' | 'loading' | 'done'>('idle');
-	const currentVersion = $derived(updateInfo?.currentVersion ?? '');
+	const currentVersion = $derived(updateInfo?.currentVersion || $systemInfo.data?.version || '');
 	const isPreRelease = $derived(
 		currentVersion.includes('-rc') ||
 		currentVersion.includes('-beta') ||
@@ -171,7 +171,7 @@
 			// Old backends (pre-2.9.10) didn't include bucket; default to "app"
 			// so the terminal still fills until the user upgrades.
 			onLogEntry: (data) => {
-				const bucket: LogBucket = (data.bucket === 'singbox' || data.bucket === 'mihomo') ? 'singbox' : 'app';
+				const bucket: LogBucket = data.bucket === 'singbox' || data.bucket === 'mihomo' ? data.bucket : 'app';
 				logStoreFor(bucket).append(data);
 			},
 			onMonitoringMatrixUpdate: (data) => {
@@ -547,6 +547,13 @@
 		margin-left: auto;
 		margin-right: auto;
 		padding: 0 1rem;
+	}
+
+	:global(html[data-layout-compact='true']) .main:has(.ai-wrapper),
+	:global(html[data-layout-compact='true']) .main:has(.system-tools) {
+		max-width: 100% !important;
+		padding-left: 0.5rem !important;
+		padding-right: 0.5rem !important;
 	}
 
 	.offline-screen {

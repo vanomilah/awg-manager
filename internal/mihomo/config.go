@@ -3,6 +3,7 @@ package mihomo
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 type Config struct {
 	Mode          string                            `yaml:"mode"`
 	LogLevel      string                            `yaml:"log-level"`
+	IPv6          bool                              `yaml:"ipv6"`
 	AllowLan      bool                              `yaml:"allow-lan"`
 	ExternalCtl   string                            `yaml:"external-controller"`
 	RoutingMark   int                               `yaml:"routing-mark,omitempty"`
@@ -46,8 +48,13 @@ type Tun struct {
 	Stack               string   `yaml:"stack"`
 	Device              string   `yaml:"device,omitempty"`
 	AutoRoute           bool     `yaml:"auto-route"`
+	AutoRedirect        bool     `yaml:"auto-redirect"`
+	StrictRoute         bool     `yaml:"strict-route"`
 	AutoDetectInterface bool     `yaml:"auto-detect-interface"`
 	DNSHijack           []string `yaml:"dns-hijack,omitempty"`
+	Inet4Address        []string `yaml:"inet4-address,omitempty"`
+	Inet6Address        []string `yaml:"inet6-address,omitempty"`
+	MTU                 int      `yaml:"mtu,omitempty"`
 }
 
 type DNS struct {
@@ -108,7 +115,13 @@ type ProxyGroup struct {
 }
 
 type Provider struct {
-	// Add rule provider fields as needed
+	Type     string `yaml:"type"`
+	Behavior string `yaml:"behavior"`
+	URL      string `yaml:"url,omitempty"`
+	Path     string `yaml:"path"`
+	Interval int    `yaml:"interval,omitempty"`
+	Format   string `yaml:"format,omitempty"`
+	Proxy    string `yaml:"proxy,omitempty"`
 }
 
 type Listener struct {
@@ -224,11 +237,12 @@ func GenerateSidecarConfig(native NativeResources) ([]byte, error) {
 	cfg := Config{
 		Mode:        "rule",
 		LogLevel:    "info",
+		IPv6:        false,
 		AllowLan:    false,
 		ExternalCtl: "127.0.0.1:9090",
 		Profile:     Profile{StoreSelected: true, StoreFakeIP: false},
 		DNS: DNS{
-			Enable: true, DefaultNS: []string{"8.8.8.8", "1.1.1.1"}, Enhanced: "redir-host",
+			Enable: true, DefaultNS: []string{"127.0.0.1", "77.88.8.8"}, Enhanced: "redir-host",
 		},
 		ProxyProvider: native.ProxyProviders,
 		RuleProvider:  native.RuleProviders,
@@ -341,14 +355,14 @@ func GenerateConfigWithResources(
 	}
 
 	if len(nameservers) == 0 {
-		nameservers = []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+		nameservers = []string{"127.0.0.1", "77.88.8.8"}
 	}
 	if len(defaultNS) == 0 {
-		defaultNS = []string{"77.88.8.8", "1.1.1.1", "8.8.8.8"}
+		defaultNS = []string{"127.0.0.1", "77.88.8.8"}
 	}
-	if len(fallbacks) == 0 {
-		fallbacks = []string{"https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"}
-	}
+	// Note: do not inject 1.1.1.1/8.8.8.8 into fallbacks when none are configured.
+	// Hardcoding foreign DoH servers breaks DNS resolution on cellular white-lists
+	// and causes healthcheck timeouts for direct outbounds.
 
 	dnsServerByTag := make(map[string]string)
 	for _, srv := range native.DNSServers {
@@ -479,13 +493,15 @@ func GenerateConfigWithResources(
 		if settings.KeeneticCloudTunnel && strings.TrimSpace(settings.KeeneticCloudOutbound) != "" {
 			cloudDomains := []string{
 				"keenetic.com", "keenetic.io", "keenetic.net", "keenetic.ru",
-				"keenetic.pro", "keenetic.link", "keenetic.name",
-				"netcraze.io", "netcraze.net", "netcraze.pro",
+				"keenetic.pro", "keenetic.link", "keenetic.name", "keenetic.cloud",
+				"netcraze.io", "netcraze.net", "netcraze.pro", "netcraze.ru", "netcraze.com", "netcraze.cloud",
 				"crazedns.ru", "crazedns.com", "crazedns.net",
-				"omni.ru",
+				"omni.ru", "knt9.xyz",
 			}
-			for _, d := range cloudDomains {
-				nameserverPolicy["+."+d] = defaultTunnelDNS
+			if defaultTunnelDNS != "" {
+				for _, d := range cloudDomains {
+					nameserverPolicy["+."+d] = defaultTunnelDNS
+				}
 			}
 			nameserverPolicy["my.keenetic.net"] = "127.0.0.1"
 			nameserverPolicy["my.netcraze.net"] = "127.0.0.1"
@@ -543,15 +559,19 @@ func GenerateConfigWithResources(
 		cfg.Sniffer = nil
 	}
 
+	cfg.IPv6 = false
+
 	if settings.RoutingMode == "fakeip-tun" || settings.RoutingMode == "policy-tun" {
 		cfg.DNS.Enhanced = "fake-ip"
 		cfg.DNS.FakeIPRange = settings.FakeIPPool4 // E.g. "198.18.0.0/15"
 
 		cfg.Tun = &Tun{
 			Enable:              true,
-			Stack:               "system",
+			Stack:               "gvisor",
 			Device:              tunIface,
 			AutoRoute:           false,
+			AutoRedirect:        false,
+			StrictRoute:         false,
 			AutoDetectInterface: false,
 			DNSHijack:           []string{"any:53"},
 		}
@@ -602,6 +622,11 @@ func GenerateConfigWithResources(
 		}
 		seenProxyNames[name] = struct{}{}
 		cfg.Proxies = append(cfg.Proxies, proxy)
+	}
+	for i := range cfg.Proxies {
+		if _, ok := cfg.Proxies[i]["routing-mark"]; !ok && cfg.RoutingMark != 0 {
+			cfg.Proxies[i]["routing-mark"] = cfg.RoutingMark
+		}
 	}
 	// Legacy shared groups remain a compatibility fallback while an existing
 	// installation is moved to the native Mihomo model. Native definitions are
@@ -680,10 +705,10 @@ func GenerateConfigWithResources(
 		)
 		cloudDomains := []string{
 			"keenetic.com", "keenetic.io", "keenetic.net", "keenetic.ru",
-			"keenetic.pro", "keenetic.link", "keenetic.name",
-			"netcraze.io", "netcraze.net", "netcraze.pro",
+			"keenetic.pro", "keenetic.link", "keenetic.name", "keenetic.cloud",
+			"netcraze.io", "netcraze.net", "netcraze.pro", "netcraze.ru", "netcraze.com", "netcraze.cloud",
 			"crazedns.ru", "crazedns.com", "crazedns.net",
-			"omni.ru",
+			"omni.ru", "knt9.xyz",
 		}
 		for _, d := range cloudDomains {
 			cfg.Rules = append(cfg.Rules, "DOMAIN-SUFFIX,"+d+","+targetOutbound)
@@ -694,11 +719,20 @@ func GenerateConfigWithResources(
 			"87.228.71.0/24",
 			"91.92.241.0/24",
 			"193.107.216.0/24",
+			"178.250.154.0/24",
+			"178.72.134.0/24",
+			"85.198.119.0/24",
+			"37.0.127.0/24",
+			"5.35.2.0/24",
+			"84.38.177.0/24",
+			"49.12.59.0/24",
+			"167.233.7.0/24",
 		}
-		for _, cidr := range cloudCIDRs {
+		allCIDRs := append(slices.Clone(cloudCIDRs), settings.DynamicCloudCIDRs...)
+		for _, cidr := range allCIDRs {
 			cfg.Rules = append(cfg.Rules, "IP-CIDR,"+cidr+","+targetOutbound+",no-resolve")
 		}
-		cloudPorts := []string{"9", "3478", "3479"}
+		cloudPorts := []string{"9", "3478", "3479", "4044", "5683"}
 		for _, p := range cloudPorts {
 			cfg.Rules = append(cfg.Rules, "DST-PORT,"+p+","+targetOutbound)
 		}
@@ -792,7 +826,9 @@ func ensureReferencedProxiesExist(cfg *Config, seenProxyNames map[string]struct{
 		}
 		if _, exists := seenProxyNames[target]; !exists {
 			ifaceName := target
-			if strings.HasPrefix(target, "awg-") {
+			if strings.HasPrefix(target, "awg-sys-") {
+				ifaceName = strings.TrimPrefix(target, "awg-sys-")
+			} else if strings.HasPrefix(target, "awg-") {
 				ifaceName = strings.TrimPrefix(target, "awg-")
 			}
 			cfg.Proxies = append(cfg.Proxies, map[string]interface{}{

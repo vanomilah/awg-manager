@@ -25,6 +25,32 @@ func CheckVLESS(transport string) Compatibility {
 	return result
 }
 
+// CheckVMess reports compiler compatibility for VMess protocol.
+func CheckVMess(transport string) Compatibility {
+	transport = strings.ToLower(strings.TrimSpace(transport))
+	if transport == "" {
+		transport = "tcp"
+	}
+	mihomo := map[string]bool{"tcp": true, "ws": true, "http": true, "h2": true, "grpc": true, "xhttp": true, "kcp": true}
+	supported := mihomo[transport]
+	result := Compatibility{
+		Mihomo:  Support{Supported: supported},
+		Singbox: Support{Supported: false, Reason: "VMess is supported natively in Mihomo"},
+	}
+	if !supported {
+		result.Mihomo.Reason = "VMess transport " + transport + " is not implemented by the Mihomo compiler"
+	}
+	return result
+}
+
+// CheckSocks reports compiler compatibility for SOCKS proxy.
+func CheckSocks() Compatibility {
+	return Compatibility{
+		Mihomo:  Support{Supported: true},
+		Singbox: Support{Supported: false, Reason: "SOCKS proxy is supported natively in Mihomo"},
+	}
+}
+
 func SelectEngine(preference EnginePreference, compatibility Compatibility, routingEngine EnginePreference) (EnginePreference, string) {
 	if preference == "" {
 		preference = EngineAuto
