@@ -144,8 +144,80 @@ func EncodeLinkWithClientPort(peer string, wgPort int, password string, vkHashes
 	return link, nil
 }
 
+// EncodeFullLink builds the wdtt:// base64(JSON) form with BOTH the DTLS port
+// and the RAW port, plus an explicit mode field. This is the canonical link
+// format: the server always listens on both ports simultaneously, so the client
+// must know both to be able to switch modes without a new link.
+//
+//   - mode=wg  (default): client connects over DTLS and uses WireGuard
+//   - mode=raw:           client connects over the dedicated RAW UDP port
+//
+// Old clients that do not understand the raw/mode fields will fall back to the
+// DTLS port (ip+dtls), which is the wg-mode path — a safe default.
+func EncodeFullLink(host string, dtlsPort, rawPort, wgPort int, password string, vkHashes []string, name string, clientListenPort int, mode string) (string, error) {
+	host = strings.TrimSpace(host)
+	password = strings.TrimSpace(password)
+	if host == "" {
+		return "", fmt.Errorf("peer не задан")
+	}
+	if password == "" {
+		return "", fmt.Errorf("password не задан")
+	}
+	if dtlsPort <= 0 {
+		dtlsPort = 56000
+	}
+	if rawPort <= 0 {
+		rawPort = dtlsPort + 1
+	}
+	if wgPort <= 0 {
+		wgPort = defaultServerWgPort
+	}
+	if clientListenPort <= 0 {
+		clientListenPort = defaultClientListenPort
+	}
+	mode = normalizeConnMode(mode)
+	payload := map[string]any{
+		"v":    "1",
+		"ip":   host,
+		"dtls": dtlsPort,
+		"raw":  rawPort,
+		"wg":   wgPort,
+		"lp":   clientListenPort,
+		"port": clientListenPort,
+		"pass": password,
+		"mode": mode,
+	}
+	if n := strings.TrimSpace(name); n != "" {
+		payload["name"] = n
+	}
+	if hashes := strings.Join(splitHashes(strings.Join(vkHashes, ",")), ","); hashes != "" {
+		payload["hash"] = hashes
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return SchemeWdtt + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// EncodeRawLink builds the modern wdtt:// base64(JSON) form. Unlike the
+// legacy colon form it carries both the ordinary DTLS port and the dedicated
+// RAW port, so an importer does not have to guess RAW as DTLS+1.
+//
+// Deprecated: prefer EncodeFullLink with an explicit mode argument.
+func EncodeRawLink(host string, dtlsPort, rawPort, wgPort int, password string, vkHashes []string, name string, clientListenPort int) (string, error) {
+	return EncodeFullLink(host, dtlsPort, rawPort, wgPort, password, vkHashes, name, clientListenPort, ConnModeRaw)
+}
+
 // EncodeQwdttLink builds qwdtt:// for qWDTT/Android — явный port=9000 в query.
+// dtlsPort и rawPort — оба порта сервера: клиент выбирает по полю mode,
+// но знает оба, чтобы переключиться без новой ссылки.
 func EncodeQwdttLink(peer, password string, vkHashes []string, name string, clientListenPort, workers int, connMode string) (string, error) {
+	return EncodeQwdttLinkFull(peer, password, vkHashes, name, clientListenPort, workers, connMode, 0, 0)
+}
+
+// EncodeQwdttLinkFull — расширенная версия: dtlsPort и rawPort задаются явно.
+func EncodeQwdttLinkFull(peer, password string, vkHashes []string, name string, clientListenPort, workers int, connMode string, dtlsPort, rawPort int) (string, error) {
 	peer = normalizePeer(strings.TrimSpace(peer))
 	password = strings.TrimSpace(password)
 	if peer == "" {
@@ -168,8 +240,29 @@ func EncodeQwdttLink(peer, password string, vkHashes []string, name string, clie
 	}
 	q.Set("port", strconv.Itoa(clientListenPort))
 	q.Set("workers", strconv.Itoa(workers))
-	if mode := normalizeConnMode(connMode); mode == ConnModeRaw {
-		q.Set("mode", mode)
+	mode := normalizeConnMode(connMode)
+	q.Set("mode", mode)
+	// Оба порта — клиент выбирает по mode, но знает оба без новой ссылки.
+	if _, peerPort, err := splitPeerHostPort(peer); err == nil {
+		if mode == ConnModeRaw {
+			if rawPort > 0 {
+				q.Set("raw_port", strconv.Itoa(rawPort))
+			} else {
+				q.Set("raw_port", strconv.Itoa(peerPort))
+			}
+			if dtlsPort > 0 {
+				q.Set("dtls_port", strconv.Itoa(dtlsPort))
+			}
+		} else {
+			if dtlsPort > 0 {
+				q.Set("dtls_port", strconv.Itoa(dtlsPort))
+			} else {
+				q.Set("dtls_port", strconv.Itoa(peerPort))
+			}
+			if rawPort > 0 {
+				q.Set("raw_port", strconv.Itoa(rawPort))
+			}
+		}
 	}
 	if n := strings.TrimSpace(name); n != "" {
 		q.Set("name", n)
@@ -242,13 +335,33 @@ func colonWdttToPayload(payload, name string) (ImportPayload, error) {
 			listen = fmt.Sprintf("127.0.0.1:%d", p)
 		}
 	}
+	port := 0
+	if p, err := strconv.Atoi(parts[1]); err == nil {
+		port = p
+	}
+	peer := parts[0] + ":" + parts[1]
+	dtlsPort := port
+	rawPort := port + 1
+	connMode := ConnModeWG
+	if port > 0 && port%2 == 1 {
+		dtlsPort = port - 1
+		rawPort = port
+		connMode = ConnModeRaw
+	}
+	peerWg := parts[0] + ":" + strconv.Itoa(dtlsPort)
+	peerRaw := parts[0] + ":" + strconv.Itoa(rawPort)
 	return ImportPayload{
 		Name:     name,
-		Peer:     parts[0] + ":" + parts[1],
+		Peer:     peer,
+		PeerWg:   peerWg,
+		PeerRaw:  peerRaw,
+		DtlsPort: dtlsPort,
+		RawPort:  rawPort,
 		Password: parts[4],
 		VKHashes: hashes,
 		Workers:  16,
 		Listen:   listen,
+		ConnMode: connMode,
 	}, nil
 }
 
@@ -281,6 +394,43 @@ func parseQwdttURI(link string) (ImportPayload, error) {
 		return ImportPayload{}, fmt.Errorf("qwdtt://: нужны peer и pass/password")
 	}
 	peer = normalizePeer(peer)
+	mode := normalizeConnMode(firstQuery(q, "mode", "connMode", "relayMode"))
+	rawPort, _ := strconv.Atoi(firstQuery(q, "raw_port", "rawPort", "server_raw_port"))
+	dtlsPort, _ := strconv.Atoi(firstQuery(q, "dtls_port", "dtlsPort", "server_port"))
+
+	host, peerPort, _ := splitPeerHostPort(peer)
+	if host == "" {
+		host = peer
+	}
+	if dtlsPort <= 0 {
+		if mode != ConnModeRaw && peerPort > 0 {
+			dtlsPort = peerPort
+		} else if rawPort > 0 {
+			dtlsPort = rawPort - 1
+		}
+	}
+	if rawPort <= 0 {
+		if mode == ConnModeRaw && peerPort > 0 {
+			rawPort = peerPort
+		} else if dtlsPort > 0 {
+			rawPort = dtlsPort + 1
+		}
+	}
+
+	var peerWg, peerRaw string
+	if host != "" && dtlsPort > 0 {
+		peerWg = net.JoinHostPort(host, strconv.Itoa(dtlsPort))
+	}
+	if host != "" && rawPort > 0 {
+		peerRaw = net.JoinHostPort(host, strconv.Itoa(rawPort))
+	}
+
+	if mode == ConnModeRaw && peerRaw != "" {
+		peer = peerRaw
+	} else if mode != ConnModeRaw && peerWg != "" {
+		peer = peerWg
+	}
+
 	workers := 18
 	if w := strings.TrimSpace(q.Get("workers")); w != "" {
 		if n, err := strconv.Atoi(w); err == nil && n > 0 {
@@ -300,13 +450,17 @@ func parseQwdttURI(link string) (ImportPayload, error) {
 	return ImportPayload{
 		Name:     name,
 		Peer:     peer,
+		PeerWg:   peerWg,
+		PeerRaw:  peerRaw,
+		DtlsPort: dtlsPort,
+		RawPort:  rawPort,
 		Password: pass,
 		VKHashes: hashes,
 		Workers:  workers,
 		Listen:   listen,
 		DeviceID: firstQuery(q, "deviceId", "device-id", "did"),
 		SubURL:   normalizeSubURL(firstQuery(q, "sub", "subUrl", "sub_url")),
-		ConnMode: firstQuery(q, "mode", "connMode", "relayMode"),
+		ConnMode: mode,
 	}, nil
 }
 
@@ -335,13 +489,55 @@ func mapJSONProfile(raw map[string]interface{}) (ImportPayload, error) {
 	pass := strings.TrimSpace(firstStr(raw, "pass", "password", "pwd"))
 	name := strings.TrimSpace(firstStr(raw, "name", "ps", "remark", "title"))
 	hashes := splitHashes(firstStr(raw, "hashes", "vkHashes", "hash", "vk"))
-	if peer == "" {
-		ip := strings.TrimSpace(firstStr(raw, "ip", "add"))
-		dtls := intFrom(raw, "dtls", "dtls_port", "server_port")
-		if ip != "" && dtls > 0 {
-			peer = ip + ":" + strconv.Itoa(dtls)
+	mode := normalizeConnMode(firstStr(raw, "mode", "connMode", "relayMode"))
+	rawPort := intFrom(raw, "raw", "rawPort", "raw_port", "serverRawPort", "server_raw_port")
+	dtlsPort := intFrom(raw, "dtls", "dtls_port", "server_port")
+
+	var host string
+	if peer != "" {
+		h, p, err := splitPeerHostPort(peer)
+		if err == nil {
+			host = h
+			if dtlsPort <= 0 && mode != ConnModeRaw {
+				dtlsPort = p
+			}
+			if rawPort <= 0 && mode == ConnModeRaw {
+				rawPort = p
+			}
+		} else {
+			host = peer
+		}
+	} else {
+		host = strings.TrimSpace(firstStr(raw, "ip", "add"))
+	}
+
+	if dtlsPort <= 0 && rawPort > 0 {
+		dtlsPort = rawPort - 1
+	}
+	if rawPort <= 0 && dtlsPort > 0 {
+		rawPort = dtlsPort + 1
+	}
+
+	var peerWg, peerRaw string
+	if host != "" && dtlsPort > 0 {
+		peerWg = net.JoinHostPort(host, strconv.Itoa(dtlsPort))
+	}
+	if host != "" && rawPort > 0 {
+		peerRaw = net.JoinHostPort(host, strconv.Itoa(rawPort))
+	}
+
+	if mode == ConnModeRaw && peerRaw != "" {
+		peer = peerRaw
+	} else if mode != ConnModeRaw && peerWg != "" {
+		peer = peerWg
+	} else if peer == "" {
+		if peerWg != "" {
+			peer = peerWg
+		} else if peerRaw != "" {
+			peer = peerRaw
 		}
 	}
+
 	if peer == "" || pass == "" {
 		return ImportPayload{}, fmt.Errorf("неполный профиль: нужны peer и password")
 	}
@@ -350,21 +546,46 @@ func mapJSONProfile(raw map[string]interface{}) (ImportPayload, error) {
 		workers = 18
 	}
 	listen := ""
-	if port := intFrom(raw, "port", "listenPort"); port > 0 {
+	if port := intFrom(raw, "port", "listenPort", "lp"); port > 0 {
 		listen = fmt.Sprintf("127.0.0.1:%d", port)
 	}
+	wgConfig := firstString(raw, "wg", "conf", "config")
 	return ImportPayload{
 		Name:     name,
 		Peer:     normalizePeer(peer),
+		PeerWg:   peerWg,
+		PeerRaw:  peerRaw,
+		DtlsPort: dtlsPort,
+		RawPort:  rawPort,
 		Password: pass,
 		VKHashes: hashes,
 		Workers:  workers,
 		Listen:   listen,
 		DeviceID: firstStr(raw, "deviceId", "device_id", "did"),
 		SubURL:   normalizeSubURL(firstStr(raw, "sub", "subUrl", "sub_url")),
-		WG:       firstStr(raw, "wg", "conf", "config"),
-		ConnMode: firstStr(raw, "mode", "connMode", "relayMode"),
+		WG:       wgConfig,
+		ConnMode: mode,
 	}, nil
+}
+
+// peerWithPort keeps only the host from peer and applies the actual server
+// port. It handles hostnames, IPv4 and bracketed IPv6 and is deliberately used
+// when switching WG/RAW so a remembered port from the other mode cannot leak
+// into a newly generated link.
+func peerWithPort(peer string, port int) string {
+	peer = strings.TrimSpace(peer)
+	if peer == "" || port <= 0 {
+		return peer
+	}
+	host := peer
+	if h, _, err := net.SplitHostPort(peer); err == nil {
+		host = h
+	} else if strings.Count(peer, ":") == 1 {
+		host = strings.SplitN(peer, ":", 2)[0]
+	} else {
+		host = strings.Trim(peer, "[]")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
 func fetchSubscriptionLink(rawURL string) (LinkDecodeResult, error) {
@@ -573,6 +794,21 @@ func firstStr(m map[string]interface{}, keys ...string) string {
 		if v, ok := m[k]; ok && v != nil {
 			s := strings.TrimSpace(fmt.Sprint(v))
 			if s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// firstString is intentionally stricter than firstStr. Some link formats use
+// `wg` as the numeric WireGuard port, while ImportPayload.WG contains a full
+// WireGuard configuration. Converting a numeric port with fmt.Sprint would
+// make the frontend try to import "56001" as a .conf file.
+func firstString(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if s, ok := m[k].(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
 				return s
 			}
 		}

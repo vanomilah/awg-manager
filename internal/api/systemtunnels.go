@@ -107,6 +107,10 @@ func (h *SystemTunnelsHandler) listSystemTunnels(ctx context.Context) ([]ndms.Sy
 
 	visible := make([]ndms.SystemWireguardTunnel, 0, len(tunnels))
 	for _, t := range tunnels {
+		// Filter out internal AWGM WDTT server interfaces from client tunnels list
+		if t.Description == "AWGM WDTT" || t.Description == "AWGM WDTT Raw" {
+			continue
+		}
 		if !excludeSet[t.ID] {
 			visible = append(visible, t)
 		}

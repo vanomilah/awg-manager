@@ -1,0 +1,7 @@
+./autostart.go
+./coordinator.go
+./journal.go
+./lock.go
+./lock_windows.go
+./migration_saga.go
+./types.go

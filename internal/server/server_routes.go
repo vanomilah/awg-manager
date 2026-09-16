@@ -2,8 +2,11 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/aiassistant"
@@ -13,10 +16,14 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/openapi"
 	"github.com/hoaxisr/awg-manager/internal/response"
+	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
+	sysexec "github.com/hoaxisr/awg-manager/internal/sys/exec"
 	sysports "github.com/hoaxisr/awg-manager/internal/sys/ports"
 	systraffic "github.com/hoaxisr/awg-manager/internal/sys/traffic"
-
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/serverwizard"
+	"github.com/hoaxisr/awg-manager/internal/serverwizard/egress"
+	"github.com/hoaxisr/awg-manager/internal/tunnel"
 )
 
 // routeHandlers держит handlers, разделяемые секциями registerRoutes.
@@ -57,6 +64,9 @@ type routeHandlers struct {
 	accessPolicyHandler  *api.AccessPolicyHandler
 	crHandler            *api.ClientRouteHandler
 	systemToolsHandler   *api.SystemToolsHandler
+	xrayServerHandler    *api.XrayServerHandler
+	tgWebProxyHandler    *api.TgWebProxyHandler
+	serverWizardHandler  *api.ServerWizardHandler
 
 	// guarded оборачивает handler в auth-middleware (RequireAuthFunc).
 	guarded func(http.HandlerFunc) http.HandlerFunc
@@ -104,6 +114,8 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 	h.systemHandler.SetHydraRoute(s.hydraService)
 	h.systemHandler.SetSingboxOperator(s.singboxOp)
 	h.systemHandler.SetEventBus(s.bus)
+	h.systemToolsHandler = api.NewSystemToolsHandler(s.settings, h.appLog)
+	h.systemToolsHandler.SetEventBus(s.bus)
 	if ms := int(s.config.SlowRequestThreshold / time.Millisecond); ms > 0 {
 		h.systemHandler.SetSlowRequestThresholdMs(ms)
 	}
@@ -160,13 +172,13 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 	h.updateHandler = api.NewUpdateHandler(s.updaterService, h.appLog)
 	h.dnsRouteHandler = api.NewDNSRouteHandler(s.dnsRouteService, h.appLog)
 	h.diagRunner = diagnostics.NewRunner(diagnostics.Deps{
-		TunnelService:        s.tunnelService,
-		NDMSQueries:          s.ndmsQueries,
-		NDMSTransport:        s.ndmsTransport,
-		KmodLoader:           s.kmodLoader,
-		TunnelStore:          s.tunnels,
-		LogService:           &diagLogAdapter{svc: s.loggingService},
-		AppVersion:           s.config.Version,
+		TunnelService: s.tunnelService,
+		NDMSQueries:   s.ndmsQueries,
+		NDMSTransport: s.ndmsTransport,
+		KmodLoader:    s.kmodLoader,
+		TunnelStore:   s.tunnels,
+		LogService:    &diagLogAdapter{svc: s.loggingService},
+		AppVersion:    s.config.Version,
 		RoutingEngine: func() string {
 			if s.settings != nil {
 				if cfg, err := s.settings.Get(); err == nil && cfg != nil {
@@ -184,11 +196,24 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 	h.diagHandler = api.NewDiagnosticsHandler(h.diagRunner)
 
 	aiService := aiassistant.NewService(h.diagRunner)
-	aiService.SetTools(aiassistant.NewToolRegistry())
+	aiToolSources := s.aiToolSources(func() *connections.Service {
+		return h.connectionsService
+	}, h.diagRunner, h.systemToolsHandler)
+	aiToolRegistry := aiassistant.NewToolRegistryWithSources(aiToolSources)
+	aiService.SetTools(aiToolRegistry)
 	actionHandlers := aiassistant.ActionHandlers{}
 	if s.singboxOrch != nil {
 		actionHandlers.RestartSingbox = func(ctx context.Context) error {
 			return s.singboxOrch.ReloadNow()
+		}
+	}
+	if s.singboxOp != nil {
+		actionHandlers.VerifySingbox = func(ctx context.Context) (*aiassistant.ActionVerification, error) {
+			status := s.singboxOp.GetStatus(ctx)
+			if !status.Running {
+				return &aiassistant.ActionVerification{Status: "failed", Summary: "Sing-box не запущен после применения действия", Detail: status.LastError}, nil
+			}
+			return &aiassistant.ActionVerification{Status: "passed", Summary: "Sing-box запущен и отвечает как управляемый процесс"}, nil
 		}
 	}
 	if s.mihomoHandler != nil {
@@ -198,18 +223,212 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		actionHandlers.ReloadMihomo = func(ctx context.Context) error {
 			return s.mihomoHandler.Reload()
 		}
+		actionHandlers.VerifyMihomo = func(context.Context) (*aiassistant.ActionVerification, error) {
+			status, err := s.mihomoHandler.StatusSnapshot()
+			if err != nil {
+				return nil, err
+			}
+			if !status.Running {
+				return &aiassistant.ActionVerification{Status: "failed", Summary: "Mihomo не запущен после применения действия", Detail: status.Error}, nil
+			}
+			return &aiassistant.ActionVerification{Status: "passed", Summary: "Mihomo запущен, конфигурация принята"}, nil
+		}
+	}
+	actionHandlers.ReapplyRouting = func(ctx context.Context) error {
+		if s.settings == nil {
+			return errors.New("routing settings are unavailable")
+		}
+		settings, err := s.settings.Load()
+		if err != nil {
+			return err
+		}
+		if settings.SingboxRouter.RoutingEngine == "mihomo" {
+			if s.mihomoHandler == nil {
+				return errors.New("mihomo handler is unavailable")
+			}
+			return s.mihomoHandler.Reload()
+		}
+		if s.singboxOrch == nil {
+			return errors.New("sing-box orchestrator is unavailable")
+		}
+		return s.singboxOrch.ReloadNow()
+	}
+	actionHandlers.CurrentRoutingEngine = func(ctx context.Context) (string, error) {
+		if s.mihomoHandler == nil || s.mihomoHandler.RouterService() == nil {
+			return "", errors.New("router service is unavailable")
+		}
+		settings, err := s.mihomoHandler.RouterService().GetSettings(ctx)
+		if err != nil {
+			return "", err
+		}
+		engine := settings.RoutingEngine
+		if engine == "" || engine == "singbox" {
+			engine = "sing-box"
+		}
+		return engine, nil
+	}
+	actionHandlers.SwitchRoutingEngine = func(ctx context.Context, engine string) error {
+		if engine != "mihomo" && engine != "sing-box" {
+			return errors.New("routing engine must be mihomo or sing-box")
+		}
+		if s.mihomoHandler == nil || s.mihomoHandler.RouterService() == nil {
+			return errors.New("router service is unavailable")
+		}
+		service := s.mihomoHandler.RouterService()
+		settings, err := service.GetSettings(ctx)
+		if err != nil {
+			return err
+		}
+		settings.RoutingEngine = engine
+		return service.UpdateSettings(ctx, settings)
+	}
+	actionHandlers.CurrentRoutingMode = func(ctx context.Context) (string, error) {
+		if s.mihomoHandler == nil || s.mihomoHandler.RouterService() == nil {
+			return "", errors.New("router service is unavailable")
+		}
+		settings, err := s.mihomoHandler.RouterService().GetSettings(ctx)
+		if err != nil {
+			return "", err
+		}
+		if !settings.Enabled {
+			return "off", nil
+		}
+		if settings.RoutingMode == "" {
+			return "tproxy", nil
+		}
+		return settings.RoutingMode, nil
+	}
+	actionHandlers.SwitchRoutingMode = func(ctx context.Context, mode string) error {
+		if mode != "off" && mode != "tproxy" && mode != "fakeip-tun" && mode != "policy-tun" {
+			return errors.New("routing mode must be off, tproxy, fakeip-tun or policy-tun")
+		}
+		if s.mihomoHandler == nil || s.mihomoHandler.RouterService() == nil {
+			return errors.New("router service is unavailable")
+		}
+		return s.mihomoHandler.RouterService().SwitchRoutingMode(ctx, mode)
+	}
+	if h.systemToolsHandler != nil {
+		actionHandlers.ServiceAction = func(_ context.Context, script, action string) error {
+			_, err := h.systemToolsHandler.AssistantServiceAction(script, action)
+			return err
+		}
+		actionHandlers.ServiceRunning = func(_ context.Context, script string) (bool, error) {
+			items, err := h.systemToolsHandler.AssistantServices()
+			if err != nil {
+				return false, err
+			}
+			for _, item := range items {
+				if filepath.Base(item.Script) == filepath.Base(script) {
+					return item.Running, nil
+				}
+			}
+			return false, errors.New("service not found")
+		}
+		actionHandlers.OpkgAction = func(_ context.Context, action, packageName string) error {
+			_, err := h.systemToolsHandler.AssistantOpkgAction(action, packageName)
+			return err
+		}
+		actionHandlers.PackageInstalled = func(_ context.Context, packageName string) (bool, error) {
+			return h.systemToolsHandler.AssistantPackageInstalled(packageName)
+		}
+	}
+	actionHandlers.VerifyRouting = func(ctx context.Context) (*aiassistant.ActionVerification, error) {
+		if s.settings == nil {
+			return nil, errors.New("routing settings are unavailable")
+		}
+		settings, err := s.settings.Load()
+		if err != nil {
+			return nil, err
+		}
+		if !settings.SingboxRouter.Enabled {
+			return &aiassistant.ActionVerification{Status: "failed", Summary: "Маршрутизация отключена после применения действия"}, nil
+		}
+		if settings.SingboxRouter.RoutingEngine == "mihomo" {
+			if s.mihomoHandler == nil {
+				return &aiassistant.ActionVerification{Status: "failed", Summary: "Mihomo недоступен для проверки"}, nil
+			}
+			status, err := s.mihomoHandler.StatusSnapshot()
+			if err != nil {
+				return nil, err
+			}
+			if !status.Running || !status.Active {
+				return &aiassistant.ActionVerification{Status: "failed", Summary: "Mihomo не активен после повторного применения маршрутизации", Detail: status.Error}, nil
+			}
+			return &aiassistant.ActionVerification{Status: "passed", Summary: "Маршрутизация Mihomo повторно применена, движок активен"}, nil
+		}
+		if s.singboxOp == nil {
+			return &aiassistant.ActionVerification{Status: "failed", Summary: "Sing-box недоступен для проверки"}, nil
+		}
+		status := s.singboxOp.GetStatus(ctx)
+		if !status.Running {
+			return &aiassistant.ActionVerification{Status: "failed", Summary: "Sing-box не запущен после повторного применения маршрутизации", Detail: status.LastError}, nil
+		}
+		return &aiassistant.ActionVerification{Status: "passed", Summary: "Маршрутизация Sing-box повторно применена, движок запущен"}, nil
 	}
 	if s.tunnelService != nil {
 		actionHandlers.RestartTunnel = func(ctx context.Context, tunnelID string) error {
 			return s.tunnelService.Restart(ctx, tunnelID)
 		}
-	}
-	if s.dnsRouteService != nil {
-		actionHandlers.FlushDNS = func(ctx context.Context) error {
-			return s.dnsRouteService.RefreshAllSubscriptions(ctx)
+		actionHandlers.VerifyTunnel = func(ctx context.Context, tunnelID string) (*aiassistant.ActionVerification, error) {
+			item, err := s.tunnelService.Get(ctx, tunnelID)
+			if err != nil {
+				return nil, err
+			}
+			if item.State != tunnel.StateRunning {
+				return &aiassistant.ActionVerification{Status: "failed", Summary: "Туннель не перешёл в рабочее состояние", Detail: item.State.String()}, nil
+			}
+			return &aiassistant.ActionVerification{Status: "passed", Summary: "Туннель " + tunnelID + " находится в состоянии running"}, nil
 		}
 	}
-	aiService.SetActions(aiassistant.NewActionRegistry(actionHandlers))
+	actionHandlers.UpdateSubscription = func(ctx context.Context, subID string) error {
+		if s.subscriptionHandler != nil {
+			err := s.subscriptionHandler.AssistantRefresh(ctx, subID)
+			if err == nil || !errors.Is(err, subscription.ErrSubscriptionNotFound) {
+				return err
+			}
+		}
+		if s.mihomoHandler != nil {
+			return s.mihomoHandler.RefreshNativeSubscription(ctx, subID)
+		}
+		return errors.New("subscription refresh is unavailable")
+	}
+	actionHandlers.VerifySubscription = func(_ context.Context, subID string) (*aiassistant.ActionVerification, error) {
+		if s.subscriptionHandler != nil {
+			for _, item := range s.subscriptionHandler.AssistantStatus() {
+				if item.ID != subID {
+					continue
+				}
+				if item.LastError != "" {
+					return &aiassistant.ActionVerification{Status: "failed", Summary: "Sing-box подписка сохранила ошибку после обновления", Detail: safeDiagnosticError(item.LastError)}, nil
+				}
+				return &aiassistant.ActionVerification{Status: "passed", Summary: "Sing-box подписка обновлена, серверов: " + fmt.Sprint(item.MemberCount)}, nil
+			}
+		}
+		if s.mihomoHandler != nil && s.mihomoHandler.NativeStore() != nil {
+			for _, item := range s.mihomoHandler.NativeStore().ListSubscriptions() {
+				if item.ID != subID {
+					continue
+				}
+				if item.LastError != "" {
+					return &aiassistant.ActionVerification{Status: "failed", Summary: "Mihomo подписка сохранила ошибку после обновления", Detail: safeDiagnosticError(item.LastError)}, nil
+				}
+				return &aiassistant.ActionVerification{Status: "passed", Summary: "Mihomo подписка обновлена, серверов: " + fmt.Sprint(len(item.Members))}, nil
+			}
+		}
+		return &aiassistant.ActionVerification{Status: "failed", Summary: "Подписка не найдена после обновления"}, nil
+	}
+	actionHandlers.ExecCommand = func(ctx context.Context, cmdStr string) error {
+		res, err := sysexec.Run(ctx, "/bin/sh", "-c", cmdStr)
+		if err != nil {
+			return err
+		}
+		if res != nil && res.ExitCode != 0 {
+			return fmt.Errorf("command exited with code %d: %s", res.ExitCode, res.Stderr)
+		}
+		return nil
+	}
+	actionRegistry := aiassistant.NewActionRegistry(actionHandlers)
+	aiService.SetActions(actionRegistry)
 	h.aiAssistantHandler = api.NewAIAssistantHandler(aiService)
 	h.aiAssistantHandler.SetRoutes(s.downloadSvc)
 	if s.settings != nil {
@@ -223,9 +442,43 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 			h.aiAssistantHandler.SetConfigStore(aiConfig)
 			h.aiAssistantHandler.SetEmbedded(embeddedMgr)
 		}
+
+		memStore, err := aiassistant.NewMemoryStore(filepath.Join(s.settings.DataDir(), "ai-memory.json"))
+		if err != nil {
+			s.loggingService.AppLog(logging.LevelWarn, logging.GroupSystem, "ai-assistant", "memory-load", "", err.Error())
+		} else {
+			aiService.SetMemory(memStore)
+			aiToolRegistry.SetMemoryStore(memStore)
+			h.aiAssistantHandler.SetMemoryStore(memStore)
+
+			sentinel := aiassistant.NewSentinel(aiService, memStore, aiToolSources, actionRegistry)
+			sentinel.Start()
+			h.aiAssistantHandler.SetSentinel(sentinel)
+		}
 	}
 
 	trafficSvc := systraffic.NewService(s.accessPolicyService, s.ndmsTransport, s.loggingService)
+	if s.settings != nil {
+		trafficSvc.SetSettingsStore(s.settings)
+	}
+	if s.presetCatalog != nil {
+		trafficSvc.SetPresetCatalog(s.presetCatalog)
+	}
+	if s.hydraService != nil {
+		trafficSvc.SetHydraService(s.hydraService)
+	}
+	if s.staticRouteService != nil {
+		trafficSvc.SetStaticRouteService(s.staticRouteService)
+	}
+	if s.singboxRouterHandler != nil && s.singboxRouterHandler.Service() != nil {
+		trafficSvc.SetRouterService(s.singboxRouterHandler.Service())
+	}
+	if s.mihomoHandler != nil {
+		if s.mihomoHandler.NativeStore() != nil {
+			trafficSvc.SetNativeStore(s.mihomoHandler.NativeStore())
+		}
+		trafficSvc.SetNativeBatchRuleSaver(s.mihomoHandler.BatchSaveRules)
+	}
 	h.trafficHandler = systraffic.NewHandler(trafficSvc)
 
 	// Connections viewer
@@ -237,14 +490,38 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 
 	h.signatureHandler = api.NewSignatureHandler()
 	h.terminalHandler = api.NewTerminalHandler(s.terminalManager, s.loggingService)
-	h.systemToolsHandler = api.NewSystemToolsHandler(s.settings, h.appLog)
-	h.systemToolsHandler.SetEventBus(s.bus)
 
 	h.eventsHandler = api.NewEventsHandler(s.bus, s.instanceID)
 
 	h.controlHandler.SetProxyControl(s.tunnels, s.proxyRuntime)
 
 	h.proxyListenerHandler = api.NewProxyListenerHandler(s.proxyRecords)
+
+	if s.xrayServerService != nil {
+		h.xrayServerHandler = api.NewXrayServerHandler(s.xrayServerService, s.serverIngressCoordinator)
+	}
+	if s.tgWebProxyService != nil {
+		h.tgWebProxyHandler = api.NewTgWebProxyHandler(s.tgWebProxyService, s.sessions)
+	}
+	if s.xrayServerService != nil || s.tgWebProxyService != nil {
+		egressAdp := egress.NewAdapter(s.catalog)
+		preflight := serverwizard.NewPreflightEngine(s.xrayServerService, s.cdnDispatcher, s.tgWebProxyService, s.serverIngressCoordinator, egressAdp)
+		fingerprint := serverwizard.NewFingerprintEngine(s.xrayServerService, s.cdnDispatcher, s.tgWebProxyService, s.serverIngressCoordinator, egressAdp)
+		planStore := serverwizard.NewPlanStore()
+		jobRunner := serverwizard.NewJobRunner()
+		wizardSvc := serverwizard.NewWizardService(
+			s.serverIngressCoordinator,
+			s.xrayServerService,
+			s.tgWebProxyService,
+			s.cdnDispatcher,
+			preflight,
+			fingerprint,
+			planStore,
+			jobRunner,
+			egressAdp,
+		)
+		h.serverWizardHandler = api.NewServerWizardHandler(wizardSvc, s.sessions)
+	}
 
 	// Auth middleware helper
 	h.guarded = s.authMiddleware.RequireAuthFunc
@@ -314,6 +591,7 @@ func (s *Server) registerTunnelRoutes(mux *http.ServeMux, h *routeHandlers) {
 	mux.HandleFunc("/api/tunnels/create", h.guarded(h.tunnelsHandler.Create))
 	mux.HandleFunc("/api/tunnels/update", h.guarded(h.tunnelsHandler.Update))
 	mux.HandleFunc("/api/tunnels/delete", h.guarded(h.tunnelsHandler.Delete))
+	mux.HandleFunc("/api/tunnels/toggle-lock", h.guarded(h.tunnelsHandler.ToggleLock))
 	mux.HandleFunc("/api/tunnels/export", h.guarded(h.tunnelsHandler.Export))
 	mux.HandleFunc("/api/tunnels/export-all", h.guarded(h.tunnelsHandler.ExportAll))
 	mux.HandleFunc("/api/tunnels/replace", h.guarded(h.tunnelsHandler.ReplaceConf))
@@ -649,6 +927,70 @@ func (s *Server) registerServerRoutes(mux *http.ServeMux, h *routeHandlers) {
 	mux.HandleFunc("/api/terminal/stop", h.guarded(h.terminalHandler.Stop))
 	mux.HandleFunc("/api/terminal/ws", h.guarded(h.terminalHandler.WebSocket))
 
+	// Xray Server (VLESS · CDN)
+	if h.xrayServerHandler != nil {
+		mux.HandleFunc("/api/servers/xray", h.guarded(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut || r.Method == http.MethodPost {
+				h.xrayServerHandler.UpdateConfig(w, r)
+			} else {
+				h.xrayServerHandler.GetConfig(w, r)
+			}
+		}))
+		mux.HandleFunc("/api/servers/xray/status", h.guarded(h.xrayServerHandler.GetStatus))
+		mux.HandleFunc("/api/servers/xray/action", h.guarded(h.xrayServerHandler.Action))
+		mux.HandleFunc("/api/servers/xray/clients", h.guarded(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost {
+				h.xrayServerHandler.AddClient(w, r)
+			} else {
+				h.xrayServerHandler.GetConfig(w, r)
+			}
+		}))
+		mux.HandleFunc("/api/servers/xray/clients/", h.guarded(func(w http.ResponseWriter, r *http.Request) {
+			path := r.URL.Path
+			if strings.HasSuffix(path, "/toggle") {
+				h.xrayServerHandler.ToggleClient(w, r)
+				return
+			}
+			if strings.HasSuffix(path, "/link") {
+				h.xrayServerHandler.GetLinks(w, r)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				h.xrayServerHandler.DeleteClient(w, r)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		mux.HandleFunc("/api/servers/xray/migration", h.guarded(h.xrayServerHandler.GetMigrationStatus))
+		mux.HandleFunc("/api/servers/xray/migration/resolve", h.guarded(h.xrayServerHandler.ResolveConflict))
+		mux.HandleFunc("/api/servers/xray/capabilities", h.guarded(h.xrayServerHandler.GetCapabilities))
+		mux.HandleFunc("/api/servers/xray/recovery/resolve", h.guarded(h.xrayServerHandler.ResolveRecovery))
+		mux.HandleFunc("/api/servers/xray/profiles", h.guarded(h.xrayServerHandler.RouteProfiles))
+		mux.HandleFunc("/api/servers/xray/profiles/", h.guarded(h.xrayServerHandler.RouteProfiles))
+	}
+
+	// Telegram WEB Proxy
+	if h.tgWebProxyHandler != nil {
+		mux.HandleFunc("/api/servers/tgwebproxy", h.guarded(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut {
+				h.tgWebProxyHandler.UpdateConfig(w, r)
+			} else if r.Method == http.MethodGet {
+				h.tgWebProxyHandler.GetConfig(w, r)
+			} else {
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+		}))
+		mux.HandleFunc("/api/servers/tgwebproxy/csrf", h.guarded(h.tgWebProxyHandler.GetCSRFToken))
+		mux.HandleFunc("/api/servers/tgwebproxy/status", h.guarded(h.tgWebProxyHandler.GetStatus))
+		mux.HandleFunc("/api/servers/tgwebproxy/reveal", h.guarded(h.tgWebProxyHandler.RevealSecret))
+		mux.HandleFunc("/api/servers/tgwebproxy/action", h.guarded(h.tgWebProxyHandler.Action))
+	}
+
+	// Server First-Run Setup Wizards
+	if h.serverWizardHandler != nil {
+		mux.HandleFunc("/api/servers/tgwebproxy/wizard/", h.guarded(h.serverWizardHandler.Route("tgwebproxy")))
+		mux.HandleFunc("/api/servers/xray/wizard/", h.guarded(h.serverWizardHandler.Route("xray")))
+	}
 }
 
 // registerPolicyRoutes — access policies, client routes, routing polling aliases.
@@ -866,6 +1208,9 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 	}
 	if s.mihomoHandler != nil {
 		s.mihomoHandler.RegisterRoutes(mux, h.guarded)
+	}
+	if s.xrayHandler != nil {
+		s.xrayHandler.RegisterRoutes(mux, h.guarded)
 	}
 	if h.aiAssistantHandler != nil {
 		h.aiAssistantHandler.RegisterRoutes(mux, h.guarded)

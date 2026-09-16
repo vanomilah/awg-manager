@@ -23,7 +23,7 @@ func TestGenerateConfig_TProxyMode(t *testing.T) {
 		},
 	}
 
-	yamlBytes, err := GenerateConfig(
+	yamlBytes, err := GenerateConfigWithResources(
 		settings,
 		"",
 		[]map[string]any{
@@ -42,6 +42,16 @@ func TestGenerateConfig_TProxyMode(t *testing.T) {
 				"type":      "selector",
 				"tag":       "sub-selector",
 				"outbounds": []any{"sub-a", "direct", "block"},
+			},
+		},
+		NativeResources{
+			RuleProviders: map[string]map[string]interface{}{
+				"custom-rs": {
+					"type":     "http",
+					"behavior": "domain",
+					"url":      "https://example.com/rs.yaml",
+					"path":     "custom-rs.yaml",
+				},
 			},
 		},
 		[]Rule{
@@ -493,6 +503,7 @@ func TestConvertSingboxRuleToMihomo_ConvertsHyphenatedGeoTags(t *testing.T) {
 
 func TestGenerateConfigWithResources_AddsLoopbackMixedBridgeListeners(t *testing.T) {
 	b, err := GenerateConfigWithResources(storage.SingboxRouterSettings{RoutingMode: "tproxy"}, "", nil, NativeResources{
+		Proxies: []Proxy{{"name": "Native node", "type": "socks5", "server": "1.1.1.1", "port": 1080}},
 		Listeners: []Listener{{
 			Name: "mihomo-native-p-0123456789abcdef", Type: "tproxy", Port: 12020,
 			Listen: "0.0.0.0", Proxy: "Native node",
@@ -570,5 +581,37 @@ func TestGenerateSidecarConfig_IsExportsOnlyButKeepsControllerAndResolver(t *tes
 	listener := cfg.Listeners[0]
 	if listener.Type != "mixed" || listener.Listen != "127.0.0.1" || listener.Port != 12000 || listener.Proxy != "Native" || !listener.UDP {
 		t.Fatalf("bridge listener=%#v", listener)
+	}
+}
+
+func TestGenerateConfig_KeeneticCloudDynamicCIDRs(t *testing.T) {
+	settings := storage.SingboxRouterSettings{
+		KeeneticCloudTunnel:   true,
+		KeeneticCloudOutbound: "CloudVPN",
+		DynamicCloudCIDRs:     []string{"1.2.3.4/32", "5.6.7.8/32"},
+	}
+	subProxies := []map[string]any{
+		{"type": "socks", "tag": "CloudVPN", "server": "1.1.1.1", "server_port": 1080},
+	}
+	raw, err := GenerateConfig(settings, "", subProxies, nil, "direct", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	has1 := false
+	has2 := false
+	for _, r := range cfg.Rules {
+		if r == "IP-CIDR,1.2.3.4/32,CloudVPN,no-resolve" {
+			has1 = true
+		}
+		if r == "IP-CIDR,5.6.7.8/32,CloudVPN,no-resolve" {
+			has2 = true
+		}
+	}
+	if !has1 || !has2 {
+		t.Fatalf("missing dynamic cloud CIDR rules in Mihomo rules: %+v", cfg.Rules)
 	}
 }

@@ -2,7 +2,7 @@
 	// Панель ссылок абоненту (ia.md §3.3, LK-01..LK-11). Ссылка выдаётся на
 	// пароль абонента; peer и VK-хеши правятся здесь же и пересобирают ссылку.
 	import { onMount } from 'svelte';
-	import { Button, FieldHint, Input, IconButton, SegmentedControl } from '$lib/components/ui';
+	import { Button, Input, IconButton } from '$lib/components/ui';
 	import { X } from 'lucide-svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
@@ -29,18 +29,7 @@
 	// svelte-ignore state_referenced_locally
 	let vkHashes = $state(user.vkHash?.trim() || (server.linkVkHashes ?? ''));
 
-	// Половина, через которую подключится ЭТОТ абонент. Работают обе и всегда
-	// (argv безусловно отдаёт -listen и -listen-raw), поэтому выбор относится
-	// к выдаваемой ссылке, а не к режиму сервера: с одного сервера штатно
-	// выдаются и wg-, и raw-ссылки (§11). Стартовое значение — что стоит в
-	// записи, дальше решает тот, кто выдаёт ссылку.
-	// svelte-ignore state_referenced_locally
-	let mode = $state<'wg' | 'raw'>(server.relayMode === 'raw' ? 'raw' : 'wg');
-
-	const modeOptions = [
-		{ value: 'wg' as const, label: 'WireGuard' },
-		{ value: 'raw' as const, label: 'Raw' },
-	];
+	const mode: 'wg' | 'raw' = 'wg';
 
 	let link = $state('');
 	let linkQwdtt = $state('');
@@ -112,23 +101,6 @@
 	</div>
 
 	<div class="panel-fields">
-		<div class="mode-row">
-			<span class="mode-label">Подключение</span>
-			<SegmentedControl
-				value={mode}
-				options={modeOptions}
-				ariaLabel="Подключение абонента"
-				disabled={busy}
-				onchange={(v) => {
-					mode = v;
-					void generate();
-				}}
-			/>
-			<FieldHint
-				text="Обе половины сервера работают всегда — выбор влияет только на эту ссылку. WireGuard: абонент идёт через WG-половину (порт раздачи). Raw: через raw-половину (следующий порт)."
-				ariaLabel="Подсказка: подключение абонента"
-			/>
-		</div>
 		<div class="field-with-btn">
 			<Input
 				label="Адрес сервера для абонента"
@@ -189,18 +161,6 @@
 
 	.panel-sub {
 		font-size: 0.75rem;
-		color: var(--color-text-secondary);
-	}
-
-	.mode-row {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		flex-wrap: wrap;
-	}
-
-	.mode-label {
-		font-size: 0.8125rem;
 		color: var(--color-text-secondary);
 	}
 

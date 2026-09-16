@@ -151,7 +151,7 @@
     debug: 'DEBUG',
   };
 
-  const groupOptions = $derived(bucket === 'singbox' ? SINGBOX_GROUPS : APP_GROUPS);
+  const groupOptions = $derived(bucket === 'singbox' || bucket === 'mihomo' ? SINGBOX_GROUPS : APP_GROUPS);
 
   /** `profiling` has a dedicated expert-only chip — never duplicate it in subgroup chips. */
   const visibleSubgroups = $derived(availableSubgroups.filter((s) => s !== 'profiling'));
@@ -240,7 +240,7 @@
   );
 
   const bucketTitle = $derived(
-    bucket === 'singbox' ? 'журнал sing-box' : 'журнал приложения',
+    bucket === 'singbox' ? 'журнал sing-box' : bucket === 'mihomo' ? 'журнал Mihomo' : 'журнал приложения',
   );
 </script>
 
@@ -325,7 +325,7 @@
     </span>
   </div>
 
-  {#if availableSubgroups.length > 0 && (filter.groups.length > 0 || bucket === 'singbox')}
+  {#if availableSubgroups.length > 0 && (filter.groups.length > 0 || bucket === 'singbox' || bucket === 'mihomo')}
     <div class="row row-subgroups">
       <span class="sub-label">Подгруппа</span>
       <span class="chip-row" role="group" aria-label="Фильтр по подгруппе">

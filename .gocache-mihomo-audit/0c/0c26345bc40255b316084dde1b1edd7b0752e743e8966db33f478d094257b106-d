@@ -1,0 +1,4 @@
+./catalog.go
+./defaults.go
+./store.go
+./types.go

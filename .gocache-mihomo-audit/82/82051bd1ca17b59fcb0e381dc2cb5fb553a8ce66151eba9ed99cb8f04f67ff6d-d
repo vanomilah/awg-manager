@@ -1,0 +1,8 @@
+./compiler.go
+./diff.go
+./migrations.go
+./parser.go
+./redactor.go
+./secrets.go
+./types.go
+./validator.go

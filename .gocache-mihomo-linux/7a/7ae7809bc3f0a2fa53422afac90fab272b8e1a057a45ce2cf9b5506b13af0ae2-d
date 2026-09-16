@@ -1,0 +1,7 @@
+./desired.go
+./fingerprint.go
+./jobs.go
+./planner.go
+./preflight.go
+./service.go
+./types.go

@@ -71,6 +71,7 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 				ipsetOK = bypassset.IsIPSetAvailable()
 			}
 		}
+		engineChanged := false
 		if err := s.deps.Settings.Update(func(cur *storage.Settings) error {
 			// Переход «пусто → непусто» требует живого ipset-бинаря. Только на
 			// переходе: при уже выбранных тегах и сломанном ipset прочие правки
@@ -95,11 +96,14 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 				normalized.RoutingMode = stateTProxy // legacy-дефолт, как в currentState
 			}
 			normalized.Enabled = cur.SingboxRouter.Enabled
-
+			engineChanged = cur.SingboxRouter.RoutingEngine != normalized.RoutingEngine
 			cur.SingboxRouter = normalized
 			return nil
 		}); err != nil {
 			return nil, err
+		}
+		if engineChanged {
+			s.notifyRoutingSlotsChanged()
 		}
 		return s.deps.Settings.Get()
 	}()
@@ -121,6 +125,14 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 	// снятие пресета молча не доехало бы. Повторный вызов из Reconcile —
 	// no-op (набор уже совпадает).
 	s.syncKeenDNSPreset(ctx, normalized)
+	s.syncKeeneticCloudRelays(ctx, normalized)
+	if normalized.RoutingEngine == "mihomo" && normalized.Enabled {
+		if rec := s.routingEngineController(); rec != nil {
+			if err := rec.Reload(); err != nil {
+				return fmt.Errorf("apply mihomo settings: %w", err)
+			}
+		}
+	}
 	return s.Reconcile(ctx)
 }
 

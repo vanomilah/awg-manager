@@ -283,7 +283,12 @@ func GenerateSidecarConfig(native NativeResources) ([]byte, error) {
 		cfg.Listeners = append(cfg.Listeners, listener)
 	}
 
-	ensureReferencedProxiesExist(&cfg, seen)
+	if err := normalizeCompiledConfig(&cfg); err != nil {
+		return nil, err
+	}
+	if err := validateCompiledConfig(&cfg); err != nil {
+		return nil, err
+	}
 
 	var buf bytes.Buffer
 	encoder := yaml.NewEncoder(&buf)
@@ -543,16 +548,16 @@ func GenerateConfigWithResources(
 	cfg.RuleProvider = native.RuleProviders
 
 	if settings.SnifferEnabled {
-		overrideHTTP := true
+		overrideProto := true
 		cfg.Sniffer = &Sniffer{
 			Enable:              true,
 			ForceDNSMapping:     true,
 			ParsePureIP:         true,
 			OverrideDestination: false,
 			Sniff: SniffProtocols{
-				HTTP: SniffProtocol{Ports: []any{80, "8080-8880"}, OverrideDestination: &overrideHTTP},
-				TLS:  SniffProtocol{Ports: []any{443, 8443}},
-				QUIC: SniffProtocol{Ports: []any{443, 8443}},
+				HTTP: SniffProtocol{Ports: []any{80, "8080-8880"}, OverrideDestination: &overrideProto},
+				TLS:  SniffProtocol{Ports: []any{443, 8443}, OverrideDestination: &overrideProto},
+				QUIC: SniffProtocol{Ports: []any{443, 8443}, OverrideDestination: &overrideProto},
 			},
 		}
 	} else {
@@ -766,37 +771,11 @@ func GenerateConfigWithResources(
 		cfg.Rules = append(cfg.Rules, "MATCH,DIRECT")
 	}
 
-	// Normalize once more at the serialization boundary. Outbounds and stored
-	// settings come from several legacy schemas, and Mihomo rejects sing-box's
-	// `selector` spelling even though the group is otherwise valid.
-	for i := range cfg.ProxyGroups {
-		cfg.ProxyGroups[i].Type = mihomoProxyGroupType(cfg.ProxyGroups[i].Type)
+	if err := normalizeCompiledConfig(&cfg); err != nil {
+		return nil, err
 	}
-
-	ensureReferencedProxiesExist(&cfg, seenProxyNames)
-
-	// Ensure that all RULE-SET rules in cfg.Rules reference an existing RuleProvider.
-	// If a rule uses RULE-SET with a name that is not in cfg.RuleProvider (e.g. legacy geosite-telegram),
-	// sanitize it to GEOSITE / GEOIP so Mihomo can load it cleanly from GeoSite.dat.
-	for i, ruleStr := range cfg.Rules {
-		parts := strings.Split(ruleStr, ",")
-		if len(parts) >= 3 && parts[0] == "RULE-SET" {
-			name := parts[1]
-			if _, exists := cfg.RuleProvider[name]; !exists {
-				cleanTag := name
-				if strings.HasPrefix(cleanTag, "geosite-") {
-					cleanTag = strings.TrimPrefix(cleanTag, "geosite-")
-					parts[0] = "GEOSITE"
-					parts[1] = cleanTag
-					cfg.Rules[i] = strings.Join(parts, ",")
-				} else if strings.HasPrefix(cleanTag, "geoip-") {
-					cleanTag = strings.TrimPrefix(cleanTag, "geoip-")
-					parts[0] = "GEOIP"
-					parts[1] = cleanTag
-					cfg.Rules[i] = strings.Join(parts, ",")
-				}
-			}
-		}
+	if err := validateCompiledConfig(&cfg); err != nil {
+		return nil, err
 	}
 
 	var buf bytes.Buffer
@@ -809,53 +788,678 @@ func GenerateConfigWithResources(
 	return buf.Bytes(), nil
 }
 
-func ensureReferencedProxiesExist(cfg *Config, seenProxyNames map[string]struct{}) {
-	knownTargets := map[string]bool{
-		"DIRECT": true, "REJECT": true, "GLOBAL": true, "PASS": true, "COMPATIBLE": true,
+func tokenizeRule(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch r {
+		case '(':
+			depth++
+			cur.WriteRune(r)
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteRune(r)
+		case ',':
+			if depth == 0 {
+				tokens = append(tokens, strings.TrimSpace(cur.String()))
+				cur.Reset()
+			} else {
+				cur.WriteRune(r)
+			}
+		default:
+			cur.WriteRune(r)
+		}
 	}
-	for name := range cfg.ProxyProvider {
-		knownTargets[name] = true
+	tokens = append(tokens, strings.TrimSpace(cur.String()))
+	return tokens
+}
+
+func stripMatchingParens(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 || s[0] != '(' || s[len(s)-1] != ')' {
+		return s, false
 	}
+	depth := 0
+	for i, r := range s {
+		if r == '(' {
+			depth++
+		} else if r == ')' {
+			depth--
+			if depth == 0 && i < len(s)-1 {
+				return s, false
+			}
+		}
+	}
+	if depth == 0 {
+		return strings.TrimSpace(s[1 : len(s)-1]), true
+	}
+	return s, false
+}
+
+func parseCompositePayload(ruleType, payload string, depth int) error {
+	if depth > 3 {
+		return CompileErrorf("rule", ruleType, payload, "composite rule nesting depth exceeds limit (max 3)")
+	}
+	payload = strings.TrimSpace(payload)
+	inner, ok := stripMatchingParens(payload)
+	if !ok {
+		return CompileErrorf("rule", ruleType, payload, "malformed %s rule payload, expected parentheses enclosing sub-rules", ruleType)
+	}
+
+	var children []string
+	var cur strings.Builder
+	depthCount := 0
+	for _, r := range inner {
+		switch r {
+		case '(':
+			depthCount++
+			cur.WriteRune(r)
+		case ')':
+			if depthCount > 0 {
+				depthCount--
+			}
+			cur.WriteRune(r)
+		case ',':
+			if depthCount == 0 {
+				item := strings.TrimSpace(cur.String())
+				if item != "" {
+					children = append(children, item)
+				}
+				cur.Reset()
+			} else {
+				cur.WriteRune(r)
+			}
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	if depthCount != 0 {
+		return CompileErrorf("rule", ruleType, payload, "unbalanced parentheses in composite rule payload")
+	}
+	if item := strings.TrimSpace(cur.String()); item != "" {
+		children = append(children, item)
+	}
+
+	if len(children) > 32 {
+		return CompileErrorf("rule", ruleType, payload, "composite rule child count %d exceeds limit (max 32)", len(children))
+	}
+	if ruleType == "NOT" {
+		if len(children) != 1 {
+			return CompileErrorf("rule", "NOT", payload, "NOT rule requires exactly 1 child rule, got %d", len(children))
+		}
+	} else if ruleType == "AND" || ruleType == "OR" {
+		if len(children) < 2 {
+			return CompileErrorf("rule", ruleType, payload, "%s rule requires at least 2 child rules, got %d", ruleType, len(children))
+		}
+	}
+
+	for _, child := range children {
+		childStr, _ := stripMatchingParens(child)
+		childStr = strings.TrimSpace(childStr)
+		if childStr == "" {
+			return CompileErrorf("rule", ruleType, payload, "empty child rule in composite rule")
+		}
+		childTokens := tokenizeRule(childStr)
+		if len(childTokens) == 0 {
+			return CompileErrorf("rule", ruleType, payload, "empty child rule in composite rule")
+		}
+		childType := strings.ToUpper(childTokens[0])
+		if childType == "MATCH" {
+			return CompileErrorf("rule", ruleType, payload, "MATCH rule is not allowed inside composite rules")
+		}
+		if childType == "SUB-RULE" {
+			return CompileErrorf("rule", "SUB-RULE", payload, "SUB-RULE is not supported in AWG Manager")
+		}
+		if childType == "AND" || childType == "OR" || childType == "NOT" {
+			if len(childTokens) != 2 {
+				return CompileErrorf("rule", childType, childStr, "composite child rule %s must have exactly 2 fields (type and payload), got %d", childType, len(childTokens))
+			}
+			if err := parseCompositePayload(childType, childTokens[1], depth+1); err != nil {
+				return err
+			}
+		} else {
+			spec, ok := LookupRuleSpec(childType)
+			if !ok {
+				return CompileErrorf("rule", childType, childStr, "unsupported rule type %q in composite rule", childType)
+			}
+			expectedMin := spec.MinFields - 1
+			expectedMax := spec.MaxFields - 1
+			if len(childTokens) < expectedMin || len(childTokens) > expectedMax {
+				return CompileErrorf("rule", childType, childStr, "child rule %s has invalid number of fields (expected between %d and %d, got %d)", childType, expectedMin, expectedMax, len(childTokens))
+			}
+			if spec.RequiresPayload {
+				if len(childTokens) < 2 || strings.TrimSpace(childTokens[1]) == "" {
+					return CompileErrorf("rule", childType, childStr, "child rule %s requires non-empty payload", childType)
+				}
+			}
+			if len(childTokens) == expectedMax && spec.MaxFields > spec.MinFields {
+				mod := strings.TrimSpace(childTokens[len(childTokens)-1])
+				validMod := false
+				for _, allowed := range spec.AllowedModifiers {
+					if strings.EqualFold(mod, allowed) {
+						validMod = true
+						break
+					}
+				}
+				if !validMod {
+					return CompileErrorf("rule", childType, childStr, "child rule %s has unsupported modifier %q", childType, mod)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+type socketCap struct {
+	tcp bool
+	udp bool
+}
+
+func listenerSocketCap(l Listener) (socketCap, error) {
+	t := strings.ToLower(strings.TrimSpace(l.Type))
+	switch t {
+	case "mixed", "tproxy", "socks", "tunnel":
+		return socketCap{tcp: true, udp: true}, nil
+	case "redir", "http":
+		return socketCap{tcp: true, udp: l.UDP}, nil
+	case "":
+		return socketCap{}, CompileErrorf("listener", l.Name, "", "listener %q has empty type", l.Name)
+	default:
+		return socketCap{}, CompileErrorf("listener", l.Name, "", "listener %q has unsupported type %q", l.Name, l.Type)
+	}
+}
+
+func addressesOverlap(addr1, addr2 string) bool {
+	addr1 = strings.TrimSpace(addr1)
+	addr2 = strings.TrimSpace(addr2)
+	isWildcard := func(a string) bool {
+		return a == "" || a == "0.0.0.0" || a == "::" || a == "[::]" || a == "*"
+	}
+	if isWildcard(addr1) || isWildcard(addr2) {
+		return true
+	}
+	return strings.EqualFold(addr1, addr2)
+}
+
+func protocolsOverlap(cap1, cap2 socketCap) bool {
+	return (cap1.tcp && cap2.tcp) || (cap1.udp && cap2.udp)
+}
+
+func normalizeCompiledConfig(cfg *Config) error {
+	for i := range cfg.ProxyGroups {
+		cfg.ProxyGroups[i].Type = mihomoProxyGroupType(cfg.ProxyGroups[i].Type)
+		for j, member := range cfg.ProxyGroups[i].Proxies {
+			if strings.EqualFold(member, "direct") {
+				cfg.ProxyGroups[i].Proxies[j] = "DIRECT"
+			} else if strings.EqualFold(member, "block") || strings.EqualFold(member, "reject") {
+				cfg.ProxyGroups[i].Proxies[j] = "REJECT"
+			}
+		}
+	}
+
+	for i := range cfg.Listeners {
+		if strings.EqualFold(cfg.Listeners[i].Proxy, "direct") {
+			cfg.Listeners[i].Proxy = "DIRECT"
+		} else if strings.EqualFold(cfg.Listeners[i].Proxy, "block") || strings.EqualFold(cfg.Listeners[i].Proxy, "reject") {
+			cfg.Listeners[i].Proxy = "REJECT"
+		}
+	}
+
+	for _, pData := range cfg.ProxyProvider {
+		if pVal, exists := pData["proxy"]; exists {
+			if pStr, ok := pVal.(string); ok {
+				if strings.EqualFold(pStr, "direct") {
+					pData["proxy"] = "DIRECT"
+				} else if strings.EqualFold(pStr, "reject") || strings.EqualFold(pStr, "block") {
+					pData["proxy"] = "REJECT"
+				}
+			}
+		}
+	}
+
+	for _, rpData := range cfg.RuleProvider {
+		if rpVal, exists := rpData["proxy"]; exists {
+			if rpStr, ok := rpVal.(string); ok {
+				if strings.EqualFold(rpStr, "direct") {
+					rpData["proxy"] = "DIRECT"
+				} else if strings.EqualFold(rpStr, "reject") || strings.EqualFold(rpStr, "block") {
+					rpData["proxy"] = "REJECT"
+				}
+			}
+		}
+	}
+
+	for i, ruleStr := range cfg.Rules {
+		parts := tokenizeRule(ruleStr)
+		if len(parts) >= 3 && strings.EqualFold(parts[0], "RULE-SET") {
+			name := strings.TrimSpace(parts[1])
+			if _, exists := cfg.RuleProvider[name]; !exists {
+				if strings.HasPrefix(name, "geosite-") {
+					parts[0] = "GEOSITE"
+					parts[1] = strings.TrimPrefix(name, "geosite-")
+					cfg.Rules[i] = strings.Join(parts, ",")
+				} else if strings.HasPrefix(name, "geosite:") {
+					parts[0] = "GEOSITE"
+					parts[1] = strings.TrimPrefix(name, "geosite:")
+					cfg.Rules[i] = strings.Join(parts, ",")
+				} else if strings.HasPrefix(name, "geoip-") {
+					parts[0] = "GEOIP"
+					parts[1] = strings.TrimPrefix(name, "geoip-")
+					hasNoResolve := false
+					for _, p := range parts[2:] {
+						if strings.TrimSpace(p) == "no-resolve" {
+							hasNoResolve = true
+							break
+						}
+					}
+					if !hasNoResolve {
+						parts = append(parts, "no-resolve")
+					}
+					cfg.Rules[i] = strings.Join(parts, ",")
+				} else if strings.HasPrefix(name, "geoip:") {
+					parts[0] = "GEOIP"
+					parts[1] = strings.TrimPrefix(name, "geoip:")
+					hasNoResolve := false
+					for _, p := range parts[2:] {
+						if strings.TrimSpace(p) == "no-resolve" {
+							hasNoResolve = true
+							break
+						}
+					}
+					if !hasNoResolve {
+						parts = append(parts, "no-resolve")
+					}
+					cfg.Rules[i] = strings.Join(parts, ",")
+				}
+			}
+		}
+	}
+
+	validDNSTarget := func(target string) bool {
+		switch strings.ToUpper(target) {
+		case "DIRECT", "REJECT", "GLOBAL", "PASS", "COMPATIBLE", "RULES":
+			return true
+		}
+		for _, p := range cfg.Proxies {
+			if name, _ := p["name"].(string); name == target {
+				return true
+			}
+		}
+		for _, g := range cfg.ProxyGroups {
+			if g.Name == target {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i, entry := range cfg.DNS.DefaultNS {
+		norm, err := NormalizeAndValidateDNSServerURI(entry, validDNSTarget)
+		if err != nil {
+			return CompileErrorf("dns", "default-nameserver", entry, "invalid default-nameserver URI: %v", err)
+		}
+		cfg.DNS.DefaultNS[i] = norm
+	}
+
+	for i, entry := range cfg.DNS.Nameserver {
+		norm, err := NormalizeAndValidateDNSServerURI(entry, validDNSTarget)
+		if err != nil {
+			return CompileErrorf("dns", "nameserver", entry, "invalid nameserver URI: %v", err)
+		}
+		cfg.DNS.Nameserver[i] = norm
+	}
+
+	for i, entry := range cfg.DNS.Fallback {
+		norm, err := NormalizeAndValidateDNSServerURI(entry, validDNSTarget)
+		if err != nil {
+			return CompileErrorf("dns", "fallback", entry, "invalid fallback URI: %v", err)
+		}
+		cfg.DNS.Fallback[i] = norm
+	}
+
+	for k, entry := range cfg.DNS.NameserverPolicy {
+		norm, err := NormalizeAndValidateDNSServerURI(entry, validDNSTarget)
+		if err != nil {
+			return CompileErrorf("dns", "nameserver-policy", entry, "invalid nameserver-policy URI for domain %q: %v", k, err)
+		}
+		cfg.DNS.NameserverPolicy[k] = norm
+	}
+
+	return nil
+}
+
+func validateCompiledConfig(cfg *Config) error {
+	proxyNames := make(map[string]bool, len(cfg.Proxies))
+	for _, p := range cfg.Proxies {
+		name, _ := p["name"].(string)
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return CompileErrorf("proxy", "", "", "proxy has empty name")
+		}
+		if proxyNames[name] {
+			return CompileErrorf("proxy", name, "", "duplicate proxy name %q", name)
+		}
+		proxyNames[name] = true
+	}
+
+	providerNames := make(map[string]bool, len(cfg.ProxyProvider))
+	for pName := range cfg.ProxyProvider {
+		pName = strings.TrimSpace(pName)
+		if pName == "" {
+			return CompileErrorf("proxy-provider", "", "", "proxy-provider has empty name")
+		}
+		providerNames[pName] = true
+	}
+
+	ruleProviderNames := make(map[string]bool, len(cfg.RuleProvider))
+	for rpName := range cfg.RuleProvider {
+		rpName = strings.TrimSpace(rpName)
+		if rpName == "" {
+			return CompileErrorf("rule-provider", "", "", "rule-provider has empty name")
+		}
+		ruleProviderNames[rpName] = true
+	}
+
+	groupNames := make(map[string]bool, len(cfg.ProxyGroups))
 	for _, g := range cfg.ProxyGroups {
-		knownTargets[g.Name] = true
-	}
-	ensureProxyExists := func(target string) {
-		target = strings.TrimSpace(target)
-		if target == "" || knownTargets[target] {
-			return
+		gName := strings.TrimSpace(g.Name)
+		if gName == "" {
+			return CompileErrorf("proxy-group", "", "", "proxy group has empty name")
 		}
-		if _, exists := seenProxyNames[target]; !exists {
-			ifaceName := target
-			if strings.HasPrefix(target, "awg-sys-") {
-				ifaceName = strings.TrimPrefix(target, "awg-sys-")
-			} else if strings.HasPrefix(target, "awg-") {
-				ifaceName = strings.TrimPrefix(target, "awg-")
+		if groupNames[gName] {
+			return CompileErrorf("proxy-group", gName, "", "duplicate proxy group name %q", gName)
+		}
+		if proxyNames[gName] {
+			return CompileErrorf("proxy-group", gName, "", "proxy group name %q conflicts with existing proxy name", gName)
+		}
+		groupNames[gName] = true
+	}
+
+	validRuleTarget := func(target string) bool {
+		switch target {
+		case "DIRECT", "REJECT", "GLOBAL", "PASS", "COMPATIBLE":
+			return true
+		}
+		return proxyNames[target] || groupNames[target]
+	}
+
+	validGroupMember := func(target string) bool {
+		switch target {
+		case "DIRECT", "REJECT":
+			return true
+		}
+		return proxyNames[target] || groupNames[target]
+	}
+
+	validListenerTarget := func(target string) bool {
+		switch target {
+		case "DIRECT", "REJECT":
+			return true
+		}
+		return proxyNames[target] || groupNames[target]
+	}
+
+	// Provider proxy validation
+	for pName, pData := range cfg.ProxyProvider {
+		if pVal, exists := pData["proxy"]; exists {
+			pStr, ok := pVal.(string)
+			if !ok {
+				return CompileErrorf("proxy-provider", pName, "", "proxy-provider %q property 'proxy' must be a string", pName)
 			}
-			cfg.Proxies = append(cfg.Proxies, map[string]interface{}{
-				"name":           target,
-				"type":           "direct",
-				"interface-name": ifaceName,
-			})
-			seenProxyNames[target] = struct{}{}
+			pStr = strings.TrimSpace(pStr)
+			if pStr != "" && !validRuleTarget(pStr) {
+				return CompileErrorf("proxy-provider", pName, "", "proxy-provider %q references unknown proxy target %q", pName, pStr)
+			}
 		}
 	}
-	for _, group := range cfg.ProxyGroups {
-		for _, member := range group.Proxies {
-			ensureProxyExists(member)
+
+	for rpName, rpData := range cfg.RuleProvider {
+		if rpVal, exists := rpData["proxy"]; exists {
+			rpStr, ok := rpVal.(string)
+			if !ok {
+				return CompileErrorf("rule-provider", rpName, "", "rule-provider %q property 'proxy' must be a string", rpName)
+			}
+			rpStr = strings.TrimSpace(rpStr)
+			if rpStr != "" && !validRuleTarget(rpStr) {
+				return CompileErrorf("rule-provider", rpName, "", "rule-provider %q references unknown proxy target %q", rpName, rpStr)
+			}
 		}
 	}
+
+	for _, g := range cfg.ProxyGroups {
+		if len(g.Proxies) == 0 && len(g.Use) == 0 && !g.IncludeAll && !g.IncludeAllProxies && !g.IncludeAllProviders {
+			return CompileErrorf("proxy-group", g.Name, "", "proxy group %q has no proxies or providers", g.Name)
+		}
+		for _, member := range g.Proxies {
+			member = strings.TrimSpace(member)
+			if member == "" {
+				return CompileErrorf("proxy-group", g.Name, "", "proxy group %q contains empty proxy member", g.Name)
+			}
+			if !validGroupMember(member) {
+				return CompileErrorf("proxy-group", g.Name, "", "proxy group %q references unknown proxy %q", g.Name, member)
+			}
+		}
+		for _, provider := range g.Use {
+			provider = strings.TrimSpace(provider)
+			if provider == "" {
+				return CompileErrorf("proxy-group", g.Name, "", "proxy group %q contains empty use provider", g.Name)
+			}
+			if !providerNames[provider] {
+				return CompileErrorf("proxy-group", g.Name, "", "proxy group %q references unknown proxy-provider %q", g.Name, provider)
+			}
+		}
+	}
+
+	// Group cycle detection (DFS with stack path)
+	groupMap := make(map[string]ProxyGroup, len(cfg.ProxyGroups))
+	for _, g := range cfg.ProxyGroups {
+		groupMap[g.Name] = g
+	}
+
+	state := make(map[string]int, len(cfg.ProxyGroups)) // 0: unvisited, 1: visiting, 2: visited
+	var visit func(node string, stack []string) error
+	visit = func(node string, stack []string) error {
+		state[node] = 1
+		stack = append(stack, node)
+
+		g := groupMap[node]
+		for _, member := range g.Proxies {
+			if groupNames[member] {
+				if state[member] == 1 {
+					cycleStart := 0
+					for i, s := range stack {
+						if s == member {
+							cycleStart = i
+							break
+						}
+					}
+					cyclePath := append(slices.Clone(stack[cycleStart:]), member)
+					return CompileErrorf("proxy-group", node, "", "circular group dependency: %s", strings.Join(cyclePath, " -> "))
+				} else if state[member] == 0 {
+					if err := visit(member, stack); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		state[node] = 2
+		return nil
+	}
+
+	for _, g := range cfg.ProxyGroups {
+		if state[g.Name] == 0 {
+			if err := visit(g.Name, nil); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Listener validation and conflict detection
+	listenerNames := make(map[string]bool, len(cfg.Listeners))
+	for _, l := range cfg.Listeners {
+		lName := strings.TrimSpace(l.Name)
+		if lName == "" {
+			return CompileErrorf("listener", "", "", "listener requires non-empty name")
+		}
+		if listenerNames[lName] {
+			return CompileErrorf("listener", lName, "", "duplicate listener name %q", lName)
+		}
+		listenerNames[lName] = true
+		if l.Port < 1 || l.Port > 65535 {
+			return CompileErrorf("listener", lName, "", "listener %q port %d out of valid range (1-65535)", lName, l.Port)
+		}
+		target := strings.TrimSpace(l.Proxy)
+		if target == "" {
+			return CompileErrorf("listener", lName, "", "listener %q requires non-empty proxy target", lName)
+		}
+		if !validListenerTarget(target) {
+			return CompileErrorf("listener", lName, "", "listener %q references unknown target %q", lName, target)
+		}
+	}
+
+	// Listener validation and capabilities collection
+	listenerCaps := make([]socketCap, len(cfg.Listeners))
+	for i, l := range cfg.Listeners {
+		lCap, err := listenerSocketCap(l)
+		if err != nil {
+			return err
+		}
+		listenerCaps[i] = lCap
+	}
+
+	// Listener vs Listener conflict
+	for i := 0; i < len(cfg.Listeners); i++ {
+		l1 := cfg.Listeners[i]
+		cap1 := listenerCaps[i]
+		for j := i + 1; j < len(cfg.Listeners); j++ {
+			l2 := cfg.Listeners[j]
+			if l1.Port == l2.Port && addressesOverlap(l1.Listen, l2.Listen) {
+				cap2 := listenerCaps[j]
+				if protocolsOverlap(cap1, cap2) {
+					return CompileErrorf("listener", l2.Name, "", "listener %q port %d conflicts with listener %q on %s", l2.Name, l2.Port, l1.Name, l1.Listen)
+				}
+			}
+		}
+	}
+
+	// Global ports vs global ports conflict
+	type globalPortEntry struct {
+		name string
+		port int
+		cap  socketCap
+	}
+	var globalPorts []globalPortEntry
+	if cfg.TProxyPort > 0 {
+		globalPorts = append(globalPorts, globalPortEntry{name: "tproxy-port", port: cfg.TProxyPort, cap: socketCap{tcp: true, udp: true}})
+	}
+	if cfg.RedirPort > 0 {
+		globalPorts = append(globalPorts, globalPortEntry{name: "redir-port", port: cfg.RedirPort, cap: socketCap{tcp: true, udp: false}})
+	}
+	if cfg.MixedPort > 0 {
+		globalPorts = append(globalPorts, globalPortEntry{name: "mixed-port", port: cfg.MixedPort, cap: socketCap{tcp: true, udp: true}})
+	}
+	if cfg.Port > 0 {
+		globalPorts = append(globalPorts, globalPortEntry{name: "port", port: cfg.Port, cap: socketCap{tcp: true, udp: false}})
+	}
+	if cfg.SocksPort > 0 {
+		globalPorts = append(globalPorts, globalPortEntry{name: "socks-port", port: cfg.SocksPort, cap: socketCap{tcp: true, udp: true}})
+	}
+
+	for i := 0; i < len(globalPorts); i++ {
+		for j := i + 1; j < len(globalPorts); j++ {
+			gp1 := globalPorts[i]
+			gp2 := globalPorts[j]
+			if gp1.port == gp2.port && protocolsOverlap(gp1.cap, gp2.cap) {
+				return CompileErrorf("port", gp2.name, "", "global %s port %d conflicts with %s", gp2.name, gp2.port, gp1.name)
+			}
+		}
+	}
+
+	// Listener vs Global Port conflict
+	for i, l := range cfg.Listeners {
+		lCap := listenerCaps[i]
+		for _, gp := range globalPorts {
+			if l.Port == gp.port && addressesOverlap(l.Listen, "0.0.0.0") && protocolsOverlap(lCap, gp.cap) {
+				return CompileErrorf("listener", l.Name, "", "listener %q port %d conflicts with global %s", l.Name, l.Port, gp.name)
+			}
+		}
+	}
+
+	// Rule validation
 	for _, ruleStr := range cfg.Rules {
-		parts := strings.Split(ruleStr, ",")
-		if len(parts) >= 3 {
-			target := parts[2]
-			if parts[0] == "MATCH" && len(parts) >= 2 {
-				target = parts[1]
+		ruleStr = strings.TrimSpace(ruleStr)
+		if ruleStr == "" {
+			return CompileErrorf("rule", "", "", "empty rule")
+		}
+		tokens := tokenizeRule(ruleStr)
+		if len(tokens) == 0 {
+			return CompileErrorf("rule", "", ruleStr, "empty rule")
+		}
+		ruleType := strings.ToUpper(tokens[0])
+
+		if ruleType == "SUB-RULE" {
+			return CompileErrorf("rule", "SUB-RULE", ruleStr, "SUB-RULE is not supported in AWG Manager")
+		}
+
+		spec, ok := LookupRuleSpec(ruleType)
+		if !ok {
+			return CompileErrorf("rule", ruleType, ruleStr, "unsupported rule type %q", ruleType)
+		}
+
+		if len(tokens) < spec.MinFields || len(tokens) > spec.MaxFields {
+			return CompileErrorf("rule", ruleType, ruleStr, "rule %q has invalid number of fields (expected between %d and %d, got %d)", ruleStr, spec.MinFields, spec.MaxFields, len(tokens))
+		}
+
+		if spec.RequiresPayload {
+			if strings.TrimSpace(tokens[1]) == "" {
+				return CompileErrorf("rule", ruleType, ruleStr, "rule %q requires non-empty payload", ruleStr)
 			}
-			ensureProxyExists(target)
-		} else if len(parts) == 2 && parts[0] == "MATCH" {
-			ensureProxyExists(parts[1])
+		}
+
+		if ruleType == "RULE-SET" {
+			payload := strings.TrimSpace(tokens[1])
+			if !ruleProviderNames[payload] {
+				return CompileErrorf("rule", payload, ruleStr, "rule %q references non-existent rule-set provider %q", ruleStr, payload)
+			}
+		}
+
+		if ruleType == "AND" || ruleType == "OR" || ruleType == "NOT" {
+			payload := strings.TrimSpace(tokens[1])
+			if err := parseCompositePayload(ruleType, payload, 1); err != nil {
+				return err
+			}
+		}
+
+		target := strings.TrimSpace(tokens[spec.TargetIndex])
+		if !validRuleTarget(target) {
+			return CompileErrorf("rule", target, ruleStr, "rule %q references unknown target %q", ruleStr, target)
+		}
+
+		if len(tokens) > spec.TargetIndex+1 {
+			for _, mod := range tokens[spec.TargetIndex+1:] {
+				mod = strings.TrimSpace(mod)
+				if mod == "" {
+					continue
+				}
+				validMod := false
+				for _, allowed := range spec.AllowedModifiers {
+					if strings.EqualFold(mod, allowed) {
+						validMod = true
+						break
+					}
+				}
+				if !validMod {
+					return CompileErrorf("rule", ruleType, ruleStr, "rule %q has unsupported modifier %q", ruleStr, mod)
+				}
+			}
 		}
 	}
+
+	return nil
 }
 
 func ConvertSingboxToMihomoProxy(ob map[string]any) Proxy {

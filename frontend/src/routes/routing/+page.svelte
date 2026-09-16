@@ -62,7 +62,7 @@
         unsubRouting?.();
     });
 
-    let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip' | 'mihomo'>('dns');
+    let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip' | 'mihomo'>('singbox');
 
     const singboxInitializedStore = singboxRouterStore.initialized;
     const singboxSettings = singboxRouterStore.settings;
@@ -148,17 +148,23 @@
     // isn't there — fakeip-tun implies sing-box installed, but this keeps the
     // selection from racing ahead of systemInfo arriving.
     let fakeipAutoSelected = false;
+    let engineAutoSelected = false;
     $effect(() => {
         if (!browser) return;
-        if (!$singboxInitializedStore) return;
-        if (!singboxInstalled) return;
         if (fakeipAutoSelected) return;
-        if ($singboxSettings?.routingMode === 'fakeip-tun') {
+        if (!isMihomo && singboxInstalled && $singboxSettings?.routingMode === 'fakeip-tun') {
             fakeipAutoSelected = true;
             const explicitTab = new URL(window.location.href).searchParams.get('tab');
             if (!explicitTab) {
                 activeTab = 'fakeip';
             }
+            return;
+        }
+        if (engineAutoSelected) return;
+        const explicitTab = new URL(window.location.href).searchParams.get('tab');
+        if (!explicitTab && activeTab === 'dns' && (isMihomo || $singboxSettings?.enabled || singboxInstalled)) {
+            engineAutoSelected = true;
+            activeTab = 'singbox';
         }
     });
 
@@ -265,19 +271,23 @@
     const singboxRouterStatus = singboxRouterStore.status;
     let singboxRuleCount = $derived($singboxRouterStatus?.ruleCount ?? 0);
 
-    const showSingboxTproxy = $derived(singboxInstalled && tabVisible('singbox'));
+    const showSingboxTproxy = $derived(
+        singboxInstalled || isMihomo
+    );
     // FakeIP is expert-gated (mirrors the 'singbox' tab's 'expert' level) BUT
     // stays visible whenever the engine is actually in fakeip-tun mode — that's
     // the in-use case the auto-select effect lands on, and hiding the chip there
     // would strand activeTab on a tab with no chip to navigate back from.
     const showSingboxFakeip = $derived(
-        singboxInstalled && (tabVisible('singbox') || $singboxSettings?.routingMode === 'fakeip-tun'),
+        !isMihomo
+        && singboxInstalled
+        && (tabVisible('singbox') || $singboxSettings?.routingMode === 'fakeip-tun'),
     );
     const singboxMenuChildren = $derived(
         (
             [
                 showSingboxTproxy
-                    ? { id: 'singbox', label: 'TProxy', badge: singboxRuleCount }
+                    ? { id: 'singbox', label: isMihomo ? 'Mihomo' : 'TProxy', badge: singboxRuleCount }
                     : null,
                 showSingboxFakeip ? { id: 'fakeip', label: 'FakeIP' } : null,
             ] as (TabChildItem | null)[]
@@ -315,12 +325,14 @@
             .filter((t) => (t.children ? true : tabVisible(t.id)))
     );
 
-    // If the user deep-linked / had the tab active and sing-box disappeared
+    // If the user deep-linked / had the tab active and engine disappeared
     // (uninstall while the page is open), bounce them off.
     $effect(() => {
         if (!$systemInfo.data) return;
-        if (!singboxInstalled && (activeTab === 'singbox' || activeTab === 'fakeip')) {
+        if (!singboxInstalled && !isMihomo && (activeTab === 'singbox' || activeTab === 'fakeip')) {
             activeTab = 'dns';
+        } else if (isMihomo && activeTab === 'fakeip') {
+            activeTab = 'singbox';
         }
     });
 
@@ -354,6 +366,9 @@
         }
 
         if (!tabsInclude(items, activeTab)) {
+            if ((activeTab === 'singbox' || activeTab === 'mihomo') && (!systemKnown || singboxInstalled || isMihomo)) {
+                return;
+            }
             const first = items[0];
             activeTab = (first.children?.[0]?.id ?? first.id) as typeof activeTab;
         }
@@ -399,7 +414,7 @@
         active={activeTab}
         onchange={(id) => requestTab(id)}
         urlParam="tab"
-        defaultTab="dns"
+        defaultTab="singbox"
     />
 
     {#if activeTab === 'hrneo'}

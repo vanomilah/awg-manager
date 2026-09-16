@@ -128,6 +128,8 @@ export class FreeturnClient extends SubscriptionsClient {
 			/** Поля ЗАПИСИ, а не конфига роли: подписка и режим журнала статистики. */
 			sub?: string;
 			statsLog?: string;
+			linkPeer?: string;
+			linkVkHashes?: string;
 		}
 	): Promise<ProxyInstanceView> {
 		return this.request<ProxyInstanceView>(instancePath(kind, id), {
@@ -196,6 +198,7 @@ export class FreeturnClient extends SubscriptionsClient {
 	): Promise<FreeTurnServerConfig> {
 		const view = await this.proxyPatch('freeturn-server', id, {
 			enabled: config.enabled,
+			linkPeer: config.linkPeer ?? '',
 			config: toFreeTurnServerPatch(config)
 		});
 		return toFreeTurnServerConfig(view);

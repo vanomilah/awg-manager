@@ -9,7 +9,7 @@
 	import ProxyPanelModeToggle from '../proxy-panel/ProxyPanelModeToggle.svelte';
 	import { linkedTunnelListenPort, patchWgConfEndpoint } from '$lib/utils/serverPeerOptions';
 	import { peersEqual } from '$lib/utils/wdttPeer';
-	import { setPeer } from '$lib/utils/wdttPeerMode';
+	import { setPeer, applyPayloadPeers } from '$lib/utils/wdttPeerMode';
 	import { errText } from '$lib/utils/errorMessage';
 	import { createSelfReschedulingPoll } from '$lib/utils/selfReschedulingPoll';
 	import type {
@@ -597,7 +597,8 @@
 				peer: peer || undefined,
 				vkHashes: vkHashes.length ? vkHashes : undefined,
 				name: opts?.name ?? selectedServer.name,
-				password: opts?.password
+				password: opts?.password,
+				mode: selectedServer.config.relayMode === 'raw' ? 'raw' : 'wg'
 			});
 			generatedLink = result.link;
 			genPeer = result.peer;
@@ -653,7 +654,7 @@
 			const c = selectedClient.config;
 			const oldPeer = savedClient?.config.peer ?? '';
 			const listenPort = linkedTunnelListenPort(selectedClient.config.listen);
-			if (payload.peer) setPeer(c, payload.peer);
+			applyPayloadPeers(c, payload);
 			if (payload.password) c.password = payload.password;
 			if (payload.vkHashes?.length) c.vkHashes = payload.vkHashes.join(',');
 			if (payload.workers && payload.workers > 0) c.workers = payload.workers;
@@ -662,9 +663,6 @@
 			if (payload.listen && !subUrl && listenPort == null) c.listen = payload.listen;
 			if (subUrl) c.sub = subUrl;
 			if (payload.deviceId) c.deviceId = payload.deviceId;
-			if (payload.connMode === 'raw' || payload.connMode === 'wg') {
-				c.connMode = payload.connMode;
-			}
 
 			const clientName = meta?.clientName?.trim();
 			if (clientName && clientName !== selectedClient.name) {

@@ -18,6 +18,7 @@
     runtimeProxies?: MihomoRuntimeProxy[];
     onClose: () => void;
     onSaved: () => void;
+    onDelete?: (id: string) => void;
   }
 
   let {
@@ -29,6 +30,7 @@
     runtimeProxies = [],
     onClose,
     onSaved,
+    onDelete,
   }: Props = $props();
 
   let id = $state('');
@@ -494,6 +496,19 @@
   </div>
 
   {#snippet actions()}
+    {#if group?.id && onDelete}
+      <Button
+        variant="danger"
+        onclick={() => {
+          const gid = group.id;
+          onClose();
+          onDelete(gid);
+        }}
+        disabled={saving}
+      >
+        Удалить группу
+      </Button>
+    {/if}
     <Button variant="ghost" onclick={onClose} disabled={saving}>Отмена</Button>
     <Button variant="primary" loading={saving} onclick={handleSave}>Сохранить</Button>
   {/snippet}

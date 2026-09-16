@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -64,12 +65,14 @@ type State struct {
 }
 
 type Service struct {
-	runner   DiagnosticsRunner
-	config   *ConfigStore
-	model    ModelAnalyzer
-	embedded *EmbeddedManager
-	tools    ToolExecutor
-	actions  ActionExecutor
+	runner       DiagnosticsRunner
+	config       *ConfigStore
+	model        ModelAnalyzer
+	embedded     *EmbeddedManager
+	tools        ToolExecutor
+	actions      ActionExecutor
+	memory       *MemoryStore
+	lastFindings []Finding
 
 	mu    sync.RWMutex
 	state State
@@ -100,6 +103,54 @@ func (s *Service) SetActions(actions ActionExecutor) {
 	s.actions = actions
 }
 
+func (s *Service) SetMemory(memory *MemoryStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.memory = memory
+}
+
+func (s *Service) Memory() *MemoryStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.memory
+}
+
+func (s *Service) SetProposal(proposal *RemediationProposal) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Proposal = proposal
+}
+
+func (s *Service) Proposal() *RemediationProposal {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.Proposal
+}
+
+// ListTools exposes the same safe catalog used by the in-app agent. Returned
+// definitions are descriptions only; execution still goes through CallTool.
+func (s *Service) ListTools() []ToolDefinition {
+	s.mu.RLock()
+	tools := s.tools
+	s.mu.RUnlock()
+	if catalog, ok := tools.(ToolCatalog); ok {
+		return catalog.Tools()
+	}
+	return []ToolDefinition{}
+}
+
+// CallTool is intentionally read-only. Mutating operations remain remediation
+// proposals and require confirmation through ApplyAction.
+func (s *Service) CallTool(ctx context.Context, call ToolCall) ToolStep {
+	s.mu.RLock()
+	tools := s.tools
+	s.mu.RUnlock()
+	if tools == nil {
+		return ToolStep{Name: call.Name, Title: "Инструмент недоступен", Status: "error", Summary: "Реестр инструментов не настроен", ReadOnly: true, StartedAt: time.Now()}
+	}
+	return tools.Execute(ctx, call)
+}
+
 func NewService(runner DiagnosticsRunner) *Service {
 	return &Service{
 		runner: runner,
@@ -112,6 +163,22 @@ func NewService(runner DiagnosticsRunner) *Service {
 			Messages:  []ChatMessage{},
 		},
 	}
+}
+
+func (s *Service) ClearChat() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.state.Status = "idle"
+	s.state.Progress = ""
+	s.state.Question = ""
+	s.state.Summary = ""
+	s.state.ModelAnswer = ""
+	s.state.ModelError = ""
+	s.state.Findings = []Finding{}
+	s.state.ToolSteps = []ToolStep{}
+	s.state.Messages = []ChatMessage{}
+	s.state.Proposal = nil
+	s.state.Error = ""
 }
 
 func (s *Service) Start(question string) error {
@@ -127,14 +194,18 @@ func (s *Service) Start(question string) error {
 	}
 	messages := append([]ChatMessage(nil), s.state.Messages...)
 	messages = appendChatMessage(messages, ChatMessage{Role: "user", Content: question, CreatedAt: time.Now()})
+	preservedFindings := append([]Finding(nil), s.state.Findings...)
+	if len(preservedFindings) == 0 && len(s.lastFindings) > 0 {
+		preservedFindings = append([]Finding(nil), s.lastFindings...)
+	}
 	s.state = State{
 		Status:    "running",
-		Progress:  "Подготовка безопасной диагностики…",
+		Progress:  "ИИ-помощник обрабатывает сообщение…",
 		Question:  question,
 		Engine:    "local-diagnostics",
 		ReadOnly:  true,
 		StartedAt: time.Now(),
-		Findings:  []Finding{},
+		Findings:  preservedFindings,
 		ToolSteps: []ToolStep{},
 		Messages:  messages,
 	}
@@ -156,8 +227,40 @@ func (s *Service) Status() State {
 
 func (s *Service) run() {
 	s.mu.RLock()
-	question, tools := s.state.Question, s.tools
+	question, tools, configStore, model := s.state.Question, s.tools, s.config, s.model
 	s.mu.RUnlock()
+
+	// Native tool-capable providers must see the question before any local
+	// keyword planner does. The model can then choose one or more tools,
+	// inspect their results, and continue the conversation. The deterministic
+	// planner below is only a fallback for providers without native tools or
+	// when model analysis is disabled.
+	if nativeAgentAvailable(configStore, model, tools) {
+		s.mu.Lock()
+		s.state.Intent = Intent{Kind: "agent"}
+		s.state.Progress = "Модель решает, нужны ли проверки…"
+		s.mu.Unlock()
+		s.completeChat()
+		return
+	}
+
+	// Если в запросе содержится конкретный код ошибки (Keenetic 0xcffd..., AmneziaWG H1=..., Reality uTLS, POSIX Errno и т.д.),
+	// используем Базу Знаний Ошибок напрямую, не запуская случайный domain.inspect для 0.0.0.0 или номеров портов.
+	if knownErr := LookupKnownError(question); knownErr != nil {
+		s.mu.Lock()
+		s.state.Intent = Intent{Kind: "error.known"}
+		s.mu.Unlock()
+		s.completeChat()
+		return
+	}
+	if _, ok := FallbackHeuristicAnalysis(question); ok {
+		s.mu.Lock()
+		s.state.Intent = Intent{Kind: "error.heuristic"}
+		s.mu.Unlock()
+		s.completeChat()
+		return
+	}
+
 	targeted := false
 	intent := Intent{Kind: "diagnostics.general"}
 	if tools != nil {
@@ -178,8 +281,13 @@ func (s *Service) run() {
 		}
 	}
 	if intent.Kind == "chat" {
-		s.completeChat()
-		return
+		lowerQ := strings.ToLower(question)
+		if containsAny(lowerQ, "отклонен", "ошибк", "проблем", "что не так") && len(s.state.Findings) == 0 && len(s.lastFindings) == 0 && s.runner != nil {
+			// No diagnostics run yet in this session — run diagnostics to collect findings
+		} else {
+			s.completeChat()
+			return
+		}
 	}
 	if targeted {
 		s.completeTargeted()
@@ -190,6 +298,9 @@ func (s *Service) run() {
 		s.fail(errors.New("diagnostics runner is not configured"))
 		return
 	}
+	s.mu.Lock()
+	s.state.Progress = "Подготовка безопасной диагностики…"
+	s.mu.Unlock()
 
 	ch, err := s.runner.RunWithStream(context.Background(), diagnostics.RunOptions{IncludeRestart: false})
 	if err != nil {
@@ -231,6 +342,25 @@ func (s *Service) run() {
 	s.completeDiagnosis(stats, findings, modelAnswer, modelErr, engineName)
 }
 
+func nativeAgentAvailable(configStore *ConfigStore, model ModelAnalyzer, tools ToolExecutor) bool {
+	if configStore == nil || model == nil || tools == nil {
+		return false
+	}
+	cfg := configStore.Get()
+	if !cfg.Enabled {
+		return false
+	}
+	providerSupported := cfg.Provider == "google" || cfg.Provider == "openai" || isChatCompletionsToolProvider(cfg)
+	if !providerSupported {
+		return false
+	}
+	if _, ok := model.(ToolAwareModel); !ok {
+		return false
+	}
+	catalog, ok := tools.(ToolCatalog)
+	return ok && len(catalog.Tools()) > 0
+}
+
 func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer string, modelErr error, engineName string) {
 	s.mu.Lock()
 	s.state.Status = "done"
@@ -238,6 +368,7 @@ func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer
 	s.state.CompletedAt = time.Now()
 	s.state.Stats = stats
 	s.state.Findings = findings
+	s.lastFindings = append([]Finding(nil), findings...)
 	s.state.ModelAnswer = modelAnswer
 	if modelErr != nil {
 		s.state.ModelError = modelErr.Error()
@@ -246,14 +377,51 @@ func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer
 		s.state.Engine = engineName
 	}
 	s.state.Summary = buildSummary(stats, len(findings))
-	proposal := remediationForFindings(findings, modelAnswer)
+	proposal := remediationFromToolSteps(s.state.ToolSteps)
+	if proposal == nil {
+		proposal = remediationForFindings(findings, modelAnswer)
+	}
 	s.state.Proposal = proposal
 	answer := modelAnswer
 	if answer == "" && modelErr != nil {
 		answer = "Модельный анализ недоступен: " + modelErr.Error()
 	}
 	if answer == "" {
-		answer = s.state.Summary
+		if len(findings) > 0 {
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("**Обнаружено отклонений: %d** (успешно проверок: %d, пропущено: %d)\n\n", len(findings), stats.Passed, stats.Skipped))
+			for i, f := range findings {
+				sevBadge := "⚠️ Внимание"
+				if f.Severity == "critical" || f.Severity == "error" {
+					sevBadge = "❌ Ошибка"
+				}
+				b.WriteString(fmt.Sprintf("%d. **%s** (%s)\n", i+1, f.Title, sevBadge))
+				if f.Detail != "" {
+					b.WriteString(fmt.Sprintf("   - **Причина:** %s\n", f.Detail))
+				}
+				if f.Recommendation != "" {
+					b.WriteString(fmt.Sprintf("   - **Рекомендация:** %s\n", f.Recommendation))
+				}
+				if f.Source != "" {
+					b.WriteString(fmt.Sprintf("   - **Источник:** `%s`\n", f.Source))
+				}
+				combined := f.Title + " " + f.Detail + " " + f.Source
+				if errRule := LookupKnownError(combined); errRule != nil && len(errRule.ActionSteps) > 0 {
+					b.WriteString("   - **🖱️ Куда тыкнуть мышкой:**\n")
+					for _, step := range errRule.ActionSteps {
+						b.WriteString(fmt.Sprintf("     • %s\n", step))
+					}
+				}
+				b.WriteByte('\n')
+			}
+			if proposal != nil {
+				b.WriteString(fmt.Sprintf("💡 **Предлагаемое действие:** %s\n", proposal.Title))
+			}
+			answer = strings.TrimSpace(b.String())
+		} else {
+			answer = fmt.Sprintf("✅ **Диагностика завершена успешно:** все проверки пройдены (%d/%d).\nКритических отклонений в работе сети, туннелей и DNS не обнаружено.", stats.Passed, stats.Passed+stats.Skipped)
+		}
+		s.state.ModelAnswer = answer
 	}
 	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: answer, CreatedAt: time.Now()})
 	s.state.Error = ""
@@ -262,7 +430,7 @@ func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer
 	if s.config != nil {
 		autoFixEnabled = s.config.Get().AutoFix
 	}
-	shouldAutoFix := autoFixEnabled && proposal != nil && (proposal.Risk == "low" || proposal.Risk == "medium")
+	shouldAutoFix := autoFixEnabled && proposal != nil && autoFixActionAllowed(proposal.Action)
 	if shouldAutoFix {
 		proposal.AutoApplied = true
 	}
@@ -270,6 +438,18 @@ func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer
 
 	if shouldAutoFix {
 		_ = s.ApplyAction(proposal.ID)
+	}
+}
+
+// Auto-fix is intentionally narrower than the confirmed action catalog.
+// Package changes, service control and routing mode/engine switches always
+// require a human click even when the global auto-fix option is enabled.
+func autoFixActionAllowed(action string) bool {
+	switch action {
+	case "mihomo.reload", "tunnel.restart", "subscription.update", "dns.flush":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -311,16 +491,6 @@ func remediationForFindings(findings []Finding, modelAnswer string) *Remediation
 				Status:      "pending",
 				CreatedAt:   time.Now(),
 			}
-		case "dns_lookup_failed", "dns_leak":
-			return &RemediationProposal{
-				ID:          newProposalID(),
-				Action:      "dns.flush",
-				Title:       "Сбросить DNS-кэш",
-				Description: "Перезапустить локальный резолвер и сбросить кэш DNS.",
-				Risk:        "low",
-				Status:      "pending",
-				CreatedAt:   time.Now(),
-			}
 		case "subscription_error":
 			target := finding.Detail
 			return &RemediationProposal{
@@ -351,20 +521,61 @@ func (s *Service) ApplyAction(id string) error {
 		s.mu.Unlock()
 		return errors.New("remediation proposal expired")
 	}
+	spec, supported := remediationSpecs[proposal.Action]
+	if !supported || !validRemediationTarget(proposal.Action, spec, proposal.Target) {
+		proposal.Status = "failed"
+		s.mu.Unlock()
+		return errors.New("remediation proposal contains an unsupported action or target")
+	}
 	proposal.Status = "applying"
+	s.state.ReadOnly = false
 	s.mu.Unlock()
 	if actions == nil {
 		return s.finishAction(errors.New("remediation executor is unavailable"), nil)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), actionTimeout(proposal.Action))
 	defer cancel()
+	var snapshot *ActionSnapshot
+	transactional, hasTransaction := actions.(TransactionalActionExecutor)
+	if hasTransaction {
+		var snapshotErr error
+		snapshot, snapshotErr = transactional.Snapshot(ctx, proposal.Action, proposal.Target)
+		if snapshotErr != nil {
+			return s.finishAction(fmt.Errorf("create rollback snapshot: %w", snapshotErr), nil)
+		}
+	}
 	err := actions.Apply(ctx, proposal.Action, proposal.Target)
 	var ver *ActionVerification
 	if err == nil {
 		time.Sleep(1 * time.Second)
 		ver, _ = actions.Verify(ctx, proposal.Action, proposal.Target)
 	}
+	shouldRollback := snapshot != nil && (err != nil || (ver != nil && ver.Status == "failed"))
+	if shouldRollback {
+		rollbackErr := transactional.Rollback(ctx, *snapshot)
+		s.mu.Lock()
+		if s.state.Proposal != nil {
+			s.state.Proposal.RolledBack = rollbackErr == nil
+			if rollbackErr != nil {
+				s.state.Proposal.RollbackError = rollbackErr.Error()
+			}
+		}
+		s.mu.Unlock()
+		if err == nil && rollbackErr != nil {
+			err = fmt.Errorf("verification failed and rollback failed: %w", rollbackErr)
+		}
+	}
 	return s.finishAction(err, ver)
+}
+
+func actionTimeout(action string) time.Duration {
+	if strings.HasPrefix(action, "opkg.") {
+		return 6 * time.Minute
+	}
+	if strings.HasPrefix(action, "service.") || strings.HasPrefix(action, "routing.") {
+		return 90 * time.Second
+	}
+	return 30 * time.Second
 }
 
 func (s *Service) finishAction(err error, ver *ActionVerification) error {
@@ -374,7 +585,14 @@ func (s *Service) finishAction(err error, ver *ActionVerification) error {
 		return err
 	}
 	if err != nil {
-		s.state.Proposal.Status = "failed"
+		if s.state.Proposal.RolledBack {
+			s.state.Proposal.Status = "rolled_back"
+			s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{
+				Role: "assistant", Content: "Изменение не удалось применить. Предыдущее состояние автоматически восстановлено.", CreatedAt: time.Now(),
+			})
+		} else {
+			s.state.Proposal.Status = "failed"
+		}
 		s.state.Proposal.Error = err.Error()
 		return err
 	}
@@ -384,8 +602,22 @@ func (s *Service) finishAction(err error, ver *ActionVerification) error {
 	if s.state.Proposal.AutoApplied {
 		msg = "ИИ автоматически применил исправление: " + s.state.Proposal.Title + "."
 	}
-	if ver != nil && ver.Summary != "" {
-		msg += "\nПроверка: " + ver.Summary
+	if ver != nil {
+		switch ver.Status {
+		case "failed":
+			s.state.Proposal.Status = "verification_failed"
+			msg = "Действие выполнено, но проблема не устранена: " + s.state.Proposal.Title + "."
+		case "warning":
+			s.state.Proposal.Status = "verification_warning"
+			msg = "Действие выполнено, но результат требует дополнительной проверки: " + s.state.Proposal.Title + "."
+		}
+		if ver.Summary != "" {
+			msg += "\nПроверка: " + ver.Summary
+		}
+	}
+	if s.state.Proposal.RolledBack {
+		s.state.Proposal.Status = "rolled_back"
+		msg += "\nПредыдущее состояние автоматически восстановлено."
 	}
 	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: msg, CreatedAt: time.Now()})
 	return nil
@@ -398,21 +630,131 @@ func (s *Service) completeChat() {
 	s.state.Status = "done"
 	s.state.Progress = "Ответ готов"
 	s.state.CompletedAt = time.Now()
-	s.state.ModelAnswer = answer
-	if modelErr != nil {
-		s.state.ModelError = modelErr.Error()
-	}
-	if answer != "" && engineName != "" {
-		s.state.Engine = engineName
-	}
 	if answer == "" {
 		if modelErr != nil {
 			answer = "Модельный анализ недоступен: " + modelErr.Error()
 		} else {
-			answer = "Модель для обычного диалога не подключена."
+			answer = s.autonomousChatAnswer(s.state.Question, s.state.Findings)
+			engineName = "autonomous-expert"
+			s.state.Engine = engineName
 		}
 	}
+	s.state.ModelAnswer = answer
+	if answer != "" && engineName != "" {
+		s.state.Engine = engineName
+	}
 	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: answer, CreatedAt: time.Now()})
+	s.state.Proposal = remediationFromToolSteps(s.state.ToolSteps)
+	if s.state.Proposal == nil {
+		s.state.Proposal = remediationForFindings(nil, answer)
+	}
+}
+
+func (s *Service) autonomousChatAnswer(question string, findings []Finding) string {
+	// 0. Поиск по Базе Знаний Ошибок (KeeneticOS, AmneziaWG, Mihomo, Sing-box, DNS, System)
+	if knownErr := LookupKnownError(question); knownErr != nil {
+		return FormatErrorCard(knownErr, question)
+	}
+	if heuristicCard, ok := FallbackHeuristicAnalysis(question); ok {
+		return heuristicCard
+	}
+
+	q := strings.ToLower(strings.TrimSpace(question))
+
+	// Запрос о базе знаний / справочнике ошибок
+	if containsAny(q, "база ошибок", "базу ошибок", "справочник", "каталог ошибок", "список ошибок") {
+		return "📚 **Справочник и база знаний ошибок роутера**\n\n" +
+			"В панели доступен специализированный раздел: вкладка **«Инструменты» -> «Система» -> «База ошибок»**.\n\n" +
+			"Там собран полный каталог решений для:\n" +
+			"• **KeeneticOS (NDMS):** все коды отказов `0xcffd...`, конфликты подсетей и AllowedIPs\n" +
+			"• **AmneziaWG и WireGuard:** ошибки парсинга, лишние пробелы в `H1=`, таймауты handshake, MTU (122)\n" +
+			"• **Mihomo и Sing-box:** конфликты портов `7890/10808/2080`, Reality uTLS, синтаксис YAML/JSON\n" +
+			"• **Ядро Linux Errno:** ошибки сетевого стека, сокетов, памяти, прав доступа и накопителей\n\n" +
+			"💡 Вы также можете прямо сюда в чат вставить любую строчку из системного журнала или консоли — я мгновенно распознаю её и покажу пошаговую инструкцию!"
+	}
+
+	// 1. Вопрос об обнаруженных отклонениях/ошибках
+	if containsAny(q, "отклонен", "ошибк", "проблем", "что не так", "почему не работ", "детали") {
+		if len(findings) == 0 && len(s.lastFindings) > 0 {
+			findings = s.lastFindings
+		}
+		if len(findings) > 0 {
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("**Обнаружено отклонений: %d**\n\n", len(findings)))
+			for i, f := range findings {
+				sevBadge := "⚠️ Внимание"
+				if f.Severity == "critical" || f.Severity == "error" {
+					sevBadge = "❌ Ошибка"
+				}
+				b.WriteString(fmt.Sprintf("%d. **%s** (%s)\n", i+1, f.Title, sevBadge))
+				if f.Detail != "" {
+					b.WriteString(fmt.Sprintf("   - **Причина:** %s\n", f.Detail))
+				}
+				if f.Recommendation != "" {
+					b.WriteString(fmt.Sprintf("   - **Рекомендация:** %s\n", f.Recommendation))
+				}
+				if f.Source != "" {
+					b.WriteString(fmt.Sprintf("   - **Источник:** `%s`\n", f.Source))
+				}
+				combined := f.Title + " " + f.Detail + " " + f.Source
+				if errRule := LookupKnownError(combined); errRule != nil && len(errRule.ActionSteps) > 0 {
+					b.WriteString("   - **🖱️ Куда тыкнуть мышкой:**\n")
+					for _, step := range errRule.ActionSteps {
+						b.WriteString(fmt.Sprintf("     • %s\n", step))
+					}
+				}
+				b.WriteByte('\n')
+			}
+			return strings.TrimSpace(b.String())
+		}
+		return "В текущей сессии активных отклонений не зафиксировано.\n\nВы можете запустить диагностику туннелей или ввести интересующий домен для проверки маршрутизации."
+	}
+
+	// 2. Приветствие
+	if containsAny(q, "привет", "здравствуй", "добрый", "старт", "start", "hello", "hi", "хай") {
+		return "Привет! Я автономный диагностический ассистент AWG Manager.\n\n" +
+			"Даже без подключения внешнего ИИ я умею тестировать роутер прямо на месте:\n" +
+			"- **Проверить туннели** — статус соединений, пинг шлюзов и handshake\n" +
+			"- **Проверить DNS** — тестирование резолва через локальный DNS и TProxy\n" +
+			"- **Статус маршрутизации** — активный движок (Mihomo / Sing-box), интерфейсы и правила\n" +
+			"- **Показать отклонения** — детальный разбор обнаруженных сетевых сбоев\n\n" +
+			"Выберите действие кнопками ниже или задайте вопрос."
+	}
+
+	// 3. Возможности / Справка
+	if containsAny(q, "что ты умеешь", "что умеешь", "помощь", "справка", "help", "возможност", "команд") {
+		return "**Возможности автономного помощника AWG Manager:**\n\n" +
+			"**Диагностика сети и туннелей:**\n" +
+			"- Мониторинг AmneziaWG, Wireguard, WDTT и OpenVPN соединений\n" +
+			"- Проверка DNS-резолва и перехвата DNS через TProxy\n" +
+			"- Проверка правил маршрутизации Sing-box / Mihomo\n" +
+			"- Поиск конфликтов портов и сетевых интерфейсов\n\n" +
+			"**Точечные проверки:**\n" +
+			"- Введите любой домен (например: `youtube.com`), чтобы узнать маршрут и активный туннель\n" +
+			"- Нажмите «Показать отклонения», чтобы разобрать найденные проблемы\n\n" +
+			"**Диалог с нейросетью:**\n" +
+			"- Для свободных бесед и генерации сложных скриптов вы можете подключить модель (Google Gemini, Anthropic Claude, DeepSeek или домашнюю Ollama) в сайдбаре слева."
+	}
+
+	// 4. Запросы о маршрутизации / туннелях / DNS
+	if containsAny(q, "туннел", "vpn", "впн") {
+		return "Для детальной проверки туннелей нажмите кнопку «Проверить туннели» выше. Я опрошу сетевые интерфейсы, пинг шлюзов и handshake."
+	}
+	if containsAny(q, "dns", "днс") {
+		return "Для проверки DNS нажмите кнопку «Проверить DNS». Я протестирую резолв доменов через TProxy и локальные апстримы."
+	}
+	if containsAny(q, "маршрут", "движок", "singbox", "sing-box", "mihomo") {
+		return "Для анализа правил и ядра нажмите «Статус маршрутизации». Я покажу текущий движок, режим работы и активные слоты."
+	}
+
+	// 5. Дефолтный ответ
+	return "Для свободного диалога и генерации команд требуется подключение языковой модели (Google Gemini, Anthropic Claude, DeepSeek или локальной Ollama в сайдбаре слева).\n\n" +
+		"В автономном режиме прямо сейчас доступны встроенные проверки:\n" +
+		"- **Проверить туннели** — диагностика всех VPN-соединений\n" +
+		"- **Проверить DNS** — тестирование резолва доменов\n" +
+		"- **Статус маршрутизации** — проверка движка и правил\n" +
+		"- **Показать отклонения** — список найденных сетевых проблем\n" +
+		"- Введите любой домен (например `google.com`), чтобы увидеть его маршрут."
 }
 
 func (s *Service) completeTargeted() {
@@ -430,6 +772,11 @@ func (s *Service) completeTargeted() {
 			stats.Skipped++
 		}
 	}
+	modelAnswer, modelErr, engineName := s.runModel(diagnostics.Report{}, nil, steps)
+	if modelAnswer == "" {
+		modelAnswer = buildTargetedAnswer(steps)
+		engineName = "typed-tools"
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.state.Status = "done"
@@ -437,16 +784,36 @@ func (s *Service) completeTargeted() {
 	s.state.CompletedAt = time.Now()
 	s.state.Stats = stats
 	s.state.Summary = fmt.Sprintf("Выполнено адресных проверок: %d. Изменения не применялись.", len(steps))
-	// Typed tools are the authority for targeted checks. A tiny local model can
-	// turn successful evidence into a fabricated failure, so do not ask it to
-	// reinterpret deterministic results.
-	s.state.ModelAnswer = buildTargetedAnswer(steps)
-	s.state.Engine = "typed-tools"
+	s.state.ModelAnswer = modelAnswer
+	if modelErr != nil {
+		s.state.ModelError = modelErr.Error()
+	}
+	if engineName != "" {
+		s.state.Engine = engineName
+	}
 	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: s.state.ModelAnswer, CreatedAt: time.Now()})
+	s.state.Proposal = remediationFromToolSteps(s.state.ToolSteps)
+	if s.state.Proposal == nil {
+		s.state.Proposal = remediationForFindings(nil, modelAnswer)
+	}
+}
+
+func remediationFromToolSteps(steps []ToolStep) *RemediationProposal {
+	for index := len(steps) - 1; index >= 0; index-- {
+		step := steps[index]
+		if step.Name != "remediation.propose" || step.Status != "passed" || len(step.Evidence) == 0 {
+			continue
+		}
+		var proposed RemediationProposal
+		if json.Unmarshal([]byte(step.Evidence[0]), &proposed) == nil {
+			return validatedRemediationProposal(proposed.Action, proposed.Target)
+		}
+	}
+	return nil
 }
 
 func appendChatMessage(messages []ChatMessage, message ChatMessage) []ChatMessage {
-	message.Content = truncateModelText(sanitizeModelText(strings.TrimSpace(message.Content)), 2000)
+	message.Content = truncateModelText(sanitizeChatMessage(strings.TrimSpace(message.Content)), 4000)
 	if message.Content == "" {
 		return messages
 	}
@@ -467,7 +834,113 @@ func buildTargetedAnswer(steps []ToolStep) string {
 		if i > 0 {
 			builder.WriteString("\n\n")
 		}
-		builder.WriteString(step.Summary)
+		if step.Name != "domain.inspect" || len(step.Evidence) == 0 {
+			builder.WriteString(step.Summary)
+		}
+
+		if step.Name == "tunnels.list" && len(step.Evidence) > 0 {
+			var tunnels []struct {
+				ID        string `json:"id"`
+				Name      string `json:"name"`
+				Interface string `json:"interface"`
+				Enabled   bool   `json:"enabled"`
+				Type      string `json:"type"`
+				RxBytes   int64  `json:"rxBytes"`
+				TxBytes   int64  `json:"txBytes"`
+			}
+			if json.Unmarshal([]byte(step.Evidence[0]), &tunnels) == nil && len(tunnels) > 0 {
+				builder.WriteString(":\n")
+				for _, t := range tunnels {
+					status := "Включен"
+					if !t.Enabled {
+						status = "Отключен"
+					}
+					builder.WriteString(fmt.Sprintf("- **%s** (`%s`): %s", t.Name, t.Interface, status))
+					if t.RxBytes > 0 || t.TxBytes > 0 {
+						builder.WriteString(fmt.Sprintf(", трафик: ↓%s / ↑%s", formatBytesHelper(t.RxBytes), formatBytesHelper(t.TxBytes)))
+					}
+					builder.WriteByte('\n')
+				}
+				continue
+			}
+		}
+
+		if step.Name == "domain.inspect" && len(step.Evidence) > 0 {
+			domainLine := step.Evidence[0]
+			domainName := ""
+			resolvedIPs := ""
+			if parts := strings.Split(domainLine, " -> "); len(parts) == 2 {
+				domainName = strings.TrimSpace(parts[0])
+				resolvedIPs = strings.TrimSpace(parts[1])
+			}
+			if domainName == "" {
+				domainName = "запрошенного домена"
+			}
+
+			interfaces := make(map[string]bool)
+			hasVPN := false
+			hasDirect := false
+			hasUnreachable := false
+			for _, ev := range step.Evidence[1:] {
+				if strings.Contains(strings.ToLower(ev), "unreachable") {
+					hasUnreachable = true
+					continue
+				}
+				if idx := strings.Index(ev, " dev "); idx != -1 {
+					sub := ev[idx+5:]
+					fields := strings.Fields(sub)
+					if len(fields) > 0 {
+						iface := fields[0]
+						interfaces[iface] = true
+						if strings.HasPrefix(iface, "opkgtun") || strings.HasPrefix(iface, "nwg") || strings.HasPrefix(iface, "tun") || strings.HasPrefix(iface, "wg") {
+							hasVPN = true
+						} else {
+							hasDirect = true
+						}
+					}
+				}
+			}
+
+			var b strings.Builder
+			b.WriteString(fmt.Sprintf("**Маршрутизация для %s:**\n\n", domainName))
+			if resolvedIPs != "" {
+				b.WriteString(fmt.Sprintf("- **DNS-резолв:** успешно (`%s`)\n", resolvedIPs))
+			}
+			if len(interfaces) > 0 {
+				var ifaceList []string
+				for iface := range interfaces {
+					ifaceList = append(ifaceList, fmt.Sprintf("`%s`", iface))
+				}
+				sort.Strings(ifaceList)
+				b.WriteString(fmt.Sprintf("- **Сетевой интерфейс:** %s\n", strings.Join(ifaceList, ", ")))
+			}
+
+			if hasUnreachable {
+				b.WriteString("- **Статус:** ❌ **Маршрут недоступен**\n\n")
+				b.WriteString("Роутер не нашёл маршрут для отправки пакетов к этому ресурсу.")
+			} else if hasVPN && !hasDirect {
+				b.WriteString("- **Статус:** ✅ **Трафик направляется через VPN**\n\n")
+				b.WriteString(fmt.Sprintf("Пакеты к `%s` идут через защищённый туннель.", domainName))
+			} else if hasVPN && hasDirect {
+				b.WriteString("- **Статус:** ⚠️ **Гибридный маршрут (часть IP идёт через VPN, часть напрямую)**\n\n")
+				b.WriteString("Некоторые IP-адреса направляются в туннель, а другие — напрямую через провайдера.")
+			} else {
+				b.WriteString("- **Статус:** ⚠️ **Прямое подключение через провайдера (без VPN)**\n\n")
+				b.WriteString(fmt.Sprintf("Трафик к `%s` идёт напрямую через вашего интернет-провайдера (в обход туннелей).\n\nЕсли ресурс заблокирован или должен работать через VPN — добавьте `%s` в список доменов на вкладке «Маршрутизация».", domainName, domainName))
+			}
+			builder.WriteString(b.String())
+			continue
+		}
+
+		if step.Name == "dns.inspect" && len(step.Evidence) > 0 {
+			builder.WriteString(":\n")
+			for _, ev := range step.Evidence {
+				builder.WriteString(fmt.Sprintf("- %s\n", ev))
+			}
+			builder.WriteString("\nDNS-резолвер роутера отвечает корректно.")
+			continue
+		}
+
 		if len(step.Evidence) > 0 {
 			builder.WriteString(":\n")
 			for _, evidence := range step.Evidence {
@@ -480,9 +953,22 @@ func buildTargetedAnswer(steps []ToolStep) string {
 	return strings.TrimSpace(builder.String())
 }
 
+func formatBytesHelper(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
 func (s *Service) runModel(report diagnostics.Report, findings []Finding, toolSteps []ToolStep) (string, error, string) {
 	s.mu.RLock()
-	configStore, model, embedded, question := s.config, s.model, s.embedded, s.state.Question
+	configStore, model, embedded, question, tools := s.config, s.model, s.embedded, s.state.Question, s.tools
 	messages := append([]ChatMessage(nil), s.state.Messages...)
 	s.mu.RUnlock()
 	if configStore == nil || model == nil {
@@ -493,7 +979,11 @@ func (s *Service) runModel(report diagnostics.Report, findings []Finding, toolSt
 		return "", nil, ""
 	}
 	s.mu.Lock()
-	s.state.Progress = "Модель анализирует обезличенные результаты…"
+	if len(toolSteps) > 0 || len(findings) > 0 || len(report.Tests) > 0 {
+		s.state.Progress = "Модель анализирует результаты проверок…"
+	} else {
+		s.state.Progress = "Модель готовит ответ…"
+	}
 	s.mu.Unlock()
 
 	timeout := 60 * time.Second
@@ -501,7 +991,7 @@ func (s *Service) runModel(report diagnostics.Report, findings []Finding, toolSt
 	case "local_embedded":
 		timeout = 240 * time.Second
 	case "google":
-		timeout = 180 * time.Second
+		timeout = 75 * time.Second
 	case "ollama":
 		timeout = 180 * time.Second
 	case "custom":
@@ -516,12 +1006,154 @@ func (s *Service) runModel(report diagnostics.Report, findings []Finding, toolSt
 		}
 	}
 
-	payload, err := buildModelDiagnostic(report, findings, toolSteps)
+	definitions := []ToolDefinition{}
+	if catalog, ok := tools.(ToolCatalog); ok {
+		definitions = catalog.Tools()
+	}
+	baseQuestion := conversationalQuestion(question, messages)
+	s.mu.RLock()
+	mem := s.memory
+	s.mu.RUnlock()
+	if mem != nil {
+		if promptCtx := mem.RenderPromptContext(); promptCtx != "" {
+			baseQuestion = promptCtx + "\n\n" + baseQuestion
+		}
+	}
+	steps := append([]ToolStep(nil), toolSteps...)
+	if nativeModel, ok := model.(ToolAwareModel); ok && len(definitions) > 0 && (cfg.Provider == "openai" || cfg.Provider == "google" || isChatCompletionsToolProvider(cfg)) {
+		return s.runNativeToolLoop(ctx, cfg, nativeModel, baseQuestion, report, findings, steps, definitions, tools)
+	}
+	seen := map[string]bool{}
+	for turn := 0; turn < maxAgentToolTurns; turn++ {
+		payload, err := buildModelDiagnostic(report, findings, steps)
+		if err != nil {
+			return "", err, cfg.Provider
+		}
+		ans, modelErr := model.Analyze(ctx, cfg, agentPrompt(baseQuestion, definitions), payload)
+		if modelErr != nil {
+			return "", modelErr, cfg.Provider
+		}
+		call, wantsTool := parseModelToolCall(ans)
+		if !wantsTool || tools == nil {
+			return ans, nil, cfg.Provider
+		}
+		key := toolCallKey(call)
+		if seen[key] {
+			return "Не удалось продолжить анализ: модель повторно запросила тот же инструмент.", nil, cfg.Provider
+		}
+		seen[key] = true
+		s.mu.Lock()
+		s.state.Progress = "ИИ проверяет: " + call.Name
+		s.mu.Unlock()
+		step := tools.Execute(ctx, call)
+		steps = append(steps, step)
+		s.mu.Lock()
+		s.state.ToolSteps = append(s.state.ToolSteps, step)
+		s.mu.Unlock()
+	}
+	summary := buildTargetedAnswer(steps)
+	continuationMsg := fmt.Sprintf("%s\n\n---\n**Достигнут лимит автоматической диагностики (%d шагов).**\nЕсли требуется продолжить углублённое исследование, напишите «Продолжай» или задайте уточняющий вопрос, и я продолжу расследование на основе уже собранных фактов.", summary, maxAgentToolTurns)
+	return continuationMsg, nil, cfg.Provider
+}
+
+func (s *Service) runNativeToolLoop(
+	ctx context.Context,
+	cfg ModelConfig,
+	model ToolAwareModel,
+	question string,
+	report diagnostics.Report,
+	findings []Finding,
+	steps []ToolStep,
+	definitions []ToolDefinition,
+	tools ToolExecutor,
+) (string, error, string) {
+	history := []ModelToolExchange{}
+	seen := map[string]bool{}
+	totalCalls := 0
+	payload, err := buildModelDiagnostic(report, findings, steps)
 	if err != nil {
 		return "", err, cfg.Provider
 	}
-	ans, modelErr := model.Analyze(ctx, cfg, conversationalQuestion(question, messages), payload)
-	return ans, modelErr, cfg.Provider
+	for turnIndex := 0; turnIndex < maxAgentToolTurns; turnIndex++ {
+		turn, err := model.AnalyzeWithTools(ctx, cfg, question, payload, definitions, history)
+		if err != nil {
+			return "", err, cfg.Provider
+		}
+		if len(turn.Calls) == 0 {
+			if strings.TrimSpace(turn.Text) == "" {
+				return "Модель завершила анализ без текстового ответа.", nil, cfg.Provider
+			}
+			return turn.Text, nil, cfg.Provider
+		}
+		exchange := ModelToolExchange{ProviderState: turn.ProviderState}
+		for _, nativeCall := range turn.Calls {
+			if totalCalls >= maxAgentToolTurns {
+				exchange.Results = append(exchange.Results, ModelToolResult{
+					ID:     nativeCall.ID,
+					Name:   nativeCall.Name,
+					Output: `{"status":"skipped","summary":"Лимит шагов автоматической диагностики исчерпан. Пожалуйста, сформулируйте итоговый ответ на основе всех уже собранных фактов."}`,
+				})
+				continue
+			}
+			arguments := make(map[string]string, len(nativeCall.Arguments))
+			for key, value := range nativeCall.Arguments {
+				switch typed := value.(type) {
+				case string:
+					arguments[key] = typed
+				case float64, bool:
+					arguments[key] = fmt.Sprint(typed)
+				}
+			}
+			call := ToolCall{Name: nativeCall.Name, Arguments: arguments}
+			key := toolCallKey(call)
+			if seen[key] {
+				step := ToolStep{
+					Name:      call.Name,
+					Title:     call.Name,
+					Status:    "warning",
+					ReadOnly:  true,
+					StartedAt: time.Now(),
+					Summary:   "Инструмент уже вызывался с такими параметрами",
+					Evidence:  []string{"Повторный вызов отклонён: используйте предыдущие результаты."},
+				}
+				output, _ := json.Marshal(step)
+				exchange.Results = append(exchange.Results, ModelToolResult{
+					ID: nativeCall.ID, Name: nativeCall.Name, Output: string(output),
+				})
+				continue
+			}
+			seen[key] = true
+			s.mu.Lock()
+			s.state.Progress = "ИИ проверяет: " + call.Name
+			s.mu.Unlock()
+			step := tools.Execute(ctx, call)
+			steps = append(steps, step)
+			s.mu.Lock()
+			s.state.ToolSteps = append(s.state.ToolSteps, step)
+			s.mu.Unlock()
+			output, _ := json.Marshal(sanitizeToolSteps([]ToolStep{step})[0])
+			exchange.Results = append(exchange.Results, ModelToolResult{
+				ID: nativeCall.ID, Name: nativeCall.Name, Output: string(output),
+			})
+			totalCalls++
+		}
+		history = append(history, exchange)
+		s.mu.Lock()
+		s.state.Progress = "Модель анализирует результаты проверки…"
+		s.mu.Unlock()
+		if totalCalls >= maxAgentToolTurns {
+			break
+		}
+	}
+	// Give model one final chance to formulate its conclusive diagnosis based on all gathered history.
+	finalTurn, finalErr := model.AnalyzeWithTools(ctx, cfg, question, payload, definitions, history, "none")
+	if finalErr == nil && strings.TrimSpace(finalTurn.Text) != "" {
+		return finalTurn.Text, nil, cfg.Provider
+	}
+
+	summary := buildTargetedAnswer(steps)
+	continuationMsg := fmt.Sprintf("%s\n\n---\n**Достигнут лимит автоматической диагностики (%d шагов).**\nЕсли требуется продолжить углублённое исследование, напишите «Продолжай» или задайте уточняющий вопрос, и я продолжу расследование на основе уже собранных фактов.", summary, maxAgentToolTurns)
+	return continuationMsg, nil, cfg.Provider
 }
 
 func conversationalQuestion(current string, messages []ChatMessage) string {
@@ -628,6 +1260,11 @@ var (
 func sanitizeModelText(value string) string {
 	value = modelIPv4Pattern.ReplaceAllString(value, "PRIVATE-IP")
 	value = modelIPv6Pattern.ReplaceAllString(value, "PRIVATE-IPV6")
+	value = modelAPIKeyPattern.ReplaceAllString(value, "[SECRET]")
+	return modelWGKeyPattern.ReplaceAllString(value, "[KEY]")
+}
+
+func sanitizeChatMessage(value string) string {
 	value = modelAPIKeyPattern.ReplaceAllString(value, "[SECRET]")
 	return modelWGKeyPattern.ReplaceAllString(value, "[KEY]")
 }

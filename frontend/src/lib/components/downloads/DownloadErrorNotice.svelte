@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import {
 		DOWNLOAD_SETTINGS_HREF,
 		humanizeDownloadError,
@@ -20,6 +21,11 @@
 	const info: HumanizedDownloadError = $derived(humanizeDownloadError(error));
 	const showRaw = $derived(!hideRaw && info.kind !== 'generic' && info.raw.trim().length > 0);
 	const showSettingsLink = $derived(info.needsDownloadSettings && !hideSettingsLink);
+
+	function askAI() {
+		const query = info.raw || info.title || '';
+		void goto('/diagnostics?tab=system&view=ai&ask=' + encodeURIComponent(query));
+	}
 </script>
 
 <div class="dl-error" class:dl-error-singbox={info.kind === 'singbox-off'}>
@@ -27,11 +33,16 @@
 	{#if info.detail}
 		<span class="dl-error-detail">{info.detail}</span>
 	{/if}
-	{#if showSettingsLink}
-		<a class="dl-error-link" href={DOWNLOAD_SETTINGS_HREF}>
-			Открыть Настройки → Загрузки
-		</a>
-	{/if}
+	<div class="dl-error-actions">
+		{#if showSettingsLink}
+			<a class="dl-error-link" href={DOWNLOAD_SETTINGS_HREF}>
+				Открыть Настройки → Загрузки
+			</a>
+		{/if}
+		<button type="button" class="dl-error-ai" onclick={askAI}>
+			✨ Разобрать с ИИ
+		</button>
+	</div>
 	{#if showRaw}
 		<details class="dl-error-raw">
 			<summary>Подробности</summary>
@@ -60,11 +71,38 @@
 		font-weight: 400;
 	}
 
+	.dl-error-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-top: 0.15rem;
+	}
+
 	.dl-error-link {
 		align-self: flex-start;
 		color: var(--accent);
 		text-decoration: underline;
 		font-weight: 500;
+	}
+
+	.dl-error-ai {
+		background: transparent;
+		border: 1px solid color-mix(in srgb, var(--color-accent, #3b82f6) 40%, transparent);
+		color: var(--color-accent, #3b82f6);
+		font-size: 0.75rem;
+		font-weight: 600;
+		padding: 0.15rem 0.5rem;
+		border-radius: var(--radius-sm, 6px);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		transition: all 0.15s ease;
+	}
+
+	.dl-error-ai:hover {
+		background: var(--color-accent, #3b82f6);
+		color: #fff;
 	}
 
 	.dl-error-raw {

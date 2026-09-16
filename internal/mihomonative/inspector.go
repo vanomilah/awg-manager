@@ -325,15 +325,33 @@ func (s *Store) Inspect(ctx context.Context, input InspectInput) (InspectData, e
 		)
 		cloudDomains := []string{
 			"keenetic.com", "keenetic.io", "keenetic.net", "keenetic.ru",
-			"keenetic.pro", "keenetic.link", "keenetic.name",
-			"netcraze.io", "netcraze.net", "netcraze.pro",
+			"keenetic.pro", "keenetic.link", "keenetic.name", "keenetic.cloud",
+			"netcraze.io", "netcraze.net", "netcraze.pro", "netcraze.ru", "netcraze.com", "netcraze.cloud",
 			"crazedns.ru", "crazedns.com", "crazedns.net",
-			"omni.ru",
+			"omni.ru", "knt9.xyz",
 		}
 		for _, d := range cloudDomains {
 			rules = append(rules, &Rule{Type: "DOMAIN-SUFFIX", Payload: d, Outbound: target, Enabled: true})
 		}
-		for _, p := range []string{"9", "3478", "3479"} {
+		cloudCIDRs := []string{
+			"185.162.93.0/24",
+			"95.213.212.0/24",
+			"87.228.71.0/24",
+			"91.92.241.0/24",
+			"193.107.216.0/24",
+			"178.250.154.0/24",
+			"178.72.134.0/24",
+			"85.198.119.0/24",
+			"37.0.127.0/24",
+			"5.35.2.0/24",
+			"84.38.177.0/24",
+			"49.12.59.0/24",
+			"167.233.7.0/24",
+		}
+		for _, cidr := range cloudCIDRs {
+			rules = append(rules, &Rule{Type: "IP-CIDR", Payload: cidr, Outbound: target, Enabled: true, NoResolve: true})
+		}
+		for _, p := range []string{"9", "3478", "3479", "4044", "5683"} {
 			rules = append(rules, &Rule{Type: "DST-PORT", Payload: p, Outbound: target, Enabled: true})
 		}
 	}

@@ -609,6 +609,42 @@ func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
 //	@Failure		409	{object}	TunnelReferencedResponse
 //	@Failure		500	{object}	APIErrorEnvelope
 //	@Router			/tunnels/delete [post]
+// ToggleLock переключает блокировку тумблера туннеля (#818).
+// POST /api/tunnels/toggle-lock?id=<id>
+func (h *TunnelsHandler) ToggleLock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	id, ok := requireQueryID(w, r)
+	if !ok {
+		return
+	}
+	if !isValidTunnelID(id) {
+		response.Error(w, "invalid tunnel ID", "INVALID_ID")
+		return
+	}
+	stored, err := h.store.Get(id)
+	if err != nil || stored == nil {
+		response.Error(w, "tunnel not found", "NOT_FOUND")
+		return
+	}
+	var newLocked bool
+	if err := h.store.Update(id, func(t *storage.AWGTunnel) error {
+		t.ToggleLocked = !t.ToggleLocked
+		newLocked = t.ToggleLocked
+		return nil
+	}); err != nil {
+		response.Error(w, err.Error(), "UPDATE_FAILED")
+		return
+	}
+	h.publishTunnelList(r.Context())
+	response.JSON(w, map[string]interface{}{
+		"id":           id,
+		"toggleLocked": newLocked,
+	})
+}
+
 func (h *TunnelsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		response.MethodNotAllowed(w)

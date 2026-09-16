@@ -1,0 +1,4 @@
+./handler.go
+./install.go
+./pins.go
+./version.go

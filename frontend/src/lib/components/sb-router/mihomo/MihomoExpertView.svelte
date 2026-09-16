@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
-    Plus, Globe, Zap, ShieldOff, Layers, Activity, RefreshCw,
+    Plus, Globe, Zap, ShieldOff, Layers, Activity, RefreshCw, Sparkles,
     Edit3, Trash2, ChevronUp, ChevronDown, Check, ExternalLink, FileText, LayoutGrid
   } from 'lucide-svelte';
   import { api } from '$lib/api/client';
@@ -28,6 +28,8 @@
   import MihomoRuleEditModal from './MihomoRuleEditModal.svelte';
   import MihomoGroupEditModal from './MihomoGroupEditModal.svelte';
   import MihomoProviderModal from './MihomoProviderModal.svelte';
+  import MihomoTemplateModal from './MihomoTemplateModal.svelte';
+  import MihomoRuleSetCatalogModal from './MihomoRuleSetCatalogModal.svelte';
   import MihomoProxyGroupCard from './MihomoProxyGroupCard.svelte';
   import DnsServersCompact from '../DnsServersCompact.svelte';
   import DNSServerEditModal from '$lib/components/routing/singboxRouter/DNSServerEditModal.svelte';
@@ -87,6 +89,17 @@
   const storeDnsServers = singboxRouterStore.dnsServers;
   const storeDnsRules = singboxRouterStore.dnsRules;
   const storeOptions = singboxRouterStore.options;
+
+  let templateModalOpen = $state(false);
+  let providerCatalogOpen = $state(false);
+
+  function handleOpenTemplates() {
+    templateModalOpen = true;
+  }
+
+  function handleOpenProviderCatalog() {
+    providerCatalogOpen = true;
+  }
 
   let dnsServerAddOpen = $state(false);
   let dnsServerEditTag = $state<string | null>(null);
@@ -389,6 +402,12 @@
     section="rules"
   >
     {#snippet actions()}
+      <Button variant="secondary" size="sm" onclick={handleOpenTemplates}>
+        {#snippet iconBefore()}
+          <Sparkles size={14} aria-hidden="true" />
+        {/snippet}
+        Шаблоны
+      </Button>
       <Button variant="secondary" size="sm" onclick={openAddWizard}>
         {#snippet iconBefore()}
           <LayoutGrid size={14} aria-hidden="true" />
@@ -551,6 +570,12 @@
     section="ruleSets"
   >
     {#snippet actions()}
+      <Button variant="secondary" size="sm" onclick={handleOpenProviderCatalog}>
+        {#snippet iconBefore()}
+          <LayoutGrid size={14} aria-hidden="true" />
+        {/snippet}
+        Каталог
+      </Button>
       <Button variant="primary" size="sm" onclick={handleAddProvider}>
         + Провайдер
       </Button>
@@ -592,6 +617,7 @@
             <th>Тип</th>
             <th>Формат / Поведение</th>
             <th>Источник (URL / Path)</th>
+            <th>Загрузка через</th>
             <th>Интервал</th>
             <th class="col-actions">Действия</th>
           </tr>
@@ -599,7 +625,7 @@
         <tbody>
           {#if filteredProviders.length === 0}
             <tr>
-              <td colspan="6" class="empty-cell">Нет провайдеров правил</td>
+              <td colspan="7" class="empty-cell">Нет провайдеров правил</td>
             </tr>
           {:else}
             {#each filteredProviders as provider (provider.id || provider.name)}
@@ -620,6 +646,19 @@
                 </td>
                 <td class="font-mono text-xs text-muted url-cell">
                   {provider.url || provider.path || '—'}
+                </td>
+                <td>
+                  {#if provider.type === 'http'}
+                    {#if provider.proxy}
+                      <Badge variant="warning" size="sm">
+                        {provider.proxy}
+                      </Badge>
+                    {:else}
+                      <span class="text-xs text-muted">DIRECT</span>
+                    {/if}
+                  {:else}
+                    <span class="text-xs text-muted">Локально</span>
+                  {/if}
                 </td>
                 <td class="text-sm text-secondary">
                   {provider.interval ? `${provider.interval}с` : '—'}
@@ -805,6 +844,7 @@
         editingGroup = null;
         onReload();
       }}
+      onDelete={handleDeleteGroup}
     />
   {/if}
 
@@ -812,6 +852,9 @@
     <MihomoProviderModal
       open={true}
       provider={editingProvider}
+      groups={groups}
+      proxies={proxies}
+      subscriptions={subscriptions}
       onClose={() => {
         providerModalOpen = false;
         editingProvider = null;
@@ -824,11 +867,45 @@
     />
   {/if}
 
+  {#if templateModalOpen}
+    <MihomoTemplateModal
+      open={true}
+      groups={groups}
+      proxies={proxies}
+      subscriptions={subscriptions}
+      currentRules={rules}
+      onClose={() => (templateModalOpen = false)}
+      onApplied={() => {
+        templateModalOpen = false;
+        onReload();
+      }}
+    />
+  {/if}
+
+  {#if providerCatalogOpen}
+    <MihomoRuleSetCatalogModal
+      open={true}
+      groups={groups}
+      proxies={proxies}
+      subscriptions={subscriptions}
+      existingProviders={ruleProviders}
+      onClose={() => (providerCatalogOpen = false)}
+      onAdded={() => {
+        providerCatalogOpen = false;
+        onReload();
+      }}
+    />
+  {/if}
+
   <!-- Delete Confirm Modal -->
   <ConfirmModal
     open={deleteConfirmOpen}
-    title="Подтверждение удаления"
-    message="Вы действительно хотите удалить этот элемент конфигурации Mihomo?"
+    title={deleteType === 'group' ? 'Удалить группу прокси?' : deleteType === 'provider' ? 'Удалить провайдер правил?' : 'Удалить правило?'}
+    message={deleteType === 'group'
+      ? 'Вы действительно хотите удалить эту группу прокси Mihomo? Связанные с ней правила могут потребовать обновления.'
+      : deleteType === 'provider'
+        ? 'Вы действительно хотите удалить этот провайдер правил Mihomo?'
+        : 'Вы действительно хотите удалить это правило маршрутизации Mihomo?'}
     confirmLabel="Удалить"
     variant="danger"
     onConfirm={confirmDelete}

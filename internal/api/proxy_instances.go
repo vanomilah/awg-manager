@@ -220,6 +220,10 @@ type ProxyRtPatchRequest struct {
 	// StatsLog — режим журнала статистики wdtt-сервера: ram|off|disk.
 	// Пустая строка означает дефолт (ram — журнал в tmpfs, не на флеш).
 	StatsLog *string `json:"statsLog,omitempty" example:"ram"`
+	// LinkPeer — адрес сервера для генерации ссылок.
+	LinkPeer *string `json:"linkPeer,omitempty" example:"77.1.2.3:56000"`
+	// LinkVKHashes — VK-хеши для генерации ссылок.
+	LinkVKHashes *string `json:"linkVkHashes,omitempty" example:"h1,h2"`
 }
 
 // ── хендлер ──────────────────────────────────────────────────────
@@ -240,6 +244,8 @@ type ProxyInstancesDeps struct {
 	// означает «гейта нет»: до проводки поверхность не имеет права запрещать
 	// то, чего не умеет проверить.
 	OpkgTunSupported func() bool
+	// OnWdttServerUpdated — уведомление при обновлении настроек wdtt-сервера (перематериализация passwords.json и SIGHUP).
+	OnWdttServerUpdated func(ctx context.Context, key string)
 }
 
 // ProxyInstancesHandler обслуживает /api/proxyrt/instances*.
@@ -458,7 +464,7 @@ func (h *ProxyInstancesHandler) patch(w http.ResponseWriter, r *http.Request, ke
 	// Только намерение — отдельным вызовом: это самая частая правка (тумблер),
 	// и у менеджера для неё есть своя точка входа. Условие перечисляет ВСЕ
 	// прочие поля тела: забытое поле уехало бы в эту ветку и потерялось молча.
-	if req.Name == nil && len(cfg) == 0 && req.Sub == nil && req.StatsLog == nil && req.Enabled != nil {
+	if req.Name == nil && len(cfg) == 0 && req.Sub == nil && req.StatsLog == nil && req.LinkPeer == nil && req.LinkVKHashes == nil && req.Enabled != nil {
 		if err := h.deps.Manager.SetEnabled(r.Context(), key, *req.Enabled); err != nil {
 			h.fail(w, err)
 			return
@@ -482,6 +488,12 @@ func (h *ProxyInstancesHandler) patch(w http.ResponseWriter, r *http.Request, ke
 		if req.StatsLog != nil {
 			rec.StatsLog = strings.TrimSpace(*req.StatsLog)
 		}
+		if req.LinkPeer != nil {
+			rec.LinkPeer = strings.TrimSpace(*req.LinkPeer)
+		}
+		if req.LinkVKHashes != nil {
+			rec.LinkVKHashes = strings.TrimSpace(*req.LinkVKHashes)
+		}
 		if err := proxyApplyConfig(rec, cfg); err != nil {
 			return err
 		}
@@ -492,6 +504,9 @@ func (h *ProxyInstancesHandler) patch(w http.ResponseWriter, r *http.Request, ke
 	if err != nil {
 		h.fail(w, err)
 		return
+	}
+	if strings.HasPrefix(key, string(instancestore.KindWdttServer)+":") && h.deps.OnWdttServerUpdated != nil {
+		h.deps.OnWdttServerUpdated(r.Context(), key)
 	}
 	h.respondRecord(w, key)
 }

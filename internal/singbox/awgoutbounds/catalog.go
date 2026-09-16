@@ -116,12 +116,13 @@ func (s *ServiceImpl) enumerate(ctx context.Context) ([]AWGEntry, error) {
 				continue
 			}
 			// Defense-in-depth: an awg-manager-created server interface is
-			// always tagged with description "AWGM ..." (see
+			// always tagged with description "AWGM WG Server" (see
 			// internal/managed/types.go::ManagedServerDescription). If the
 			// managedSet check above missed it (e.g., legacy storage entry
 			// without InterfaceName populated), fall back to description
-			// prefix match.
-			if strings.HasPrefix(t.Description, "AWGM") {
+			// prefix match. WDTT client tunnels ("AWGM WDTT Raw Client: ...")
+			// must not be skipped.
+			if strings.HasPrefix(t.Description, "AWGM WG Server") {
 				continue
 			}
 			seen[t.InterfaceName] = true

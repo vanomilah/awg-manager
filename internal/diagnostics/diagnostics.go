@@ -130,6 +130,7 @@ type JournalWarningsInfo struct {
 	LimitPerBucket int                  `json:"limitPerBucket"`
 	AWGM           JournalWarningBucket `json:"awgm"`
 	Singbox        JournalWarningBucket `json:"singbox"`
+	Mihomo         JournalWarningBucket `json:"mihomo,omitempty"`
 }
 
 // JournalWarningBucket is one diagnostics journal excerpt for a concrete log bucket.

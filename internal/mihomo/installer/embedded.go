@@ -19,5 +19,6 @@ var EmbeddedBinaries = map[string]BinarySpec{
 		Version: RequiredVersion,
 		URL:     "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-arm64-v1.19.29.gz",
 		SHA256:  "9a868b5e4e0ad91d9d71e1b41b0cfce78aaba44360c30df74a723f8e3926a86c",
+		Size:    44236926,
 	},
 }

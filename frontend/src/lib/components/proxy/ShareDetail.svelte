@@ -4,7 +4,7 @@
 	// редактируемую копию, которая живёт здесь (W-22). Сохраняет её страница:
 	// она владеет конфигами и статусами.
 	import { onMount, untrack } from 'svelte';
-	import { Badge, Button, Card, Dropdown, FieldHint, SideDrawer, Stat, StatStrip, Toggle } from '$lib/components/ui';
+	import { Badge, Button, Card, Dropdown, FieldHint, SegmentedControl, SideDrawer, Stat, StatStrip, Toggle } from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { errText } from '$lib/utils/errorMessage';
@@ -24,6 +24,8 @@
 	import LogSection from './LogSection.svelte';
 	import ServerAllowlist from './ServerAllowlist.svelte';
 	import ServerClients from './ServerClients.svelte';
+	import ServerFreeTurnAuth from './ServerFreeTurnAuth.svelte';
+	import ServerSharedAuth from './ServerSharedAuth.svelte';
 	import { CLIENT_TEXT } from './serverClients';
 	import ShareAdvancedSection from './ShareAdvancedSection.svelte';
 	import ShareNetworkSection from './ShareNetworkSection.svelte';
@@ -100,15 +102,10 @@
 	let lanOptions = $state<{ value: string; label: string }[]>([]);
 	let wanOptions = $state<{ value: string; label: string }[]>([]);
 	let ingress = $state(false);
-	// RB-11 показывается, только когда точно известно, что sing-box не работает:
-	// до ответа ручки статуса тумблер молчит, а не пугает.
-	let singboxRunning = $state(true);
-	// Режим устройств «все» в tproxy делает тумблер неотличимым от включённого:
-	// jump в цепочку sing-box эмитится в PREROUTING безусловно, а MARK-правила
-	// по входным интерфейсам в этом режиме не эмитятся вовсе
-	// (internal/singbox/router/iptables.go) — трафик абонентов с opkgtun
-	// перехватывается при любом его положении. Ссылка при этом сохраняется и
-	// заработает после возврата режима «по политике», поэтому тумблер живой.
+	let activeEngine = $state<'sing-box' | 'mihomo'>('sing-box');
+	const isMihomo = $derived(activeEngine === 'mihomo');
+	const engineName = $derived(isMihomo ? 'Mihomo' : 'sing-box');
+	let engineRunning = $state(true);
 	let ingressForced = $state(false);
 
 	// Гейт старта WDTT-сервера (SH-91): «Абонент 1» на путях UI больше не
@@ -118,13 +115,27 @@
 	let usableClients = $state<number | undefined>(undefined);
 	let totalClients = $state<number | undefined>(undefined);
 
+	let localAuthMode = $state<'shared' | 'users'>(
+		wdttServer?.clientAuthMode === 'shared' ? 'shared' : 'users',
+	);
+	const clientAuthMode = $derived(wdttDraft?.clientAuthMode ?? localAuthMode);
+	const isSharedMode = $derived(clientAuthMode === 'shared');
+
 	const peerOptions = $derived(buildRunningServerPeerDropdownOptions(peerSnap));
 	const wdttStatus = $derived(row.protocol === 'wdtt' ? (status as WdttProcessStatus) : undefined);
 	const running = $derived(row.state === 'running');
+
+	const effectiveUsableClients = $derived(
+		isSharedMode ? (wdttDraft?.sharedPassword?.trim() ? 1 : 0) : usableClients,
+	);
 	// У работающего сервера подсказки нет: «Запустить» и так заперта состоянием,
 	// а текст про незапускаемый сервер рядом с запущенным — прямая неправда.
 	const startBlockedHint = $derived(
-		wdttServer && !running && usableClients === 0 ? CLIENT_TEXT.startNoUsable : '',
+		wdttServer && !running && effectiveUsableClients === 0
+			? isSharedMode
+				? 'Задайте общий пароль сервера для запуска'
+				: CLIENT_TEXT.startNoUsable
+			: '',
 	);
 	const ports = $derived(
 		wdttDraft ? wdttServerPorts(wdttDraft) : ftDraft ? freeTurnServerPorts(ftDraft) : [],
@@ -138,7 +149,20 @@
 	// два порта стояли в ряд с кнопками и тумблером.
 	const uptimeValue = $derived(running ? formatUptime(row.startedAt) || '—' : '—');
 	const clientsValue = $derived(
-		usableClients === undefined ? '—' : `${usableClients} / ${totalClients ?? usableClients}`,
+		ftServer
+			? 'FreeTurn'
+			: isSharedMode
+				? 'Общий пароль'
+				: usableClients === undefined
+					? '—'
+					: `${usableClients} / ${totalClients ?? usableClients}`,
+	);
+	const clientsSub = $derived(
+		ftServer
+			? 'обфусцированный TURN'
+			: isSharedMode
+				? 'режим PSK (без списка)'
+				: 'рабочих / всего',
 	);
 	const portTiles = $derived(ports.slice(0, 2));
 
@@ -172,19 +196,24 @@
 		} catch {
 			/* список WAN вторичен */
 		}
-		// WS-27: фактическое состояние тумблера — из настроек роутера sing-box.
+		// WS-27: фактическое состояние тумблера — из настроек роутера.
 		if (!wdttDraft) return;
 		try {
 			const settings = await api.singboxRouterGetSettings();
+			activeEngine = settings.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
 			ingress = ingressOn(settings.ingressInterfaces, wdttIngressRefs(wdttDraft, wdttStatus));
 			ingressForced = allDevicesTProxy(settings);
 		} catch {
 			/* нет ответа — тумблер остаётся выключенным */
 		}
 		try {
-			singboxRunning = (await api.singboxGetStatus()).running;
+			if (activeEngine === 'mihomo') {
+				engineRunning = (await api.mihomoStatus()).running;
+			} else {
+				engineRunning = (await api.singboxGetStatus()).running;
+			}
 		} catch {
-			/* нет ответа — про состояние sing-box ничего не заявляем */
+			/* нет ответа — про состояние движка ничего не заявляем */
 		}
 	});
 
@@ -235,6 +264,7 @@
 		void locked(async () => {
 			await withIngressLock(async () => {
 				const settings = await api.singboxRouterGetSettings();
+				activeEngine = settings.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
 				// Режим могли сменить на другой странице — подсказка не должна врать.
 				ingressForced = allDevicesTProxy(settings);
 				const refs = wdttIngressRefs(wdttDraft as WdttServerConfig, wdttStatus);
@@ -312,7 +342,7 @@
 	<!-- Состояние: четыре числа, которые смотрят каждый день. -->
 	<StatStrip>
 		<Stat value={running ? 'Запущен' : 'Остановлен'} label="Состояние" sub={uptimeValue} />
-		<Stat value={clientsValue} label="Абоненты" sub="рабочих / всего" />
+		<Stat value={clientsValue} label="Абоненты" sub={clientsSub} />
 		{#each portTiles as p (p.label)}
 			<Stat value={`:${p.port}`} label={p.label} />
 		{/each}
@@ -321,31 +351,71 @@
 	<!-- EX-01: та же форма, что у «Выхода» — ошибка живёт, пока процесс не работает. -->
 	<LastErrorBox text={running ? '' : (status?.lastError ?? '')} />
 
-	<!-- Абоненты — во всю ширину: ради них сюда и заходят. Прежде блок жил в
-	     правой колонке рядом с формой, и на 1440px ему доставалась половина
-	     экрана, а форма занимала вторую. -->
+	{#if wdttServer}
+		<div class="auth-mode-selector-bar">
+			<span class="auth-mode-title">Авторизация клиентов</span>
+			<SegmentedControl
+				options={[
+					{ value: 'shared', label: 'Общий пароль (PSK)' },
+					{ value: 'users', label: 'По списку пользователей' },
+				]}
+				value={clientAuthMode}
+				onchange={async (val) => {
+					localAuthMode = val as 'shared' | 'users';
+					if (wdttDraft) {
+						wdttDraft.clientAuthMode = val as 'shared' | 'users';
+						if (val === 'shared' && !wdttDraft.sharedPassword) {
+							const arr = new Uint8Array(16);
+							crypto.getRandomValues(arr);
+							wdttDraft.sharedPassword = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
+						}
+						await save();
+					}
+				}}
+			/>
+		</div>
+	{/if}
+
+	<!-- Абоненты / Общий пароль — во всю ширину: ради них сюда и заходят -->
 	<div id="share-clients" class="clients-block">
 		{#if wdttServer}
-			<ServerClients
+			{#if isSharedMode}
+				<ServerSharedAuth
+					serverId={row.id}
+					serverName={row.name}
+					server={wdttDraft ?? wdttServer}
+					{running}
+					busy={mutating}
+					onsave={save}
+					onpasswordchange={(newPass) => {
+						if (wdttDraft) wdttDraft.sharedPassword = newPass;
+					}}
+				/>
+			{:else}
+				<ServerClients
+					serverId={row.id}
+					serverName={row.name}
+					server={wdttServer}
+					{running}
+					busy={mutating}
+					{locked}
+					onusable={(count, total) => {
+						usableClients = count;
+						totalClients = total;
+					}}
+				/>
+			{/if}
+		{:else if ftServer}
+			<ServerFreeTurnAuth
 				serverId={row.id}
 				serverName={row.name}
-				server={wdttServer}
+				server={ftDraft ?? ftServer}
 				{running}
 				busy={mutating}
 				{locked}
-				onusable={(count, total) => {
-					usableClients = count;
-					totalClients = total;
-				}}
-			/>
-		{:else if ftServer}
-			<ServerAllowlist
-				serverId={row.id}
-				serverName={row.name}
-				server={ftServer}
-				{peerConf}
-				busy={mutating}
-				{locked}
+				onsave={save}
+				bind:peer
+				bind:peerConf
 			/>
 		{/if}
 	</div>
@@ -422,11 +492,11 @@
 {#snippet ingressToggle()}
 	<div class="run-toggle">
 		<Toggle
-			label="Маршрутизация через sing-box"
-			hint={!singboxRunning
-				? 'sing-box не запущен — правило вступит в силу после его запуска'
+			label={`Маршрутизация через ${engineName}`}
+			hint={!engineRunning
+				? `${engineName} не запущен — правило вступит в силу после его запуска`
 				: ingressForced
-					? 'Режим устройств «все» — трафик абонентов и так идёт через sing-box'
+					? `Режим устройств «все» — трафик абонентов и так идёт через ${engineName}`
 					: ''}
 			checked={ingress}
 			disabled={mutating}
@@ -435,9 +505,9 @@
 		/>
 		<FieldHint
 			text={ingressForced
-				? 'В маршрутизации sing-box выбран режим устройств «все»: под правила попадает весь транзитный трафик роутера, включая трафик абонентов, — при любом положении этого тумблера. Положение всё равно сохраняется и вступит в силу, когда режим вернут на «по политике».'
-				: 'Трафик абонентов пойдёт по правилам sing-box — тем же, что у устройств сети. Выключено — абоненты выходят напрямую, минуя правила.'}
-			ariaLabel="Подсказка: маршрутизация через sing-box"
+				? `В маршрутизации ${engineName} выбран режим устройств «все»: под правила попадает весь транзитный трафик роутера, включая трафик абонентов, — при любом положении этого тумблера. Положение всё равно сохраняется и вступит в силу, когда режим вернут на «по политике».`
+				: `Трафик абонентов пойдёт по правилам ${engineName} — тем же, что у устройств сети. Выключено — абоненты выходят напрямую, минуя правила.`}
+			ariaLabel={`Подсказка: маршрутизация через ${engineName}`}
 		/>
 	</div>
 {/snippet}
@@ -461,8 +531,29 @@
 		margin-left: auto;
 	}
 
-	.clients-block {
+	.auth-mode-selector-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.625rem 0.875rem;
+		background: var(--color-surface-raised, rgba(255, 255, 255, 0.03));
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm, 6px);
 		margin-top: 1rem;
+		flex-wrap: wrap;
+	}
+
+	.auth-mode-title {
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: var(--color-text-secondary);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.clients-block {
+		margin-top: 0.75rem;
 	}
 
 	/* Между плитками состояния и абонентами — воздух: это две разные вещи. */

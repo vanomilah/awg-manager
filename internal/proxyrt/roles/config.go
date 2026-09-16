@@ -211,9 +211,11 @@ type WdttServerConfig struct {
 	// Debug — пользовательский тумблер старого мира (Г-1). В argv сервера не
 	// эмитится — как и раньше, хранится намерение.
 	Debug bool `json:"debug,omitempty"`
-	// ExposeToPolicies — тумблер «использовать в политиках доступа»:
-	// private → public + ip global (ndms_iface.go:101-110). Роутерный механизм
-	// с осознанным выбором; routable_exit сервера УБРАН решением владельца.
+	// ClientAuthMode — режим авторизации клиентов: "shared" (общий пароль PSK) или "users" (по списку).
+	// Пусто = "users" (дефолт для обратной совместимости).
+	ClientAuthMode string `json:"clientAuthMode,omitempty"`
+	// SharedPassword — общий пароль сервера при ClientAuthMode == "shared".
+	SharedPassword string `json:"sharedPassword,omitempty"`
 	ExposeToPolicies bool `json:"exposeToPolicies,omitempty"`
 	OpenFirewall     bool `json:"openFirewall"`
 }

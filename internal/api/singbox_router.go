@@ -31,6 +31,11 @@ func NewSingboxRouterHandler(svc router.Service, appLogger logging.AppLogger) *S
 	}
 }
 
+// Service returns the underlying router.Service instance.
+func (h *SingboxRouterHandler) Service() router.Service {
+	return h.svc
+}
+
 // SetOutboundRefCheckers wires device-proxy and router reference guards for
 // composite-outbound deletion (refuse 409 when the tag is still selected by a
 // device-proxy instance).

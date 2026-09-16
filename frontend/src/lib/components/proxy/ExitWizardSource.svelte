@@ -148,29 +148,44 @@
 	</div>
 {:else if detected === 'freeturn'}
 	<div class="detect-box">
+		<div class="detect-badge-row">
+			<Badge size="sm" variant="purple">FreeTurn</Badge>
+			{#if ftHasWg}
+				<Badge size="sm" variant="success">WireGuard-конфиг включён</Badge>
+			{:else}
+				<Badge size="sm" variant="warning">Без WireGuard-конфига</Badge>
+			{/if}
+		</div>
 		<p class="detect-note">
-			Профиль FreeTurn
+			{#if ftHasWg}
+				Ссылка содержит параметры подключения и готовую конфигурацию WireGuard. AWG-туннель создастся автоматически.
+			{:else}
+				В ссылке нет WireGuard-конфига — потребуется вставить клиентский .conf на шаге «Куда направить трафик».
+			{/if}
 			{#if ftClientId}
 				<FieldHint
 					text="В ссылке есть Client ID. Если у сервера включён список разрешённых, владелец сервера должен внести именно этот ID."
 					ariaLabel="Подсказка: Client ID"
 				/>
 			{/if}
-			{#if !ftHasWg}
-				<FieldHint
-					text="В ссылке нет WireGuard-конфига — вставьте клиентский .conf на шаге «Куда направить трафик»."
-					ariaLabel="Подсказка: WireGuard-конфиг"
-				/>
-			{/if}
 		</p>
 	</div>
 {:else if detected === 'wdtt'}
 	<div class="detect-box">
-		{#if mode === 'raw'}
-			<Badge size="sm" variant="accent">WDTT · Raw</Badge>
-		{:else}
-			<p class="detect-note">Профиль WDTT · режим WG</p>
-		{/if}
+		<div class="detect-badge-row">
+			{#if mode === 'raw'}
+				<Badge size="sm" variant="accent">WDTT · Raw</Badge>
+			{:else}
+				<Badge size="sm" variant="accent">WDTT · WG</Badge>
+			{/if}
+		</div>
+		<p class="detect-note">
+			{#if mode === 'raw'}
+				Режим Raw: клиент поднимает собственный интерфейс OpkgTun.
+			{:else}
+				Профиль WDTT (режим WireGuard). Трафик направляется через связанный AWG-туннель.
+			{/if}
+		</p>
 	</div>
 {/if}
 
@@ -195,6 +210,13 @@
 		border: 1px solid var(--color-border);
 		background: var(--color-bg-tertiary);
 		border-radius: var(--radius);
+	}
+
+	.detect-badge-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		margin-bottom: 0.5rem;
 	}
 
 	.detect-box.bad {

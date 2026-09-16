@@ -158,6 +158,8 @@ export class WdttClient extends FreeturnClient {
 		const view = await this.proxyPatch('wdtt-server', id, {
 			enabled: config.enabled,
 			statsLog: config.statsLog ?? '',
+			linkPeer: config.linkPeer ?? '',
+			linkVkHashes: config.linkVkHashes ?? '',
 			config: toWdttServerPatch(config)
 		});
 		return { config: toWdttServerConfig(view) };

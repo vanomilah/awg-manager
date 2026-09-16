@@ -1,0 +1,8 @@
+{"Time":"2026-09-15T11:20:10.959824293+03:00","Action":"start","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router"}
+{"Time":"2026-09-15T11:20:10.96884159+03:00","Action":"run","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Test":"TestValidateMihomoVersion_ExecutionScript"}
+{"Time":"2026-09-15T11:20:10.96935669+03:00","Action":"output","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Test":"TestValidateMihomoVersion_ExecutionScript","Output":"=== RUN   TestValidateMihomoVersion_ExecutionScript\n"}
+{"Time":"2026-09-15T11:20:10.971240589+03:00","Action":"output","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Test":"TestValidateMihomoVersion_ExecutionScript","Output":"--- PASS: TestValidateMihomoVersion_ExecutionScript (0.00s)\n"}
+{"Time":"2026-09-15T11:20:10.971800489+03:00","Action":"pass","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Test":"TestValidateMihomoVersion_ExecutionScript","Elapsed":0}
+{"Time":"2026-09-15T11:20:10.972225089+03:00","Action":"output","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Output":"PASS\n"}
+{"Time":"2026-09-15T11:20:10.972667289+03:00","Action":"output","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Output":"ok  \tgithub.com/hoaxisr/awg-manager/internal/singbox/router\t0.012s\n"}
+{"Time":"2026-09-15T11:20:10.976295588+03:00","Action":"pass","Package":"github.com/hoaxisr/awg-manager/internal/singbox/router","Elapsed":0.016}

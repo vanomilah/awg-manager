@@ -282,7 +282,8 @@ func TestMihomoHelperProcess(t *testing.T) {
 		_, _ = os.Stderr.WriteString("deliberate failure\n")
 		os.Exit(23)
 	case "wait":
-		select {}
+		time.Sleep(24 * time.Hour)
+		os.Exit(0)
 	default:
 		os.Exit(24)
 	}

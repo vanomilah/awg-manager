@@ -239,7 +239,7 @@
       <div class="flow-col">
         <div class="flow-cap">Что увидит выход</div>
         <div class="dest dest-free">
-          <span class="dest-name">Туннель sing-box</span>
+          <span class="dest-name">Туннель {cfg?.routingEngine === 'mihomo' ? 'Mihomo' : 'sing-box'}</span>
           <span class="dest-tech">{tunName}</span>
           <span class="dest-note">адреса устройств — правила и статистика по клиентам работают</span>
         </div>

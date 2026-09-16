@@ -24,14 +24,16 @@ export function listenPort(listen?: string): string | null {
 	return /^\d+$/.test(port) ? port : null;
 }
 
-/** Туннель клиента: по `wdttClientId`, иначе по локальному порту. */
+/** Туннель клиента: по `clientId` (wdttClientId или freeTurnClientId), иначе по локальному порту. */
 export function findLinkedTunnel(
 	tunnels: TunnelListItem[],
 	listen?: string,
-	wdttClientId?: string,
+	clientId?: string,
 ): TunnelListItem | null {
-	if (wdttClientId) {
-		const linked = tunnels.find((t) => t.wdttClientId === wdttClientId);
+	if (clientId) {
+		const linked = tunnels.find(
+			(t) => t.wdttClientId === clientId || t.freeTurnClientId === clientId,
+		);
 		if (linked) return linked;
 	}
 	const port = listenPort(listen);

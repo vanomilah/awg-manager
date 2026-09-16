@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
@@ -920,5 +921,134 @@ func TestStoreMigration_PersistFailureReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "persist migration") {
 		t.Fatalf("expected persist migration error, got: %v", err)
+	}
+}
+
+func TestStoreSnapshotFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mihomo-native.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.CreateVLESS("vless://id@host:443?type=xhttp&path=%2Fx#Original", EngineAuto, EngineSingbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	origDigest, err := store.CurrentDigest()
+	if err != nil {
+		t.Fatalf("CurrentDigest failed: %v", err)
+	}
+
+	txid := "20260915120000"
+	snapFile, err := store.CreateSnapshotFile(txid)
+	if err != nil {
+		t.Fatalf("CreateSnapshotFile failed: %v", err)
+	}
+	if _, err := os.Stat(snapFile); err != nil {
+		t.Fatalf("snapshot file missing: %v", err)
+	}
+
+	// Mutate store
+	p2, err := store.CreateVLESS("vless://id2@host:443?type=xhttp&path=%2Fx#Mutated", EngineAuto, EngineSingbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutDigest, err := store.CurrentDigest()
+	if err != nil || mutDigest == origDigest {
+		t.Fatalf("expected digest change after mutation: orig=%s mut=%s", origDigest, mutDigest)
+	}
+
+	// Restore from snapshot
+	if err := store.RestoreSnapshotFile(snapFile); err != nil {
+		t.Fatalf("RestoreSnapshotFile failed: %v", err)
+	}
+
+	restoredDigest, err := store.CurrentDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredDigest != origDigest {
+		t.Fatalf("digest after restore mismatch: got %s, want %s", restoredDigest, origDigest)
+	}
+
+	// Verify p2 is gone
+	if _, err := store.GetProxy(p2.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("mutated proxy p2 should be gone after restore")
+	}
+
+	// Remove snapshot
+	if err := store.RemoveSnapshotFile(snapFile); err != nil {
+		t.Fatalf("RemoveSnapshotFile failed: %v", err)
+	}
+	if _, err := os.Stat(snapFile); !os.IsNotExist(err) {
+		t.Fatalf("snapshot file should be absent after removal")
+	}
+}
+
+func TestStoreTxAdapter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mihomo-native.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Compile-time interface check
+	var tx mihomo.NativeStoreTx = store.TxAdapter()
+	if tx == nil {
+		t.Fatal("TxAdapter returned nil")
+	}
+
+	digest, err := tx.CurrentDigest()
+	if err != nil || digest == "" {
+		t.Fatalf("tx.CurrentDigest failed: %v", err)
+	}
+}
+
+func TestStoreDraftJournal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mihomo-native.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Initially nil
+	dj, err := store.LoadDraftJournal()
+	if err != nil {
+		t.Fatalf("LoadDraftJournal failed: %v", err)
+	}
+	if dj != nil {
+		t.Fatalf("expected nil draft journal, got: %+v", dj)
+	}
+
+	// Save draft journal
+	expected := mihomo.DraftJournal{
+		Version:                  1,
+		TxID:                     "20260915120000",
+		State:                    mihomo.DraftPending,
+		DraftSnapshotFile:        "store.snapshot.20260915120000.json",
+		BaseDesiredStoreDigest:   "base123",
+		TargetDesiredStoreDigest: "target123",
+	}
+	if err := store.SaveDraftJournal(expected); err != nil {
+		t.Fatalf("SaveDraftJournal failed: %v", err)
+	}
+
+	loaded, err := store.LoadDraftJournal()
+	if err != nil {
+		t.Fatalf("LoadDraftJournal after save failed: %v", err)
+	}
+	if loaded == nil || loaded.TxID != expected.TxID || loaded.State != expected.State {
+		t.Fatalf("loaded mismatch: got %+v, want %+v", loaded, expected)
+	}
+
+	// Remove draft journal
+	if err := store.RemoveDraftJournal(); err != nil {
+		t.Fatalf("RemoveDraftJournal failed: %v", err)
+	}
+	loaded, err = store.LoadDraftJournal()
+	if err != nil || loaded != nil {
+		t.Fatalf("expected nil after removal, got: %+v (err: %v)", loaded, err)
 	}
 }

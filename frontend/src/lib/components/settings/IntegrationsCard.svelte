@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SingboxStatus, HydraRouteStatus } from '$lib/types';
+	import type { SingboxStatus, HydraRouteStatus, MihomoStatus, XrayStatus } from '$lib/types';
 	import { Button, ConfirmModal, Input, Modal, StatusDot } from '$lib/components/ui';
 	import SettingsSectionLabel from './SettingsSectionLabel.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -53,6 +53,26 @@
 		clashPortError?: string | null;
 		/** Подсистемы прокси (WDTT, FreeTurn); пусто — блок не рисуется. */
 		proxyBinaries?: ProxyBinaryRow[];
+		/** Mihomo интеграция */
+		mihomoStatus?: MihomoStatus | null;
+		mihomoStatusLoading?: boolean;
+		mihomoInstalling?: boolean;
+		mihomoUpdating?: boolean;
+		mihomoUninstalling?: boolean;
+		mihomoInstallError?: string | null;
+		mihomoUpdateError?: string | null;
+		oninstallMihomo?: () => void;
+		onupdateMihomo?: () => void;
+		onuninstallMihomo?: () => void;
+		showMihomo?: boolean;
+		/** Xray интеграция */
+		xrayStatus?: XrayStatus | null;
+		xrayStatusLoading?: boolean;
+		xrayInstalling?: boolean;
+		xrayUninstalling?: boolean;
+		oninstallXray?: () => void;
+		onuninstallXray?: () => void;
+		showXray?: boolean;
 	}
 
 	let {
@@ -79,6 +99,24 @@
 		clashPortSaving = false,
 		clashPortError = null,
 		proxyBinaries = [],
+		mihomoStatus = null,
+		mihomoStatusLoading = false,
+		mihomoInstalling = false,
+		mihomoUpdating = false,
+		mihomoUninstalling = false,
+		mihomoInstallError = null,
+		mihomoUpdateError = null,
+		oninstallMihomo,
+		onupdateMihomo,
+		onuninstallMihomo,
+		showMihomo = true,
+		xrayStatus = null,
+		xrayStatusLoading = false,
+		xrayInstalling = false,
+		xrayUninstalling = false,
+		oninstallXray,
+		onuninstallXray,
+		showXray = true,
 	}: Props = $props();
 
 	// Подсистема, ожидающая подтверждения удаления.
@@ -119,10 +157,18 @@
 	const clashPortDirty = $derived(clashPortValue !== (clashPort || DEFAULT_CLASH_PORT));
 
 	let confirmUninstall = $state(false);
+	let confirmUninstallMihomo = $state(false);
 
 	const singboxInstalled = $derived(singboxStatus?.installed ?? false);
 	const singboxRunning = $derived(singboxStatus?.running ?? false);
 	const singboxNeedsUpdate = $derived(singboxStatus?.updateAvailable ?? false);
+	const mihomoInstalled = $derived(mihomoStatus?.installed ?? false);
+	const mihomoRunning = $derived(mihomoStatus?.running ?? false);
+	const mihomoNeedsUpdate = $derived(mihomoStatus?.updateAvailable ?? false);
+	const xrayInstalled = $derived(xrayStatus?.installed ?? false);
+	const xrayRunning = $derived(xrayStatus?.running ?? false);
+
+	let confirmUninstallXray = $state(false);
 	const hydraInstalled = $derived(hydraStatus?.installed ?? false);
 	const hydraRunning = $derived(hydraStatus?.running ?? false);
 	const hydraProcessState = $derived(
@@ -196,7 +242,7 @@
 	});
 </script>
 
-{#if showSingbox || showHydra || proxyBinaries.length > 0}
+{#if showSingbox || showMihomo || showXray || showHydra || proxyBinaries.length > 0}
 	<div class="settings-block">
 		<div class="card">
 		<SettingsSectionLabel label="Интеграции" icon={Blocks} tone="purple" header />
@@ -364,6 +410,149 @@
 			{/if}
 		{/if}
 
+		{#if showMihomo}
+			<div class="setting-row">
+				<div class="integration-item">
+					<StatusDot
+						variant={mihomoStatusLoading ? 'muted' : (mihomoInstalled && mihomoRunning ? 'success' : 'muted')}
+						size="md"
+						ariaLabel={
+							mihomoStatusLoading
+								? 'Mihomo: получение данных'
+								: mihomoInstalled && mihomoRunning
+									? 'Mihomo работает'
+									: 'Mihomo остановлен'
+						}
+					/>
+					<div class="integration-meta">
+						<span class="font-medium">Mihomo</span>
+						{#if mihomoStatusLoading}
+							<span class="integration-sub">получаю данные…</span>
+						{:else if mihomoInstalled && mihomoStatus}
+							<span class="integration-sub">
+								v{mihomoStatus.version ?? mihomoStatus.currentVersion ?? '?'}
+								{#if mihomoRunning && mihomoStatus.pid}· pid {mihomoStatus.pid}{:else if !mihomoRunning}· остановлен{/if}
+							</span>
+							{#if mihomoNeedsUpdate}
+								<span class="setting-description warning">
+									Требуется обновление: {mihomoStatus.currentVersion ?? '—'} → {mihomoStatus.requiredVersion}
+								</span>
+							{/if}
+							{#if mihomoUpdateError}
+								<span class="install-error-row">
+									<span class="install-error-label">Не удалось обновить: {mihomoUpdateError}</span>
+								</span>
+							{/if}
+						{:else}
+							<span class="setting-description">
+								Ядро маршрутизации с поддержкой proxy-групп, url-тестов, правил и sniffer.
+							</span>
+							{#if mihomoInstallError}
+								<span class="install-error-row">
+									<span class="install-error-label">Не удалось установить: {mihomoInstallError}</span>
+								</span>
+							{/if}
+						{/if}
+					</div>
+				</div>
+				{#if mihomoInstalled}
+					<div class="integration-actions">
+						{#if mihomoNeedsUpdate && onupdateMihomo}
+							<Button variant="primary" size="sm" onclick={onupdateMihomo} loading={mihomoUpdating}>
+								{mihomoUpdating ? 'Обновление...' : 'Обновить'}
+							</Button>
+						{:else}
+							<Button variant="secondary" size="sm" href="/routing?tab=mihomo">Открыть</Button>
+						{/if}
+						{#if onuninstallMihomo}
+							<Button
+								variant="outline-danger"
+								size="sm"
+								loading={mihomoUninstalling}
+								onclick={() => (confirmUninstallMihomo = true)}
+							>
+								{mihomoUninstalling ? 'Удаление...' : 'Удалить'}
+							</Button>
+						{/if}
+					</div>
+				{:else if mihomoStatusLoading}
+					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
+				{:else if oninstallMihomo}
+					<Button variant="primary" size="sm" onclick={oninstallMihomo} loading={mihomoInstalling}>
+						{mihomoInstalling ? 'Установка...' : 'Установить'}
+					</Button>
+				{/if}
+			</div>
+		{/if}
+
+		{#if showXray}
+			<div class="setting-row">
+				<div class="integration-item">
+					<StatusDot
+						variant={xrayStatusLoading ? 'muted' : (xrayInstalled && xrayRunning ? 'success' : 'muted')}
+						size="md"
+						ariaLabel={
+							xrayStatusLoading
+								? 'Xray: получение данных'
+								: xrayInstalled && xrayRunning
+									? 'Xray работает'
+									: 'Xray остановлен'
+						}
+					/>
+					<div class="integration-meta">
+						<div class="integration-title-wrap">
+							<span class="font-medium">Xray-core</span>
+							{#if xrayStatus?.source === 'managed'}
+								<span class="integration-badge">управляется awg-manager</span>
+							{:else if xrayStatus?.source === 'opkg'}
+								<span class="integration-badge">пакет opkg</span>
+							{:else if xrayStatus?.source === 'external'}
+								<span class="integration-badge">внешний бинарник</span>
+							{/if}
+						</div>
+						{#if xrayStatusLoading}
+							<span class="integration-sub">получаю данные…</span>
+						{:else if xrayInstalled && xrayStatus}
+							<span class="integration-sub">
+								v{xrayStatus.version || 'Версия не определена'}
+								{#if xrayRunning}· запущен{:else}· остановлен{/if}
+							</span>
+							<span class="setting-description">
+								Ядро для серверных и клиентских подключений. Управление сервером доступно на вкладке «Раздача / Серверы».
+							</span>
+						{:else}
+							<span class="setting-description">
+								Ядро для серверных и клиентских подключений.
+							</span>
+						{/if}
+					</div>
+				</div>
+				{#if xrayInstalled}
+					<div class="integration-actions">
+						<Button variant="secondary" size="sm" href="/servers?tab=xray">Открыть</Button>
+						{#if onuninstallXray}
+							<Button
+								variant="outline-danger"
+								size="sm"
+								disabled={xrayStatus?.canUninstall === false}
+								title={xrayStatus?.canUninstall === false ? (xrayStatus?.blockers?.join(', ') || 'Удаление недоступно для внешнего бинарника') : 'Удалить Xray'}
+								onclick={() => (confirmUninstallXray = true)}
+								loading={xrayUninstalling}
+							>
+								Удалить
+							</Button>
+						{/if}
+					</div>
+				{:else if xrayStatusLoading}
+					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
+				{:else if oninstallXray}
+					<Button variant="primary" size="sm" onclick={oninstallXray} loading={xrayInstalling}>
+						{xrayInstalling ? 'Установка...' : 'Установить'}
+					</Button>
+				{/if}
+			</div>
+		{/if}
+
 		{#each proxyBinaries as p (p.key)}
 			<div class="setting-row">
 				<div class="integration-item">
@@ -529,7 +718,57 @@
 	/>
 {/if}
 
+{#if confirmUninstallMihomo}
+	<ConfirmModal
+		open={confirmUninstallMihomo}
+		title="Удалить Mihomo?"
+		message="Движок будет остановлен, а его бинарный файл удален с роутера."
+		secondary="Конфигурация, правила и группы сохранятся — после повторной установки они продолжат работать."
+		confirmLabel="Удалить"
+		variant="danger"
+		busy={mihomoUninstalling}
+		onConfirm={() => {
+			confirmUninstallMihomo = false;
+			onuninstallMihomo?.();
+		}}
+		onClose={() => (confirmUninstallMihomo = false)}
+	/>
+{/if}
+
+{#if confirmUninstallXray}
+	<ConfirmModal
+		open={confirmUninstallXray}
+		title="Удалить Xray-core?"
+		message="Бинарный файл Xray будет удален с роутера."
+		secondary={xrayStatus?.blockers && xrayStatus.blockers.length > 0 ? `Внимание: обнаружены активные зависимости (${xrayStatus.blockers.join(', ')}). Удаление может быть заблокировано.` : 'Конфигурация сервера сохранится — после повторной установки вы сможете продолжить работу.'}
+		confirmLabel="Удалить"
+		variant="danger"
+		busy={xrayUninstalling}
+		onConfirm={() => {
+			confirmUninstallXray = false;
+			onuninstallXray?.();
+		}}
+		onClose={() => (confirmUninstallXray = false)}
+	/>
+{/if}
+
+
 <style>
+	.integration-title-wrap {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+	.integration-badge {
+		font-size: 0.6875rem;
+		font-weight: 500;
+		padding: 0.1rem 0.4rem;
+		background: rgba(59, 130, 246, 0.12);
+		color: #3b82f6;
+		border-radius: 4px;
+		border: 1px solid rgba(59, 130, 246, 0.25);
+	}
 	/* Своя раскладка вместо сетки .setting-row (1fr auto): там колонка с
 	   описанием схлопывалась под ширину поля и текст ломался по слову. */
 	.setting-row.bootstrap-row {

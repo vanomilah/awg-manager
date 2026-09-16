@@ -211,6 +211,14 @@ export type AIEmbeddedStatus = {
 	error?: string;
 };
 
+export type AIProviderProfile = {
+	baseUrl?: string;
+	model?: string;
+	apiKeySet?: boolean;
+	routeTag?: string;
+	routeKind?: string;
+};
+
 export type AIModelConfig = {
 	enabled: boolean;
 	autoFix?: boolean;
@@ -221,6 +229,7 @@ export type AIModelConfig = {
 	routeTag?: string;
 	routeKind?: string;
 	localEngine?: AIEmbeddedConfig;
+	providers?: Record<string, AIProviderProfile>;
 	updatedAt?: string;
 };
 
@@ -349,4 +358,62 @@ export type TrafficExportResponse = {
 	addedIps?: string[];
 	skippedDomains?: string[];
 	skippedIps?: string[];
+};
+
+export type AIMemoryFact = {
+	id: string;
+	category: string;
+	content: string;
+	source: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type AILearnedPlaybook = {
+	id: string;
+	category: string;
+	title: string;
+	trigger: string;
+	diagnosis: string;
+	action: string;
+	target?: string;
+	successCount: number;
+	learnedFrom: string;
+	createdAt: string;
+	lastUsedAt?: string;
+};
+
+export type AILearningJournalEntry = {
+	id: string;
+	timestamp: string;
+	trigger: string;
+	query: string;
+	cloudAdvice: string;
+	actionTaken: string;
+	outcome: string;
+};
+
+export type AISentinelSettings = {
+	enabled: boolean;
+	intervalSeconds: number;
+	autonomyLevel: 'notify_only' | 'safe_auto' | 'disabled' | string;
+};
+
+export type AISentinelStatus = {
+	running: boolean;
+	enabled: boolean;
+	autonomyLevel: string;
+	intervalSeconds: number;
+	lastCheck?: string;
+	lastSymptom?: string;
+	lastAction?: string;
+	lastError?: string;
+};
+
+export type AIMemoryData = {
+	facts: AIMemoryFact[];
+	playbooks: AILearnedPlaybook[];
+	journal: AILearningJournalEntry[];
+	settings: AISentinelSettings;
+	sentinel: AISentinelStatus;
 };

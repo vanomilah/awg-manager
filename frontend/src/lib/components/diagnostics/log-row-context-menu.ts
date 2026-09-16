@@ -10,6 +10,7 @@ export interface ContextMenuState {
   onCopyMessage?: () => void;
   onFilterScope?: () => void;
   onFilterLevel?: () => void;
+  onAskAI?: () => void;
 }
 
 export const contextMenu = writable<ContextMenuState>({
@@ -22,7 +23,7 @@ export const contextMenu = writable<ContextMenuState>({
 export function openContextMenu(
   e: MouseEvent,
   log: LogEntry,
-  handlers: Pick<ContextMenuState, 'onCopyLine' | 'onCopyMessage' | 'onFilterScope' | 'onFilterLevel'>,
+  handlers: Pick<ContextMenuState, 'onCopyLine' | 'onCopyMessage' | 'onFilterScope' | 'onFilterLevel' | 'onAskAI'>,
 ) {
   e.preventDefault();
   contextMenu.set({
@@ -34,6 +35,7 @@ export function openContextMenu(
     onCopyMessage: handlers.onCopyMessage,
     onFilterScope: handlers.onFilterScope,
     onFilterLevel: handlers.onFilterLevel,
+    onAskAI: handlers.onAskAI,
   });
 }
 

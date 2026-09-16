@@ -39,6 +39,7 @@ export interface FreeTurnServerConfig {
 	debug: boolean;
 	/** Открыть listen-порт в firewall Keenetic (INPUT). undefined = true */
 	openFirewall?: boolean;
+	linkPeer?: string;
 }
 
 export interface FreeTurnClientInstance {

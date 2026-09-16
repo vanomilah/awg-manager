@@ -22,8 +22,9 @@ import (
 // interfaces — catches interface drift at the declaration line instead
 // of at the wiring callsite in main.go.
 var (
-	_ router.AccessPolicyProvider = (*routerAccessPolicyAdapter)(nil)
-	_ router.KeenDNSInfoProvider  = keenDNSInfoAdapter{}
+	_ router.AccessPolicyProvider   = (*routerAccessPolicyAdapter)(nil)
+	_ router.KeenDNSInfoProvider    = keenDNSInfoAdapter{}
+	_ router.KeenCloudRelayProvider = keenDNSInfoAdapter{}
 )
 
 // routerAccessPolicyAdapter projects the accesspolicy.Service surface
@@ -452,6 +453,20 @@ func (a keenDNSInfoAdapter) KeenDNSInfo(ctx context.Context) (string, []string, 
 		}
 	}
 	return fqdn, addrs, nil
+}
+
+func (a keenDNSInfoAdapter) KeenCloudRelays(ctx context.Context) ([]string, []string, error) {
+	if a.keendns == nil {
+		return nil, nil, nil
+	}
+	info, err := a.keendns.Get(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info == nil {
+		return nil, nil, nil
+	}
+	return slices.Clone(info.RelayIPs), slices.Clone(info.RelayDomains), nil
 }
 
 // routerSegmentDetailsAdapter отдаёт router описание и адресацию сегмента по

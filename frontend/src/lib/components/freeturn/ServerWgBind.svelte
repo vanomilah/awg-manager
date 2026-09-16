@@ -13,7 +13,7 @@
 
 	interface Props {
 		onConnect: (addr: string) => void;
-		onPeerConf: (conf: string) => void;
+		onPeerConf?: (conf: string) => void;
 		wgConf?: string;
 		keeneticSelected?: boolean;
 		clientListenPort?: number;
@@ -81,10 +81,12 @@
 	function applyManualWgConf() {
 		const raw = wgConf.trim();
 		if (!raw) {
-			onPeerConf('');
+			onPeerConf?.('');
 			return;
 		}
-		onPeerConf(patchWgConfEndpoint(raw, endpointPort));
+		const patched = patchWgConfEndpoint(raw, endpointPort);
+		wgConf = patched;
+		onPeerConf?.(patched);
 	}
 
 	async function apply() {
@@ -105,7 +107,7 @@
 				const peer = srv?.peers?.find((p) => p.publicKey === pubkey);
 				if (peer?.confAvailable !== true) {
 					wgConf = '';
-					onPeerConf('');
+					onPeerConf?.('');
 					return;
 				}
 			}
@@ -114,8 +116,9 @@
 				kind === 'system'
 					? await api.getSystemServerPeerConf(serverId, pubkey)
 					: await api.getManagedPeerConf(serverId, pubkey);
-			wgConf = conf;
-			onPeerConf(patchWgConfEndpoint(conf, endpointPort));
+			const patched = patchWgConfEndpoint(conf, endpointPort);
+			wgConf = patched;
+			onPeerConf?.(patched);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -135,10 +138,12 @@
 		const raw = wgConf;
 		untrack(() => {
 			if (!raw.trim()) {
-				onPeerConf('');
+				onPeerConf?.('');
 				return;
 			}
-			onPeerConf(patchWgConfEndpoint(raw.trim(), endpointPort));
+			const patched = patchWgConfEndpoint(raw.trim(), endpointPort);
+			wgConf = patched;
+			onPeerConf?.(patched);
 		});
 	});
 </script>

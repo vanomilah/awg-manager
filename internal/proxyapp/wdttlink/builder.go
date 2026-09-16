@@ -3,7 +3,6 @@ package wdttlink
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/proxyrt/instancestore"
@@ -109,7 +108,7 @@ func (b *Builder) BuildLink(ctx context.Context, rec instancestore.Record, req L
 	}
 
 	// §11: режим ссылки задаёт запрос; пусто — режим записи. От режима зависит
-	// ТОЛЬКО порт в peer и пометка mode=raw в qwdtt://.
+	// порт в peer и пометка mode= в ссылке.
 	mode := strings.TrimSpace(req.Mode)
 	if mode == "" {
 		mode = cfg.RelayMode
@@ -130,9 +129,9 @@ func (b *Builder) BuildLink(ctx context.Context, rec instancestore.Record, req L
 		}
 		peer = ip
 	}
-	if !strings.Contains(peer, ":") {
-		peer = peer + ":" + strconv.Itoa(linkPort)
-	}
+	// LinkPeer remembers the last generated endpoint. Always replace its port:
+	// otherwise switching a link from WG to RAW keeps the old DTLS/direct port.
+	peer = peerWithPort(peer, linkPort)
 
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -151,16 +150,24 @@ func (b *Builder) BuildLink(ctx context.Context, rec instancestore.Record, req L
 			Msg: "укажите VK-хеши: без них ссылка не заработает"}
 	}
 
+	// Оба порта всегда идут в ссылке: сервер слушает dtls и raw одновременно.
+	// Клиент выбирает режим по полю mode. Старые клиенты (без знания raw) просто
+	// подключатся по dtls-порту, как раньше.
+	dtlsPort, listenErr := listenPort(cfg.Listen)
+	if listenErr != nil {
+		dtlsPort = 56002
+	}
+	rawPort := LinkListenPortForMode(cfg, ConnModeRaw)
 	link, err := EncodeLink(peer, cfg.WgPort, linkPassword, hashes, name)
 	if err != nil {
 		return nil, &LinkError{Code: "WDTT_LINK_ENCODE_FAILED", Msg: err.Error()}
 	}
-	qLink, err := EncodeQwdttLink(peer, linkPassword, hashes, name, 0, 0, mode)
+	qLink, err := EncodeQwdttLinkFull(peer, linkPassword, hashes, name, 0, 0, mode, dtlsPort, rawPort)
 	if err != nil {
 		return nil, &LinkError{Code: "WDTT_LINK_ENCODE_FAILED", Msg: err.Error()}
 	}
 
-	b.persistPeer(ctx, rec, peer)
+	b.persistLinkParams(ctx, rec, peer, hashes)
 
 	return map[string]string{
 		"link":      link,
@@ -176,21 +183,28 @@ func (b *Builder) externalIP(ctx context.Context) (string, error) {
 	return b.deps.ExternalIP(ctx)
 }
 
-// persistPeer запоминает адрес последней ссылки В ЗАПИСИ, чтобы ссылка
-// восстанавливалась без повторного ввода WAN-адреса. Правка ПО МЕСТУ:
-// пересборка записи литералом потеряла бы абонентов и слоты адресов.
-//
-// Отказ записи НЕ роняет ответ (паритет старого фронта, LinkPanel.svelte:84-88:
-// «не критично: ссылка уже показана»): ссылка собрана и годна, а память об
-// адресе — удобство. Хеши абонента сюда НЕ пишутся сознательно (W-33 фронта):
-// vkHash принадлежит абоненту, и попав в параметры сервера, он уехал бы в
-// ссылку следующего абонента.
-func (b *Builder) persistPeer(ctx context.Context, rec instancestore.Record, peer string) {
-	if b.deps.Mutator == nil || peer == "" || peer == strings.TrimSpace(rec.LinkPeer) {
+// persistLinkParams запоминает адрес и хеши последней ссылки В ЗАПИСИ, чтобы ссылка
+// восстанавливалась без повторного ввода.
+func (b *Builder) persistLinkParams(ctx context.Context, rec instancestore.Record, peer string, hashes []string) {
+	if b.deps.Mutator == nil {
+		return
+	}
+	cfg, _ := rec.WdttServerConfig()
+	peerChanged := peer != "" && peer != strings.TrimSpace(rec.LinkPeer)
+	joinedHashes := strings.Join(hashes, ",")
+	hashesChanged := (cfg.ClientAuthMode == "shared" || strings.TrimSpace(rec.LinkVKHashes) == "") &&
+		joinedHashes != "" && joinedHashes != strings.TrimSpace(rec.LinkVKHashes)
+
+	if !peerChanged && !hashesChanged {
 		return
 	}
 	_ = b.deps.Mutator.Update(ctx, rec.Key(), func(r *instancestore.Record) error {
-		r.LinkPeer = peer
+		if peerChanged {
+			r.LinkPeer = peer
+		}
+		if hashesChanged {
+			r.LinkVKHashes = joinedHashes
+		}
 		return nil
 	})
 }
@@ -205,6 +219,17 @@ func (b *Builder) persistPeer(ctx context.Context, rec instancestore.Record, pee
 // Проверка по всему списку записи была бы мягче: ссылка на просроченного
 // абонента собралась бы без единой жалобы и молча не подключилась.
 func (b *Builder) linkPasswordFor(req LinkRequest, rec instancestore.Record) (string, error) {
+	if cfg, err := rec.WdttServerConfig(); err == nil && strings.TrimSpace(cfg.ClientAuthMode) == "shared" {
+		pass := strings.TrimSpace(req.Password)
+		if pass == "" {
+			pass = strings.TrimSpace(cfg.SharedPassword)
+		}
+		if pass == "" {
+			return "", errors.New("не задан общий пароль сервера: укажите пароль в настройках раздачи")
+		}
+		return pass, nil
+	}
+
 	if b.deps.Vetting == nil {
 		// Fail-closed: без предиката пригодность абонента не проверить, а
 		// выдать ссылку «на всякий пароль» хуже отказа.

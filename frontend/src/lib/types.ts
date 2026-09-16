@@ -14,3 +14,4 @@ export * from './types/freeturn';
 export * from './types/wdtt';
 export * from './types/awg3';
 export * from './types/mihomoNative';
+export * from './types/xray';

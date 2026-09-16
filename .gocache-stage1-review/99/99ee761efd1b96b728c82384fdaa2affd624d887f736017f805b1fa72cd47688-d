@@ -1,0 +1,9 @@
+./config.go
+./error.go
+./operator.go
+./stale_process.go
+./stale_process_other.go
+./config_stage1_test.go
+./config_test.go
+./operator_test.go
+./stale_process_test.go

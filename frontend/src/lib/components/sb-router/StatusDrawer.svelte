@@ -242,15 +242,26 @@
   let activeMode = $derived.by<CaptureMode | null>(() => {
     if (!(s?.enabled ?? false)) return null;
     const m = $settings?.routingMode;
-    return m === 'tproxy' || m === 'policy-tun' ? m : null;
+    // Legacy settings did not contain routingMode; an enabled legacy engine
+    // is TPROXY.  Keep FakeIP distinct: it is running, but neither capture
+    // card in this drawer is its active mode.
+    if (m === undefined || m === 'tproxy') return 'tproxy';
+    return m === 'policy-tun' ? m : null;
   });
-  let captureOn = $derived(activeMode !== null);
+  // This is the main engine switch, so it must reflect the same global
+  // enabled state as the status title and the core-switch guard.  Previously
+  // it was tied only to TPROXY/policy-tun, which rendered it OFF while FakeIP
+  // (or a legacy payload) was actually running.
+  let engineOn = $derived(engineEnabled);
   // Выбор пользователя в этой сессии — что включит тумблер, пока движок
   // выключен. Пусто → persisted routingMode (легаси/пустой = tproxy).
   let pickedMode = $state<CaptureMode | null>(null);
   let targetMode = $derived<CaptureMode>(
     activeMode ?? pickedMode ?? ($settings?.routingMode === 'policy-tun' ? 'policy-tun' : 'tproxy'),
   );
+  // While FakeIP is active neither of this drawer's capture cards is active.
+  // When the engine is off, show the mode that the next enable will start.
+  let displayedMode = $derived<CaptureMode | null>(activeMode ?? (engineOn ? null : targetMode));
   let policyTunMode = $derived(targetMode === 'policy-tun');
 
   // policy-tun-unbound показывает карточка режима (там же ссылка на политики) —
@@ -380,14 +391,16 @@
     modeSwitch.request(turnOn ? targetMode : 'off');
   }
   function handleToggleClick(_e: MouseEvent) {
-    toggleEngine(!captureOn);
+    toggleEngine(!engineOn);
   }
   // Выбор режима: при выключенном движке только запоминаем цель тумблера,
   // при включённом — сразу просим переключение (общий confirm + прогресс).
   function selectMode(m: CaptureMode) {
-    if (switchBusy || m === targetMode) return;
+    if (switchBusy) return;
+    if (engineOn && activeMode === m) return;
+    if (!engineOn && m === targetMode) return;
     pickedMode = m;
-    if (activeMode !== null) modeSwitch.request(m);
+    if (engineOn) modeSwitch.request(m);
   }
   async function restartEngine(_e: MouseEvent) {
     if (restarting) return;
@@ -475,7 +488,7 @@
       <div class="sec-cap">Состояние</div>
       <div class="engine-status" class:state-off={engineState === 'off'} class:state-warn={engineState === 'warn'} class:state-on={engineState === 'on'}>
         <div class="engine-main">
-          <Toggle checked={captureOn} controlled loading={switchBusy} onchange={toggleEngine} />
+          <Toggle checked={engineOn} controlled loading={switchBusy} ariaLabel="Включить или выключить движок маршрутизации" onchange={toggleEngine} />
           <div class="engine-text">
             <div class="engine-head">
               <StatusDot variant={engineDotVariant} size="sm" />
@@ -510,14 +523,14 @@
           label="TPROXY-правила"
           sub="перехват iptables на роутере"
           tone="accent"
-          selected={targetMode === 'tproxy'}
+          selected={displayedMode === 'tproxy'}
           onclick={() => selectMode('tproxy')}
         />
         <OutboundOption
           label="Политики + tun"
           sub="захват трафика через политику доступа Keenetic, без TPROXY-правил"
           tone="accent"
-          selected={targetMode === 'policy-tun'}
+          selected={displayedMode === 'policy-tun'}
           onclick={() => selectMode('policy-tun')}
         />
       </div>
@@ -864,8 +877,8 @@
   {#snippet footer()}
     <div class="footer-actions">
       <div class="footer-btns">
-        <Button variant={captureOn ? 'danger' : 'primary'} size="sm" fullWidth disabled={switchBusy} onclick={handleToggleClick}>
-          {captureOn ? 'Выключить' : 'Включить'}
+        <Button variant={engineOn ? 'danger' : 'primary'} size="sm" fullWidth disabled={switchBusy} onclick={handleToggleClick}>
+          {engineOn ? 'Выключить' : 'Включить'}
         </Button>
         <Button variant="ghost" size="sm" fullWidth loading={restarting} onclick={restartEngine}>Перезапустить</Button>
       </div>

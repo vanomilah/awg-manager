@@ -23,6 +23,7 @@ const (
 	DefaultGoogleBaseURL     = "https://generativelanguage.googleapis.com/v1beta"
 	DefaultOllamaBaseURL     = "http://127.0.0.1:11434/v1"
 	DefaultEmbeddedBaseURL   = "http://127.0.0.1:11435/v1"
+	DefaultAnthropicBaseURL  = "https://api.anthropic.com/v1"
 )
 
 type LocalEngineConfig struct {
@@ -35,30 +36,48 @@ type LocalEngineConfig struct {
 	AutoStopMinutes int    `json:"autoStopMinutes,omitempty"`
 }
 
+type ProviderProfile struct {
+	BaseURL   string `json:"baseUrl,omitempty"`
+	Model     string `json:"model,omitempty"`
+	APIKey    string `json:"apiKey,omitempty"`
+	RouteTag  string `json:"routeTag,omitempty"`
+	RouteKind string `json:"routeKind,omitempty"`
+}
+
+type PublicProviderProfile struct {
+	BaseURL   string `json:"baseUrl,omitempty"`
+	Model     string `json:"model,omitempty"`
+	APIKeySet bool   `json:"apiKeySet"`
+	RouteTag  string `json:"routeTag,omitempty"`
+	RouteKind string `json:"routeKind,omitempty"`
+}
+
 type ModelConfig struct {
-	Enabled     bool              `json:"enabled"`
-	AutoFix     bool              `json:"autoFix"`
-	Provider    string            `json:"provider"`
-	BaseURL     string            `json:"baseUrl,omitempty"`
-	Model       string            `json:"model"`
-	APIKey      string            `json:"apiKey,omitempty"`
-	RouteTag    string            `json:"routeTag,omitempty"`
-	RouteKind   string            `json:"routeKind,omitempty"`
-	LocalEngine LocalEngineConfig `json:"localEngine,omitempty"`
-	UpdatedAt   time.Time         `json:"updatedAt,omitempty"`
+	Enabled     bool                       `json:"enabled"`
+	AutoFix     bool                       `json:"autoFix"`
+	Provider    string                     `json:"provider"`
+	BaseURL     string                     `json:"baseUrl,omitempty"`
+	Model       string                     `json:"model"`
+	APIKey      string                     `json:"apiKey,omitempty"`
+	RouteTag    string                     `json:"routeTag,omitempty"`
+	RouteKind   string                     `json:"routeKind,omitempty"`
+	LocalEngine LocalEngineConfig          `json:"localEngine,omitempty"`
+	Providers   map[string]ProviderProfile `json:"providers,omitempty"`
+	UpdatedAt   time.Time                  `json:"updatedAt,omitempty"`
 }
 
 type PublicModelConfig struct {
-	Enabled     bool              `json:"enabled"`
-	AutoFix     bool              `json:"autoFix"`
-	Provider    string            `json:"provider"`
-	BaseURL     string            `json:"baseUrl,omitempty"`
-	Model       string            `json:"model"`
-	APIKeySet   bool              `json:"apiKeySet"`
-	RouteTag    string            `json:"routeTag,omitempty"`
-	RouteKind   string            `json:"routeKind,omitempty"`
-	LocalEngine LocalEngineConfig `json:"localEngine,omitempty"`
-	UpdatedAt   time.Time         `json:"updatedAt,omitempty"`
+	Enabled     bool                             `json:"enabled"`
+	AutoFix     bool                             `json:"autoFix"`
+	Provider    string                           `json:"provider"`
+	BaseURL     string                           `json:"baseUrl,omitempty"`
+	Model       string                           `json:"model"`
+	APIKeySet   bool                             `json:"apiKeySet"`
+	RouteTag    string                           `json:"routeTag,omitempty"`
+	RouteKind   string                           `json:"routeKind,omitempty"`
+	LocalEngine LocalEngineConfig                `json:"localEngine,omitempty"`
+	Providers   map[string]PublicProviderProfile `json:"providers,omitempty"`
+	UpdatedAt   time.Time                        `json:"updatedAt,omitempty"`
 }
 
 type ConfigUpdate struct {
@@ -82,7 +101,8 @@ type ConfigStore struct {
 
 func NewConfigStore(path string) (*ConfigStore, error) {
 	s := &ConfigStore{path: path, cfg: ModelConfig{
-		Provider: "openai",
+		Provider:  "openai",
+		Providers: make(map[string]ProviderProfile),
 		LocalEngine: LocalEngineConfig{
 			Port:            11435,
 			ContextSize:     1536,
@@ -100,6 +120,21 @@ func NewConfigStore(path string) (*ConfigStore, error) {
 	if err := json.Unmarshal(b, &s.cfg); err != nil {
 		return nil, fmt.Errorf("AI config: decode: %w", err)
 	}
+	if s.cfg.Providers == nil {
+		s.cfg.Providers = make(map[string]ProviderProfile)
+	}
+	// Seed current active provider into Providers if not already present
+	if s.cfg.Provider != "" {
+		if _, ok := s.cfg.Providers[s.cfg.Provider]; !ok {
+			s.cfg.Providers[s.cfg.Provider] = ProviderProfile{
+				BaseURL:   s.cfg.BaseURL,
+				Model:     s.cfg.Model,
+				APIKey:    s.cfg.APIKey,
+				RouteTag:  s.cfg.RouteTag,
+				RouteKind: s.cfg.RouteKind,
+			}
+		}
+	}
 	if err := validateModelConfig(s.cfg); err != nil {
 		return nil, fmt.Errorf("AI config: %w", err)
 	}
@@ -112,20 +147,36 @@ func (s *ConfigStore) Get() ModelConfig {
 	return s.cfg
 }
 
-func (s *ConfigStore) Public() PublicModelConfig {
-	cfg := s.Get()
-	return PublicModelConfig{
-		Enabled:     cfg.Enabled,
-		AutoFix:     cfg.AutoFix,
-		Provider:    cfg.Provider,
-		BaseURL:     cfg.BaseURL,
-		Model:       cfg.Model,
-		APIKeySet:   cfg.APIKey != "",
-		RouteTag:    cfg.RouteTag,
-		RouteKind:   cfg.RouteKind,
-		LocalEngine: cfg.LocalEngine,
-		UpdatedAt:   cfg.UpdatedAt,
+func (s *ConfigStore) publicLocked() PublicModelConfig {
+	publicProviders := make(map[string]PublicProviderProfile, len(s.cfg.Providers))
+	for k, p := range s.cfg.Providers {
+		publicProviders[k] = PublicProviderProfile{
+			BaseURL:   p.BaseURL,
+			Model:     p.Model,
+			APIKeySet: p.APIKey != "",
+			RouteTag:  p.RouteTag,
+			RouteKind: p.RouteKind,
+		}
 	}
+	return PublicModelConfig{
+		Enabled:     s.cfg.Enabled,
+		AutoFix:     s.cfg.AutoFix,
+		Provider:    s.cfg.Provider,
+		BaseURL:     s.cfg.BaseURL,
+		Model:       s.cfg.Model,
+		APIKeySet:   s.cfg.APIKey != "",
+		RouteTag:    s.cfg.RouteTag,
+		RouteKind:   s.cfg.RouteKind,
+		LocalEngine: s.cfg.LocalEngine,
+		Providers:   publicProviders,
+		UpdatedAt:   s.cfg.UpdatedAt,
+	}
+}
+
+func (s *ConfigStore) Public() PublicModelConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.publicLocked()
 }
 
 func (s *ConfigStore) Save(update ConfigUpdate) (PublicModelConfig, error) {
@@ -133,6 +184,10 @@ func (s *ConfigStore) Save(update ConfigUpdate) (PublicModelConfig, error) {
 	defer s.mu.Unlock()
 
 	next := s.cfg
+	if next.Providers == nil {
+		next.Providers = make(map[string]ProviderProfile)
+	}
+
 	next.Enabled = update.Enabled
 	next.AutoFix = update.AutoFix
 	provider := strings.TrimSpace(update.Provider)
@@ -145,21 +200,53 @@ func (s *ConfigStore) Save(update ConfigUpdate) (PublicModelConfig, error) {
 	next.Model = strings.TrimSpace(update.Model)
 	next.RouteTag = strings.TrimSpace(update.RouteTag)
 	next.RouteKind = strings.TrimSpace(update.RouteKind)
+
+	if next.Model == "" {
+		if prof, ok := next.Providers[provider]; ok && prof.Model != "" {
+			next.Model = prof.Model
+		}
+	}
+	if next.BaseURL == "" {
+		if prof, ok := next.Providers[provider]; ok && prof.BaseURL != "" {
+			next.BaseURL = prof.BaseURL
+		}
+	}
+	if update.RouteTag == "" {
+		if prof, ok := next.Providers[provider]; ok && prof.RouteTag != "" {
+			next.RouteTag = prof.RouteTag
+			next.RouteKind = prof.RouteKind
+		}
+	}
 	if next.RouteTag == "" {
 		next.RouteTag = "direct"
 		next.RouteKind = "direct"
 	}
-	// A credential belongs to one provider. Never silently reuse (and send)
-	// the previous provider's secret after switching endpoints.
-	if providerChanged && strings.TrimSpace(update.APIKey) == "" {
-		next.APIKey = ""
-	}
+
 	if key := strings.TrimSpace(update.APIKey); key != "" {
 		next.APIKey = key
-	}
-	if update.ClearAPIKey {
+	} else if update.ClearAPIKey {
 		next.APIKey = ""
+	} else if providerChanged {
+		if prof, ok := next.Providers[provider]; ok && prof.APIKey != "" {
+			next.APIKey = prof.APIKey
+		} else {
+			next.APIKey = ""
+		}
 	}
+
+	// Update the profile for this provider
+	prof := next.Providers[provider]
+	prof.BaseURL = next.BaseURL
+	prof.Model = next.Model
+	prof.RouteTag = next.RouteTag
+	prof.RouteKind = next.RouteKind
+	if next.APIKey != "" {
+		prof.APIKey = next.APIKey
+	} else if update.ClearAPIKey {
+		prof.APIKey = ""
+	}
+	next.Providers[provider] = prof
+
 	if update.LocalEngine != nil {
 		next.LocalEngine = *update.LocalEngine
 	}
@@ -175,18 +262,7 @@ func (s *ConfigStore) Save(update ConfigUpdate) (PublicModelConfig, error) {
 		return PublicModelConfig{}, fmt.Errorf("AI config: save: %w", err)
 	}
 	s.cfg = next
-	return PublicModelConfig{
-		Enabled:     next.Enabled,
-		AutoFix:     next.AutoFix,
-		Provider:    next.Provider,
-		BaseURL:     next.BaseURL,
-		Model:       next.Model,
-		APIKeySet:   next.APIKey != "",
-		RouteTag:    next.RouteTag,
-		RouteKind:   next.RouteKind,
-		LocalEngine: next.LocalEngine,
-		UpdatedAt:   next.UpdatedAt,
-	}, nil
+	return s.publicLocked(), nil
 }
 
 func validateModelConfig(cfg ModelConfig) error {
@@ -198,6 +274,7 @@ func validateModelConfig(cfg ModelConfig) error {
 		"deepseek":       true,
 		"openrouter":     true,
 		"google":         true,
+		"anthropic":      true,
 		"ollama":         true,
 		"local_embedded": true,
 		"custom":         true,

@@ -261,11 +261,13 @@ func dropOrphanPasswordsDevices(devices map[string]any, passwords map[string]pas
 
 // preparePasswordsJSONForServer merges записи абонентов с существующим файлом и
 // снимает протухшие привязки к IP шлюза перед стартом wdtt-server.
-//
-// Записи абонентов МЕРЖАТСЯ поверх лежащих в файле: is_deactivated, device_ids,
-// max_devices, expires_at, счётчики трафика и ports принадлежат серверу, наши —
-// только label и vk_hash.
 func preparePasswordsJSONForServer(configDir string, users []instancestore.ServerUser) (passwordsJSON, bool, error) {
+	return preparePasswordsJSONForServerWithMode(configDir, users, "", "")
+}
+
+// preparePasswordsJSONForServerWithMode merges записи абонентов или единый общий пароль (authMode == "shared")
+// с существующим файлом и снимает протухшие привязки к IP шлюза перед стартом wdtt-server.
+func preparePasswordsJSONForServerWithMode(configDir string, users []instancestore.ServerUser, authMode, sharedPassword string) (passwordsJSON, bool, error) {
 	existing, err := loadPasswordsJSON(configDir)
 	if err != nil {
 		return passwordsJSON{}, false, err
@@ -275,16 +277,37 @@ func preparePasswordsJSONForServer(configDir string, users []instancestore.Serve
 		Passwords: map[string]passwordsJSONUser{},
 		Devices:   devices,
 	}
-	for _, u := range UsableUsers(users) {
-		entry := existing.Passwords[u.Password] // нулевая, если абонента ещё нет
-		if label := strings.TrimSpace(u.Comment); label != "" {
-			entry.Label = label
+
+	if strings.TrimSpace(authMode) == "shared" {
+		pass := strings.TrimSpace(sharedPassword)
+		if pass != "" {
+			entry := existing.Passwords[pass]
+			if entry.Label == "" {
+				entry.Label = "Общий доступ"
+			}
+			doc.Passwords[pass] = entry
+			if existing.MainPassword != "" {
+				doc.MainPassword = existing.MainPassword
+			} else {
+				doc.MainPassword = pass
+			}
 		}
-		if vk := strings.TrimSpace(u.VkHash); vk != "" {
-			entry.VkHash = vk
+	} else {
+		for _, u := range UsableUsers(users) {
+			entry := existing.Passwords[u.Password] // нулевая, если абонента ещё нет
+			if label := strings.TrimSpace(u.Comment); label != "" {
+				entry.Label = label
+			}
+			if vk := strings.TrimSpace(u.VkHash); vk != "" {
+				entry.VkHash = vk
+			}
+			doc.Passwords[u.Password] = entry
 		}
-		doc.Passwords[u.Password] = entry
+		if existing.MainPassword != "" {
+			doc.MainPassword = existing.MainPassword
+		}
 	}
+
 	// Порядок обязателен: прополка сирот — до резерва шлюза, иначе она снимет
 	// сам резерв (владельца у него нет по построению).
 	doc.Devices = reserveGatewayIPInDevices(dropOrphanPasswordsDevices(doc.Devices, doc.Passwords))
@@ -294,6 +317,10 @@ func preparePasswordsJSONForServer(configDir string, users []instancestore.Serve
 // syncPasswordsJSON writes passwords.json — the auth source of wdtt-server.
 // Второе значение — «вычищены устройства с IP шлюза», для журнала.
 func syncPasswordsJSON(configDir string, users []instancestore.ServerUser) (bool, error) {
+	return syncPasswordsJSONWithMode(configDir, users, "", "")
+}
+
+func syncPasswordsJSONWithMode(configDir string, users []instancestore.ServerUser, authMode, sharedPassword string) (bool, error) {
 	dir := strings.TrimSpace(configDir)
 	if dir == "" {
 		return false, nil
@@ -301,7 +328,7 @@ func syncPasswordsJSON(configDir string, users []instancestore.ServerUser) (bool
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return false, err
 	}
-	doc, sanitized, err := preparePasswordsJSONForServer(dir, users)
+	doc, sanitized, err := preparePasswordsJSONForServerWithMode(dir, users, authMode, sharedPassword)
 	if err != nil {
 		return false, err
 	}

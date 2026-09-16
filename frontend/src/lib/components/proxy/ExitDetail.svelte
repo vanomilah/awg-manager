@@ -108,7 +108,7 @@
 	const rawNdms = $derived(wdttStatus?.ndmsIface?.trim() || wdttClient?.ndmsIface?.trim() || '');
 	const rawKernel = $derived(wdttStatus?.rawIface?.trim() || wdttClient?.rawIface?.trim() || '');
 	const tunnel = $derived(
-		raw ? null : findLinkedTunnel(tunnels, listen, row.protocol === 'wdtt' ? row.id : undefined),
+		raw ? null : findLinkedTunnel(tunnels, listen, row.id),
 	);
 	// Трафик берётся у СВЯЗАННОГО туннеля: своей истории у прокси-процесса нет,
 	// а гонять человека за цифрами на другую страницу — ровно та причина, по
@@ -210,10 +210,29 @@
 	});
 
 	async function importConf(conf: string) {
+		const raw = conf.trim();
+		if (!raw) return;
 		tunnelBusy = true;
 		try {
+			let actualConf = raw;
+			if (raw.startsWith('freeturn://')) {
+				const decoded = await api.decodeFreeTurnLink(raw);
+				if (decoded.wg?.trim()) {
+					actualConf = decoded.wg.trim();
+				} else {
+					throw new Error('В ссылке FreeTurn отсутствует конфигурация WireGuard');
+				}
+			} else if (raw.startsWith('wdtt://') || raw.startsWith('qwdtt://')) {
+				const decoded = await api.decodeWdttLink(raw);
+				const wg = decoded.profile?.wg || decoded.subscription?.profiles?.[0]?.wg;
+				if (wg?.trim()) {
+					actualConf = wg.trim();
+				} else {
+					throw new Error('В ссылке WDTT отсутствует конфигурация WireGuard');
+				}
+			}
 			const tun = await api.importConfig(
-				conf,
+				actualConf,
 				row.name,
 				undefined,
 				row.protocol === 'freeturn' ? row.id : undefined,
@@ -265,30 +284,53 @@
 	<!-- EX-01: ошибка живёт, пока процесс не работает. -->
 	<LastErrorBox text={running ? '' : (status?.lastError ?? '')} />
 
-	<!-- Секции нет, пока интерфейс клиента неизвестен: пустой заголовок ничего
-	     не сообщает, а обещать «не заведён в политику» не о чем. -->
-	{#if policyIface}
-		<DetailSection title="Куда идёт трафик">
-			{#if raw}
-				<div class="line-row">
-					<span class="line-label">В роутере:</span>
-					<code>{rawNdms}</code>
-					<FieldHint text={rawHint} ariaLabel="Подсказка: интерфейс клиента" />
-				</div>
-			{:else if tunnel}
-				<!-- EX-09 — и у WDTT-WG, и у FreeTurn-клиента: туннель есть у обоих.
-				     (i) EX-10 рассказывает про режим WG — он только у WDTT. -->
-				<div class="line-row">
+	<DetailSection title="Куда идёт трафик">
+		{#if raw}
+			<div class="line-row">
+				<span class="line-label">В роутере:</span>
+				<code>{rawNdms}</code>
+				<FieldHint text={rawHint} ariaLabel="Подсказка: интерфейс клиента" />
+			</div>
+		{:else if tunnel}
+			<!-- EX-09 — и у WDTT-WG, и у FreeTurn-клиента: туннель есть у обоих.
+			     (i) EX-10 рассказывает про режим WG — он только у WDTT. -->
+			<div class="line-row">
+				<span class="line-label">AWG-туннель:</span>
+				<a class="link" href={`/tunnels/${tunnel.id}`}>{tunnel.name}<ExternalLink size={12} /></a>
+				{#if row.protocol === 'wdtt'}
+					<FieldHint
+						text={`Режим WG: клиент получает WireGuard-конфиг, из него создан AWG-туннель с Endpoint 127.0.0.1:${port ?? ''}.`}
+						ariaLabel="Подсказка: AWG-туннель"
+					/>
+				{/if}
+			</div>
+		{:else}
+			<div class="no-tunnel-banner">
+				<div class="no-tunnel-info">
 					<span class="line-label">AWG-туннель:</span>
-					<a class="link" href={`/tunnels/${tunnel.id}`}>{tunnel.name}<ExternalLink size={12} /></a>
-					{#if row.protocol === 'wdtt'}
-						<FieldHint
-							text={`Режим WG: клиент получает WireGuard-конфиг, из него создан AWG-туннель с Endpoint 127.0.0.1:${port ?? ''}.`}
-							ariaLabel="Подсказка: AWG-туннель"
-						/>
-					{/if}
+					<Badge size="sm" variant="warning">Не создан</Badge>
+					<span class="no-tunnel-desc">
+						{#if row.protocol === 'freeturn'}
+							Для направления трафика через этот прокси создайте AWG-туннель по ссылке или .conf от сервера.
+						{:else}
+							Для направления трафика через этот прокси создайте AWG-туннель.
+						{/if}
+					</span>
 				</div>
-			{/if}
+				<div class="no-tunnel-actions">
+					{#if row.protocol === 'wdtt' && wdttStatus?.wgConfig}
+						<Button variant="primary" size="sm" loading={tunnelBusy} onclick={() => ensureTunnel(true)}>
+							Создать туннель из журнала
+						</Button>
+					{/if}
+					<Button variant="secondary" size="sm" onclick={() => (settingsOpen = true)}>
+						Импортировать .conf в настройках
+					</Button>
+				</div>
+			</div>
+		{/if}
+
+		{#if policyIface}
 			<div class="line-row">
 				<span class="line-label">Политика доступа:</span>
 				{#if policyLabel}
@@ -305,8 +347,8 @@
 					{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
 				</Button>
 			</div>
-		</DetailSection>
-	{/if}
+		{/if}
+	</DetailSection>
 
 	<!-- Поллинг капчи не крутится у остановленного клиента: подтверждать
 	     нечего, пока потоки не поднимаются. -->
@@ -419,5 +461,34 @@
 		word-break: break-all;
 	}
 
+	.no-tunnel-banner {
+		padding: 0.75rem;
+		background: var(--color-bg-tertiary);
+		border: 1px dashed var(--color-border);
+		border-radius: var(--radius);
+		margin-bottom: 0.75rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
 
+	.no-tunnel-info {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.no-tunnel-desc {
+		font-size: 0.8125rem;
+		color: var(--color-text-secondary);
+	}
+
+	.no-tunnel-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		margin-top: 0.25rem;
+	}
 </style>

@@ -101,6 +101,17 @@
 	let singboxUpdating = $state(false);
 	let singboxUpdateError = $state<string | null>(null);
 	let singboxBusy = $state(false);
+	let mihomoStatusValue = $state<import('$lib/types').MihomoStatus | null>(null);
+	let mihomoStatusLoading = $state(false);
+	let mihomoInstalling = $state(false);
+	let mihomoInstallError = $state<string | null>(null);
+	let mihomoUpdating = $state(false);
+	let mihomoUpdateError = $state<string | null>(null);
+	let mihomoUninstalling = $state(false);
+	let xrayStatusValue = $state<import('$lib/types').XrayStatus | null>(null);
+	let xrayStatusLoading = $state(false);
+	let xrayInstalling = $state(false);
+	let xrayUninstalling = $state(false);
 	let ndmsProxyBusy = $state(false);
 	let ndmsProxyConfirmOpen = $state(false);
 	let ndmsProxyConfirmEnable = $state(false); // true = подтверждение включения; false = выключения
@@ -222,6 +233,91 @@
 		}
 	}
 
+	async function fetchMihomoStatus() {
+		mihomoStatusLoading = true;
+		try {
+			mihomoStatusValue = await api.mihomoStatus();
+		} catch {
+			// ignore if not configured
+		} finally {
+			mihomoStatusLoading = false;
+		}
+	}
+
+	async function installMihomo() {
+		mihomoInstalling = true;
+		mihomoInstallError = null;
+		try {
+			mihomoStatusValue = await api.mihomoInstall();
+			notifications.success("Mihomo установлен");
+		} catch (e) {
+			mihomoInstallError = e instanceof Error ? e.message : String(e);
+		} finally {
+			mihomoInstalling = false;
+		}
+	}
+
+	async function updateMihomo() {
+		mihomoUpdating = true;
+		mihomoUpdateError = null;
+		try {
+			mihomoStatusValue = await api.mihomoUpdate();
+			notifications.success("Mihomo обновлён");
+		} catch (e) {
+			mihomoUpdateError = e instanceof Error ? e.message : String(e);
+		} finally {
+			mihomoUpdating = false;
+		}
+	}
+
+	async function uninstallMihomo() {
+		mihomoUninstalling = true;
+		try {
+			mihomoStatusValue = await api.mihomoUninstall();
+			notifications.success("Mihomo удалён");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось удалить Mihomo");
+		} finally {
+			mihomoUninstalling = false;
+		}
+	}
+
+	async function fetchXrayStatus() {
+		xrayStatusLoading = true;
+		try {
+			xrayStatusValue = await api.xrayStatus();
+		} catch {
+			// ignore if not configured
+		} finally {
+			xrayStatusLoading = false;
+		}
+	}
+
+	async function installXray() {
+		xrayInstalling = true;
+		try {
+			xrayStatusValue = await api.xrayInstall();
+			notifications.success("Xray установлен");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось установить Xray");
+		} finally {
+			xrayInstalling = false;
+		}
+	}
+
+	async function uninstallXray() {
+		xrayUninstalling = true;
+		try {
+			await api.xrayUninstall();
+			notifications.success("Xray удален");
+			await fetchXrayStatus();
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось удалить Xray");
+		} finally {
+			xrayUninstalling = false;
+		}
+	}
+
 	async function fetchSystemInfo(silent = true) {
 		if (systemInfoInFlight) {
 			return systemInfoInFlight;
@@ -302,7 +398,12 @@
 onMount(() => {
 	const timer = setInterval(() => {
 		void fetchSystemInfo(true);
+		void fetchMihomoStatus();
+		void fetchXrayStatus();
 	}, 30000);
+
+	void fetchMihomoStatus();
+	void fetchXrayStatus();
 
 	void (async () => {
 		try {
@@ -684,6 +785,7 @@ $effect(() => {
 		if (!to?.url || to.url.pathname !== "/settings") return;
 		if (!from?.url || from.url.pathname !== "/settings") {
 			await fetchSystemInfo(true);
+			void fetchXrayStatus();
 		}
 		scrollToSettingsHashTarget();
 		scrollToFeedbackFabSetting();
@@ -745,6 +847,24 @@ $effect(() => {
 					onupdateSingbox={updateSingbox}
 					showSingbox={showSingboxIntegration}
 					showHydra={showHydraIntegration}
+					mihomoStatus={mihomoStatusValue}
+					{mihomoStatusLoading}
+					{mihomoInstalling}
+					{mihomoUpdating}
+					{mihomoUninstalling}
+					{mihomoInstallError}
+					{mihomoUpdateError}
+					oninstallMihomo={installMihomo}
+					onupdateMihomo={updateMihomo}
+					onuninstallMihomo={uninstallMihomo}
+					showMihomo={true}
+					xrayStatus={xrayStatusValue}
+					{xrayStatusLoading}
+					{xrayInstalling}
+					{xrayUninstalling}
+					oninstallXray={installXray}
+					onuninstallXray={uninstallXray}
+					showXray={true}
 				/>
 				</div>
 			</aside>

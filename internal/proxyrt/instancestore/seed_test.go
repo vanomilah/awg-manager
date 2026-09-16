@@ -1348,7 +1348,7 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 	// OpenFirewall у обеих серверных ролей задан явным false — чтобы значение
 	// отличалось от дефолта «ключа нет → true» и потеря маппинга была видна.
 	// Форма nil→true закрыта TestSeedOpenFirewallAbsentOrNullMeansOn.
-	assertEveryFieldCarried(t, "WdttServerConfig", []any{*srv.WdttServer}, "OpenFirewall")
+	assertEveryFieldCarried(t, "WdttServerConfig", []any{*srv.WdttServer}, "OpenFirewall", "ClientAuthMode", "SharedPassword")
 	assertEveryFieldCarried(t, "ServerUser", []any{srv.Users[0]})
 	assertEveryFieldCarried(t, "FreeTurnClientConfig",
 		[]any{*got["freeturn-client:ftc-1"].FreeTurnClient})

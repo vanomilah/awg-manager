@@ -26,6 +26,9 @@
 	import type { WdttPanelUserEntry, WdttProcessStatus, WdttServerConfig } from '$lib/types';
 
 	const withIngressLock = createIngressMutationLock();
+	let activeEngine = $state<'sing-box' | 'mihomo'>('sing-box');
+	let engineLabel = $derived(activeEngine === 'mihomo' ? 'Mihomo' : 'sing-box');
+	let engineTitle = $derived(activeEngine === 'mihomo' ? 'Маршрутизация через Mihomo' : 'Маршрутизация через sing-box');
 
 	const SERVER_TABS = [
 		{ id: 'main', label: 'Основное' },
@@ -292,6 +295,7 @@
 		}
 		try {
 			const s = await api.singboxRouterGetSettings();
+			activeEngine = s.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
 			const refs = s.ingressInterfaces ?? [];
 			server.ingressEnabled = wdttIngressRefs.some((ref) => refs.includes(ref));
 		} catch {
@@ -780,12 +784,12 @@
 				</div>
 				<div class="setting-row setting-row-toggle">
 					<div class="setting-copy">
-						<span class="setting-title">Маршрутизация через прокси-движок</span>
+						<span class="setting-title">{engineTitle}</span>
 						<span class="setting-description">
-							Весь TCP- и UDP-трафик клиентов этого сервера (WireGuard и raw) пойдёт через выбранный
-							движок (sing-box или Mihomo) и маршрутизируется его правилами; в режиме FakeIP DNS-запросы перехватываются
+							Весь TCP- и UDP-трафик клиентов этого сервера (WireGuard и raw) пойдёт через {engineLabel}
+							и маршрутизируется его правилами; в режиме FakeIP DNS-запросы перехватываются
 							резолвером туннеля. Следствия в FakeIP: выше нагрузка на процессор, у клиентов не
-							работает ping (ICMP), при остановленном движке они остаются без сети.
+							работает ping (ICMP), при остановленном {engineLabel} они остаются без сети.
 						</span>
 					</div>
 					<div class="setting-control setting-control-toggle">

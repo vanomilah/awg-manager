@@ -26,6 +26,7 @@ func (r *Runner) collectJournalWarnings() *JournalWarningsInfo {
 		LimitPerBucket: limit,
 		AWGM:           r.collectJournalWarningBucket(logging.BucketApp, limit),
 		Singbox:        r.collectJournalWarningBucket(logging.BucketSingbox, limit),
+		Mihomo:         r.collectJournalWarningBucket(logging.BucketMihomo, limit),
 	}
 }
 

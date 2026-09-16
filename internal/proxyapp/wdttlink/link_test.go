@@ -109,6 +109,52 @@ func TestEncodeQwdttLink_Port9000(t *testing.T) {
 	if got.Listen != "127.0.0.1:9000" {
 		t.Fatalf("listen=%q", got.Listen)
 	}
+	if got.WG != "" {
+		t.Fatalf("numeric wg port was mistaken for WireGuard config: %q", got.WG)
+	}
+}
+
+func TestEncodeRawLink_RoundTripKeepsDedicatedPort(t *testing.T) {
+	link, err := EncodeRawLink("raw.example", 56002, 56123, 56001, "secret", []string{"h1"}, "Raw", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(link, SchemeWdtt) || strings.Contains(link, "raw.example:") {
+		t.Fatalf("raw link must use wdtt base64(JSON), got %q", link)
+	}
+	got, err := DecodeImport(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Peer != "raw.example:56123" || got.ConnMode != ConnModeRaw {
+		t.Fatalf("raw endpoint lost: %+v", got)
+	}
+	if got.Listen != "127.0.0.1:9000" {
+		t.Fatalf("listen=%q", got.Listen)
+	}
+}
+
+func TestDecodeImport_QwdttRawPortOverridesStalePeerPort(t *testing.T) {
+	link := "qwdtt://config?peer=raw.example%3A56002&raw_port=56123&mode=raw&pass=x&hashes=h"
+	got, err := DecodeImport(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Peer != "raw.example:56123" || got.ConnMode != ConnModeRaw {
+		t.Fatalf("raw endpoint lost: %+v", got)
+	}
+}
+
+func TestPeerWithPort(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"example.org", "example.org:56123"},
+		{"example.org:56002", "example.org:56123"},
+		{"[2001:db8::1]:56002", "[2001:db8::1]:56123"},
+	} {
+		if got := peerWithPort(tc.in, 56123); got != tc.want {
+			t.Errorf("peerWithPort(%q)=%q want %q", tc.in, got, tc.want)
+		}
+	}
 }
 
 func TestDecodeImport_WdttColon(t *testing.T) {

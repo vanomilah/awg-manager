@@ -273,6 +273,9 @@ func (r *Role) natGroups(c roles.WdttServerConfig) netres.GroupProvider {
 			}
 			if mark != "" {
 				groups = append(groups, netres.PolicyMarkGroup(c.RawIface, mark))
+				if c.WgIface != "" && c.WgIface != c.RawIface {
+					groups = append(groups, netres.PolicyMarkGroup(c.WgIface, mark))
+				}
 			}
 		}
 		return groups, nil
@@ -290,7 +293,11 @@ func (r *Role) hookGroups(c roles.WdttServerConfig) netres.GroupProvider {
 		if len(groups) == 0 {
 			return nil, nil
 		}
-		return append(netres.ForwardGroups([]string{c.RawIface}), groups...), nil
+		forwardIfaces := []string{c.RawIface}
+		if c.WgIface != "" && c.WgIface != c.RawIface {
+			forwardIfaces = append(forwardIfaces, c.WgIface)
+		}
+		return append(netres.ForwardGroups(forwardIfaces), groups...), nil
 	}
 }
 

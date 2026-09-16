@@ -278,7 +278,13 @@ func parseSingboxVersionOutput(out string) (string, []string) {
 // IsPresent reports whether the managed sing-box binary exists and is executable.
 // Fast path for UI/system probes that must not block on `sing-box version`.
 func (o *Operator) IsPresent() bool {
-	return isExecutable(o.binary)
+	if isExecutable(o.binary) {
+		return true
+	}
+	if isExecutable("/opt/bin/sing-box") {
+		return true
+	}
+	return false
 }
 
 // Install downloads the managed sing-box binary, verifies SHA256, and

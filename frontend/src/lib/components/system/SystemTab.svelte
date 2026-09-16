@@ -29,15 +29,15 @@
 
 	const views = $derived.by(() => {
 		if ($poniesUnlocked || $page.url.searchParams.get('view') === 'ponies') {
-			return [...baseViews, { id: 'ponies' as SystemView, label: 'Страна розовых пони' }];
+			return [...baseViews, { id: 'ponies' as SystemView, label: 'Скрытый табунчик пони' }];
 		}
 		return baseViews;
 	});
 
 	function initialView(): SystemView {
 		const v = $page.url.searchParams.get('view');
-		if (v === 'ai' || v === 'files' || v === 'services' || v === 'packages' || v === 'terminal' || v === 'ports' || v === 'processes' || v === 'ponies') return v;
-		return 'traffic';
+		if (v === 'traffic' || v === 'files' || v === 'services' || v === 'packages' || v === 'terminal' || v === 'ports' || v === 'processes' || v === 'ponies') return v;
+		return 'ai';
 	}
 
 	let activeView = $state<SystemView>(initialView());
@@ -48,20 +48,19 @@
 			if ($poniesUnlocked) {
 				activeView = 'ponies';
 			} else {
-				activeView = 'traffic';
+				activeView = 'ai';
 			}
 		} else if (v === 'ai' || v === 'traffic' || v === 'files' || v === 'services' || v === 'packages' || v === 'terminal' || v === 'ports' || v === 'processes') {
 			activeView = v;
 		} else if (!$page.url.searchParams.has('view')) {
-			activeView = 'traffic';
+			activeView = 'ai';
 		}
 	});
 
 	function setView(id: SystemView) {
 		activeView = id;
 		const url = new URL($page.url);
-		if (id === 'traffic') url.searchParams.delete('view');
-		else url.searchParams.set('view', id);
+		url.searchParams.set('view', id);
 		void goto(url.pathname + url.search + url.hash, {
 			replaceState: true,
 			keepFocus: true,
@@ -74,18 +73,18 @@
 	<div class="expert-disclaimer" role="note">
 		<AlertTriangle size={16} aria-hidden="true" />
 		<span>
-			<strong>Expert-режим.</strong> Инструменты системного анализа, управления файлами, службами, пакетами и процессами
-			выполняются от имени <code>root</code>.
+			<strong>Expert-режим.</strong> Прямое управление службами роутера, системными файлами, пакетами, процессами и сетевыми
+			соединениями от имени <code>root</code>.
 		</span>
 	</div>
 
 	<Tabs tabs={views} active={activeView} onchange={(id) => setView(id as SystemView)} />
 
 	<div class="panel">
-		{#if activeView === 'traffic'}
-			<TrafficAnalysisPanel />
-		{:else if activeView === 'ai'}
+		{#if activeView === 'ai'}
 			<AIAssistantPanel />
+		{:else if activeView === 'traffic'}
+			<TrafficAnalysisPanel />
 		{:else if activeView === 'files'}
 			<FileManager />
 		{:else if activeView === 'services'}

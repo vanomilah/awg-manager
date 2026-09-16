@@ -5,10 +5,19 @@
 export interface MihomoStatus {
 	engine: 'mihomo';
 	running: boolean;
+	degraded?: boolean;
 	pid: number;
 	binary: string;
 	error: string;
 	version?: string;
+	currentVersion?: string;
+	requiredVersion?: string;
+	installed?: boolean;
+	installAvailable?: boolean;
+	updateAvailable?: boolean;
+	installState?: 'installed' | 'missing' | 'missing_no_space' | 'outdated_no_space';
+	requiredBytes?: number;
+	freeBytes?: number;
 	selected?: boolean;
 	enabled?: boolean;
 	active?: boolean;

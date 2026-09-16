@@ -16,6 +16,20 @@ mkdir -p /opt/var/log
 chmod 755 /opt/bin/awg-manager
 chmod 755 /opt/sbin/awg
 chmod 755 /opt/etc/init.d/S99awg-manager
+for script in S95tproxy-server S99telemt S96telemt-raw; do
+    target="/opt/etc/init.d/$script"
+    if [ -f "$target" ]; then
+        chmod 755 "$target"
+        saved_enabled="/tmp/.awgm_${script}_enabled"
+        if [ -f "$saved_enabled" ]; then
+            new_val=$(cat "$saved_enabled" 2>/dev/null)
+            if [ -n "$new_val" ]; then
+                sed -i "s/^ENABLED=.*/$new_val/" "$target" 2>/dev/null || true
+            fi
+            rm -f "$saved_enabled" 2>/dev/null || true
+        fi
+    fi
+done
 for hook in iflayerchanged ifcreated ifdestroyed ifipchanged; do
     chmod 755 "/opt/etc/ndm/${hook}.d/50-awg-manager.sh" 2>/dev/null || true
 done

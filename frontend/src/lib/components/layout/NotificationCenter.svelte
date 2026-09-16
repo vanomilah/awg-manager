@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button } from '$lib/components/ui';
-	import { Bell } from 'lucide-svelte';
+	import { Bell, Sparkles } from 'lucide-svelte';
 	import SideDrawer from '$lib/components/ui/SideDrawer.svelte';
 	import {
 		notificationCenter,
@@ -20,6 +20,7 @@
 	let { authenticated }: Props = $props();
 
 	let open = $state(false);
+	let expandedId = $state<string | null>(null);
 
 	const ORDER: DayBucket[] = ['today', 'yesterday', 'earlier'];
 	const GROUP_LABELS: Record<DayBucket, string> = {
@@ -56,7 +57,16 @@
 		if (e.action) {
 			open = false;
 			goto(e.action.href);
+			return;
 		}
+		expandedId = expandedId === e.id ? null : e.id;
+	}
+
+	function askAI(e: CenterEntry, event?: MouseEvent): void {
+		if (event) event.stopPropagation();
+		notificationCenter.markRead(e.id);
+		open = false;
+		goto('/diagnostics?tab=system&view=ai&ask=' + encodeURIComponent(e.message));
 	}
 </script>
 
@@ -102,22 +112,39 @@
 								class:unread={!e.read}
 								class:is-error={e.type === 'error'}
 								class:is-warning={e.type === 'warning'}
+								class:is-expanded={expandedId === e.id}
 							>
-								<button type="button" class="notif-main" onclick={() => onRowActivate(e)}>
-									<span class="notif-dot" class:hidden={e.read}></span>
-									<span class="notif-body">
-										<span class="notif-msg">{e.message}</span>
-										<span class="notif-meta">{meta(e)}</span>
-									</span>
-								</button>
-								<button
-									type="button"
-									class="notif-remove"
-									aria-label="Удалить уведомление"
-									onclick={() => notificationCenter.remove(e.id)}
-								>
-									×
-								</button>
+								<div class="notif-row-main">
+									<button type="button" class="notif-main" onclick={() => onRowActivate(e)}>
+										<span class="notif-dot" class:hidden={e.read}></span>
+										<span class="notif-body">
+											<span class="notif-msg">{e.message}</span>
+											<span class="notif-meta">{meta(e)}</span>
+										</span>
+									</button>
+									<button
+										type="button"
+										class="notif-remove"
+										aria-label="Удалить уведомление"
+										onclick={() => notificationCenter.remove(e.id)}
+									>
+										×
+									</button>
+								</div>
+								{#if e.type === 'error' || e.type === 'warning' || expandedId === e.id}
+									<div class="notif-ai-footnote">
+										<button
+											type="button"
+											class="notif-ai-btn"
+											onclick={(ev) => askAI(e, ev)}
+											title="Разобрать ошибку с помощью ИИ"
+										>
+											<Sparkles size={13} class="ai-sparkle-icon" />
+											<span>Разобрать с ИИ</span>
+											<span class="notif-ai-arrow">→</span>
+										</button>
+									</div>
+								{/if}
 							</div>
 						{/each}
 					</div>
@@ -269,15 +296,23 @@
 
 	.notif-row {
 		display: flex;
-		align-items: stretch;
-		gap: 0.25rem;
+		flex-direction: column;
 		border-radius: var(--radius-sm);
 		border: 1px solid transparent;
+		overflow: hidden;
+		transition: all 0.15s ease;
+	}
+
+	.notif-row-main {
+		display: flex;
+		align-items: stretch;
+		gap: 0.25rem;
+		width: 100%;
 	}
 
 	.notif-row:not(.unread) {
 		border-color: color-mix(in srgb, var(--color-border) 65%, transparent);
-		opacity: 0.62;
+		opacity: 0.75;
 	}
 
 	.notif-row.unread.is-error {
@@ -365,6 +400,70 @@
 
 	.notif-remove:hover {
 		color: var(--color-text-primary);
+	}
+
+	.notif-ai-footnote {
+		padding: 0 0.5rem 0.5rem 1.85rem;
+		display: flex;
+		align-items: center;
+	}
+
+	.notif-ai-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.75rem;
+		font-weight: 500;
+		padding: 0.25rem 0.55rem;
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-accent) 30%, transparent);
+		color: var(--color-accent);
+		cursor: pointer;
+		text-decoration: none;
+		transition: all 0.15s ease;
+	}
+
+	.notif-ai-btn:hover {
+		background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+		border-color: var(--color-accent);
+	}
+
+	.notif-ai-btn :global(.ai-sparkle-icon) {
+		color: inherit;
+		flex-shrink: 0;
+	}
+
+	.notif-ai-arrow {
+		font-size: 0.8rem;
+		line-height: 1;
+		transition: transform 0.15s ease;
+	}
+
+	.notif-ai-btn:hover .notif-ai-arrow {
+		transform: translateX(2px);
+	}
+
+	.notif-row.unread.is-error .notif-ai-btn {
+		background: color-mix(in srgb, var(--color-error, #e5484d) 12%, transparent);
+		border-color: color-mix(in srgb, var(--color-error, #e5484d) 35%, transparent);
+		color: var(--color-error, #e5484d);
+	}
+
+	.notif-row.unread.is-error .notif-ai-btn:hover {
+		background: color-mix(in srgb, var(--color-error, #e5484d) 22%, transparent);
+		border-color: var(--color-error, #e5484d);
+	}
+
+	.notif-row.unread.is-warning .notif-ai-btn {
+		background: color-mix(in srgb, #f59e0b 12%, transparent);
+		border-color: color-mix(in srgb, #f59e0b 35%, transparent);
+		color: #d97706;
+	}
+
+	.notif-row.unread.is-warning .notif-ai-btn:hover {
+		background: color-mix(in srgb, #f59e0b 22%, transparent);
+		border-color: #d97706;
 	}
 
 	.notif-footer {

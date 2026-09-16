@@ -75,6 +75,7 @@ type SystemInfoData struct {
 	SlowRequestThresholdMs      int                           `json:"slowRequestThresholdMs" example:"0"`
 	BackendAvailability         SystemInfoBackendAvailability `json:"backendAvailability"`
 	Singbox                     SystemInfoSingbox             `json:"singbox"`
+	RoutingEngine               string                        `json:"routingEngine,omitempty" example:"mihomo"`
 	RouterDetails               *RouterDetails                `json:"routerDetails,omitempty"`
 }
 
@@ -439,8 +440,15 @@ func (h *SystemHandler) buildSystemInfo(disableMemorySaving bool, gcMemLimit, go
 	routerDetails := h.getRouterDetailsCached()
 	clock := routerclock.Get()
 	nativewgAvail, nativewgReason := nativewgStatus()
+	routingEngine := "sing-box"
+	if h.settingsStore != nil {
+		if s, err := h.settingsStore.Get(); err == nil && s.SingboxRouter.RoutingEngine != "" {
+			routingEngine = s.SingboxRouter.RoutingEngine
+		}
+	}
 
 	return map[string]interface{}{
+		"routingEngine":       routingEngine,
 		"version":             h.version,
 		"goVersion":           runtime.Version(),
 		"goArch":              runtime.GOARCH,

@@ -47,10 +47,14 @@ import (
 	systraffic "github.com/hoaxisr/awg-manager/internal/sys/traffic"
 	"github.com/hoaxisr/awg-manager/internal/terminal"
 	"github.com/hoaxisr/awg-manager/internal/testing"
+	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
+	"github.com/hoaxisr/awg-manager/internal/serveringress"
+	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/traffic"
 	"github.com/hoaxisr/awg-manager/internal/tunnel/nwg"
 	"github.com/hoaxisr/awg-manager/internal/tunnel/systemtunnel"
 	"github.com/hoaxisr/awg-manager/internal/updater"
+	"github.com/hoaxisr/awg-manager/internal/xrayserver"
 )
 
 const (
@@ -112,6 +116,7 @@ type Server struct {
 	exposureGuardStop          context.CancelFunc
 	singboxHandler             *api.SingboxHandler
 	mihomoHandler              *api.MihomoHandler
+	xrayHandler                *api.XrayHandler
 	aiAssistantHandler         *api.AIAssistantHandler
 	trafficHandler             *systraffic.Handler
 	singboxConnsHandler        *api.SingboxConnectionsHandler
@@ -137,6 +142,10 @@ type Server struct {
 	singboxSubMembersFn        func() []diagnostics.SingboxSubMember
 	singboxConfigPreviewFn     func() (string, error)
 	dnsCheckService            *dnscheck.Service
+	xrayServerService          *xrayserver.Service
+	tgWebProxyService          *tgwebproxy.Service
+	cdnDispatcher              *cdndispatcher.Dispatcher
+	serverIngressCoordinator   *serveringress.Coordinator
 	authMiddleware             *auth.Middleware
 	httpServer                 *http.Server
 
@@ -216,6 +225,7 @@ type Deps struct {
 	HydraService         *hydraroute.Service
 	SingboxHandler       *api.SingboxHandler
 	MihomoHandler        *api.MihomoHandler
+	XrayHandler          *api.XrayHandler
 	AIAssistantHandler   *api.AIAssistantHandler
 	TrafficHandler       *systraffic.Handler
 	SingboxOrch          *singboxorch.Orchestrator
@@ -224,6 +234,10 @@ type Deps struct {
 	MonitoringService    *monitoring.Service
 	SingboxSubMembers    func() []diagnostics.SingboxSubMember
 	SingboxConfigPreview func() (string, error)
+	XrayServerService        *xrayserver.Service
+	TgWebProxyService        *tgwebproxy.Service
+	CDNDispatcher            *cdndispatcher.Dispatcher
+	ServerIngressCoordinator *serveringress.Coordinator
 }
 
 // authLoggerAdapter narrows ScopedLogger to the AuthLogger interface
@@ -279,6 +293,7 @@ func New(cfg Config, deps Deps) *Server {
 		bus:                    deps.Bus,
 		singboxHandler:         deps.SingboxHandler,
 		mihomoHandler:          deps.MihomoHandler,
+		xrayHandler:            deps.XrayHandler,
 		aiAssistantHandler:     deps.AIAssistantHandler,
 		trafficHandler:         deps.TrafficHandler,
 		singboxOrch:            deps.SingboxOrch,
@@ -287,8 +302,12 @@ func New(cfg Config, deps Deps) *Server {
 		monitoringService:      deps.MonitoringService,
 		singboxSubMembersFn:    deps.SingboxSubMembers,
 		singboxConfigPreviewFn: deps.SingboxConfigPreview,
-		authMiddleware:         auth.NewMiddleware(deps.Sessions, deps.Settings, &authLoggerAdapter{log: appLog}),
-		instanceID:             id,
+		xrayServerService:        deps.XrayServerService,
+		tgWebProxyService:        deps.TgWebProxyService,
+		cdnDispatcher:            deps.CDNDispatcher,
+		serverIngressCoordinator: deps.ServerIngressCoordinator,
+		authMiddleware:           auth.NewMiddleware(deps.Sessions, deps.Settings, &authLoggerAdapter{log: appLog}),
+		instanceID:               id,
 	}
 }
 

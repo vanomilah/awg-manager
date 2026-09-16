@@ -107,7 +107,18 @@ func buildSingboxCore(d singboxCoreDeps) singboxCore {
 	// Propagate the sticky-stop intent so reload-triggered cold-starts
 	// (slot-file writes from router/deviceproxy/subscriptions) respect a
 	// user-pressed Stop in the same way the watchdog does.
-	orch.SetShouldRun(func() bool { return !op.IsManuallyStopped() })
+	// In addition, when Mihomo is the primary routing engine, sing-box must
+	// not be cold-started by orchestrator slots (Mihomo owns transparent proxying).
+	orch.SetShouldRun(func() bool {
+		if d.settings != nil {
+			if st, err := d.settings.Load(); err == nil && st != nil {
+				if st.SingboxRouter.RoutingEngine == "mihomo" {
+					return false
+				}
+			}
+		}
+		return !op.IsManuallyStopped()
+	})
 	// AWG3 imported endpoints — store owns awg3.json, service projects it into
 	// the 16-awg3.json slot. Constructed here so the SlotAwg3 HasContent closure
 	// (below) can read the store, mirroring SlotTunnels' HasUserTunnels gate.

@@ -3,6 +3,7 @@
 </script>
 
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { openContextMenu } from './log-row-context-menu';
   import { formatDateTimeWithOffset, formatTime } from '$lib/utils/format';
   import { familyOf } from './subgroup-palette';
@@ -90,12 +91,22 @@
     onClickLevel?.(log.level);
   }
 
+  function handleAskAI(e: MouseEvent) {
+    e.stopPropagation();
+    const query = cleanMessage || log.action || '';
+    void goto('/diagnostics?tab=system&view=ai&ask=' + encodeURIComponent(query));
+  }
+
   function handleContextMenu(e: MouseEvent) {
     openContextMenu(e, log, {
       onCopyLine: () => onCopyLine?.(log),
       onCopyMessage: () => onCopyMessage?.(cleanMessage),
       onFilterScope: () => onClickScope?.(log.group, log.subgroup),
       onFilterLevel: () => onClickLevel?.(log.level),
+      onAskAI: () => {
+        const query = cleanMessage || log.action || '';
+        void goto('/diagnostics?tab=system&view=ai&ask=' + encodeURIComponent(query));
+      },
     });
   }
 
@@ -156,6 +167,16 @@
   <span class="target">{log.target}</span>
   <span class="arrow">→</span>
   <span class="message" class:truncate={!isExpanded}>{cleanMessage}</span>
+  {#if log.level === 'error'}
+    <button
+      type="button"
+      class="ai-ask-chip"
+      title="Разобрать эту ошибку в ИИ-помощнике"
+      onclick={handleAskAI}
+    >
+      ✨ ИИ
+    </button>
+  {/if}
   {#if (log.repeats ?? 0) > 0}
     <span class="repeat-badge" title={repeatTitle}>×{(log.repeats ?? 0) + 1}</span>
   {/if}
@@ -283,6 +304,29 @@
   :global(html.light) .row.expanded,
   :global([data-theme="light"]) .row.expanded {
     background: rgba(0, 0, 0, 0.03);
+  }
+
+  .ai-ask-chip {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.4rem;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-sans, system-ui, sans-serif);
+    line-height: 1.2;
+    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--color-accent) 50%, transparent);
+    background: color-mix(in srgb, var(--color-accent) 15%, transparent);
+    color: var(--color-accent);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-left: 0.25rem;
+  }
+  .ai-ask-chip:hover {
+    background: var(--color-accent);
+    color: #fff;
+    transform: translateY(-1px);
   }
 
   @media (max-width: 640px) {

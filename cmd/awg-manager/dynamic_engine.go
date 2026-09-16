@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
+	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/proxyengine"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
@@ -18,6 +20,9 @@ type DynamicEngine struct {
 	singboxEngine proxyengine.Engine
 	mihomoEngine  proxyengine.Engine
 	settingsStore *storage.SettingsStore
+	coordinator   *mihomo.ApplyCoordinator
+	nativeStore   *mihomonative.Store
+	compileFn     func(context.Context) (*mihomo.CompileResult, error)
 
 	OnMihomoReload func() error
 	// MihomoSidecarNeeded keeps native loopback exports alive while sing-box
@@ -30,7 +35,9 @@ type DynamicEngine struct {
 	OnMihomoReady       func() error
 	OnMihomoUnavailable func() error
 	OnMihomoShutdown    func(context.Context) error
+	OnReady             func()
 
+	onReadyOnce        sync.Once
 	transitionMu       sync.Mutex
 	currentMihomoMode  mihomoRuntimeMode
 	shuttingDown       atomic.Bool
@@ -92,6 +99,123 @@ func NewDynamicEngine(sb, mh proxyengine.Engine, store *storage.SettingsStore) *
 		mihomoEngine:  mh,
 		settingsStore: store,
 	}
+}
+
+type StartupStatus string
+
+const (
+	StatusReady    StartupStatus = "ready"
+	StatusDegraded StartupStatus = "degraded"
+)
+
+type StartupResult struct {
+	Status StartupStatus
+	Error  error
+}
+
+func (d *DynamicEngine) SetCoordinator(c *mihomo.ApplyCoordinator) {
+	d.coordinator = c
+}
+
+func (d *DynamicEngine) SetNativeStore(s *mihomonative.Store) {
+	d.nativeStore = s
+}
+
+func (d *DynamicEngine) SetCompileFunc(fn func(context.Context) (*mihomo.CompileResult, error)) {
+	d.compileFn = fn
+}
+
+func (d *DynamicEngine) Coordinator() *mihomo.ApplyCoordinator {
+	return d.coordinator
+}
+
+func (d *DynamicEngine) triggerReady() {
+	if d.OnReady != nil {
+		d.onReadyOnce.Do(d.OnReady)
+	}
+}
+
+func (d *DynamicEngine) Startup(ctx context.Context) StartupResult {
+	if d.coordinator == nil {
+		d.triggerReady()
+		return StartupResult{Status: StatusReady}
+	}
+	if err := d.coordinator.RecoverOnStartup(ctx); err != nil {
+		return StartupResult{Status: StatusDegraded, Error: err}
+	}
+	d.triggerReady()
+	return StartupResult{Status: StatusReady}
+}
+
+func (d *DynamicEngine) ApplyNativeMutation(ctx context.Context, mutateFn func() error) error {
+	if d.coordinator == nil {
+		return mutateFn()
+	}
+	return d.coordinator.MutateAndApply(ctx, mutateFn, func(c context.Context) (*mihomo.CompileResult, error) {
+		if d.compileFn != nil {
+			return d.compileFn(c)
+		}
+		return nil, errors.New("compile function not configured")
+	})
+}
+
+func (d *DynamicEngine) ApplyDraftOnly(ctx context.Context, mutateFn func() error) error {
+	if d.nativeStore == nil {
+		return mutateFn()
+	}
+	baseDigest, _ := d.nativeStore.CurrentDigest()
+	txid := mihomo.GenerateTxID()
+	snapFile, err := d.nativeStore.CreateSnapshotFile(txid)
+	if err != nil {
+		return err
+	}
+	if err := mutateFn(); err != nil {
+		_ = d.nativeStore.RestoreSnapshotFile(snapFile)
+		_ = d.nativeStore.RemoveSnapshotFile(snapFile)
+		return err
+	}
+	targetDigest, _ := d.nativeStore.CurrentDigest()
+	dj := mihomo.DraftJournal{
+		Version:                  1,
+		TxID:                     txid,
+		State:                    mihomo.DraftPending,
+		DraftSnapshotFile:        snapFile,
+		BaseDesiredStoreDigest:   baseDigest,
+		TargetDesiredStoreDigest: targetDigest,
+		CreatedAt:                time.Now(),
+		UpdatedAt:                time.Now(),
+	}
+	return d.nativeStore.SaveDraftJournal(dj)
+}
+
+func (d *DynamicEngine) ApplyPendingDraft(ctx context.Context) error {
+	if d.coordinator == nil {
+		return nil
+	}
+	return d.coordinator.MutateAndApply(ctx, nil, func(c context.Context) (*mihomo.CompileResult, error) {
+		if d.compileFn != nil {
+			return d.compileFn(c)
+		}
+		return nil, errors.New("compile function not configured")
+	})
+}
+
+func (d *DynamicEngine) IsDegraded() bool {
+	if d.coordinator == nil {
+		return false
+	}
+	return d.coordinator.State() == mihomo.StateRecoveryRequired
+}
+
+func (d *DynamicEngine) Reconcile(ctx context.Context, action string, force bool) error {
+	if d.coordinator == nil {
+		return errors.New("coordinator unavailable")
+	}
+	if err := d.coordinator.Reconcile(ctx, action, force); err != nil {
+		return err
+	}
+	d.triggerReady()
+	return nil
 }
 
 func (d *DynamicEngine) activeRoutingEngine() string {
@@ -174,6 +298,15 @@ func (d *DynamicEngine) stopMihomoAfterWithdraw(reason string) error {
 }
 
 func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
+	if d.coordinator != nil && d.compileFn != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		if err := d.coordinator.MutateAndApply(ctx, nil, d.compileFn); err != nil {
+			return d.failMihomo(fmt.Errorf("mihomo coordinator apply: %w", err))
+		}
+		d.currentMihomoMode = mode
+		return nil
+	}
 	if mode == mihomoRuntimeOff {
 		return d.stopMihomoAfterWithdraw("stop stale Mihomo engine")
 	}

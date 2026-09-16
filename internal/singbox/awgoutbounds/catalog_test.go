@@ -189,15 +189,16 @@ func TestEnumerate_ManagedServersNilFilter(t *testing.T) {
 
 func TestEnumerate_SkipsAWGMDescriptionPrefix(t *testing.T) {
 	// Validates the description-prefix fallback filter: a system tunnel whose
-	// description starts with "AWGM" (the ManagedServerDescription prefix in
-	// internal/managed/types.go) must be excluded even when ManagedServers is
-	// nil (i.e., the interface-name set is empty / stale).
-	root := makeIfacePresent(t, "Wireguard1")
+	// description starts with "AWGM WG Server" (the ManagedServerDescription prefix in
+	// internal/managed/types.go) must be excluded, but client WDTT tunnels
+	// ("AWGM WDTT Raw Client: ...") must be preserved.
+	root := makeIfacePresent(t, "Wireguard1", "Wireguard2")
 	s := &ServiceImpl{
 		deps: Deps{
 			AWGTunnels: &fakeAWGStore{},
 			SystemTunnels: &fakeSystemStore{tunnels: []SystemTunnelInfo{
 				{ID: "Wireguard1", InterfaceName: "Wireguard1", Description: "AWGM WG Server"},
+				{ID: "Wireguard2", InterfaceName: "Wireguard2", Description: "AWGM WDTT Raw Client: Дом"},
 			}},
 			ManagedServers: nil, // confirm fallback alone catches it
 		},
@@ -207,8 +208,8 @@ func TestEnumerate_SkipsAWGMDescriptionPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enumerate: %v", err)
 	}
-	if len(out) != 0 {
-		t.Errorf("expected 0 entries (server-side WG must be filtered by description prefix), got %d: %+v", len(out), out)
+	if len(out) != 1 || out[0].Tag != "awg-sys-Wireguard2" {
+		t.Errorf("expected 1 entry for Wireguard2, got %d: %+v", len(out), out)
 	}
 }
 

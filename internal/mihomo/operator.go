@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Operator manages the Mihomo process and implements proxyengine.Engine
@@ -32,6 +36,7 @@ type Operator struct {
 	afterWait      func()
 	cleanupStaleFn func(string, string) error
 	onExit         func(uint64)
+	logFn          func(level, action, message string)
 }
 
 func NewOperator(binaryPath, configDir string) *Operator {
@@ -40,6 +45,22 @@ func NewOperator(binaryPath, configDir string) *Operator {
 		configDir:      configDir,
 		commandFn:      exec.Command,
 		cleanupStaleFn: cleanupStaleManagedProcesses,
+	}
+}
+
+// SetLogger sets an optional logging callback for early startup and process errors.
+func (o *Operator) SetLogger(fn func(level, action, message string)) {
+	o.mu.Lock()
+	o.logFn = fn
+	o.mu.Unlock()
+}
+
+func (o *Operator) log(level, action, message string) {
+	o.mu.Lock()
+	fn := o.logFn
+	o.mu.Unlock()
+	if fn != nil {
+		fn(level, action, message)
 	}
 }
 
@@ -61,8 +82,31 @@ func (o *Operator) CurrentGeneration() uint64 {
 	return o.generation
 }
 
+func (o *Operator) configHasTunEnabled() bool {
+	data, err := os.ReadFile(filepath.Join(o.configDir, "config.yaml"))
+	if err != nil {
+		return false
+	}
+	var probe struct {
+		Tun struct {
+			Enable bool `yaml:"enable"`
+		} `yaml:"tun"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Tun.Enable
+}
+
 func (o *Operator) Reload() error {
 	if running, _ := o.IsRunning(); !running {
+		return o.Start()
+	}
+
+	// Mihomo cannot dynamically bind or attach a Linux TUN device via hot reload
+	// (PUT /configs). When TUN is enabled in config.yaml, Mihomo must restart cleanly.
+	if o.configHasTunEnabled() {
+		_ = o.Stop()
 		return o.Start()
 	}
 
@@ -95,6 +139,7 @@ func (o *Operator) Reload() error {
 		return o.recordError(fmt.Errorf("mihomo reload failed with status: %s", resp.Status))
 	}
 	o.clearError()
+	go o.warmupGroups()
 	return nil
 }
 
@@ -156,10 +201,16 @@ func (o *Operator) Start() error {
 	// that were persisted when the group was in selector mode.
 	_ = os.Remove(filepath.Join(o.configDir, "cache.db"))
 
-	cmd := o.commandFn(o.binaryPath, "-d", o.configDir)
+	cmd := o.commandFn(o.resolveBinary(), "-d", o.configDir)
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	logFile, logErr := os.OpenFile("/tmp/mihomo.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if logErr == nil {
+		cmd.Stdout = io.MultiWriter(&stdout, logFile)
+		cmd.Stderr = io.MultiWriter(&stderr, logFile)
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	}
 
 	if err := cmd.Start(); err != nil {
 		o.lastError = err.Error()
@@ -204,6 +255,7 @@ func (o *Operator) Start() error {
 		return o.recordError(fmt.Errorf("mihomo startup failed: %s", detail))
 	}
 	o.clearError()
+	go o.warmupGroups()
 	return nil
 }
 
@@ -299,8 +351,21 @@ func (o *Operator) ConfigDir() string {
 	return o.configDir
 }
 
-func (o *Operator) Binary() string {
+func (o *Operator) resolveBinary() string {
+	if _, err := os.Stat(o.binaryPath); err == nil {
+		return o.binaryPath
+	}
+	if _, err := os.Stat("/opt/bin/mihomo"); err == nil {
+		return "/opt/bin/mihomo"
+	}
+	if lp, err := exec.LookPath("mihomo"); err == nil {
+		return lp
+	}
 	return o.binaryPath
+}
+
+func (o *Operator) Binary() string {
+	return o.resolveBinary()
 }
 
 func (o *Operator) LastError() string {
@@ -371,6 +436,7 @@ func (o *Operator) recordError(err error) error {
 	o.mu.Lock()
 	o.lastError = err.Error()
 	o.mu.Unlock()
+	o.log("error", "runtime", err.Error())
 	return err
 }
 
@@ -378,4 +444,40 @@ func (o *Operator) clearError() {
 	o.mu.Lock()
 	o.lastError = ""
 	o.mu.Unlock()
+}
+
+func (o *Operator) warmupGroups() {
+	time.Sleep(300 * time.Millisecond)
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:9090/proxies")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var data struct {
+		Proxies map[string]struct {
+			Type    string `json:"type"`
+			TestURL string `json:"testUrl"`
+		} `json:"proxies"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return
+	}
+	for name, p := range data.Proxies {
+		pType := strings.ToLower(p.Type)
+		if pType == "fallback" || pType == "urltest" {
+			testURL := p.TestURL
+			if testURL == "" {
+				testURL = "https://www.gstatic.com/generate_204"
+			}
+			endpoint := fmt.Sprintf("http://127.0.0.1:9090/group/%s/delay?url=%s&timeout=5000", url.PathEscape(name), url.QueryEscape(testURL))
+			req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+			if err == nil {
+				r, err := client.Do(req)
+				if err == nil {
+					_ = r.Body.Close()
+				}
+			}
+		}
+	}
 }

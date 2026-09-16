@@ -85,6 +85,10 @@ export interface WdttServerConfig {
 	 * старте: живой сервер от смены не перезапускается (`internal/wdtt/types.go`).
 	 */
 	exposeToPolicies?: boolean;
+	/** Режим авторизации клиентов: 'shared' (общий пароль PSK) или 'users' (по списку). */
+	clientAuthMode?: 'shared' | 'users';
+	/** Общий пароль при clientAuthMode === 'shared' */
+	sharedPassword?: string;
 }
 
 export interface WdttServerInstance {
@@ -168,6 +172,10 @@ export interface WdttImportPayload {
 	deviceId?: string;
 	wg?: string;
 	connMode?: 'wg' | 'raw';
+	peerWg?: string;
+	peerRaw?: string;
+	dtlsPort?: number;
+	rawPort?: number;
 }
 
 export interface WdttSubscriptionPreview {
@@ -217,4 +225,6 @@ export interface WdttPanelUsersStatus {
 	available: boolean;
 	users: WdttPanelUserEntry[];
 	reload?: WdttServerClientsReload;
+	authMode?: 'shared' | 'users';
+	sharedPassword?: string;
 }

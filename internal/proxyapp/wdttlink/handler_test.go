@@ -276,22 +276,49 @@ func TestLink_ModeDecidesPort(t *testing.T) {
 				t.Fatalf("peer=%v want %q", data["peer"], wantPeer)
 			}
 			link, _ := data["link"].(string)
-			if !strings.HasPrefix(link, "wdtt://1.2.3.4:"+tc.wantPort+":") {
-				t.Fatalf("wdtt-ссылка не на порт %s: %q", tc.wantPort, link)
+			decoded, err := DecodeImport(link)
+			if err != nil {
+				t.Fatalf("не удалось разобрать выданную wdtt-ссылку: %v", err)
+			}
+			if decoded.Peer != wantPeer {
+				t.Fatalf("wdtt-ссылка ведёт на %q, ожидали %q: %q", decoded.Peer, wantPeer, link)
+			}
+			wantMode := normalizeConnMode(tc.mode)
+			if tc.mode == "" {
+				wantMode = normalizeConnMode(tc.relayMode)
+			}
+			if normalizeConnMode(decoded.ConnMode) != wantMode {
+				t.Fatalf("wdtt-ссылка имеет режим %q, ожидали %q", decoded.ConnMode, wantMode)
 			}
 			q, _ := data["linkQwdtt"].(string)
 			if !strings.Contains(q, "peer=1.2.3.4%3A"+tc.wantPort) {
 				t.Fatalf("qwdtt-ссылка не на порт %s: %q", tc.wantPort, q)
 			}
 			// Режим ссылки уезжает в qwdtt://: raw помечается явно, wg — нет.
-			wantMode := normalizeConnMode(tc.mode)
-			if tc.mode == "" {
-				wantMode = normalizeConnMode(tc.relayMode)
-			}
 			if hasMode := strings.Contains(q, "mode=raw"); hasMode != (wantMode == ConnModeRaw) {
 				t.Fatalf("mode=raw в qwdtt=%v при режиме %q: %q", hasMode, wantMode, q)
 			}
+			if wantMode == ConnModeRaw && !strings.Contains(q, "raw_port="+tc.wantPort) {
+				t.Fatalf("qwdtt-ссылка не передаёт отдельный raw_port=%s: %q", tc.wantPort, q)
+			}
 		})
+	}
+}
+
+func TestLink_ReplacesRememberedPortWhenModeChanges(t *testing.T) {
+	rec := serverRecord(roles.WdttServerConfig{
+		Listen: "0.0.0.0:56002", RawListen: "0.0.0.0:56123", WgPort: 56001, RelayMode: ConnModeRaw,
+	}, instancestore.ServerUser{Password: "abonent"})
+	rec.LinkPeer = "198.51.100.9:56002"
+	h, _, _, _, _ := newTestHandler(t, rec)
+	rr := httptest.NewRecorder()
+	h.Link(rr, post(t, `{"password":"abonent","vkHashes":["hh"],"mode":"raw"}`), rec.Key())
+	data, msg, code := decodeEnvelope(t, rr)
+	if code != "" {
+		t.Fatalf("отказ %s: %s", code, msg)
+	}
+	if got := data["peer"]; got != "198.51.100.9:56123" {
+		t.Fatalf("peer=%v want raw port", got)
 	}
 }
 

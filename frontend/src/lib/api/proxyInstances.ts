@@ -330,6 +330,8 @@ export function toWdttServerConfig(v: ProxyInstanceView): WdttServerConfig {
     linkVkHashes: v.linkVkHashes,
     statsLog: v.statsLog as WdttServerConfig["statsLog"],
     exposeToPolicies: bool(c, "exposeToPolicies"),
+    clientAuthMode: (str(c, "clientAuthMode") as WdttServerConfig["clientAuthMode"]) ?? "users",
+    sharedPassword: str(c, "sharedPassword"),
   };
 }
 
@@ -379,6 +381,7 @@ export function toFreeTurnServerConfig(
     clientsFile: str(c, "clientsFile"),
     debug: bool(c, "debug") === true,
     openFirewall: bool(c, "openFirewall"),
+    linkPeer: v.linkPeer,
   };
 }
 
@@ -645,6 +648,10 @@ export function toWdttServerPatch(cfg: WdttServerConfig): Cfg {
     debug: cfg.debug === true,
     exposeToPolicies: cfg.exposeToPolicies === true,
     openFirewall: cfg.openFirewall !== false,
+    clientAuthMode: cfg.clientAuthMode ?? "users",
+    sharedPassword: cfg.sharedPassword ?? "",
+    linkPeer: cfg.linkPeer ?? "",
+    linkVkHashes: cfg.linkVkHashes ?? "",
   };
   // Формы выхода NAT НЕ смешиваются: бэкенд различает их по присутствию ключей
   // и делает присланную источником правды (F59). Нетронутый список уезжает

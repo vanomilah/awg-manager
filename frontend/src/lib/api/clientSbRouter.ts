@@ -14,6 +14,8 @@ import type {
 	MihomoNativeGroup,
 	MihomoNativeRule,
 	MihomoNativeRuleProvider,
+	XrayStatus,
+	XrayConfigRequest,
 	RouterPolicy,
 	RouterStagingStatusResponse,
 	SingboxGeositesData,
@@ -529,12 +531,43 @@ export class SbRouterClient extends SingboxClient {
 		return this.request('/mihomo/status');
 	}
 
+	async mihomoInstall(): Promise<MihomoStatus> {
+		return this.request('/mihomo/install', { method: 'POST' });
+	}
+
+	async mihomoUpdate(): Promise<MihomoStatus> {
+		return this.request('/mihomo/update', { method: 'POST' });
+	}
+
+	async mihomoUninstall(): Promise<MihomoStatus> {
+		return this.request('/mihomo/uninstall', { method: 'POST' });
+	}
+
+	async xrayStatus(): Promise<XrayStatus> {
+		return this.request('/xray/status');
+	}
+
+	async xrayInstall(): Promise<XrayStatus> {
+		return this.request('/xray/install', { method: 'POST' });
+	}
+
+	async xrayUninstall(): Promise<void> {
+		await this.request('/xray/uninstall', { method: 'POST' });
+	}
+
 	async mihomoConfig(): Promise<{ yaml: string }> {
 		return this.request('/mihomo/config');
 	}
 
 	async mihomoReload(): Promise<void> {
 		await this.request('/mihomo/reload', { method: 'POST' });
+	}
+
+	async mihomoReconcile(action: 'rollback_to_lkg' | 'clear_marker', force = false): Promise<{ status: string }> {
+		return this.request('/mihomo/recovery/reconcile', {
+			method: 'POST',
+			body: JSON.stringify({ action, force })
+		});
 	}
 
 	async mihomoNativeProxies(): Promise<MihomoNativeProxy[]> {
@@ -635,6 +668,18 @@ export class SbRouterClient extends SingboxClient {
 
 	async mihomoNativeReorderRules(ids: string[], apply = true): Promise<void> {
 		await this.request(`/mihomo/native/rules/order${apply ? '' : '?apply=false'}`, { method: 'PUT', body: JSON.stringify({ ids }) });
+	}
+
+	async mihomoNativeUnsupportedRules(): Promise<{ items: MihomoNativeRule[]; revision: string }> {
+		return this.request<{ items: MihomoNativeRule[]; revision: string }>('/mihomo/native/rules/unsupported');
+	}
+
+	async mihomoNativeDeleteUnsupportedRules(ids: string[], revision: string, apply = true): Promise<{ deleted: boolean; deletedCount: number }> {
+		const suffix = apply ? '' : '?apply=false';
+		return this.request<{ deleted: boolean; deletedCount: number }>(`/mihomo/native/rules/unsupported/delete${suffix}`, {
+			method: 'POST',
+			body: JSON.stringify({ ids, revision }),
+		});
 	}
 
 	async mihomoNativeRuleProviders(): Promise<MihomoNativeRuleProvider[]> {

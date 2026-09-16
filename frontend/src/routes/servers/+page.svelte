@@ -18,8 +18,11 @@
 		ManagedServerBackupToolbar,
 		ManagedServerDriftBanner,
 		ServersPageSkeleton,
+		XrayServerCard,
+		TelegramWebProxyCard,
 		type RailItem,
 	} from '$lib/components/servers';
+	import type { XrayStatus, TgWebProxyStatus } from '$lib/types';
 	import { dedupBy } from '$lib/utils/dedupBy';
 	import { createIngressMutationLock } from '$lib/utils/ingressMutation';
 	import { countActiveManagedPeers, countActiveSystemPeers } from '$lib/utils/serverPeerActivity';
@@ -34,12 +37,42 @@
 	}
 
 	let unsub: (() => void) | undefined;
+	let pollTimer: any;
+
+	let xrayStatus = $state<XrayStatus | null>(null);
+	let tgStatus = $state<TgWebProxyStatus | null>(null);
+
+	async function loadXrayStatus() {
+		try {
+			xrayStatus = await api.getXrayServerStatus();
+		} catch {
+			xrayStatus = null;
+		}
+	}
+
+	async function loadTgStatus() {
+		try {
+			tgStatus = await api.getTgWebProxyStatus();
+		} catch {
+			tgStatus = null;
+		}
+	}
+
 	onMount(() => {
 		unsub = servers.subscribe(() => {});
 		loadIngressRefs();
 		loadLANSegmentOptions();
+		loadXrayStatus();
+		loadTgStatus();
+		pollTimer = setInterval(() => {
+			loadXrayStatus();
+			loadTgStatus();
+		}, 6000);
 	});
-	onDestroy(() => unsub?.());
+	onDestroy(() => {
+		unsub?.();
+		if (pollTimer) clearInterval(pollTimer);
+	});
 
 	let snap = $derived($servers);
 	let serverList = $derived(snap.data?.servers ?? []);
@@ -52,6 +85,7 @@
 
 	let ingressRefs = $state<string[]>([]);
 	let lanSegmentOptions = $state<{ value: string; label: string }[]>([]);
+	let activeEngine = $state<'sing-box' | 'mihomo'>('sing-box');
 
 	async function loadLANSegmentOptions() {
 		try {
@@ -64,6 +98,7 @@
 		try {
 			const s = await api.singboxRouterGetSettings();
 			ingressRefs = s.ingressInterfaces ?? [];
+			activeEngine = s.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
 		} catch (e) {
 			ingressRefs = [];
 			notifications.error(e instanceof Error ? e.message : 'Не удалось загрузить настройки egress');
@@ -165,6 +200,31 @@
 				kind: 'system',
 			});
 		}
+
+		// Xray Server (VLESS · CDN)
+		const xrayClients = xrayStatus?.clients ?? [];
+		const activeClients = xrayClients.filter(c => c.enabled).length;
+		items.push({
+			id: '__xray_server__',
+			name: 'Xray VLESS',
+			iface: 'CDN Bridge',
+			listenPort: xrayStatus?.port || 9008,
+			status: xrayStatus?.running ? 'running' : 'stopped',
+			peerCount: xrayClients.length,
+			peerActive: activeClients,
+			kind: 'xray',
+		});
+
+		// Telegram WEB Proxy
+		items.push({
+			id: '__tg_webproxy__',
+			name: 'Telegram Proxy',
+			iface: 'CDN',
+			listenPort: tgStatus?.port || 8085,
+			status: tgStatus?.running ? 'running' : 'stopped',
+			kind: 'tgwebproxy',
+		});
+
 		return dedupBy(items, (i) => i.id, { warnTag: 'server rail' });
 	});
 
@@ -307,6 +367,7 @@
 						ingressEnabled={ingressRefs.includes(`managed:${activeManaged.interfaceName}`)}
 						onToggleIngress={handleToggleManagedIngress}
 						{lanSegmentOptions}
+						{activeEngine}
 					/>
 				{:else if activeItem?.kind === 'system' && activeServer}
 				<ServerCard
@@ -315,7 +376,12 @@
 					onUnmark={unmarkServer}
 					ingressEnabled={ingressRefs.includes(`iface:${activeServer.interfaceName}`)}
 					onToggleIngress={handleToggleSystemIngress}
+					{activeEngine}
 				/>
+				{:else if activeItem?.kind === 'xray'}
+					<XrayServerCard />
+				{:else if activeItem?.kind === 'tgwebproxy'}
+					<TelegramWebProxyCard />
 				{/if}
 			</main>
 		</div>

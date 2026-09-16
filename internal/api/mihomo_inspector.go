@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,6 +12,42 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/response"
 )
+
+// InspectNative enriches a Mihomo inspection with the shared router DNS
+// configuration. The HTTP endpoint and internal diagnostics use this same
+// path so their route/DNS explanations cannot drift.
+func (h *MihomoHandler) InspectNative(ctx context.Context, req mihomonative.InspectInput) (mihomonative.InspectData, error) {
+	if h.nativeStore == nil {
+		return mihomonative.InspectData{}, fmt.Errorf("mihomo native store is not initialized")
+	}
+	if h.routerSvc != nil {
+		if st, err := h.routerSvc.GetSettings(ctx); err == nil {
+			req.KeeneticCloudTunnel = st.KeeneticCloudTunnel
+			req.KeeneticCloudOutbound = st.KeeneticCloudOutbound
+		}
+		if srvs, err := h.routerSvc.ListDNSServers(ctx); err == nil {
+			for _, server := range srvs {
+				sni := ""
+				if server.TLS != nil {
+					sni = server.TLS.ServerName
+				}
+				req.DNSServers = append(req.DNSServers, mihomonative.DNSServerSpec{
+					Tag: server.Tag, Type: server.Type, Server: server.Server,
+					ServerPort: server.ServerPort, Detour: server.Detour, SNI: sni,
+				})
+			}
+		}
+		if rules, err := h.routerSvc.ListDNSRules(ctx); err == nil {
+			for _, rule := range rules {
+				req.DNSRules = append(req.DNSRules, mihomonative.DNSRuleSpec{
+					Domain: rule.Domain, DomainSuffix: rule.DomainSuffix,
+					DomainKeyword: rule.DomainKeyword, RuleSet: rule.RuleSet, Server: rule.Server,
+				})
+			}
+		}
+	}
+	return h.nativeStore.Inspect(ctx, req)
+}
 
 func (h *MihomoHandler) handleMihomoInspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -34,40 +71,7 @@ func (h *MihomoHandler) handleMihomoInspect(w http.ResponseWriter, r *http.Reque
 		response.Error(w, "mihomo native store is not initialized", "STORE_NOT_READY")
 		return
 	}
-	if h.routerSvc != nil {
-		if st, err := h.routerSvc.GetSettings(r.Context()); err == nil {
-			req.KeeneticCloudTunnel = st.KeeneticCloudTunnel
-			req.KeeneticCloudOutbound = st.KeeneticCloudOutbound
-		}
-		if srvs, err := h.routerSvc.ListDNSServers(r.Context()); err == nil {
-			for _, s := range srvs {
-				sni := ""
-				if s.TLS != nil {
-					sni = s.TLS.ServerName
-				}
-				req.DNSServers = append(req.DNSServers, mihomonative.DNSServerSpec{
-					Tag:        s.Tag,
-					Type:       s.Type,
-					Server:     s.Server,
-					ServerPort: s.ServerPort,
-					Detour:     s.Detour,
-					SNI:        sni,
-				})
-			}
-		}
-		if rls, err := h.routerSvc.ListDNSRules(r.Context()); err == nil {
-			for _, r := range rls {
-				req.DNSRules = append(req.DNSRules, mihomonative.DNSRuleSpec{
-					Domain:        r.Domain,
-					DomainSuffix:  r.DomainSuffix,
-					DomainKeyword: r.DomainKeyword,
-					RuleSet:       r.RuleSet,
-					Server:        r.Server,
-				})
-			}
-		}
-	}
-	res, err := h.nativeStore.Inspect(r.Context(), req)
+	res, err := h.InspectNative(r.Context(), req)
 	if err != nil {
 		response.InternalError(w, err.Error())
 		return

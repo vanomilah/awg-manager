@@ -4,7 +4,7 @@
 
 import { api } from '$lib/api/client';
 import { linkedTunnelListenPort, patchWgConfEndpoint } from '$lib/utils/serverPeerOptions';
-import { setPeer, switchConnMode } from '$lib/utils/wdttPeerMode';
+import { applyPayloadPeers, setPeer, switchConnMode, syncPeerSlots } from '$lib/utils/wdttPeerMode';
 import { findLinkedTunnel } from './linkedTunnel';
 import type {
 	AccessPolicy,
@@ -194,7 +194,7 @@ export function applyWdttPayload(
 ): void {
 	if (subUrl) cfg.sub = subUrl;
 	if (p.deviceId) cfg.deviceId = p.deviceId;
-	if (p.connMode === 'raw' || p.connMode === 'wg') switchConnMode(cfg, p.connMode);
+	applyPayloadPeers(cfg, p);
 }
 
 export function applyFtPayload(cfg: FreeTurnClientConfig, p: FreeTurnLinkPayload): void {
@@ -216,6 +216,7 @@ export function applyWdttFields(
 ): WdttClientConfig {
 	switchConnMode(cfg, mode);
 	setPeer(cfg, f.peer.trim());
+	syncPeerSlots(cfg);
 	cfg.password = f.password;
 	cfg.vkHashes = f.vkHashes.trim();
 	cfg.workers = Number(f.workers) || cfg.workers;
@@ -371,8 +372,7 @@ export async function resolveExitInterface(
 		const all = await api.getTunnelsAll();
 		const tunnels = all.tunnels ?? [];
 		const byId = o.tunnelId ? tunnels.find((t) => t.id === o.tunnelId) : null;
-		const linked =
-			byId ?? findLinkedTunnel(tunnels, o.listen, o.protocol === 'wdtt' ? o.id : undefined);
+		const linked = byId ?? findLinkedTunnel(tunnels, o.listen, o.id);
 		const iface = linked?.ndmsName?.trim();
 		if (iface) return iface;
 	}

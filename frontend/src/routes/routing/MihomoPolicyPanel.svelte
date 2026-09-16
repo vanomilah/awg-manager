@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { ChevronDown, ChevronUp, Pencil, Plus, RefreshCw, Save, Trash2, Users, Waypoints } from 'lucide-svelte';
+	import { AlertTriangle, ChevronDown, ChevronUp, Pencil, Plus, RefreshCw, Save, Trash2, Users, Waypoints } from 'lucide-svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
 	import type { MihomoNativeGroup, MihomoNativeProxy, MihomoNativeRule, MihomoNativeRuleProvider, MihomoNativeSubscription, MihomoRuntimeProvider, MihomoRuntimeProxy } from '$lib/types';
-	import { Badge, Button, Card, SegmentedControl } from '$lib/components/ui';
+	import { MIHOMO_SUPPORTED_RULE_TYPES } from '$lib/types/mihomoRuleTypes.generated';
+	import { Badge, Button, Card, Modal, SegmentedControl } from '$lib/components/ui';
 
 	let section = $state<'rules' | 'groups'>('groups');
 	let groups = $state<MihomoNativeGroup[]>([]);
@@ -15,6 +16,10 @@
 	let subscriptions = $state<MihomoNativeSubscription[]>([]);
 	let runtime = $state<MihomoRuntimeProxy[]>([]);
 	let runtimeProviders = $state<MihomoRuntimeProvider[]>([]);
+	let unsupportedRules = $state<MihomoNativeRule[]>([]);
+	let unsupportedRevision = $state('');
+	let unsupportedModalOpen = $state(false);
+	let deletingUnsupported = $state(false);
 	let loading = $state(true);
 	let saving = $state(false);
 
@@ -57,13 +62,7 @@
 	let providerFormat = $state<MihomoNativeRuleProvider['format']>('yaml');
 	let providerInterval = $state(86400);
 
-	const ruleTypes = [
-		{ label: 'Домены', items: ['DOMAIN', 'DOMAIN-SUFFIX', 'DOMAIN-KEYWORD', 'DOMAIN-WILDCARD', 'DOMAIN-REGEX', 'GEOSITE'] },
-		{ label: 'IP и сети', items: ['IP-CIDR', 'IP-CIDR6', 'IP-SUFFIX', 'IP-ASN', 'GEOIP', 'SRC-GEOIP', 'SRC-IP-ASN', 'SRC-IP-CIDR', 'SRC-IP-SUFFIX'] },
-		{ label: 'Порты и входы', items: ['DST-PORT', 'SRC-PORT', 'IN-PORT', 'IN-TYPE', 'IN-USER', 'IN-NAME', 'REMATCH-NAME', 'NETWORK', 'DSCP'] },
-		{ label: 'Процесс', items: ['PROCESS-PATH', 'PROCESS-PATH-WILDCARD', 'PROCESS-PATH-REGEX', 'PROCESS-NAME', 'PROCESS-NAME-WILDCARD', 'PROCESS-NAME-REGEX', 'UID'] },
-		{ label: 'Составные', items: ['RULE-SET', 'AND', 'OR', 'NOT', 'SUB-RULE', 'MATCH'] },
-	];
+	const ruleTypes = MIHOMO_SUPPORTED_RULE_TYPES;
 
 	function displayName(name: string): string {
 		const native = subscriptions.find((sub) => sub.groupName === name);
@@ -100,15 +99,18 @@
 	async function load() {
 		loading = true;
 		try {
-			const [g, r, rp, p, s, rt, providers] = await Promise.all([
+			const [g, r, rp, p, s, rt, providers, unsupp] = await Promise.all([
 				api.mihomoNativeGroups(), api.mihomoNativeRules(), api.mihomoNativeRuleProviders(),
 				api.mihomoNativeProxies(), api.mihomoNativeSubscriptions(),
 				api.mihomoRuntimeProxies().catch(() => ({ proxies: {} })),
 				api.mihomoRuntimeProviders().catch(() => ({ providers: {} })),
+				api.mihomoNativeUnsupportedRules().catch(() => ({ items: [], revision: '' })),
 			]);
 			groups = g; rules = r; ruleProviders = rp; proxies = p; subscriptions = s;
 			runtime = Object.values(rt.proxies ?? {});
 			runtimeProviders = Object.entries(providers.providers ?? {}).map(([name, provider]) => ({ ...provider, name: provider.name || name }));
+			unsupportedRules = unsupp.items ?? [];
+			unsupportedRevision = unsupp.revision ?? '';
 		} catch (error) { notifications.error(error instanceof Error ? error.message : String(error)); }
 		finally { loading = false; }
 	}
@@ -176,6 +178,37 @@
 		catch (error) { notifications.error(error instanceof Error ? error.message : String(error)); }
 	}
 
+	async function deleteUnsupportedRules() {
+		if (deletingUnsupported) return;
+		deletingUnsupported = true;
+		try {
+			const ids = unsupportedRules.map((r) => r.id);
+			await api.mihomoNativeDeleteUnsupportedRules(ids, unsupportedRevision, true);
+			notifications.success('Неподдерживаемые правила удалены');
+			unsupportedModalOpen = false;
+			await load();
+		} catch (error: any) {
+			const is409 = error?.status === 409 || error?.body?.code === 'MIHOMO_RULES_STALE' || String(error?.message).includes('MIHOMO_RULES_STALE') || String(error?.message).includes('rules have been modified');
+			if (is409) {
+				notifications.warning('Список правил изменился, данные обновлены');
+				try {
+					const refreshed = await api.mihomoNativeUnsupportedRules();
+					unsupportedRules = refreshed.items ?? [];
+					unsupportedRevision = refreshed.revision ?? '';
+					if (unsupportedRules.length === 0) {
+						unsupportedModalOpen = false;
+					}
+				} catch {
+					await load();
+				}
+			} else {
+				notifications.error(error instanceof Error ? error.message : String(error));
+			}
+		} finally {
+			deletingUnsupported = false;
+		}
+	}
+
 	function resetProvider() { editProviderId = ''; providerName = ''; providerType = 'http'; providerURL = ''; providerPath = ''; providerBehavior = 'classical'; providerFormat = 'yaml'; providerInterval = 86400; }
 	function editProvider(provider: MihomoNativeRuleProvider) { editProviderId = provider.id; providerName = provider.name; providerType = provider.type; providerURL = provider.url ?? ''; providerPath = provider.path ?? ''; providerBehavior = provider.behavior; providerFormat = provider.format; providerInterval = provider.interval || 86400; providerForm = true; }
 	async function saveProvider() {
@@ -227,6 +260,20 @@
 		</div>
 	{:else}
 		<div class="section-tools"><div><strong>Правила</strong><span>Первое совпадение сверху побеждает. Если ничего не подошло, используется DIRECT.</span></div><div class="tool-buttons"><Button variant="secondary" size="sm" onclick={() => { resetProvider(); providerForm = !providerForm; }}><Plus size={15} />Rule provider</Button><Button variant="primary" size="sm" onclick={() => { resetRule(); ruleForm = !ruleForm; }}><Plus size={15} />Правило</Button></div></div>
+		{#if unsupportedRules.length > 0}
+			<div class="unsupported-banner">
+				<div class="unsupported-banner-content">
+					<AlertTriangle size={18} class="unsupported-icon" />
+					<div>
+						<strong>Обнаружены неподдерживаемые правила ({unsupportedRules.length})</strong>
+						<p>В конфигурации сохранены правила типов, не поддерживаемых текущей версией ядра Mihomo.</p>
+					</div>
+				</div>
+				<Button variant="danger" size="sm" onclick={() => unsupportedModalOpen = true}>
+					Просмотреть и удалить
+				</Button>
+			</div>
+		{/if}
 		{#if providerForm}<Card padding="lg"><div class="editor"><div class="form-grid"><label><span>Название набора</span><input bind:value={providerName} placeholder="youtube" /></label><label><span>Источник</span><select bind:value={providerType}><option value="http">HTTP</option><option value="file">Локальный файл</option></select></label><label><span>Формат</span><select bind:value={providerFormat}><option value="yaml">YAML</option><option value="text">Text</option><option value="mrs">MRS</option></select></label></div>{#if providerType === 'http'}<label><span>URL</span><input bind:value={providerURL} placeholder="https://…/rules.mrs" /></label>{:else}<label><span>Путь к файлу</span><input bind:value={providerPath} placeholder="./rules/local.yaml" /></label>{/if}<div class="form-grid"><label><span>Поведение</span><select bind:value={providerBehavior}><option value="classical">Classical</option><option value="domain">Domains</option><option value="ipcidr">IP CIDR</option></select></label><label><span>Интервал, сек.</span><input type="number" min="0" bind:value={providerInterval} /></label></div><div class="editor-actions"><Button variant="ghost" size="sm" onclick={() => providerForm = false}>Отмена</Button><Button variant="primary" size="sm" onclick={saveProvider} loading={saving}>Сохранить provider</Button></div></div></Card>{/if}
 		{#if ruleProviders.length > 0}<div class="provider-chips">{#each ruleProviders as provider (provider.id)}<span><strong>{provider.name}</strong> · {provider.behavior}/{provider.format}<button onclick={() => editProvider(provider)} aria-label="Изменить provider"><Pencil size={12} /></button><button onclick={() => removeProvider(provider)} aria-label="Удалить provider"><Trash2 size={12} /></button></span>{/each}</div>{/if}
 		{#if ruleForm}<Card padding="lg"><div class="editor"><div class="form-grid rule-grid"><label><span>Условие</span><select bind:value={ruleType}>{#each ruleTypes as category}<optgroup label={category.label}>{#each category.items as item}<option value={item}>{item}</option>{/each}</optgroup>{/each}</select></label>{#if ruleType !== 'MATCH'}<label><span>Значение</span>{#if ruleType === 'RULE-SET' && ruleProviders.length > 0}<select bind:value={rulePayload}><option value="">Выберите provider</option>{#each ruleProviders as provider}<option value={provider.name}>{provider.name}</option>{/each}</select>{:else}<input bind:value={rulePayload} placeholder={ruleType === 'AND' || ruleType === 'OR' || ruleType === 'NOT' ? '((DOMAIN,example.com),(NETWORK,UDP))' : 'значение'} />{/if}</label>{/if}<label><span>Выход</span><select bind:value={ruleOutbound}>{#each outputOptions as output}<option value={output.value}>{output.label}</option>{/each}</select></label></div>{#if ['IP-CIDR','IP-CIDR6','IP-SUFFIX','IP-ASN','GEOIP'].includes(ruleType)}<label class="inline-check"><input type="checkbox" bind:checked={ruleNoResolve} /> Не выполнять DNS-resolve</label>{/if}<div class="editor-actions"><Button variant="ghost" size="sm" onclick={() => ruleForm = false}>Отмена</Button><Button variant="primary" size="sm" onclick={saveRule} loading={saving}><Save size={14} />Сохранить и применить</Button></div></div></Card>{/if}
@@ -234,6 +281,60 @@
 	{/if}
 </section>
 
+<Modal open={unsupportedModalOpen} title="Неподдерживаемые правила Mihomo" size="md" onclose={() => { if (!deletingUnsupported) unsupportedModalOpen = false; }}>
+	<div class="unsupported-modal">
+		<p class="modal-desc">
+			Следующие правила имеют типы, не поддерживаемые ядром Mihomo. Вы можете удалить весь набор неподдерживаемых правил разом.
+		</p>
+		{#if unsupportedRevision}
+			<div class="revision-token">
+				<span>Ревизия снимка:</span>
+				<code>{unsupportedRevision}</code>
+			</div>
+		{/if}
+		<div class="unsupported-list">
+			{#each unsupportedRules as rule (rule.id)}
+				<div class="unsupported-item">
+					<div class="unsupported-item-header">
+						<Badge variant="warning">{rule.type}</Badge>
+						<code class="rule-id">{rule.id}</code>
+					</div>
+					<div class="unsupported-item-details">
+						<span class="payload">{rule.payload || '—'}</span>
+						<span class="arrow">→</span>
+						<span class="outbound">{displayName(rule.outbound)}</span>
+					</div>
+				</div>
+			{/each}
+		</div>
+		<div class="modal-actions">
+			<Button variant="ghost" size="sm" onclick={() => unsupportedModalOpen = false} disabled={deletingUnsupported}>
+				Отмена
+			</Button>
+			<Button variant="danger" size="sm" onclick={deleteUnsupportedRules} loading={deletingUnsupported} disabled={deletingUnsupported || unsupportedRules.length === 0}>
+				<Trash2 size={14} />
+				Удалить неподдерживаемые правила ({unsupportedRules.length})
+			</Button>
+		</div>
+	</div>
+</Modal>
+
 <style>
 	.policy-panel{display:grid;gap:12px;padding-top:4px}.panel-head,.section-tools{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.panel-head h3,.panel-head p{margin:0}.panel-head p,.section-tools span{display:block;margin-top:3px;color:var(--text-muted);font-size:12px}.head-actions,.tool-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.icon{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}.icon:hover{background:var(--bg-tertiary);color:var(--text-primary)}.icon.danger:hover{color:var(--danger)}.editor{display:grid;gap:12px}.form-grid,.advanced-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}.rule-grid{grid-template-columns:1fr 2fr 1fr}.advanced-grid{grid-template-columns:repeat(4,minmax(0,1fr));padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary)}.editor label{display:grid;gap:5px;color:var(--text-secondary);font-size:12px}input,select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-primary);color:var(--text-primary);font:inherit}.field-title{display:block;margin-bottom:6px;color:var(--text-secondary);font-size:12px}.checks{display:flex;flex-wrap:wrap;gap:6px;max-height:190px;overflow:auto}.checks button{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-primary);color:var(--text-secondary);cursor:pointer}.checks button.selected{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}.inline-check{display:flex!important;grid-template-columns:auto 1fr!important;align-items:center}.inline-check input{width:auto}.advanced-toggle{justify-self:start;border:0;background:transparent;color:var(--accent);font-size:12px;cursor:pointer}.editor-actions{display:flex;justify-content:flex-end;gap:7px}.cards,.rule-list{display:grid;gap:8px}.group-row,.rule-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;align-items:center;gap:10px;padding:11px;border:1px solid var(--border);border-radius:9px;background:var(--bg-secondary)}.provider-row{grid-template-columns:auto minmax(0,1fr) auto}.rule-row{grid-template-columns:auto auto minmax(0,1fr) auto auto auto}.group-row>div:nth-child(2),.rule-row>div:nth-child(3){display:grid;min-width:0}.group-row strong,.rule-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.group-row span,.rule-row span{color:var(--text-muted);font-size:11px}.provider-row em{margin-top:3px;color:var(--danger);font-size:11px}.kind-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:var(--accent-soft);color:var(--accent)}.order{width:22px;text-align:center;color:var(--text-muted);font:11px var(--font-mono)}.reorder{display:grid}.reorder button{display:grid;place-items:center;width:24px;height:18px;border:0;background:transparent;color:var(--text-muted);cursor:pointer}.provider-chips{display:flex;flex-wrap:wrap;gap:7px}.provider-chips>span{display:flex;align-items:center;gap:5px;padding:7px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg-secondary);color:var(--text-muted);font-size:11px}.provider-chips button{display:grid;place-items:center;border:0;background:transparent;color:var(--text-muted);cursor:pointer}.empty{padding:24px;text-align:center;border:1px dashed var(--border);border-radius:9px;color:var(--text-muted);font-size:12px}.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:900px){.advanced-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.panel-head,.section-tools{flex-direction:column}.head-actions,.head-actions :global(.segmented-control){width:100%}.form-grid,.rule-grid,.advanced-grid{grid-template-columns:1fr}.group-row{grid-template-columns:auto minmax(0,1fr) auto auto}.group-row :global(.badge){display:none}.provider-row{grid-template-columns:auto 1fr}.rule-row{grid-template-columns:minmax(0,1fr) auto auto}.rule-row>.kind-icon,.rule-row>.order,.rule-row>.reorder{display:none}}
+	.unsupported-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid rgba(245,158,11,0.3);border-radius:8px;background:rgba(245,158,11,0.08)}
+	.unsupported-banner-content{display:flex;align-items:center;gap:10px}
+	.unsupported-banner-content strong{display:block;font-size:13px;color:var(--text-primary)}
+	.unsupported-banner-content p{margin:2px 0 0;font-size:11px;color:var(--text-muted)}
+	:global(.unsupported-icon){color:#f59e0b;flex-shrink:0}
+	.unsupported-modal{display:grid;gap:14px}
+	.modal-desc{margin:0;font-size:13px;color:var(--text-secondary);line-height:1.4}
+	.revision-token{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:6px;background:var(--bg-tertiary);font-size:11px;color:var(--text-muted)}
+	.revision-token code{font-family:var(--font-mono);color:var(--text-primary)}
+	.unsupported-list{display:grid;gap:8px;max-height:240px;overflow-y:auto}
+	.unsupported-item{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-secondary);font-size:12px}
+	.unsupported-item-header{display:flex;align-items:center;gap:8px}
+	.rule-id{font-family:var(--font-mono);font-size:11px;color:var(--text-muted)}
+	.unsupported-item-details{display:flex;align-items:center;gap:6px;color:var(--text-secondary)}
+	.unsupported-item-details .outbound{font-weight:500;color:var(--text-primary)}
+	.modal-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:6px}
 </style>

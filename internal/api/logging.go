@@ -104,6 +104,8 @@ func parseBucket(raw string, def logging.Bucket) (logging.Bucket, bool) {
 		return logging.BucketApp, true
 	case logging.BucketSingbox:
 		return logging.BucketSingbox, true
+	case logging.BucketMihomo:
+		return logging.BucketMihomo, true
 	}
 	return "", false
 }
@@ -184,14 +186,14 @@ func queryList(q map[string][]string, key string) []string {
 // GetLogs returns log entries from the requested bucket with optional
 // filtering and pagination.
 //
-// GET /api/logs?bucket=app|singbox&group=&subgroup=&level=&limit=&offset=&since=&sanitize=
+// GET /api/logs?bucket=app|singbox|mihomo&group=&subgroup=&level=&limit=&offset=&since=&sanitize=
 //
 //	@Summary		Get logs
-//	@Description	Returns log entries from the selected bucket. `bucket=app` (default) covers tunnel/routing/server/system events; `bucket=singbox` covers sing-box forwarder events isolated from app history. By default target/message are backend-masked; pass `sanitize=false` only when the authenticated admin UI explicitly reveals raw logs.
+//	@Description	Returns log entries from the selected bucket. `bucket=app` (default) covers tunnel/routing/server/system events; engine buckets contain isolated sing-box or Mihomo runtime events. By default target/message are backend-masked; pass `sanitize=false` only when the authenticated admin UI explicitly reveals raw logs.
 //	@Tags			logs
 //	@Produce		json
 //	@Security		CookieAuth
-//	@Param			bucket		query		string	false	"Bucket selector"		Enums(app, singbox)
+//	@Param			bucket		query		string	false	"Bucket selector"		Enums(app, singbox, mihomo)
 //	@Param			group		query		[]string	false	"Filter by group (repeat param or comma-separated values)"	collectionFormat(multi)
 //	@Param			subgroup	query		[]string	false	"Filter by subgroup (repeat param or comma-separated values)"	collectionFormat(multi)
 //	@Param			level		query		string	false	"Filter by level"
@@ -213,7 +215,7 @@ func (h *LoggingHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	bucket, ok := parseBucket(q.Get("bucket"), logging.BucketApp)
 	if !ok {
 		response.ErrorWithStatus(w, http.StatusBadRequest,
-			"invalid bucket: must be 'app' or 'singbox'", "INVALID_BUCKET")
+			"invalid bucket: must be 'app', 'singbox' or 'mihomo'", "INVALID_BUCKET")
 		return
 	}
 
@@ -284,14 +286,14 @@ func (h *LoggingHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 // ClearLogs removes all entries from the requested bucket.
 //
-// POST /api/logs/clear?bucket=app|singbox
+// POST /api/logs/clear?bucket=app|singbox|mihomo
 //
 //	@Summary		Clear logs
 //	@Description	Clears all entries from the requested bucket. `bucket` is required — there is no implicit "clear everything" since app and sing-box logs serve different audiences.
 //	@Tags			logs
 //	@Produce		json
 //	@Security		CookieAuth
-//	@Param			bucket	query		string	true	"Bucket to clear"	Enums(app, singbox)
+//	@Param			bucket	query		string	true	"Bucket to clear"	Enums(app, singbox, mihomo)
 //	@Success		200	{object}	APIEnvelope
 //	@Failure		400	{object}	APIErrorEnvelope
 //	@Failure		500	{object}	APIErrorEnvelope
@@ -305,13 +307,13 @@ func (h *LoggingHandler) ClearLogs(w http.ResponseWriter, r *http.Request) {
 	raw := r.URL.Query().Get("bucket")
 	if raw == "" {
 		response.ErrorWithStatus(w, http.StatusBadRequest,
-			"bucket query parameter is required: 'app' or 'singbox'", "MISSING_BUCKET")
+			"bucket query parameter is required: 'app', 'singbox' or 'mihomo'", "MISSING_BUCKET")
 		return
 	}
 	bucket, ok := parseBucket(raw, logging.BucketApp)
 	if !ok {
 		response.ErrorWithStatus(w, http.StatusBadRequest,
-			"invalid bucket: must be 'app' or 'singbox'", "INVALID_BUCKET")
+			"invalid bucket: must be 'app', 'singbox' or 'mihomo'", "INVALID_BUCKET")
 		return
 	}
 

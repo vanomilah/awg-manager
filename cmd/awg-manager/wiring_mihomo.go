@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/api"
+	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/mihomo/installer"
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
@@ -20,8 +21,21 @@ func (a *app) setupMihomo() {
 	binaryPath := installer.DefaultBinaryPath
 	configDir := filepath.Join(a.dataDir, "mihomo")
 
+	arch := detectArch()
+	spec := installer.EmbeddedBinaries[arch]
+	a.mihomoInstaller = installer.New(binaryPath, arch, spec, a.loggingService)
+
 	a.mihomoOp = mihomo.NewOperator(binaryPath, configDir)
+	a.mihomoOp.SetLogger(func(level, action, message string) {
+		if a.loggingService != nil {
+			a.loggingService.AppLog(logging.Level(level), logging.GroupMihomo, logging.SubSBProcess, action, "mihomo", message)
+		}
+	})
 	a.mihomoHandler = api.NewMihomoHandler(a.mihomoOp)
+	a.mihomoHandler.SetInstaller(a.mihomoInstaller)
+	if a.eventBus != nil {
+		a.mihomoHandler.SetEventBus(a.eventBus)
+	}
 	a.mihomoHandler.SetSettingsStore(a.settingsStore)
 	nativeStore, err := mihomonative.NewStore(filepath.Join(configDir, "native.json"))
 	if err != nil {
@@ -86,11 +100,17 @@ func (a *app) setupMihomo() {
 		}
 	})
 
-	// Forward Mihomo runtime logs from external-controller (/logs) into the app's
-	// UI log view (singbox/engine bucket).
+	// Forward Mihomo runtime logs from external-controller (/logs) into its own
+	// engine bucket. Keeping this separate from sing-box is essential: sing-box
+	// can still run as a compatibility proxy component while Mihomo routes.
 	logFwdCtx, logFwdCancel := context.WithCancel(context.Background())
 	a.deferOnExit(logFwdCancel)
-	go singbox.NewLogForwarder(func() string { return "127.0.0.1:9090" }, a.loggingService).Run(logFwdCtx)
+	go singbox.NewEngineLogForwarder(
+		func() string { return "127.0.0.1:9090" },
+		a.loggingService,
+		logging.GroupMihomo,
+		"mihomo",
+	).Run(logFwdCtx)
 }
 
 // syncNDMSProxyExports reconciles the two composite-proxy families in an order
@@ -180,6 +200,11 @@ func syncMihomoAfterSingboxReload(
 		return fmt.Errorf("load settings for Mihomo sync: %w", err)
 	}
 	if settings.SingboxRouter.RoutingEngine != "mihomo" {
+		if running, _ := mihomoEngine.IsRunning(); running {
+			if err := mihomoEngine.Stop(); err != nil {
+				return fmt.Errorf("stop Mihomo when sing-box is primary: %w", err)
+			}
+		}
 		return nil
 	}
 	if !settings.SingboxRouter.Enabled {
@@ -190,6 +215,15 @@ func syncMihomoAfterSingboxReload(
 	}
 	if err := generate(); err != nil {
 		return fmt.Errorf("generate Mihomo config after sing-box reload: %w", err)
+	}
+	if settings.SingboxRouter.RoutingMode == "policy-tun" || settings.SingboxRouter.RoutingMode == "fakeip-tun" {
+		if running, _ := mihomoEngine.IsRunning(); running {
+			_ = mihomoEngine.Stop()
+		}
+		if err := mihomoEngine.Start(); err != nil {
+			return fmt.Errorf("start Mihomo after sing-box reload: %w", err)
+		}
+		return nil
 	}
 	if err := mihomoEngine.Reload(); err != nil {
 		return fmt.Errorf("reload Mihomo after sing-box reload: %w", err)

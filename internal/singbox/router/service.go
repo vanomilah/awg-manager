@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -286,6 +287,7 @@ type StagingEventBus interface {
 }
 
 type MihomoNativeProxySource interface {
+	ValidateRuntimeRules() error
 	ConfigProxies() []map[string]interface{}
 	ConfigProviders() map[string]map[string]interface{}
 	ConfigProviderGroups() []map[string]interface{}
@@ -296,7 +298,10 @@ type MihomoNativeProxySource interface {
 	ConfigRuleProviders() map[string]map[string]interface{}
 	ImportLegacyGroups([]storage.ProxyGroup) error
 	ImportLegacyRules([]string) error
+	ListBridges() []mihomonative.BridgeRef
 }
+
+var _ MihomoNativeProxySource = (*mihomonative.Store)(nil)
 
 type Deps struct {
 	AppLog   logging.AppLogger
@@ -618,6 +623,12 @@ type ServiceImpl struct {
 	keenDNSAddrs       []string
 	keenDNSInfoAt      time.Time
 	keenDNSBypassCIDRs []string
+
+	// Keenetic Cloud auto-discovery and self-healing state
+	cloudSyncMu        sync.Mutex
+	cloudSyncLast      time.Time
+	cloudBasePopulated bool
+	dynamicCloudIPs    []string
 }
 
 func NewService(d Deps) *ServiceImpl {
@@ -844,6 +855,7 @@ func (s *ServiceImpl) persistSlotDirect(slot orchestrator.Slot, cfg *RouterConfi
 	if err != nil {
 		return err
 	}
+	s.enrichMaterializedConfig(materialized)
 	if checkCycles {
 		if err := validateNoCompositeCycles(materialized.Outbounds); err != nil {
 			return err
@@ -886,6 +898,7 @@ func (s *ServiceImpl) persistConfig(ctx context.Context, cfg *RouterConfig) erro
 	if err != nil {
 		return err
 	}
+	s.enrichMaterializedConfig(materialized)
 	// sing-box only reports circular outbound dependencies at "start
 	// service" (not via `sing-box check`), so a cyclic config would persist
 	// and FATAL-loop. Catch it here before writing, regardless of source
@@ -1024,5 +1037,129 @@ func (s *ServiceImpl) emitCfgEvent(event string, cfg *RouterConfig) {
 }
 
 // ---------------------------------------------------------------------------
-// Staging API
+// Keenetic Cloud Tunnel rules & Outbound Enrichment
 // ---------------------------------------------------------------------------
+
+var KeeneticCloudDomains = []string{
+	"keenetic.com", "keenetic.io", "keenetic.net", "keenetic.ru",
+	"keenetic.pro", "keenetic.link", "keenetic.name", "keenetic.cloud",
+	"netcraze.io", "netcraze.net", "netcraze.pro", "netcraze.ru", "netcraze.com", "netcraze.cloud",
+	"crazedns.ru", "crazedns.com", "crazedns.net",
+	"omni.ru", "knt9.xyz",
+}
+
+var KeeneticCloudCIDRs = []string{
+	"31.135.0.0/16",
+	"91.240.84.0/22",
+	"95.213.181.0/24",
+	"95.213.212.0/24",
+	"185.162.93.0/24",
+	"87.228.71.0/24",
+	"91.92.241.0/24",
+	"193.107.216.0/24",
+	"178.250.154.0/24",
+	"178.72.134.0/24",
+	"85.198.119.0/24",
+	"37.0.127.0/24",
+	"5.35.2.0/24",
+	"84.38.177.0/24",
+	"49.12.59.0/24",
+	"167.233.7.0/24",
+	"162.55.128.0/24",
+	"157.180.11.0/24",
+	"5.9.29.0/24",
+	"185.10.184.0/24",
+}
+
+var KeeneticCloudPorts = []int{9, 3478, 3479, 4044, 5683}
+
+func BuildKeeneticCloudRules(targetOutbound string, extraCIDRs ...string) []Rule {
+	target := strings.TrimSpace(targetOutbound)
+	if target == "" {
+		return nil
+	}
+	cidrs := slices.Clone(KeeneticCloudCIDRs)
+	for _, extra := range extraCIDRs {
+		extra = strings.TrimSpace(extra)
+		if extra != "" && !slices.Contains(cidrs, extra) {
+			cidrs = append(cidrs, extra)
+		}
+	}
+	return []Rule{
+		{Domain: []string{"my.keenetic.net", "my.netcraze.net"}, Outbound: "direct"},
+		{DomainSuffix: KeeneticCloudDomains, Outbound: target},
+		{IPCIDR: cidrs, Outbound: target},
+		{Port: KeeneticCloudPorts, Outbound: target},
+	}
+}
+
+func insertCloudRules(rules []Rule, cloudRules []Rule) []Rule {
+	if len(cloudRules) == 0 {
+		return rules
+	}
+	insertIdx := 0
+	for i, r := range rules {
+		if r.Action == "hijack-dns" || (r.IPIsPrivate != nil && *r.IPIsPrivate) {
+			insertIdx = i + 1
+		} else {
+			break
+		}
+	}
+	out := make([]Rule, 0, len(rules)+len(cloudRules))
+	out = append(out, rules[:insertIdx]...)
+	out = append(out, cloudRules...)
+	out = append(out, rules[insertIdx:]...)
+	return out
+}
+
+func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
+	if materialized == nil || s.deps.Settings == nil {
+		return
+	}
+	settings, err := s.deps.Settings.Load()
+	if err != nil {
+		return
+	}
+
+	// Inject ProxyGroups as dummy selector outbounds so the orchestrator's validation
+	// (which reads this SlotRouter config) knows these tags exist and accepts rules
+	// targeting them.
+	filtered := make([]Outbound, 0, len(materialized.Outbounds))
+	for _, o := range materialized.Outbounds {
+		isDummy := false
+		if o.Type == "direct" || o.Type == "selector" {
+			for _, pg := range settings.SingboxRouter.ProxyGroups {
+				if pg.Name == o.Tag {
+					isDummy = true
+					break
+				}
+			}
+		}
+		if !isDummy {
+			filtered = append(filtered, o)
+		}
+	}
+	materialized.Outbounds = filtered
+
+	for _, pg := range settings.SingboxRouter.ProxyGroups {
+		materialized.Outbounds = append(materialized.Outbounds, Outbound{
+			Type:      "selector",
+			Tag:       pg.Name,
+			Default:   "direct",
+			Outbounds: []string{"direct"},
+		})
+	}
+
+	if settings.SingboxRouter.KeeneticCloudTunnel && strings.TrimSpace(settings.SingboxRouter.KeeneticCloudOutbound) != "" {
+		target := strings.TrimSpace(settings.SingboxRouter.KeeneticCloudOutbound)
+		cloudRules := BuildKeeneticCloudRules(target, s.dynamicCloudCIDRs()...)
+		materialized.Route.Rules = insertCloudRules(materialized.Route.Rules, cloudRules)
+	}
+
+	if materialized.Inbounds == nil {
+		materialized.Inbounds = []Inbound{}
+	}
+	if materialized.Outbounds == nil {
+		materialized.Outbounds = []Outbound{}
+	}
+}

@@ -202,7 +202,7 @@ build_ipk_one() {
     cat > "$IPK_ROOT/CONTROL/control" << EOF
 Package: awg-manager
 Version: ${VERSION}
-Depends: iptables, ip-full, wireguard-tools, conntrack, curl
+Depends: iptables, ipset, ip-full, wireguard-tools, conntrack, curl
 Section: net
 Architecture: ${PKG_ARCH}
 Maintainer: hoaxisr
@@ -212,6 +212,7 @@ Description: AmneziaWG tunnel manager with web interface
  Includes bundled kernel modules.
 EOF
 
+    [ -f entware/control/preinst ] && cp entware/control/preinst "$IPK_ROOT/CONTROL/" && chmod 755 "$IPK_ROOT/CONTROL/preinst"
     cp entware/control/postinst "$IPK_ROOT/CONTROL/"
     cp entware/control/prerm "$IPK_ROOT/CONTROL/"
     chmod 755 "$IPK_ROOT/CONTROL/postinst"
@@ -225,8 +226,10 @@ EOF
     echo "2.0" > "$IPK_DIR/debian-binary"
 
     cd "$IPK_DIR/CONTROL"
+    local CONTROL_FILES="control postinst prerm"
+    [ -f preinst ] && CONTROL_FILES="control preinst postinst prerm"
     tar --numeric-owner --owner=0 --group=0 -czf "$IPK_DIR/control.tar.gz" \
-        control postinst prerm
+        $CONTROL_FILES
 
     cd "$IPK_DIR"
     tar --numeric-owner --owner=0 --group=0 -czf "$IPK_DIR/data.tar.gz" \

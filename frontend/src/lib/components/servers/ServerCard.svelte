@@ -37,6 +37,7 @@
 		onUnmark?: (id: string) => void;
 		ingressEnabled?: boolean;
 		onToggleIngress?: (interfaceName: string, enabled: boolean) => Promise<void>;
+		activeEngine?: 'sing-box' | 'mihomo';
 	}
 
 	let {
@@ -45,7 +46,11 @@
 		onUnmark,
 		ingressEnabled = false,
 		onToggleIngress = async () => {},
+		activeEngine = 'sing-box',
 	}: Props = $props();
+
+	let engineLabel = $derived(activeEngine === 'mihomo' ? 'Mihomo' : 'sing-box');
+	let engineTitle = $derived(activeEngine === 'mihomo' ? 'Маршрутизация через Mihomo' : 'Маршрутизация через sing-box');
 
 	let isBuiltIn = $derived(server.builtIn ?? server.description === 'Wireguard VPN Server');
 
@@ -427,12 +432,12 @@
 
 			<div class="setting-row setting-row-toggle">
 				<div class="setting-copy">
-					<span class="setting-title">Маршрутизация через sing-box</span>
+					<span class="setting-title">{engineTitle}</span>
 					<span class="setting-description">
-						Весь трафик клиентов этого сервера пойдёт через sing-box и маршрутизируется его
+						Весь трафик клиентов этого сервера пойдёт через {engineLabel} и маршрутизируется его
 						правилами; в режиме FakeIP их DNS-запросы перехватываются резолвером туннеля.
 						Следствия в FakeIP: выше нагрузка на процессор, у клиентов не работает ping (ICMP),
-						при остановленном sing-box они остаются без сети.
+						при остановленном {engineLabel} они остаются без сети.
 					</span>
 				</div>
 				<div class="setting-control setting-control-toggle">

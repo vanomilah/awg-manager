@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 
+	"github.com/hoaxisr/awg-manager/internal/singbox/router/bypassset"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
@@ -46,17 +47,20 @@ func (s *ServiceImpl) buildTproxySpec(
 	// появление (первый успешный запрос после старта) или смена не дали бы
 	// переустановки правил, и обход доехал бы только по ручному Enable.
 	bypassSubnets, _ := resolveBypassCIDRs(sr.BypassPresets, sr.BypassExtraSubnets, s.keenDNSBypass())
+	hasCloudSet := sr.KeeneticCloudTunnel && bypassset.CloudSetExists(ctx)
 	return RestoreInputSpec{
-		PolicyMark:        mark,
-		MatchAll:          !policyMode,
-		WANIPs:            wanIPs,
-		LANBridges:        lanBridges,
-		BypassUDPPorts:    bypassUDP,
-		BypassTCPPorts:    bypassTCP,
-		BypassCIDRs:       bypassSubnets,
-		BypassGeoIPSet:    len(sr.BypassGeoIPTags) > 0,
-		IngressInterfaces: ingress,
-		QoSClasses:        qosSpecs,
+		PolicyMark:          mark,
+		MatchAll:            !policyMode,
+		WANIPs:              wanIPs,
+		LANBridges:          lanBridges,
+		BypassUDPPorts:      bypassUDP,
+		BypassTCPPorts:      bypassTCP,
+		BypassCIDRs:         bypassSubnets,
+		BypassGeoIPSet:      len(sr.BypassGeoIPTags) > 0,
+		IngressInterfaces:   ingress,
+		QoSClasses:          qosSpecs,
+		KeeneticCloudTunnel: sr.KeeneticCloudTunnel,
+		KeeneticCloudSet:    hasCloudSet,
 	}
 }
 
@@ -67,19 +71,23 @@ func (s *ServiceImpl) buildTproxySpec(
 // WAN-исключения обязательны и здесь: без них DSCP-меченный трафик на
 // собственный адрес роутера ушёл бы в sing-box петлёй.
 func (s *ServiceImpl) buildPolicyTunSpec(
+	ctx context.Context,
 	sr storage.SingboxRouterSettings,
 	wanIPs []string,
 	qosSpecs []QoSClassSpec,
 ) RestoreInputSpec {
 	bypassUDP, bypassTCP, _ := resolveBypassPorts(sr.BypassPresets, sr.BypassExtraPorts)
 	bypassSubnets, _ := resolveBypassCIDRs(sr.BypassPresets, sr.BypassExtraSubnets, s.keenDNSBypass())
+	hasCloudSet := sr.KeeneticCloudTunnel && bypassset.CloudSetExists(ctx)
 	return RestoreInputSpec{
-		DSCPOnly:       true,
-		MatchAll:       true,
-		WANIPs:         wanIPs,
-		BypassUDPPorts: bypassUDP,
-		BypassTCPPorts: bypassTCP,
-		BypassCIDRs:    bypassSubnets,
-		QoSClasses:     qosSpecs,
+		DSCPOnly:            true,
+		MatchAll:            true,
+		WANIPs:              wanIPs,
+		BypassUDPPorts:      bypassUDP,
+		BypassTCPPorts:      bypassTCP,
+		BypassCIDRs:         bypassSubnets,
+		QoSClasses:          qosSpecs,
+		KeeneticCloudTunnel: sr.KeeneticCloudTunnel,
+		KeeneticCloudSet:    hasCloudSet,
 	}
 }

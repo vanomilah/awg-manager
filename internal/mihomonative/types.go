@@ -143,6 +143,15 @@ type Rule struct {
 	Enabled   bool   `json:"enabled"`
 }
 
+type RuleInput struct {
+	ID        string `json:"id,omitempty"`
+	Type      string `json:"type"`
+	Payload   string `json:"payload,omitempty"`
+	Outbound  string `json:"outbound"`
+	NoResolve bool   `json:"noResolve,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
+}
+
 type RuleProvider struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`

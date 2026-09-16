@@ -1,0 +1,3 @@
+./inspector.go
+./resolver.go
+./resolver_test.go

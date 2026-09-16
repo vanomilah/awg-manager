@@ -35,6 +35,7 @@ const WDTT_SERVER_OPTIONAL_STRINGS: readonly (keyof WdttServerConfig)[] = [
 
 const FT_SERVER_OPTIONAL_STRINGS: readonly (keyof FreeTurnServerConfig)[] = [
 	'obfKey',
+	'linkPeer',
 ];
 
 function fillStrings<T extends object>(cfg: T, keys: readonly (keyof T)[]): T {

@@ -56,6 +56,10 @@ type UsersStatus struct {
 	// ручки, переписывающие passwords.json (добавление, удаление); у чтения и
 	// переименования пусто.
 	Reload Reload `json:"reload,omitempty"`
+	// AuthMode — режим авторизации клиентов: "shared" или "users".
+	AuthMode string `json:"authMode,omitempty"`
+	// SharedPassword — общий пароль при AuthMode == "shared".
+	SharedPassword string `json:"sharedPassword,omitempty"`
 }
 
 var (
@@ -174,7 +178,7 @@ func (s *Service) materialize(rec instancestore.Record) error {
 		// log.Fatalf, — а симлинк журнала лёг бы в текущий каталог демона.
 		return fmt.Errorf("инстанс %s: не задан configDir сервера — passwords.json писать некуда", rec.Key())
 	}
-	sanitized, err := syncPasswordsJSON(dir, rec.Users)
+	sanitized, err := syncPasswordsJSONWithMode(dir, rec.Users, cfg.ClientAuthMode, cfg.SharedPassword)
 	if err != nil {
 		return err
 	}
@@ -252,18 +256,25 @@ func (s *Service) adopt(ctx context.Context, key, cfgDir string) (instancestore.
 	if err != nil {
 		return rec, err
 	}
+	if rec.WdttServer != nil && strings.TrimSpace(rec.WdttServer.ClientAuthMode) == "shared" {
+		return rec, nil
+	}
+	var sharedPass string
+	if rec.WdttServer != nil {
+		sharedPass = strings.TrimSpace(rec.WdttServer.SharedPassword)
+	}
 	file, _, err := loadUserEntries(cfgDir)
 	if err != nil {
 		return rec, err
 	}
-	if _, changed := adoptUsers(rec.Users, file); !changed {
+	if _, changed := adoptUsers(rec.Users, file, sharedPass); !changed {
 		// Пустая запись store на каждом чтении списка стоила бы полного цикла
 		// с объявлением выходов реестру. Решение «писать или нет» принимается
 		// по свежепрочитанной записи, а САМ состав всё равно считает колбэк.
 		return rec, nil
 	}
 	if err := s.mutateUsers(ctx, key, func(list []instancestore.ServerUser) ([]instancestore.ServerUser, error) {
-		next, _ := adoptUsers(list, file)
+		next, _ := adoptUsers(list, file, sharedPass)
 		return next, nil
 	}); err != nil {
 		return rec, err
@@ -275,20 +286,44 @@ func (s *Service) adopt(ctx context.Context, key, cfgDir string) (instancestore.
 //
 // Порядок обхода фиксирован: карта отдаёт ключи вразнобой, а список абонентов
 // уезжает в запись и виден в UI.
-func adoptUsers(list []instancestore.ServerUser, file map[string]passwordsJSONUser) ([]instancestore.ServerUser, bool) {
-	if len(file) == 0 {
-		return list, false
+func adoptUsers(list []instancestore.ServerUser, file map[string]passwordsJSONUser, ignoredPasswords ...string) ([]instancestore.ServerUser, bool) {
+	ignored := make(map[string]struct{}, len(ignoredPasswords))
+	for _, p := range ignoredPasswords {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			ignored[p] = struct{}{}
+		}
 	}
-	out := slices.Clone(list)
+
+	out := make([]instancestore.ServerUser, 0, len(list))
+	changed := false
+	for _, u := range list {
+		p := strings.TrimSpace(u.Password)
+		c := strings.TrimSpace(u.Comment)
+		if c == "Общий доступ" || (len(ignored) > 0 && isIgnored(p, ignored)) {
+			changed = true
+			continue
+		}
+		out = append(out, u)
+	}
+
+	if len(file) == 0 {
+		return out, changed
+	}
 	known := make(map[string]int, len(out))
 	for i, u := range out {
 		known[strings.TrimSpace(u.Password)] = i
 	}
-	changed := false
 	for _, pass := range slices.Sorted(maps.Keys(file)) {
 		entry := file[pass]
 		pass = strings.TrimSpace(pass)
 		if pass == "" {
+			continue
+		}
+		if isIgnored(pass, ignored) {
+			continue
+		}
+		if strings.TrimSpace(entry.Label) == "Общий доступ" {
 			continue
 		}
 		if _, ok := known[pass]; ok {
@@ -303,6 +338,11 @@ func adoptUsers(list []instancestore.ServerUser, file map[string]passwordsJSONUs
 		changed = true
 	}
 	return out, changed
+}
+
+func isIgnored(pass string, ignored map[string]struct{}) bool {
+	_, ok := ignored[pass]
+	return ok
 }
 
 // ── ручки ────────────────────────────────────────────────────────
@@ -611,7 +651,12 @@ func (s *Service) status(rec instancestore.Record, cfgDir string) UsersStatus {
 	if err != nil {
 		s.warn("passwords.json не прочитан: " + err.Error())
 	}
-	return mergeUsers(rec.Users, file, available)
+	st := mergeUsers(rec.Users, file, available)
+	if rec.WdttServer != nil {
+		st.AuthMode = rec.WdttServer.ClientAuthMode
+		st.SharedPassword = rec.WdttServer.SharedPassword
+	}
+	return st
 }
 
 // mergeUsers собирает список для UI: состав из записи, имя и VK-хеш при

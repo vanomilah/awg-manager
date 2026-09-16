@@ -204,3 +204,101 @@ export interface ManagedServerDriftResponse {
 }
 
 // #endregion
+
+// ─────────────────────────────────────────────
+// #region Xray Server & Telegram Web Proxy
+// ─────────────────────────────────────────────
+
+export interface XrayClient {
+	id: string;
+	remark: string;
+	enabled: boolean;
+	created_at: string;
+}
+
+export interface XrayConfig {
+	enabled: boolean;
+	listen_port: number;
+	dispatcher_port: number;
+	public_domain: string;
+	public_port: number;
+	path: string;
+	mode: string;
+	uplink_method: string;
+	xmux_max_connections: number;
+	outbound_socks_port: number;
+	clients: XrayClient[];
+}
+
+export interface XrayShareLinks {
+	vless_url: string;
+	happ_json: string;
+	singbox_json: string;
+	mihomo_yaml: string;
+	remark: string;
+	uuid: string;
+}
+
+export interface TgWebProxyConfig {
+	schema_version?: number;
+	enabled: boolean;
+	listen_port: number;
+	admin_port: number;
+	public_hostname: string;
+	direct_host?: string;
+	direct_port?: number;
+	secret: string;
+	legacy_secret?: string;
+	legacy_expires_at?: string;
+	backend: string;
+	carrier_mode: string;
+	upstream_device?: string;
+	tls_domain?: string;
+}
+
+export interface TgWebProxyStatus {
+	installed: boolean;
+	installed_telemt?: boolean;
+	installed_tproxy?: boolean;
+	running: boolean;
+	pid: number;
+	port: number;
+	direct_online?: boolean;
+	raw_online?: boolean;
+	webproxy_online?: boolean;
+	backend_online: boolean;
+	backend_addr: string;
+	upstream_status?: 'ok' | 'degraded' | 'interface_down';
+	carrier_mode: string;
+	public_host: string;
+	direct_host?: string;
+	direct_port?: number;
+	tls_domain?: string;
+	secret_masked?: string;
+	legacy_secret_masked?: string;
+	legacy_active?: boolean;
+	legacy_expires_at?: string;
+	legacy_expired_pending_reconcile?: boolean;
+	bridge_url: string;
+	tg_url: string;
+	tme_url: string;
+	mtproxy_secret?: string;
+	mtproxy_url?: string;
+	mtproxy_tme_url?: string;
+}
+
+export interface TgWebProxyRevealData {
+	secret: string;
+	legacy_secret?: string;
+	direct_host: string;
+	direct_port: number;
+	tls_domain: string;
+	tg_url: string;
+	tme_url: string;
+	bridge_url: string;
+	mtproxy_secret: string;
+	mtproxy_url: string;
+	mtproxy_tme_url: string;
+}
+
+// #endregion

@@ -38,7 +38,7 @@
   const FULL_TIMESTAMP_KEY = `${storagePrefix}.logsFullTimestamp`;
   const PAGE_SIZE = 200;
   type LogsQueryParams = {
-    bucket: 'app' | 'singbox';
+    bucket: 'app' | 'singbox' | 'mihomo';
     groups: string[];
     subgroups: string[];
     limit: number;
@@ -200,8 +200,8 @@
   function buildLogQuery(limit: number, offset = 0): LogsQueryParams {
     if (bucket === 'singbox' || bucket === 'mihomo') {
       return {
-        bucket: 'singbox',
-        groups: ['singbox'],
+        bucket,
+        groups: [bucket],
         subgroups: filter.groups,
         limit,
         offset,
@@ -528,7 +528,7 @@
       if (!set.has(log.level)) return false;
     }
 
-    if (bucket === 'singbox') {
+    if (bucket === 'singbox' || bucket === 'mihomo') {
       if (currentFilter.groups.length > 0) {
         const set = new Set(currentFilter.groups);
         if (!set.has(log.subgroup)) return false;

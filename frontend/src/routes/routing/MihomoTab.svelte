@@ -31,6 +31,37 @@
     }
   }
 
+  let installing = $state(false);
+  let updating = $state(false);
+
+  async function installMihomo(): Promise<void> {
+    if (installing) return;
+    installing = true;
+    try {
+      status = await api.mihomoInstall();
+      notifications.success('Mihomo установлен');
+      await refresh(true);
+    } catch (e) {
+      notifications.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      installing = false;
+    }
+  }
+
+  async function updateMihomo(): Promise<void> {
+    if (updating) return;
+    updating = true;
+    try {
+      status = await api.mihomoUpdate();
+      notifications.success('Mihomo обновлён');
+      await refresh(true);
+    } catch (e) {
+      notifications.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      updating = false;
+    }
+  }
+
   async function reload(): Promise<void> {
     if (reloading) return;
     reloading = true;
@@ -43,6 +74,22 @@
       await refresh(true);
     } finally {
       reloading = false;
+    }
+  }
+
+  let reconciling = $state(false);
+
+  async function reconcile(): Promise<void> {
+    if (reconciling) return;
+    reconciling = true;
+    try {
+      await api.mihomoReconcile('rollback_to_lkg', true);
+      notifications.success('Восстановление Mihomo выполнено успешно');
+      await refresh(true);
+    } catch (e) {
+      notifications.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      reconciling = false;
     }
   }
 
@@ -108,6 +155,19 @@
   <MihomoConfigPanel />
   <MihomoPolicyPanel />
 
+  {#if status?.degraded}
+    <div class="degraded-banner" role="alert">
+      <div class="degraded-content">
+        <strong>Внимание: Mihomo в защитном режиме (Degraded)</strong>
+        <p>Произошел сбой транзакции или обнаружен маркер восстановления. Изменения заблокированы до завершения административного восстановления.</p>
+      </div>
+      <Button variant="danger" size="sm" onclick={reconcile} disabled={reconciling}>
+        <span class:spin={reconciling}><RotateCw size={14} /></span>
+        Восстановить (LKG)
+      </Button>
+    </div>
+  {/if}
+
   {#if loadError && !status}
     <div class="error-panel" role="alert">{loadError}</div>
   {:else}
@@ -131,6 +191,19 @@
             <div><dt>Движок выбран</dt><dd>{status?.selected ? 'Да' : 'Нет'}</dd></div>
             <div><dt>Маршрутизация включена</dt><dd>{status?.enabled ? 'Да' : 'Нет'}</dd></div>
             <div><dt>Бинарный файл</dt><dd class="mono">{status?.binary || '—'}</dd></div>
+            <div>
+              <dt>Статус бинарника</dt>
+              <dd>
+                {#if status?.installed}
+                  <span class="text-success">Установлен (v{status.currentVersion || status.version || '—'})</span>
+                  {#if status?.updateAvailable}
+                    <Badge variant="warning">Доступно обновление v{status.requiredVersion}</Badge>
+                  {/if}
+                {:else}
+                  <span class="text-warning">Не установлен</span>
+                {/if}
+              </dd>
+            </div>
           </dl>
 
           {#if status?.error || status?.settingsError || loadError}
@@ -160,12 +233,31 @@
           </div>
 
           <div class="actions">
+            {#if status && !status.installed}
+              <Button
+                variant="primary"
+                size="md"
+                onclick={installMihomo}
+                loading={installing}
+              >
+                {installing ? 'Установка...' : 'Установить Mihomo в 1 клик'}
+              </Button>
+            {:else if status?.updateAvailable}
+              <Button
+                variant="primary"
+                size="md"
+                onclick={updateMihomo}
+                loading={updating}
+              >
+                {updating ? 'Обновление...' : 'Обновить Mihomo'}
+              </Button>
+            {/if}
             <Button
               variant="secondary"
               size="md"
               onclick={reload}
               loading={reloading}
-              disabled={!status?.enabled}
+              disabled={!status?.enabled || !status?.installed}
               title={!status?.enabled
                 ? 'Сначала включите маршрутизацию'
                 : 'Сгенерировать конфигурацию и перезагрузить Mihomo'}
@@ -215,6 +307,22 @@
   .mono { font-family: var(--font-mono); font-size: 0.8125rem; }
   .actions { display: flex; flex-wrap: wrap; gap: 0.625rem; }
   .error-panel { padding: 0.75rem; border: 1px solid var(--color-error-border); border-radius: var(--radius-sm); background: var(--color-error-tint); color: var(--color-error); font-size: 0.8125rem; overflow-wrap: anywhere; }
+  .degraded-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.875rem 1.125rem;
+    border-radius: var(--radius-sm, 6px);
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: var(--color-error, #ef4444);
+  }
+  .degraded-content p {
+    margin: 0.25rem 0 0 0;
+    font-size: 0.8125rem;
+    color: var(--color-text-secondary);
+  }
   .ownership { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
   .ownership span { display: grid; gap: .15rem; padding: .7rem; border-radius: var(--radius-sm); background: var(--color-bg-tertiary); }
   .ownership strong { font-size: .78rem; color: var(--color-text-primary); }

@@ -327,6 +327,7 @@ export async function commitShareWizard(input: ShareCommitInput): Promise<ShareC
 			peer: peerWithPort(input.peer, port) || undefined,
 			password: password || undefined,
 			vkHashes: client.vkHash.trim() ? [client.vkHash.trim()] : undefined,
+			mode: cfg.relayMode === 'raw' ? 'raw' : 'wg',
 		});
 		return {
 			id,

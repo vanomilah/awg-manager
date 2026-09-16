@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/events"
+	"github.com/hoaxisr/awg-manager/internal/mihomo/installer"
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/proxyengine"
 	"github.com/hoaxisr/awg-manager/internal/response"
@@ -25,6 +27,8 @@ import (
 // MihomoHandler provides REST API endpoints for managing the Mihomo engine.
 type MihomoHandler struct {
 	op            proxyengine.Engine
+	installer     *installer.Installer
+	bus           *events.Bus
 	settingsStore *storage.SettingsStore
 	routerSvc     router.Service
 	reloadFn      func() error
@@ -39,13 +43,85 @@ type MihomoHandler struct {
 	reloadPublishesBridge bool
 	mutationTx            func(func() error) error
 	mutationReloadFn      func() error
+	mutationApplier       NativeMutationApplier
 	nativeMu              sync.Mutex
+}
+
+// MihomoStatusSnapshot is a secret-free internal status view shared by the
+// REST handler and read-only diagnostics such as the AI assistant.
+type MihomoStatusSnapshot struct {
+	Running          bool   `json:"running"`
+	Degraded         bool   `json:"degraded"`
+	PID              int    `json:"pid,omitempty"`
+	Binary           string `json:"binary,omitempty"`
+	Error            string `json:"error,omitempty"`
+	Selected         bool   `json:"selected"`
+	Enabled          bool   `json:"enabled"`
+	Active           bool   `json:"active"`
+	Installed        bool   `json:"installed"`
+	InstallAvailable bool   `json:"installAvailable"`
+	UpdateAvailable  bool   `json:"updateAvailable"`
+	CurrentVersion   string `json:"currentVersion,omitempty"`
+	Version          string `json:"version,omitempty"`
+	RequiredVersion  string `json:"requiredVersion,omitempty"`
+	InstallState     string `json:"installState,omitempty"`
+	RequiredBytes    int64  `json:"requiredBytes,omitempty"`
+	FreeBytes        int64  `json:"freeBytes,omitempty"`
+}
+
+func (h *MihomoHandler) StatusSnapshot() (MihomoStatusSnapshot, error) {
+	if h == nil || h.op == nil {
+		return MihomoStatusSnapshot{}, errors.New("mihomo engine is unavailable")
+	}
+	running, pid := h.op.IsRunning()
+	binPath := h.op.Binary()
+	status := MihomoStatusSnapshot{Running: running, PID: pid, Binary: binPath, Error: h.op.LastError()}
+
+	if h.installer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		status.Installed = h.installer.IsInstalled()
+		status.InstallAvailable = h.installer.IsInstallAvailable()
+		status.CurrentVersion = h.installer.CurrentVersion(ctx)
+		status.Version = status.CurrentVersion
+		status.RequiredVersion = h.installer.RequiredVersion()
+		status.UpdateAvailable = h.installer.UpdateAvailable(ctx)
+		status.InstallState = string(h.installer.EvaluateInstallState(ctx))
+		status.RequiredBytes = h.installer.RequiredSize()
+		if free, ok := h.installer.FreeBytes(); ok {
+			status.FreeBytes = free
+		}
+	} else {
+		info, err := os.Stat(binPath)
+		status.Installed = err == nil && !info.IsDir() && (info.Mode()&0111 != 0)
+	}
+
+	if h.settingsStore == nil {
+		return status, nil
+	}
+	settings, err := h.settingsStore.Load()
+	if err != nil {
+		return status, err
+	}
+	status.Selected = settings.SingboxRouter.RoutingEngine == "mihomo"
+	status.Enabled = settings.SingboxRouter.Enabled
+	hasNativeListeners := h.nativeStore != nil && len(h.nativeStore.ConfigBridgeListeners()) > 0
+	status.Active = (status.Selected && status.Enabled && running) || (running && hasNativeListeners)
+	return status, nil
 }
 
 func NewMihomoHandler(op proxyengine.Engine) *MihomoHandler {
 	return &MihomoHandler{
 		op: op,
 	}
+}
+
+func (h *MihomoHandler) SetInstaller(inst *installer.Installer) {
+	h.installer = inst
+}
+
+func (h *MihomoHandler) SetEventBus(bus *events.Bus) {
+	h.bus = bus
 }
 
 func (h *MihomoHandler) SetSettingsStore(store *storage.SettingsStore) {
@@ -127,13 +203,56 @@ func (h *MihomoHandler) SetNativeBridgeLifecycle(
 	h.bridgeDown = down
 }
 
+func (h *MihomoHandler) SetMutationApplier(applier NativeMutationApplier) {
+	h.nativeMu.Lock()
+	defer h.nativeMu.Unlock()
+	h.mutationApplier = applier
+}
+
+// MihomoRecoveryReconcileRequest specifies recovery parameters for degraded mode.
+type MihomoRecoveryReconcileRequest struct {
+	Action string `json:"action"` // "rollback_to_lkg" | "clear_marker"
+	Force  bool   `json:"force"`
+}
+
+//	@Summary		Reconcile degraded Mihomo coordinator state
+//	@Description	Administratively triggers reconciliation or clears recovery marker for degraded Mihomo state
+//	@Tags			mihomo
+//	@Accept			json
+//	@Produce		json
+//	@Param			body	body		MihomoRecoveryReconcileRequest	true	"Reconciliation action and force flag"
+//	@Success		200		{object}	APIEnvelope
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		503		{object}	APIErrorEnvelope
+//	@Router			/mihomo/recovery/reconcile [post]
+func (h *MihomoHandler) HandleRecoveryReconcile(w http.ResponseWriter, r *http.Request) {
+	if h.mutationApplier == nil {
+		response.ErrorWithStatus(w, http.StatusServiceUnavailable, "recovery applier unavailable", "UNAVAILABLE")
+		return
+	}
+	var req MihomoRecoveryReconcileRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		response.BadRequest(w, "invalid request body")
+		return
+	}
+	if err := h.mutationApplier.Reconcile(r.Context(), req.Action, req.Force); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "RECONCILE_FAILED")
+		return
+	}
+	response.Success(w, map[string]string{"status": "ok"})
+}
+
 func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.HandlerFunc) http.HandlerFunc) {
 	if guarded == nil {
 		guarded = func(next http.HandlerFunc) http.HandlerFunc { return next }
 	}
-	mux.HandleFunc("GET /api/mihomo/status", guarded(h.handleStatus))
+	mux.HandleFunc("GET /api/mihomo/status", guarded(h.HandleStatus))
+	mux.HandleFunc("POST /api/mihomo/install", guarded(h.handleInstall))
+	mux.HandleFunc("POST /api/mihomo/update", guarded(h.handleUpdate))
+	mux.HandleFunc("POST /api/mihomo/uninstall", guarded(h.handleUninstall))
 	mux.HandleFunc("GET /api/mihomo/config", guarded(h.handleConfig))
 	mux.HandleFunc("POST /api/mihomo/reload", guarded(h.handleReload))
+	mux.HandleFunc("POST /api/mihomo/recovery/reconcile", guarded(h.HandleRecoveryReconcile))
 	if h.nativeStore != nil {
 		mux.HandleFunc("GET /api/mihomo/native/proxies", guarded(h.handleNativeProxyList))
 		mux.HandleFunc("POST /api/mihomo/native/proxies", guarded(h.handleNativeProxyCreate))
@@ -149,10 +268,13 @@ func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.Han
 		mux.HandleFunc("GET /api/mihomo/native/groups", guarded(h.handleNativeGroupList))
 		mux.HandleFunc("POST /api/mihomo/native/groups", guarded(h.handleNativeGroupSave))
 		mux.HandleFunc("PUT /api/mihomo/native/groups/{id}", guarded(h.handleNativeGroupSave))
-		mux.HandleFunc("DELETE /api/mihomo/native/groups/{id}", guarded(h.handleNativeGroupDelete))
 		mux.HandleFunc("GET /api/mihomo/native/rules", guarded(h.handleNativeRuleList))
-		mux.HandleFunc("POST /api/mihomo/native/rules", guarded(h.handleNativeRuleSave))
-		mux.HandleFunc("PUT /api/mihomo/native/rules/{id}", guarded(h.handleNativeRuleSave))
+		mux.HandleFunc("GET /api/mihomo/native/rules/unsupported", guarded(h.HandleNativeUnsupportedRulesList))
+		mux.HandleFunc("POST /api/mihomo/native/rules/unsupported/delete", guarded(h.HandleNativeUnsupportedRulesDelete))
+		mux.HandleFunc("GET /api/router/mihomo/rules/unsupported", guarded(h.HandleNativeUnsupportedRulesList))
+		mux.HandleFunc("POST /api/router/mihomo/rules/unsupported/delete", guarded(h.HandleNativeUnsupportedRulesDelete))
+		mux.HandleFunc("POST /api/mihomo/native/rules", guarded(h.handleNativeRuleCreate))
+		mux.HandleFunc("PUT /api/mihomo/native/rules/{id}", guarded(h.handleNativeRuleUpdate))
 		mux.HandleFunc("DELETE /api/mihomo/native/rules/{id}", guarded(h.handleNativeRuleDelete))
 		mux.HandleFunc("PUT /api/mihomo/native/rules/order", guarded(h.handleNativeRuleOrder))
 		mux.HandleFunc("GET /api/mihomo/native/rule-providers", guarded(h.handleNativeRuleProviderList))
@@ -226,19 +348,23 @@ func (h *MihomoHandler) handleNativeGroupDelete(w http.ResponseWriter, r *http.R
 func (h *MihomoHandler) handleNativeRuleList(w http.ResponseWriter, _ *http.Request) {
 	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListRules()})
 }
-func (h *MihomoHandler) handleNativeRuleSave(w http.ResponseWriter, r *http.Request) {
-	var rule mihomonative.Rule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+func (h *MihomoHandler) handleNativeRuleCreate(w http.ResponseWriter, r *http.Request) {
+	var input mihomonative.RuleInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
 		return
 	}
-	if id := r.PathValue("id"); id != "" {
-		rule.ID = id
+	if input.ID != "" {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "rule id must not be specified when creating a rule", "ID_NOT_ALLOWED")
+		return
 	}
 	apply := r.URL.Query().Get("apply") != "false"
 	result, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
-		saved, saveErr := h.nativeStore.SaveRule(rule)
+		saved, saveErr := h.nativeStore.CreateRule(input)
 		if saveErr != nil {
+			if errors.Is(saveErr, mihomonative.ErrIDNotAllowed) {
+				return nil, saveErr
+			}
 			return nil, nativeInputError{saveErr}
 		}
 		return saved, nil
@@ -249,6 +375,40 @@ func (h *MihomoHandler) handleNativeRuleSave(w http.ResponseWriter, r *http.Requ
 	}
 	response.Success(w, result)
 }
+
+func (h *MihomoHandler) handleNativeRuleUpdate(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		response.ErrorWithStatus(w, http.StatusNotFound, "rule id required", "NOT_FOUND")
+		return
+	}
+	var input mihomonative.RuleInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	if input.ID != "" && input.ID != id {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "payload id does not match route id", "ID_MISMATCH")
+		return
+	}
+	apply := r.URL.Query().Get("apply") != "false"
+	result, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		updated, updateErr := h.nativeStore.UpdateRule(id, input)
+		if updateErr != nil {
+			if errors.Is(updateErr, mihomonative.ErrRuleNotFound) || errors.Is(updateErr, mihomonative.ErrIDMismatch) {
+				return nil, updateErr
+			}
+			return nil, nativeInputError{updateErr}
+		}
+		return updated, nil
+	})
+	if err != nil {
+		writeNativeMutationError(w, err, "INVALID_RULE")
+		return
+	}
+	response.Success(w, result)
+}
+
 func (h *MihomoHandler) handleNativeRuleDelete(w http.ResponseWriter, r *http.Request) {
 	apply := r.URL.Query().Get("apply") != "false"
 	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
@@ -263,6 +423,103 @@ func (h *MihomoHandler) handleNativeRuleDelete(w http.ResponseWriter, r *http.Re
 	}
 	response.Success(w, map[string]bool{"deleted": true})
 }
+
+// NativeUnsupportedRulesResponse represents the response containing unsupported rules and snapshot revision.
+type NativeUnsupportedRulesResponse struct {
+	Items    []mihomonative.Rule `json:"items"`
+	Revision string              `json:"revision"`
+}
+
+// NativeDeleteUnsupportedRulesRequest represents the payload required to delete unsupported rules.
+type NativeDeleteUnsupportedRulesRequest struct {
+	IDs      []string `json:"ids" binding:"required,min=1,dive,min=1" validate:"min=1,unique,dive,min=1" extensions:"x-nullable=false"`
+	Revision string   `json:"revision" binding:"required,min=1" validate:"min=1"`
+}
+
+// NativeDeleteUnsupportedRulesResponse represents the result of deleting unsupported rules.
+type NativeDeleteUnsupportedRulesResponse struct {
+	Deleted      bool `json:"deleted"`
+	DeletedCount int  `json:"deletedCount"`
+}
+
+//	@Summary		List unsupported native Mihomo rules
+//	@Description	Returns a snapshot of rules with unsupported types and a revision token
+//	@Tags			mihomo
+//	@Produce		json
+//	@Success		200	{object}	NativeUnsupportedRulesResponse
+//	@Router			/mihomo/native/rules/unsupported [get]
+func (h *MihomoHandler) HandleNativeUnsupportedRulesList(w http.ResponseWriter, _ *http.Request) {
+	items, revision := h.nativeStore.ComputeUnsupportedRulesSnapshot()
+	if items == nil {
+		items = []mihomonative.Rule{}
+	}
+	response.Success(w, NativeUnsupportedRulesResponse{
+		Items:    items,
+		Revision: revision,
+	})
+}
+
+//	@Summary		Delete unsupported native Mihomo rules
+//	@Description	Deletes the specified unsupported rules if the full set and revision match
+//	@Tags			mihomo
+//	@Accept			json
+//	@Produce		json
+//	@Param			apply	query		bool								false	"Apply config immediately"
+//	@Param			body	body		NativeDeleteUnsupportedRulesRequest	true	"Rule IDs and revision token"
+//	@Success		200		{object}	NativeDeleteUnsupportedRulesResponse
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		409		{object}	APIErrorEnvelope
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Router			/mihomo/native/rules/unsupported/delete [post]
+func (h *MihomoHandler) HandleNativeUnsupportedRulesDelete(w http.ResponseWriter, r *http.Request) {
+	var body NativeDeleteUnsupportedRulesRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
+		return
+	}
+	if body.Revision == "" {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "revision is required", "INVALID_REQUEST")
+		return
+	}
+	if len(body.IDs) == 0 {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "ids array must not be empty", "INVALID_REQUEST")
+		return
+	}
+	seenIDs := make(map[string]struct{}, len(body.IDs))
+	for _, id := range body.IDs {
+		if id == "" {
+			response.ErrorWithStatus(w, http.StatusBadRequest, "rule id must not be empty", "INVALID_REQUEST")
+			return
+		}
+		if _, seen := seenIDs[id]; seen {
+			response.ErrorWithStatus(w, http.StatusBadRequest, "duplicate rule id in selection", "SELECTION_MISMATCH")
+			return
+		}
+		seenIDs[id] = struct{}{}
+	}
+	apply := r.URL.Query().Get("apply") != "false"
+	result, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
+		deletedCount, deleteErr := h.nativeStore.DeleteUnsupportedRules(body.IDs, body.Revision)
+		if deleteErr != nil {
+			return nil, deleteErr
+		}
+		return NativeDeleteUnsupportedRulesResponse{Deleted: true, DeletedCount: deletedCount}, nil
+	})
+	if err != nil {
+		if errors.Is(err, mihomonative.ErrRulesStale) {
+			response.ErrorWithStatus(w, http.StatusConflict, err.Error(), "MIHOMO_RULES_STALE")
+			return
+		}
+		if errors.Is(err, mihomonative.ErrSelectionMismatch) {
+			response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "SELECTION_MISMATCH")
+			return
+		}
+		writeNativeMutationError(w, err, "DELETE_UNSUPPORTED_RULES_FAILED")
+		return
+	}
+	response.Success(w, result)
+}
+
 func (h *MihomoHandler) handleNativeRuleOrder(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		IDs []string `json:"ids"`
@@ -338,8 +595,28 @@ func (e nativeInputError) Error() string { return e.err.Error() }
 func (e nativeInputError) Unwrap() error { return e.err }
 
 func writeNativeMutationError(w http.ResponseWriter, err error, invalidCode string) {
-	if errors.Is(err, mihomonative.ErrNotFound) {
+	if errors.Is(err, ErrRecoveryRequired) {
+		response.ErrorWithStatus(w, http.StatusServiceUnavailable, "Mihomo engine is in degraded recovery mode; mutation rejected", "RECOVERY_REQUIRED")
+		return
+	}
+	if errors.Is(err, mihomonative.ErrNotFound) || errors.Is(err, mihomonative.ErrRuleNotFound) {
 		response.ErrorWithStatus(w, http.StatusNotFound, "Mihomo resource not found", "NOT_FOUND")
+		return
+	}
+	if errors.Is(err, mihomonative.ErrIDNotAllowed) {
+		response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "ID_NOT_ALLOWED")
+		return
+	}
+	if errors.Is(err, mihomonative.ErrIDMismatch) {
+		response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "ID_MISMATCH")
+		return
+	}
+	if errors.Is(err, mihomonative.ErrRulesStale) {
+		response.ErrorWithStatus(w, http.StatusConflict, err.Error(), "MIHOMO_RULES_STALE")
+		return
+	}
+	if errors.Is(err, mihomonative.ErrSelectionMismatch) {
+		response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "SELECTION_MISMATCH")
 		return
 	}
 	var inputErr nativeInputError
@@ -392,6 +669,28 @@ func (h *MihomoHandler) withNativeMutation(
 	apply bool,
 	mutate func() (interface{}, error),
 ) (interface{}, error) {
+	if h.mutationApplier != nil {
+		if h.mutationApplier.IsDegraded() {
+			return nil, ErrRecoveryRequired
+		}
+		var result interface{}
+		var mutErr error
+		fn := func() error {
+			result, mutErr = mutate()
+			return mutErr
+		}
+		if apply {
+			if err := h.mutationApplier.ApplyNativeMutation(ctx, fn); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := h.mutationApplier.ApplyDraftOnly(ctx, fn); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
+	}
+
 	h.nativeMu.Lock()
 	defer h.nativeMu.Unlock()
 
@@ -697,17 +996,37 @@ func (h *MihomoHandler) handleNativeSubscriptionDelete(w http.ResponseWriter, r 
 
 func (h *MihomoHandler) handleNativeSubscriptionRefresh(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if err := h.RefreshNativeSubscription(r.Context(), id); err != nil {
+		status, code := http.StatusBadGateway, "PROVIDER_REFRESH_FAILED"
+		if errors.Is(err, mihomonative.ErrNotFound) {
+			status, code = http.StatusNotFound, "NOT_FOUND"
+		} else if errors.Is(err, errNativeSubscriptionNotRuntimeProvider) {
+			status, code = http.StatusConflict, "NOT_RUNTIME_PROVIDER"
+		}
+		response.ErrorWithStatus(w, status, err.Error(), code)
+		return
+	}
+	response.Success(w, map[string]bool{"refreshed": true})
+}
+
+var errNativeSubscriptionNotRuntimeProvider = errors.New("only Mihomo provider subscriptions can be refreshed at runtime")
+
+// RefreshNativeSubscription refreshes one Mihomo provider through its local
+// controller. The same method is shared by the HTTP API and confirmed AI
+// remediation actions.
+func (h *MihomoHandler) RefreshNativeSubscription(ctx context.Context, id string) error {
+	if h == nil || h.nativeStore == nil {
+		return errors.New("mihomo native subscription store is unavailable")
+	}
 	sub, err := h.nativeStore.GetSubscription(id)
 	if err != nil {
-		response.ErrorWithStatus(w, http.StatusNotFound, "subscription not found", "NOT_FOUND")
-		return
+		return err
 	}
 	if sub.Format != mihomonative.FormatMihomoProvider || sub.ProviderName == "" {
-		response.ErrorWithStatus(w, http.StatusConflict, "only Mihomo provider subscriptions can be refreshed at runtime", "NOT_RUNTIME_PROVIDER")
-		return
+		return errNativeSubscriptionNotRuntimeProvider
 	}
 	target := "http://127.0.0.1:9090/providers/proxies/" + url.PathEscape(sub.ProviderName)
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPut, target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, nil)
 	if err == nil {
 		var upstream *http.Response
 		upstream, err = mihomoHTTPClient.Do(req)
@@ -726,35 +1045,102 @@ func (h *MihomoHandler) handleNativeSubscriptionRefresh(w http.ResponseWriter, r
 	if recordErr != nil && err == nil {
 		err = recordErr
 	}
-	if err != nil {
-		response.ErrorWithStatus(w, http.StatusBadGateway, err.Error(), "PROVIDER_REFRESH_FAILED")
-		return
-	}
-	response.Success(w, map[string]bool{"refreshed": true})
+	return err
 }
 
-func (h *MihomoHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
-	running, pid := h.op.IsRunning()
-	status := map[string]interface{}{
-		"running": running,
-		"pid":     pid,
-		"binary":  h.op.Binary(),
-		"error":   h.op.LastError(),
-		"engine":  "mihomo",
+//	@Summary		Get Mihomo engine status
+//	@Description	Returns runtime and installation status of Mihomo engine including degraded state
+//	@Tags			mihomo
+//	@Produce		json
+//	@Success		200	{object}	APIEnvelope
+//	@Router			/mihomo/status [get]
+func (h *MihomoHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
+	status, err := h.StatusSnapshot()
+	degraded := h.mutationApplier != nil && h.mutationApplier.IsDegraded()
+	payload := map[string]interface{}{
+		"running":          status.Running,
+		"degraded":         degraded,
+		"pid":              status.PID,
+		"binary":           status.Binary,
+		"error":            status.Error,
+		"engine":           "mihomo",
+		"selected":         status.Selected,
+		"enabled":          status.Enabled,
+		"active":           status.Active,
+		"installed":        status.Installed,
+		"installAvailable": status.InstallAvailable,
+		"updateAvailable":  status.UpdateAvailable,
+		"currentVersion":   status.CurrentVersion,
+		"version":          status.CurrentVersion,
+		"requiredVersion":  status.RequiredVersion,
+		"installState":     status.InstallState,
+		"requiredBytes":    status.RequiredBytes,
+		"freeBytes":        status.FreeBytes,
 	}
-	if h.settingsStore != nil {
-		settings, err := h.settingsStore.Load()
-		if err != nil {
-			status["settingsError"] = err.Error()
-		} else {
-			selected := settings.SingboxRouter.RoutingEngine == "mihomo"
-			enabled := settings.SingboxRouter.Enabled
-			hasNativeListeners := h.nativeStore != nil && len(h.nativeStore.ConfigBridgeListeners()) > 0
-			status["selected"] = selected
-			status["enabled"] = enabled
-			status["active"] = (selected && enabled && running) || (running && hasNativeListeners)
+	if err != nil {
+		payload["settingsError"] = err.Error()
+	}
+	response.Success(w, payload)
+}
+
+func (h *MihomoHandler) handleInstall(w http.ResponseWriter, r *http.Request) {
+	if h.installer == nil {
+		response.ErrorWithStatus(w, http.StatusNotImplemented, "mihomo installer not configured", "NOT_CONFIGURED")
+		return
+	}
+	if err := h.installer.Install(r.Context()); err != nil {
+		response.InternalError(w, fmt.Sprintf("install mihomo: %v", err))
+		return
+	}
+	if h.bus != nil {
+		h.bus.PublishInvalidated(events.ResourceSysInfo, "mihomo-installed")
+	}
+	status, _ := h.StatusSnapshot()
+	response.Success(w, status)
+}
+
+func (h *MihomoHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if h.installer == nil {
+		response.ErrorWithStatus(w, http.StatusNotImplemented, "mihomo installer not configured", "NOT_CONFIGURED")
+		return
+	}
+	wasRunning, _ := h.op.IsRunning()
+	if wasRunning {
+		_ = h.op.Stop()
+	}
+	if err := h.installer.Install(r.Context()); err != nil {
+		if wasRunning {
+			_ = h.op.Start()
 		}
+		response.InternalError(w, fmt.Sprintf("update mihomo: %v", err))
+		return
 	}
+	if wasRunning {
+		_ = h.op.Start()
+	}
+	if h.bus != nil {
+		h.bus.PublishInvalidated(events.ResourceSysInfo, "mihomo-updated")
+	}
+	status, _ := h.StatusSnapshot()
+	response.Success(w, status)
+}
+
+func (h *MihomoHandler) handleUninstall(w http.ResponseWriter, r *http.Request) {
+	if h.installer == nil {
+		response.ErrorWithStatus(w, http.StatusNotImplemented, "mihomo installer not configured", "NOT_CONFIGURED")
+		return
+	}
+	if running, _ := h.op.IsRunning(); running {
+		_ = h.op.Stop()
+	}
+	if err := h.installer.Remove(r.Context()); err != nil {
+		response.InternalError(w, fmt.Sprintf("remove mihomo: %v", err))
+		return
+	}
+	if h.bus != nil {
+		h.bus.PublishInvalidated(events.ResourceSysInfo, "mihomo-uninstalled")
+	}
+	status, _ := h.StatusSnapshot()
 	response.Success(w, status)
 }
 

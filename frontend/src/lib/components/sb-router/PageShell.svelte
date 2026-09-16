@@ -110,8 +110,8 @@
             class:icon-btn-active={logsActive}
             onclick={onOpenLogs}
             aria-pressed={logsActive}
-            aria-label={logsActive ? 'Закрыть логи sing-box' : 'Логи sing-box'}
-            title={logsActive ? 'Закрыть логи sing-box' : 'Логи sing-box'}
+            aria-label={logsActive ? `Закрыть логи ${activeEngineLabel}` : `Логи ${activeEngineLabel}`}
+            title={logsActive ? `Закрыть логи ${activeEngineLabel}` : `Логи ${activeEngineLabel}`}
           >
             <span class="action-icon"><ScrollText size={16} /></span>
             <span class="action-text">Логи</span>

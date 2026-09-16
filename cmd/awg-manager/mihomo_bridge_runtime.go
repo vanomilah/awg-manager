@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 )
 
@@ -280,4 +281,96 @@ func (r *mihomoBridgeRuntime) deactivateLocked(ctx context.Context) error {
 		}
 	}
 	return joined
+}
+
+// Ensure *mihomoBridgeRuntime satisfies mihomo.BridgeRuntime.
+var _ mihomo.BridgeRuntime = (*mihomoBridgeRuntime)(nil)
+
+// ApplyBridges ensures all requested bridges are active in the kernel/NDMS.
+func (r *mihomoBridgeRuntime) ApplyBridges(ctx context.Context, bridges []mihomo.BridgeRef) error {
+	if r == nil || r.manager == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gate.setReady(true)
+	return r.manager.Reconcile(ctx, nil)
+}
+
+// WithdrawBridges withdraws the specified bridge interfaces from the kernel/NDMS.
+func (r *mihomoBridgeRuntime) WithdrawBridges(ctx context.Context, bridges []mihomo.BridgeRef) error {
+	if r == nil || r.gate == nil || r.gate.base == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var joined error
+	for _, ref := range bridges {
+		canonicalOwner := ""
+		legacyOwners := []string{}
+		if ref.LegacyOwner != "" {
+			legacyOwners = append(legacyOwners, ref.LegacyOwner)
+		}
+		if r.store != nil {
+			for _, nb := range r.store.ListBridges() {
+				if nb.Bridge.ProxyIndex == ref.ProxyIndex {
+					canonicalOwner = mihomonative.BridgeOwnershipDescription(nb.Kind, nb.ID)
+					break
+				}
+			}
+		}
+		if canonicalOwner != "" {
+			if _, err := r.gate.base.RemoveProxyIfOwned(ctx, ref.ProxyIndex, canonicalOwner, legacyOwners...); err != nil {
+				joined = errors.Join(joined, fmt.Errorf("withdraw bridge Proxy%d: %w", ref.ProxyIndex, err))
+			}
+		}
+	}
+	return joined
+}
+
+// VerifyBridges verifies that Mihomo is listening on the required bridge ports.
+func (r *mihomoBridgeRuntime) VerifyBridges(ctx context.Context, bridges []mihomo.BridgeRef) error {
+	if r == nil || r.store == nil {
+		return nil
+	}
+	listeners := r.store.ConfigBridgeListeners()
+	if len(listeners) == 0 {
+		return nil
+	}
+	targetPorts := make(map[int]bool)
+	for _, b := range bridges {
+		for _, nb := range r.store.ListBridges() {
+			if nb.Bridge.ProxyIndex == b.ProxyIndex {
+				targetPorts[nb.Bridge.ListenPort] = true
+			}
+		}
+	}
+	var requiredListeners []mihomonative.BridgeListener
+	for _, l := range listeners {
+		if targetPorts[l.Port] {
+			requiredListeners = append(requiredListeners, l)
+		}
+	}
+	if len(requiredListeners) > 0 {
+		return waitForMihomoBridgeListeners(ctx, requiredListeners)
+	}
+	return nil
+}
+
+// ListActiveBridges returns all currently registered bridge interfaces.
+func (r *mihomoBridgeRuntime) ListActiveBridges(ctx context.Context) ([]mihomo.BridgeRef, error) {
+	if r == nil || r.store == nil {
+		return nil, nil
+	}
+	nativeBridges := r.store.ListBridges()
+	out := make([]mihomo.BridgeRef, len(nativeBridges))
+	for i, nb := range nativeBridges {
+		out[i] = mihomo.BridgeRef{
+			ProxyIndex:      nb.Bridge.ProxyIndex,
+			ProxyInterface:  nb.Bridge.ProxyInterface,
+			KernelInterface: nb.Bridge.KernelInterface,
+			LegacyOwner:     nb.LegacyOwner,
+		}
+	}
+	return out, nil
 }

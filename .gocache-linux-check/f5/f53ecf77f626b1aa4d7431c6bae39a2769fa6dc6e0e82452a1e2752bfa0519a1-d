@@ -1,0 +1,9 @@
+./anonymize.go
+./collectors.go
+./diagnostics.go
+./dnsproxy.go
+./journal_warnings.go
+./privacy.go
+./singbox_config.go
+./tests.go
+./timezone.go

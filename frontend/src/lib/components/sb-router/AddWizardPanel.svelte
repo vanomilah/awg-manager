@@ -305,7 +305,7 @@
         createdCount++;
       } else {
         const cleanTag = tagLower.replace(/^geosite-/, '');
-        const geoTag = MIHOMO_ALIASES[cleanTag] || cleanTag;
+        const geoTag = (MIHOMO_ALIASES[cleanTag] || cleanTag).toLowerCase();
 
         if (['dev-tools', 'ip-checkers', 'npm', 'torrents'].includes(cleanTag) && preset?.engines?.dns?.domains?.length) {
           for (const d of preset.engines.dns.domains) {
@@ -321,13 +321,54 @@
             }
           }
         } else {
-          await api.mihomoNativeSaveRule({
-            type: 'GEOSITE',
-            payload: geoTag,
-            outbound: targetOutbound,
-            enabled: true,
-          });
-          createdCount++;
+          // MetaCubeX MRS rule-provider support:
+          // Try to create modern .mrs rule-provider first and route via RULE-SET
+          const mrsUrl = `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/${geoTag}.mrs`;
+          try {
+            await api.mihomoNativeSaveRuleProvider({
+              name: geoTag,
+              type: 'http',
+              url: mrsUrl,
+              path: `./rules/${geoTag}.mrs`,
+              behavior: 'domain',
+              format: 'mrs',
+              interval: 86400,
+              enabled: true,
+            });
+            await api.mihomoNativeSaveRule({
+              type: 'RULE-SET',
+              payload: geoTag,
+              outbound: targetOutbound,
+              enabled: true,
+            });
+            createdCount++;
+          } catch {
+            // Fallback to built-in GEOSITE if provider creation fails
+            await api.mihomoNativeSaveRule({
+              type: 'GEOSITE',
+              payload: geoTag,
+              outbound: targetOutbound,
+              enabled: true,
+            });
+            createdCount++;
+          }
+
+          if (geoTag === 'roblox') {
+            await api.mihomoNativeSaveRule({
+              type: 'DOMAIN-SUFFIX',
+              payload: 'rbxcdn.com',
+              outbound: targetOutbound,
+              enabled: true,
+            });
+            await api.mihomoNativeSaveRule({
+              type: 'IP-CIDR',
+              payload: '128.116.0.0/16',
+              outbound: targetOutbound,
+              noResolve: true,
+              enabled: true,
+            });
+            createdCount += 2;
+          }
         }
 
         if (geoTag === 'telegram' || geoTag === 'netflix' || geoTag === 'twitter' || geoTag === 'facebook') {

@@ -45,6 +45,10 @@
     <button type="button" role="menuitem" onclick={() => { $contextMenu.onFilterLevel?.(); closeContextMenu(); }}>
       Фильтр по уровню
     </button>
+    <hr />
+    <button type="button" role="menuitem" class="ai-menu-item" onclick={() => { $contextMenu.onAskAI?.(); closeContextMenu(); }}>
+      ✨ Разобрать с ИИ
+    </button>
   </div>
 {/if}
 
@@ -74,6 +78,11 @@
   }
   .menu button:hover {
     background: var(--color-bg-hover);
+  }
+
+  .menu .ai-menu-item {
+    color: var(--color-accent, #3b82f6);
+    font-weight: 500;
   }
 
   .menu hr {

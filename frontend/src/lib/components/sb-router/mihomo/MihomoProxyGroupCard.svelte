@@ -315,7 +315,7 @@
         <button
           type="button"
           class="compact-btn icon-only danger"
-          onclick={() => onDelete(group.id)}
+          onclick={() => onDelete(group.id || group.name)}
           title="Удалить группу"
         >
           <Trash2 size={13} />

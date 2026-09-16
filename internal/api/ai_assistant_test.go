@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -38,6 +39,7 @@ func TestAIAssistantConfigNeverReturnsAPIKey(t *testing.T) {
 
 func (f *fakeAIService) Start(question string) error { f.question = question; return f.err }
 func (f *fakeAIService) Status() aiassistant.State   { return f.state }
+func (f *fakeAIService) ClearChat()            {}
 
 func TestAIAssistantDiagnose(t *testing.T) {
 	svc := &fakeAIService{state: aiassistant.State{Status: "running", ReadOnly: true}}
@@ -80,5 +82,31 @@ func TestAIAssistantEmbeddedStatus(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"port":11435`) {
 		t.Fatalf("expected port in response: %s", rec.Body.String())
+	}
+}
+
+type fakeMCPAIService struct{ fakeAIService }
+
+func (*fakeMCPAIService) ListTools() []aiassistant.ToolDefinition {
+	return []aiassistant.ToolDefinition{{Name: "dns.inspect", Title: "DNS", Description: "Проверка DNS", InputSchema: map[string]any{"type": "object"}, ReadOnly: true}}
+}
+
+func (*fakeMCPAIService) CallTool(_ context.Context, call aiassistant.ToolCall) aiassistant.ToolStep {
+	return aiassistant.ToolStep{Name: call.Name, Title: "DNS", Status: "passed", Summary: "DNS отвечает", ReadOnly: true}
+}
+
+func TestAIAssistantMCPListsAndCallsReadOnlyTools(t *testing.T) {
+	h := NewAIAssistantHandler(&fakeMCPAIService{})
+
+	rec := httptest.NewRecorder()
+	h.MCP(rec, httptest.NewRequest(http.MethodPost, "/api/system/ai/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"name":"dns.inspect"`) || !strings.Contains(rec.Body.String(), `"readOnlyHint":true`) {
+		t.Fatalf("unexpected tools/list response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.MCP(rec, httptest.NewRequest(http.MethodPost, "/api/system/ai/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dns.inspect","arguments":{"domain":"ya.ru"}}}`)))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"isError":false`) || !strings.Contains(rec.Body.String(), "DNS отвечает") {
+		t.Fatalf("unexpected tools/call response: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

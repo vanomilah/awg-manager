@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 )
@@ -271,6 +272,11 @@ func (s *ServiceImpl) Inspect(ctx context.Context, input InspectInput) (InspectR
 	m := s.ruleSetMaterializer()
 	ruleSets := m.inspectRuleSetsWithInlineAliases(cfg)
 	rules := m.restoreConfig(cfg).Route.Rules
+	if st, err := s.deps.Settings.Load(); err == nil && st.SingboxRouter.KeeneticCloudTunnel && strings.TrimSpace(st.SingboxRouter.KeeneticCloudOutbound) != "" {
+		target := strings.TrimSpace(st.SingboxRouter.KeeneticCloudOutbound)
+		cloudRules := BuildKeeneticCloudRules(target, s.dynamicCloudCIDRs()...)
+		rules = insertCloudRules(rules, cloudRules)
+	}
 	binary := ""
 	if s.deps.Singbox != nil {
 		binary = s.deps.Singbox.Binary()

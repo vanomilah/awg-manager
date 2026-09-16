@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -14,14 +15,13 @@ import (
 
 const keenDNSTTL = 60 * time.Second
 
-// KeenDNSInfo holds the router's KeenDNS domain registration, if any.
+// KeenDNSInfo holds the router's KeenDNS domain registration and active cloud relay endpoints.
 type KeenDNSInfo struct {
-	Domain  string `json:"domain"`
-	Enabled bool   `json:"enabled"`
-	// Address — IPv4 доступа к роутеру по имени KeenDNS. В режиме direct
-	// статической записи у ndnproxy нет, и это единственный источник адреса
-	// для обхода пресета keendns.
-	Address string `json:"address"`
+	Domain       string   `json:"domain"`
+	Enabled      bool     `json:"enabled"`
+	Address      string   `json:"address"`
+	RelayIPs     []string `json:"relay_ips,omitempty"`
+	RelayDomains []string `json:"relay_domains,omitempty"`
 }
 
 // KeenDNSStore caches KeenDNS status from NDMS.
@@ -59,14 +59,18 @@ func (s *KeenDNSStore) fetch(ctx context.Context, _ string) (*KeenDNSInfo, error
 
 // parseKeenDNS строит FQDN доступа из полей booked + domain ответа /show/ndns
 // (например booked="impod", domain="crazedns.ru" → "impod.crazedns.ru").
-// Любой домен Keenetic покрывается автоматически — без allowlist суффиксов.
-// Допущение: domain — это зона, а не уже готовый FQDN (verified на ребренд-OS,
-// для стоковой *.keenetic.pro не перепроверялось).
+// Также извлекает активные реле-серверы из блока ttp.tunnel (IP-адреса и домены).
 func parseKeenDNS(raw []byte) *KeenDNSInfo {
 	var v struct {
 		Booked  string `json:"booked"`
 		Domain  string `json:"domain"`
 		Address string `json:"address"`
+		TTP     struct {
+			Tunnel []struct {
+				Target       string `json:"target"`
+				TargetRemote string `json:"target-remote"`
+			} `json:"tunnel"`
+		} `json:"ttp"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return nil
@@ -76,9 +80,46 @@ func parseKeenDNS(raw []byte) *KeenDNSInfo {
 	if booked == "" || domain == "" {
 		return nil
 	}
+
+	var relayIPs []string
+	var relayDomains []string
+	seenIP := make(map[string]struct{})
+	seenDomain := make(map[string]struct{})
+
+	for _, t := range v.TTP.Tunnel {
+		if remote := strings.TrimSpace(t.TargetRemote); remote != "" {
+			host := remote
+			if h, _, err := net.SplitHostPort(remote); err == nil {
+				host = h
+			}
+			if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+				ipStr := ip.String()
+				if _, ok := seenIP[ipStr]; !ok {
+					seenIP[ipStr] = struct{}{}
+					relayIPs = append(relayIPs, ipStr)
+				}
+			}
+		}
+		if target := strings.TrimSpace(t.Target); target != "" {
+			host := target
+			if h, _, err := net.SplitHostPort(target); err == nil {
+				host = h
+			}
+			host = strings.ToLower(strings.TrimSpace(host))
+			if host != "" {
+				if _, ok := seenDomain[host]; !ok {
+					seenDomain[host] = struct{}{}
+					relayDomains = append(relayDomains, host)
+				}
+			}
+		}
+	}
+
 	return &KeenDNSInfo{
-		Domain:  booked + "." + domain,
-		Enabled: true,
-		Address: strings.TrimSpace(v.Address),
+		Domain:       booked + "." + domain,
+		Enabled:      true,
+		Address:      strings.TrimSpace(v.Address),
+		RelayIPs:     relayIPs,
+		RelayDomains: relayDomains,
 	}
 }

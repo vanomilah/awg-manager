@@ -9,7 +9,7 @@
 	import { notifications } from '$lib/stores/notifications';
 	import { errText } from '$lib/utils/errorMessage';
 	import { peersEqual } from '$lib/utils/wdttPeer';
-	import { setPeer } from '$lib/utils/wdttPeerMode';
+	import { applyPayloadPeers, setPeer } from '$lib/utils/wdttPeerMode';
 	import type { WdttClientConfig, WdttImportPayload } from '$lib/types';
 	import DetailSection from './DetailSection.svelte';
 
@@ -74,7 +74,7 @@
 		if (!payload) return;
 		applying = true;
 		try {
-			if (payload.peer) setPeer(client, payload.peer);
+			applyPayloadPeers(client, payload);
 			if (payload.password) client.password = payload.password;
 			if (payload.vkHashes?.length) client.vkHashes = payload.vkHashes.join(',');
 			if (payload.workers && payload.workers > 0) client.workers = payload.workers;

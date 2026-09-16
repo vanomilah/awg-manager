@@ -17,6 +17,7 @@ export { default as ServerAllowlist } from './ServerAllowlist.svelte';
 export { default as ServerClientAddModal } from './ServerClientAddModal.svelte';
 export { default as ServerClientRow } from './ServerClientRow.svelte';
 export { default as ServerClients } from './ServerClients.svelte';
+export { default as ServerSharedAuth } from './ServerSharedAuth.svelte';
 export { default as ShareAdvancedSection } from './ShareAdvancedSection.svelte';
 export { default as ShareDetail } from './ShareDetail.svelte';
 export { default as ShareNetworkSection } from './ShareNetworkSection.svelte';

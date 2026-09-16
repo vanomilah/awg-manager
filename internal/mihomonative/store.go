@@ -2,6 +2,7 @@ package mihomonative
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,11 +15,20 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/storage"
+	"github.com/hoaxisr/awg-manager/internal/strictfs"
 	"gopkg.in/yaml.v3"
 )
 
-var ErrNotFound = errors.New("mihomo native: not found")
+var (
+	ErrNotFound          = errors.New("mihomo native: not found")
+	ErrRuleNotFound      = errors.New("mihomo native: rule not found")
+	ErrIDNotAllowed      = errors.New("mihomo native: rule id must not be specified when creating a rule")
+	ErrIDMismatch        = errors.New("mihomo native: payload id does not match route id")
+	ErrRulesStale        = errors.New("mihomo native: unsupported rules have changed, snapshot is stale")
+	ErrSelectionMismatch = errors.New("mihomo native: rule selection does not match current unsupported rules")
+)
 
 const autoNativeGroupName = "Mihomo: Native"
 
@@ -237,8 +247,142 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return storage.AtomicWritePerm(s.path, b, 0600)
+	return strictfs.StrictWriteAtomic(s.path, b, 0600)
 }
+
+func (s *Store) CreateSnapshotFile(txid string) (string, error) {
+	if err := strictfs.ValidateTxID(txid); err != nil {
+		return "", err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	b, err := json.MarshalIndent(s.data, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("mihomo native: marshal store snapshot: %w", err)
+	}
+
+	dir := filepath.Dir(s.path)
+	snapshotPath := filepath.Join(dir, fmt.Sprintf("store.snapshot.%s.json", txid))
+	if err := strictfs.StrictWriteAtomic(snapshotPath, b, 0600); err != nil {
+		return "", fmt.Errorf("mihomo native: write snapshot %s: %w", snapshotPath, err)
+	}
+	return snapshotPath, nil
+}
+
+func (s *Store) RestoreSnapshotFile(snapshotPath string) error {
+	b, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		return fmt.Errorf("mihomo native: read snapshot %s: %w", snapshotPath, err)
+	}
+
+	var restored state
+	if err := json.Unmarshal(b, &restored); err != nil {
+		return fmt.Errorf("mihomo native: unmarshal snapshot %s: %w", snapshotPath, err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous := s.data
+	s.data = restored
+	if err := s.saveLocked(); err != nil {
+		s.data = previous
+		return fmt.Errorf("mihomo native: save restored store: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RemoveSnapshotFile(snapshotPath string) error {
+	return strictfs.StrictUnlink(snapshotPath)
+}
+
+func (s *Store) CurrentDigest() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	b, err := json.MarshalIndent(s.data, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("mihomo native: marshal data for digest: %w", err)
+	}
+	return strictfs.ComputeBytesDigest(b), nil
+}
+
+func (s *Store) DraftJournalPath() string {
+	return filepath.Join(filepath.Dir(s.path), "store.draft.json")
+}
+
+func (s *Store) SaveDraftJournal(journal mihomo.DraftJournal) error {
+	b, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		return err
+	}
+	return strictfs.StrictWriteAtomic(s.DraftJournalPath(), b, 0600)
+}
+
+func (s *Store) LoadDraftJournal() (*mihomo.DraftJournal, error) {
+	p := s.DraftJournalPath()
+	b, err := os.ReadFile(p)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var dj mihomo.DraftJournal
+	if err := json.Unmarshal(b, &dj); err != nil {
+		return nil, fmt.Errorf("unmarshal draft journal %s: %w", p, err)
+	}
+	return &dj, nil
+}
+
+func (s *Store) RemoveDraftJournal() error {
+	return strictfs.StrictUnlink(s.DraftJournalPath())
+}
+
+// StoreTxAdapter wraps *Store to satisfy mihomo.NativeStoreTx.
+type StoreTxAdapter struct {
+	store *Store
+}
+
+func NewStoreTxAdapter(store *Store) *StoreTxAdapter {
+	return &StoreTxAdapter{store: store}
+}
+
+func (s *Store) TxAdapter() *StoreTxAdapter {
+	return NewStoreTxAdapter(s)
+}
+
+func (a *StoreTxAdapter) CreateSnapshotFile(txid string) (string, error) {
+	return a.store.CreateSnapshotFile(txid)
+}
+
+func (a *StoreTxAdapter) RestoreSnapshotFile(snapshotPath string) error {
+	return a.store.RestoreSnapshotFile(snapshotPath)
+}
+
+func (a *StoreTxAdapter) RemoveSnapshotFile(snapshotPath string) error {
+	return a.store.RemoveSnapshotFile(snapshotPath)
+}
+
+func (a *StoreTxAdapter) CurrentDigest() (string, error) {
+	return a.store.CurrentDigest()
+}
+
+func (a *StoreTxAdapter) ListBridges() []mihomo.BridgeRef {
+	nativeBridges := a.store.ListBridges()
+	out := make([]mihomo.BridgeRef, len(nativeBridges))
+	for i, nb := range nativeBridges {
+		out[i] = mihomo.BridgeRef{
+			ProxyIndex:      nb.Bridge.ProxyIndex,
+			ProxyInterface:  nb.Bridge.ProxyInterface,
+			KernelInterface: nb.Bridge.KernelInterface,
+			LegacyOwner:     nb.LegacyOwner,
+		}
+	}
+	return out
+}
+
 
 func (s *Store) ListProxies() []ProxyNode {
 	s.mu.RLock()
@@ -375,10 +519,27 @@ func (s *Store) ConfigProviderGroups() []map[string]interface{} {
 		if len(validProxies) == 0 && len(group.Use) == 0 && !group.IncludeAll && !group.IncludeAllProxies && !group.IncludeAllProviders {
 			validProxies = []string{"DIRECT"}
 		}
+		lazy := group.Lazy
+		interval := group.Interval
+		if group.Type == "fallback" || group.Type == "url-test" {
+			if interval <= 0 {
+				interval = 60
+			}
+			if group.Type == "fallback" {
+				lazy = false
+			} else {
+				for _, p := range validProxies {
+					if strings.EqualFold(p, "DIRECT") {
+						lazy = false
+						break
+					}
+				}
+			}
+		}
 		out = append(out, map[string]interface{}{
 			"name": group.Name, "type": group.Type, "proxies": validProxies,
-			"use": append([]string(nil), group.Use...), "url": group.URL, "interval": group.Interval,
-			"lazy": group.Lazy, "strategy": group.Strategy, "tolerance": group.Tolerance,
+			"use": append([]string(nil), group.Use...), "url": group.URL, "interval": interval,
+			"lazy": lazy, "strategy": group.Strategy, "tolerance": group.Tolerance,
 			"timeout": group.Timeout, "max-failed-times": group.MaxFailedTimes, "disable-udp": group.DisableUDP,
 			"include-all": group.IncludeAll, "include-all-proxies": group.IncludeAllProxies, "include-all-providers": group.IncludeAllProviders,
 			"filter": group.Filter, "exclude-filter": group.ExcludeFilter, "exclude-type": group.ExcludeType,
@@ -595,6 +756,12 @@ func (s *Store) SaveGroup(in ProxyGroup) (ProxyGroup, error) {
 	if in.Interval < 0 {
 		return ProxyGroup{}, fmt.Errorf("mihomo native: interval cannot be negative")
 	}
+	if in.Type == "fallback" {
+		in.Lazy = false
+		if in.Interval <= 0 {
+			in.Interval = 60
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if strings.EqualFold(in.Name, autoNativeGroupName) {
@@ -770,22 +937,16 @@ func ruleConfigLine(rule Rule) string {
 	return line
 }
 
-var allowedRuleTypes = map[string]bool{
-	"DOMAIN": true, "DOMAIN-SUFFIX": true, "DOMAIN-KEYWORD": true, "DOMAIN-WILDCARD": true, "DOMAIN-REGEX": true, "GEOSITE": true,
-	"IP-CIDR": true, "IP-CIDR6": true, "IP-SUFFIX": true, "IP-ASN": true, "GEOIP": true,
-	"SRC-GEOIP": true, "SRC-IP-ASN": true, "SRC-IP-CIDR": true, "SRC-IP-SUFFIX": true,
-	"DST-PORT": true, "SRC-PORT": true, "IN-PORT": true, "IN-TYPE": true, "IN-USER": true, "IN-NAME": true, "REMATCH-NAME": true,
-	"PROCESS-PATH": true, "PROCESS-PATH-WILDCARD": true, "PROCESS-PATH-REGEX": true,
-	"PROCESS-NAME": true, "PROCESS-NAME-WILDCARD": true, "PROCESS-NAME-REGEX": true,
-	"UID": true, "NETWORK": true, "DSCP": true, "RULE-SET": true, "AND": true, "OR": true, "NOT": true, "SUB-RULE": true, "MATCH": true,
-}
-
 func validateAndNormalizeRule(in Rule) (Rule, error) {
 	in.Type, in.Payload, in.Outbound = strings.ToUpper(strings.TrimSpace(in.Type)), strings.TrimSpace(in.Payload), strings.TrimSpace(in.Outbound)
-	if !allowedRuleTypes[in.Type] {
+	if in.Type == "SUB-RULE" {
+		return Rule{}, fmt.Errorf("mihomo native: SUB-RULE is not supported in AWG Manager")
+	}
+	spec, ok := mihomo.LookupRuleSpec(in.Type)
+	if !ok {
 		return Rule{}, fmt.Errorf("mihomo native: unsupported rule type %q", in.Type)
 	}
-	if in.Type != "MATCH" && in.Payload == "" {
+	if spec.RequiresPayload && in.Payload == "" {
 		return Rule{}, fmt.Errorf("mihomo native: rule payload is required")
 	}
 	if in.Outbound == "" {
@@ -794,10 +955,225 @@ func validateAndNormalizeRule(in Rule) (Rule, error) {
 	if in.ID == "" {
 		in.ID = newID()
 	}
-	if !in.Enabled {
-		in.Enabled = true
-	}
 	return in, nil
+}
+
+// ValidateRuntimeRules inspects all active (enabled) rules and returns an error if any
+// enabled rule has an unsupported rule type (e.g. SUB-RULE).
+func (s *Store) ValidateRuntimeRules() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var invalid []string
+	for _, r := range s.data.Rules {
+		if !r.Enabled {
+			continue
+		}
+		t := strings.ToUpper(strings.TrimSpace(r.Type))
+		if t == "SUB-RULE" {
+			invalid = append(invalid, fmt.Sprintf("rule %s: SUB-RULE is not supported", r.ID))
+			continue
+		}
+		if !mihomo.IsSupportedRuleType(t) {
+			invalid = append(invalid, fmt.Sprintf("rule %s: unsupported rule type %q", r.ID, r.Type))
+		}
+	}
+	if len(invalid) > 0 {
+		return fmt.Errorf("mihomo native: unsupported active rules found: %s", strings.Join(invalid, "; "))
+	}
+	return nil
+}
+
+type canonicalUnsupportedRule struct {
+	ID        string `json:"id"`
+	Type      string `json:"type"`
+	Payload   string `json:"payload"`
+	Outbound  string `json:"outbound"`
+	NoResolve bool   `json:"noResolve"`
+	Enabled   bool   `json:"enabled"`
+}
+
+func (s *Store) computeUnsupportedRulesSnapshotLocked() ([]Rule, string) {
+	var out []Rule
+	for _, r := range s.data.Rules {
+		t := strings.ToUpper(strings.TrimSpace(r.Type))
+		if t == "SUB-RULE" || !mihomo.IsSupportedRuleType(t) {
+			out = append(out, *r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].ID < out[j].ID
+	})
+	canonical := make([]canonicalUnsupportedRule, len(out))
+	for i, r := range out {
+		canonical[i] = canonicalUnsupportedRule{
+			ID:        r.ID,
+			Type:      r.Type,
+			Payload:   r.Payload,
+			Outbound:  r.Outbound,
+			NoResolve: r.NoResolve,
+			Enabled:   r.Enabled,
+		}
+	}
+	b, _ := json.Marshal(canonical)
+	h := sha256.Sum256(b)
+	revision := "v1:" + hex.EncodeToString(h[:])
+	return out, revision
+}
+
+// ComputeUnsupportedRulesSnapshot returns a snapshot of all persisted rules with unsupported rule types
+// along with a canonical SHA-256 revision token.
+func (s *Store) ComputeUnsupportedRulesSnapshot() ([]Rule, string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.computeUnsupportedRulesSnapshotLocked()
+}
+
+// UnsupportedRules returns all persisted rules (enabled or disabled) that have an unsupported type.
+func (s *Store) UnsupportedRules() []Rule {
+	rules, _ := s.ComputeUnsupportedRulesSnapshot()
+	return rules
+}
+
+// DeleteUnsupportedRules removes rules with unsupported rule types only if expectedIDs matches
+// the exact, unique, non-empty full set of currently unsupported rules and expectedRevision matches the snapshot revision.
+// It is transactional: if saveLocked() fails, the in-memory slice is rolled back
+// and an error is returned. Returns the number of removed rules on success.
+func (s *Store) DeleteUnsupportedRules(expectedIDs []string, expectedRevision string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if len(expectedIDs) == 0 {
+		return 0, ErrSelectionMismatch
+	}
+
+	current, rev := s.computeUnsupportedRulesSnapshotLocked()
+	if rev != expectedRevision {
+		return 0, ErrRulesStale
+	}
+
+	if len(current) == 0 {
+		return 0, ErrSelectionMismatch
+	}
+
+	expectedSet := make(map[string]struct{}, len(expectedIDs))
+	for _, id := range expectedIDs {
+		if id == "" {
+			return 0, ErrSelectionMismatch
+		}
+		if _, exists := expectedSet[id]; exists {
+			return 0, ErrSelectionMismatch
+		}
+		expectedSet[id] = struct{}{}
+	}
+
+	if len(expectedSet) != len(current) {
+		return 0, ErrSelectionMismatch
+	}
+
+	currentMap := make(map[string]bool, len(current))
+	for _, r := range current {
+		currentMap[r.ID] = true
+		if _, ok := expectedSet[r.ID]; !ok {
+			return 0, ErrSelectionMismatch
+		}
+	}
+
+	var toKeep []*Rule
+	for _, r := range s.data.Rules {
+		if !currentMap[r.ID] {
+			toKeep = append(toKeep, r)
+		}
+	}
+
+	oldRules := s.data.Rules
+	s.data.Rules = toKeep
+	if err := s.saveLocked(); err != nil {
+		s.data.Rules = oldRules
+		return 0, err
+	}
+	return len(current), nil
+}
+
+// CreateRule creates a new rule using RuleInput. ID must be empty.
+// Defaults Enabled to true if not specified.
+func (s *Store) CreateRule(in RuleInput) (Rule, error) {
+	if in.ID != "" {
+		return Rule{}, ErrIDNotAllowed
+	}
+	enabled := true
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+	normalized, err := validateAndNormalizeRule(Rule{
+		ID:        newID(),
+		Type:      in.Type,
+		Payload:   in.Payload,
+		Outbound:  in.Outbound,
+		NoResolve: in.NoResolve,
+		Enabled:   enabled,
+	})
+	if err != nil {
+		return Rule{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := normalized
+	s.data.Rules = append(s.data.Rules, &cp)
+	if err := s.saveLocked(); err != nil {
+		s.data.Rules = s.data.Rules[:len(s.data.Rules)-1]
+		return Rule{}, err
+	}
+	return cp, nil
+}
+
+// UpdateRule updates an existing rule by ID using RuleInput.
+// If in.Enabled is nil, existing Enabled state is preserved.
+func (s *Store) UpdateRule(id string, in RuleInput) (Rule, error) {
+	if id == "" {
+		return Rule{}, ErrRuleNotFound
+	}
+	if in.ID != "" && in.ID != id {
+		return Rule{}, ErrIDMismatch
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idx := -1
+	for i, r := range s.data.Rules {
+		if r.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return Rule{}, ErrRuleNotFound
+	}
+
+	enabled := s.data.Rules[idx].Enabled
+	if in.Enabled != nil {
+		enabled = *in.Enabled
+	}
+
+	normalized, err := validateAndNormalizeRule(Rule{
+		ID:        id,
+		Type:      in.Type,
+		Payload:   in.Payload,
+		Outbound:  in.Outbound,
+		NoResolve: in.NoResolve,
+		Enabled:   enabled,
+	})
+	if err != nil {
+		return Rule{}, err
+	}
+
+	old := s.data.Rules[idx]
+	cp := normalized
+	s.data.Rules[idx] = &cp
+	if err := s.saveLocked(); err != nil {
+		s.data.Rules[idx] = old
+		return Rule{}, err
+	}
+	return cp, nil
 }
 
 func (s *Store) SaveRule(in Rule) (Rule, error) {

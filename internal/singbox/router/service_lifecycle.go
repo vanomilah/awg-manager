@@ -774,6 +774,11 @@ func (s *ServiceImpl) enableLocked(ctx context.Context, clearManualStop bool) er
 		if err := s.deps.Orch.SetEnabled(orchestrator.SlotRouter, !mihomoPrimary); err != nil {
 			return fmt.Errorf("orchestrator set router slot state: %w", err)
 		}
+		if mihomoPrimary {
+			// When Mihomo is primary, Mihomo owns mixed-port 1099. DeviceProxy in sing-box
+			// must not remain active on the conflicting port.
+			_ = s.deps.Orch.SetEnabled(orchestrator.SlotDeviceProxy, false)
+		}
 	} else if !mihomoPrimary {
 		if running, _ := s.deps.Singbox.IsRunning(); !running {
 			if err := s.deps.Singbox.Start(); err != nil {
@@ -798,7 +803,10 @@ func (s *ServiceImpl) enableLocked(ctx context.Context, clearManualStop bool) er
 	// перегенерировать свои слоты (вернуть ссылки на композиты) ДО reload.
 	s.notifyRoutingSlotsChanged()
 	if err := s.orchestratorApplyNow(); err != nil {
-		return fmt.Errorf("orchestrator reload after enable: %w", err)
+		if !mihomoPrimary {
+			return fmt.Errorf("orchestrator reload after enable: %w", err)
+		}
+		s.appLog.Warn("orchestrator-reload", "", fmt.Sprintf("sing-box orchestrator reload failed while Mihomo is primary: %v", err))
 	}
 	// Reloading the parked sing-box slot normally triggers DynamicEngine's
 	// mirror hook. Keep an explicit convergence fallback for boot, legacy
@@ -865,6 +873,9 @@ func (s *ServiceImpl) enableLocked(ctx context.Context, clearManualStop bool) er
 	// iptables-restore. Наполняется он асинхронно ниже.
 	if len(sr.BypassGeoIPTags) > 0 {
 		s.ensureBypassSetExists(ctx)
+	}
+	if sr.KeeneticCloudTunnel {
+		s.ensureCloudSetExists(ctx)
 	}
 
 	spec := s.buildTproxySpec(ctx, sr, mark, policyMode, wanIPs, qosSpecs)
@@ -1530,6 +1541,7 @@ func (s *ServiceImpl) Reconcile(ctx context.Context) error {
 		return err
 	}
 	s.syncKeenDNSPreset(ctx, sr)
+	s.syncKeeneticCloudRelays(ctx, sr)
 	// fakeip-tun installs NO iptables, so the tproxy switch below (keyed on
 	// IPTables.IsInstalled/HasAnyInstalled) would always read "not installed"
 	// and route every tick to Enable. Dispatch by mode FIRST so the tproxy
@@ -1826,6 +1838,9 @@ func (s *ServiceImpl) reconcileInstalled(ctx context.Context, sr storage.Singbox
 		// Набор должен существовать до правила `--match-set` (см. Enable).
 		if len(sr.BypassGeoIPTags) > 0 {
 			s.ensureBypassSetExists(ctx)
+		}
+		if sr.KeeneticCloudTunnel {
+			s.ensureCloudSetExists(ctx)
 		}
 		s.mu.Lock()
 		if err := s.deps.IPTables.Install(ctx, want); err != nil {

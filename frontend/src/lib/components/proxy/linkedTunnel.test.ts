@@ -58,6 +58,14 @@ describe('findLinkedTunnel', () => {
 		expect(findLinkedTunnel(byId, '127.0.0.1:9000', 'default')?.id).toBe('own');
 	});
 
+	it('freeTurnClientId главнее порта', () => {
+		const byFt = [
+			tunnel('linked', '127.0.0.1:9000'),
+			{ ...tunnel('own-ft', 'vps.example:51820'), freeTurnClientId: 'ft-default' },
+		];
+		expect(findLinkedTunnel(byFt, '127.0.0.1:9000', 'ft-default')?.id).toBe('own-ft');
+	});
+
 	it('чужой wdttClientId не считается связанным', () => {
 		const foreign = [tunnel('other', '127.0.0.1:9500', 'wdtt-2')];
 		expect(findLinkedTunnel(foreign, '127.0.0.1:9000', 'default')).toBeNull();

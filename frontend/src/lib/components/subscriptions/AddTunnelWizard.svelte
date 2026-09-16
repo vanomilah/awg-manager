@@ -428,14 +428,12 @@
 		submitting = true;
 		error = '';
 		try {
-			if (targetEngine === 'mihomo') {
+			if (isInline && targetEngine === 'mihomo') {
 				await api.mihomoNativeCreateSubscription({
-					name: label.trim() || (isInline ? 'Mihomo group' : new URL(url).hostname),
-					url: isInline ? undefined : url.trim(),
-					inline: isInline ? inlineText.trim() : undefined,
-					format: isInline ? 'share-links' : 'mihomo-provider',
-					enginePreference: 'mihomo', refreshHours: isInline ? 0 : refreshHours, enabled,
-					headers: isInline ? undefined : parseHeadersText(headersText),
+					name: label.trim() || 'Mihomo group',
+					inline: inlineText.trim(),
+					format: 'share-links',
+					enginePreference: 'mihomo', refreshHours: 0, enabled,
 					mode,
 					testUrl: mode === 'urltest' ? utUrl : undefined,
 					testInterval: mode === 'urltest' ? utIntervalSec : undefined,
@@ -600,19 +598,19 @@
 			class="form"
 			onsubmit={(e) => {
 				e.preventDefault();
-				if (kind === 'url' && targetEngine === 'sing-box') void fetchPreview();
+				if (kind === 'url') void fetchPreview();
 				else void submitSubscription();
 			}}
 		>
-			{@render enginePicker()}
+			{#if kind !== 'url'}
+				{@render enginePicker()}
+			{/if}
 			{#if kind === 'url'}
 				<div class="steps" aria-hidden="true">
 					<span class="step current">URL и заголовки</span>
 					<span class="step-sep">›</span>
-					{#if targetEngine === 'sing-box'}
-						<span class="step">Выбор серверов</span>
-						<span class="step-sep">›</span>
-					{/if}
+					<span class="step">Выбор серверов</span>
+					<span class="step-sep">›</span>
 					<span class="step">Готово</span>
 				</div>
 			{/if}
@@ -789,7 +787,7 @@
 			>
 				{submitting ? 'Импорт...' : 'Импортировать'}
 			</Button>
-		{:else if kind === 'url' && urlStep === 'form' && targetEngine === 'sing-box'}
+		{:else if kind === 'url' && urlStep === 'form'}
 			<Button
 				variant="primary"
 				onclick={fetchPreview}

@@ -80,6 +80,35 @@ func TestGetLogs_MultiSelectSingboxSubgroups(t *testing.T) {
 	}
 }
 
+func TestGetLogs_MihomoBucketIsIsolated(t *testing.T) {
+	settings := &loggingTestSettings{enabled: true, logLevel: string(logging.LevelDebug)}
+	svc := logging.NewService(settings)
+	defer svc.Stop()
+
+	svc.AppLog(logging.LevelInfo, logging.GroupSingbox, logging.SubSBRuntime, "run", "sing-box", "singbox")
+	svc.AppLog(logging.LevelInfo, logging.GroupMihomo, logging.SubSBRuntime, "run", "mihomo", "mihomo")
+
+	h := NewLoggingHandler(svc, svc)
+	req := httptest.NewRequest(http.MethodGet, "/api/logs?bucket=mihomo&group=mihomo", nil)
+	w := httptest.NewRecorder()
+	h.GetLogs(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Logs []logging.LogEntry `json:"logs"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data.Logs) != 1 || body.Data.Logs[0].Group != logging.GroupMihomo {
+		t.Fatalf("mihomo logs = %+v, want one isolated Mihomo entry", body.Data.Logs)
+	}
+}
+
 func TestGetLogs_MultiSelectAppGroups(t *testing.T) {
 	settings := &loggingTestSettings{enabled: true, logLevel: string(logging.LevelDebug)}
 	svc := logging.NewService(settings)

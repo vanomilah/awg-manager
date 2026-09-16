@@ -35,9 +35,13 @@
 		ingressEnabled?: boolean;
 		onToggleIngress?: (interfaceName: string, enabled: boolean) => Promise<void>;
 		lanSegmentOptions?: { value: string; label: string }[];
+		activeEngine?: 'sing-box' | 'mihomo';
 	}
 
-	let { server, stats, routerIP = '', onDeleted = () => {}, onUpdated = () => {}, onOpenASC, ingressEnabled = false, onToggleIngress = async () => {}, lanSegmentOptions = [] }: Props = $props();
+	let { server, stats, routerIP = '', onDeleted = () => {}, onUpdated = () => {}, onOpenASC, ingressEnabled = false, onToggleIngress = async () => {}, lanSegmentOptions = [], activeEngine = 'sing-box' }: Props = $props();
+
+	let engineLabel = $derived(activeEngine === 'mihomo' ? 'Mihomo' : 'sing-box');
+	let engineTitle = $derived(activeEngine === 'mihomo' ? 'Маршрутизация через Mihomo' : 'Маршрутизация через sing-box');
 
 	let serverId = $derived(server.interfaceName);
 
@@ -424,11 +428,11 @@
 
 		<div class="setting-row setting-row-toggle">
 			<div class="setting-copy">
-				<span class="setting-title">Маршрутизация через sing-box</span>
+				<span class="setting-title">{engineTitle}</span>
 				<span class="setting-description">
-					Весь трафик клиентов этого сервера пойдёт через sing-box и маршрутизируется его правилами;
+					Весь трафик клиентов этого сервера пойдёт через {engineLabel} и маршрутизируется его правилами;
 					в режиме FakeIP их DNS-запросы перехватываются резолвером туннеля. Следствия в FakeIP:
-					выше нагрузка на процессор, у клиентов не работает ping (ICMP), при остановленном sing-box
+					выше нагрузка на процессор, у клиентов не работает ping (ICMP), при остановленном {engineLabel}
 					они остаются без сети.
 				</span>
 			</div>

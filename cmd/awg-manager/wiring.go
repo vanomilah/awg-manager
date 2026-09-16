@@ -7,15 +7,19 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/auth"
 	"github.com/hoaxisr/awg-manager/internal/awg3endpoint"
+	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
 	"github.com/hoaxisr/awg-manager/internal/clientroute"
 	"github.com/hoaxisr/awg-manager/internal/deviceproxy"
 	"github.com/hoaxisr/awg-manager/internal/dnsroute"
 	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/events"
+	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
+	"github.com/hoaxisr/awg-manager/internal/xrayserver"
 	"github.com/hoaxisr/awg-manager/internal/hydraroute"
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/managed"
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
+	mihomoinstaller "github.com/hoaxisr/awg-manager/internal/mihomo/installer"
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
 	ndmscommand "github.com/hoaxisr/awg-manager/internal/ndms/command"
@@ -31,6 +35,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/proxyrt/manager"
 	"github.com/hoaxisr/awg-manager/internal/routing"
 	"github.com/hoaxisr/awg-manager/internal/server"
+	"github.com/hoaxisr/awg-manager/internal/serveringress"
 	"github.com/hoaxisr/awg-manager/internal/singbox"
 	"github.com/hoaxisr/awg-manager/internal/singbox/awgoutbounds"
 	"github.com/hoaxisr/awg-manager/internal/singbox/installer"
@@ -152,6 +157,12 @@ type app struct {
 	clientRouteService  *clientroute.ServiceImpl
 	accessPolicySvc     *accesspolicy.ServiceImpl
 
+	// Xray Server, TG Web Proxy and CDN Dispatcher
+	xrayServerService  *xrayserver.Service
+	tgWebProxyService  *tgwebproxy.Service
+	cdnDispatcher      *cdndispatcher.Dispatcher
+	ingressCoordinator *serveringress.Coordinator
+
 	// sing-box
 	singboxOp           *singbox.Operator
 	sbOrch              *singboxorch.Orchestrator
@@ -173,12 +184,14 @@ type app struct {
 	downloadSvc         *downloader.Service
 
 	// mihomo
+	mihomoInstaller     *mihomoinstaller.Installer
 	mihomoOp            *mihomo.Operator
 	mihomoHandler       *api.MihomoHandler
 	mihomoNativeStore   *mihomonative.Store
 	mihomoBridge        *mihomonative.BridgeManager
 	mihomoBridgeRuntime *mihomoBridgeRuntime
 	dynamicEngine       *DynamicEngine
+	xrayHandler         *api.XrayHandler
 
 	// прокси-рантайм
 	//

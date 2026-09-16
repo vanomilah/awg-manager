@@ -4,6 +4,7 @@
   import { notifications } from '$lib/stores/notifications';
   import { Button, ConfirmModal, SectionLabel } from '$lib/components/ui';
   import { LoadingSpinner } from '$lib/components/layout';
+  import { Sparkles } from 'lucide-svelte';
   import { pluralize, RULE_WORDS } from '$lib/utils/pluralize';
   import FlowGraph from '../FlowGraph.svelte';
   import { openAddWizard } from '../addWizardStore';
@@ -19,6 +20,7 @@
   import MihomoRuleCard, { type MihomoBeginnerGroupedCard } from './MihomoRuleCard.svelte';
   import MihomoRuleEditModal from './MihomoRuleEditModal.svelte';
   import MihomoGroupEditModal from './MihomoGroupEditModal.svelte';
+  import MihomoTemplateModal from './MihomoTemplateModal.svelte';
   import MihomoProxyGroupCard from './MihomoProxyGroupCard.svelte';
 
   interface Props {
@@ -53,6 +55,13 @@
   let editingGroup = $state<MihomoNativeGroup | null>(null);
   let deleteConfirmOpen = $state(false);
   let deletingRules = $state<MihomoNativeRule[]>([]);
+  let deletingGroup = $state<MihomoNativeGroup | null>(null);
+
+  let templateModalOpen = $state(false);
+
+  function handleOpenTemplates() {
+    templateModalOpen = true;
+  }
 
   // Drag & drop state for reordering
   let draggedIndex = $state<number | null>(null);
@@ -210,8 +219,8 @@
     if (type === 'RULE-SET') {
       return {
         title: payload || type,
-        subtitle: 'Внешний список правил',
-        chips: [{ kind: 'ruleset' as const, label: payload }],
+        subtitle: 'Внешний набор правил (.mrs)',
+        chips: [{ kind: 'ruleset' as const, label: `rule-set: ${payload}` }],
       };
     }
 
@@ -275,10 +284,36 @@
 
   function handleDeleteCard(rulesToDelete: MihomoNativeRule[]) {
     deletingRules = rulesToDelete;
+    deletingGroup = null;
     deleteConfirmOpen = true;
   }
 
+  function handleDeleteGroup(groupId: string) {
+    const target = groups.find((g) => g.id === groupId || g.name === groupId);
+    if (target) {
+      deletingGroup = target;
+      deletingRules = [];
+      deleteConfirmOpen = true;
+    }
+  }
+
   async function confirmDelete() {
+    if (deletingGroup) {
+      try {
+        if (deletingGroup.id) {
+          await api.mihomoNativeDeleteGroup(deletingGroup.id, true);
+        }
+        notifications.success(`Группа «${deletingGroup.name}» удалена`);
+        onReload();
+      } catch (e) {
+        notifications.error(e instanceof Error ? e.message : 'Не удалось удалить группу');
+      } finally {
+        deletingGroup = null;
+        deleteConfirmOpen = false;
+      }
+      return;
+    }
+
     if (deletingRules.length === 0) return;
     try {
       for (let i = 0; i < deletingRules.length; i++) {
@@ -291,7 +326,7 @@
       notifications.success(deletingRules.length > 1 ? 'Правила удалены' : 'Правило удалено');
       onReload();
     } catch (e) {
-      notifications.error(e instanceof Error ? e.message : 'Не удалось удалить правило');
+      notifications.error(e instanceof Error ? e.message : 'Не удалось удалить правила');
     } finally {
       deletingRules = [];
       deleteConfirmOpen = false;
@@ -388,6 +423,7 @@
               editingGroup = g;
               groupModalOpen = true;
             }}
+            onDelete={handleDeleteGroup}
             {onReload}
           />
         {/each}
@@ -406,7 +442,13 @@
         <div class="counter">
           {pluralize(groupedCards.length, RULE_WORDS)}
         </div>
-        <Button variant="secondary" size="sm" onclick={handleOpenAdd}>
+        <Button variant="secondary" size="sm" onclick={handleOpenTemplates}>
+          {#snippet iconBefore()}
+            <Sparkles size={14} aria-hidden="true" />
+          {/snippet}
+          Шаблоны
+        </Button>
+        <Button variant="primary" size="sm" onclick={handleOpenAdd}>
           + Правило
         </Button>
       </div>
@@ -423,6 +465,12 @@
           Воспользуйтесь мастером настройки, чтобы направить нужные сервисы (YouTube, Telegram, Discord и др.) через прокси-группы.
         </p>
         <div class="empty-action">
+          <Button variant="secondary" size="sm" onclick={handleOpenTemplates}>
+            {#snippet iconBefore()}
+              <Sparkles size={14} aria-hidden="true" />
+            {/snippet}
+            Шаблоны
+          </Button>
           <Button variant="primary" size="sm" onclick={handleOpenAdd}>
             + Создать правило через мастер
           </Button>
@@ -493,20 +541,41 @@
         editingGroup = null;
         onReload();
       }}
+      onDelete={handleDeleteGroup}
+    />
+  {/if}
+
+  {#if templateModalOpen}
+    <MihomoTemplateModal
+      open={true}
+      {groups}
+      {proxies}
+      {subscriptions}
+      currentRules={rules}
+      onClose={() => (templateModalOpen = false)}
+      onApplied={() => {
+        templateModalOpen = false;
+        onReload();
+      }}
     />
   {/if}
 
   <!-- Delete Rule Confirm Modal -->
   <ConfirmModal
     open={deleteConfirmOpen}
-    title="Удалить правило"
-    message="Вы действительно хотите удалить это правило маршрутизации Mihomo?"
+    title={deletingGroup ? 'Удалить группу прокси?' : 'Удалить правило?'}
+    message={deletingGroup
+      ? `Вы действительно хотите удалить группу «${deletingGroup.name}»? Связанные с ней правила могут потребовать обновления.`
+      : deletingRules.length > 1
+        ? `Удалить ${deletingRules.length} правил(а) для этого сервиса?`
+        : 'Вы действительно хотите удалить это правило маршрутизации Mihomo?'}
     confirmLabel="Удалить"
     variant="danger"
     onConfirm={confirmDelete}
     onClose={() => {
       deleteConfirmOpen = false;
       deletingRules = [];
+      deletingGroup = null;
     }}
   />
 </div>

@@ -963,6 +963,14 @@ func (a *app) wireProxyrt() {
 		Log:              logTail,
 		BinaryInfo:       installSvc.Binary,
 		OpkgTunSupported: opkgTunSupported,
+		OnWdttServerUpdated: func(ctx context.Context, key string) {
+			if rec, ok := records.Get(key); ok {
+				_ = users.Materialize(rec)
+				if reloader := proxySignalReload(links); reloader != nil {
+					_, _ = reloader(key)
+				}
+			}
+		},
 	})
 
 	a.srv.SetProxyRtSurface(server.ProxyRtSurface{

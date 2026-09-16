@@ -49,7 +49,7 @@ type LogEntryEvent struct {
 	Action    string `json:"action"`
 	Target    string `json:"target"`
 	Message   string `json:"message"`
-	Bucket    string `json:"bucket"` // "app" | "singbox"
+	Bucket    string `json:"bucket"` // "app" | "singbox" | "mihomo"
 	// Повтор, свёрнутый в существующую запись (Timestamp — её первое
 	// появление): Repeats — счётчик схлопнутых повторов, LastSeen — время
 	// последнего. Клиент обновляет строку по составному ключу вместо append.

@@ -55,10 +55,14 @@ func TestCollectJournalWarningsCollectsAppAndSingboxWarnLevel(t *testing.T) {
 			logging.BucketSingbox: {
 				{Level: "error", Group: "singbox", Subgroup: "outbound", Message: "singbox error"},
 			},
+			logging.BucketMihomo: {
+				{Level: "warn", Group: "mihomo", Message: "mihomo warn"},
+			},
 		},
 		totals: map[logging.Bucket]int{
 			logging.BucketApp:     5,
 			logging.BucketSingbox: 1,
+			logging.BucketMihomo:  2,
 		},
 		stats: map[logging.Bucket]logging.BufferStats{
 			logging.BucketApp: {
@@ -72,6 +76,12 @@ func TestCollectJournalWarningsCollectsAppAndSingboxWarnLevel(t *testing.T) {
 				Size:     3,
 				Capacity: 7000,
 				Oldest:   oldest.Add(time.Hour),
+			},
+			logging.BucketMihomo: {
+				Bucket:   logging.BucketMihomo,
+				Size:     4,
+				Capacity: 5000,
+				Oldest:   oldest.Add(2 * time.Hour),
 			},
 		},
 	}
@@ -89,11 +99,11 @@ func TestCollectJournalWarningsCollectsAppAndSingboxWarnLevel(t *testing.T) {
 		t.Fatalf("Levels = %#v, want [error warn]", got.Levels)
 	}
 
-	if len(fake.calls) != 2 {
-		t.Fatalf("calls = %d, want 2", len(fake.calls))
+	if len(fake.calls) != 3 {
+		t.Fatalf("calls = %d, want 3", len(fake.calls))
 	}
 
-	wantBuckets := []logging.Bucket{logging.BucketApp, logging.BucketSingbox}
+	wantBuckets := []logging.Bucket{logging.BucketApp, logging.BucketSingbox, logging.BucketMihomo}
 	for i, call := range fake.calls {
 		if call.bucket != wantBuckets[i] {
 			t.Fatalf("call[%d].bucket = %s, want %s", i, call.bucket, wantBuckets[i])
@@ -135,6 +145,14 @@ func TestCollectJournalWarningsCollectsAppAndSingboxWarnLevel(t *testing.T) {
 	if got.Singbox.BufferSize != 3 || got.Singbox.BufferCapacity != 7000 {
 		t.Fatalf("Singbox buffer size/capacity = %d/%d, want 3/7000",
 			got.Singbox.BufferSize, got.Singbox.BufferCapacity)
+	}
+
+	if got.Mihomo.Bucket != string(logging.BucketMihomo) {
+		t.Fatalf("Mihomo bucket = %q, want mihomo", got.Mihomo.Bucket)
+	}
+	if got.Mihomo.Total != 2 || got.Mihomo.Included != 1 || !got.Mihomo.Truncated {
+		t.Fatalf("Mihomo total/included/truncated = %d/%d/%v, want 2/1/true",
+			got.Mihomo.Total, got.Mihomo.Included, got.Mihomo.Truncated)
 	}
 }
 

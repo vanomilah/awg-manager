@@ -243,10 +243,12 @@ func (s *WGServerStore) ListSystemTunnels(ctx context.Context) ([]ndms.SystemWir
 		if err := json.Unmarshal(data, &typeCheck); err != nil {
 			continue
 		}
-		if !strings.EqualFold(typeCheck.Type, "Wireguard") {
+		isWG := strings.EqualFold(typeCheck.Type, "Wireguard")
+		isOpkgTun := strings.EqualFold(typeCheck.Type, "OpkgTun")
+		if !isWG && !isOpkgTun {
 			continue
 		}
-		if typeCheck.Description == builtInVPNServerDescription {
+		if typeCheck.Description == builtInVPNServerDescription || typeCheck.Description == "AWGM WDTT" || typeCheck.Description == "AWGM WDTT Raw" {
 			continue
 		}
 		var detail rciWireguardDetail

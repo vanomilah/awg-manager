@@ -1,0 +1,26 @@
+{
+  "version": "v1.19.29",
+  "binary": {
+    "assetName": "mihomo-linux-amd64-compatible-v1.19.29.gz",
+    "url": "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.29/mihomo-linux-amd64-compatible-v1.19.29.gz",
+    "compressedSha256": "5612e698e96c8b8ad15abc4c0a4f098eba9234354b4f248cb97f2528e215b094",
+    "uncompressedSha256": "bd2a08ae155b7dffc12a1bdf610ff5f17c45058414a1d2c562e28eb9309abff6"
+  },
+  "geodata": {
+    "geoip.dat": {
+      "releaseTag": "202609132350",
+      "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202609132350/geoip.dat",
+      "sha256": "45325fee1555c8bf04115100694ce8429b88c9bb3b3548abcfd236a1c8ea146f"
+    },
+    "geosite.dat": {
+      "releaseTag": "202609132350",
+      "url": "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/202609132350/geosite.dat",
+      "sha256": "26914f6992dfc0d71ef2e3110a01571068b15d2f4ae343a0a5afbc1c9e4e5590"
+    },
+    "ASN.mmdb": {
+      "releaseTag": "2026.09.13",
+      "url": "https://github.com/P3TERX/GeoLite.mmdb/releases/download/2026.09.13/GeoLite2-ASN.mmdb",
+      "sha256": "b4e9281ba6c3a7fd7247ba5805ac61622c8ee9c5f7977a75ae700fd109e24e9d"
+    }
+  }
+}

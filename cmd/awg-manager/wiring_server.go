@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/hydraroute"
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
 	"github.com/hoaxisr/awg-manager/internal/server"
 	"github.com/hoaxisr/awg-manager/internal/singbox"
@@ -29,9 +31,13 @@ import (
 	singboxorch "github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router/bypassset"
+	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
+	"github.com/hoaxisr/awg-manager/internal/serveringress"
+	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
+	"github.com/hoaxisr/awg-manager/internal/xrayserver"
 )
 
 // setupServer registers routing snapshot providers and constructs the HTTP
@@ -71,6 +77,80 @@ func (a *app) setupServer() {
 		fmt.Fprintf(os.Stderr, "Failed to load embedded frontend: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Initialize CDN Dispatcher, Xray Server and TG Web Proxy
+	cdnDisp := cdndispatcher.New(cdndispatcher.Config{
+		ListenAddr:     ":9009",
+		XrayTarget:     "http://127.0.0.1:9008",
+		TgTarget:       "http://127.0.0.1:8085",
+		PublicHostname: "",
+		XrayPathPrefix: "/cdn-bridge",
+	})
+	a.cdnDispatcher = cdnDisp
+
+	onReload := func() {
+		a.bootLog.Info("ingress", "on_reload", "service state changed")
+	}
+
+	a.xrayServerService = xrayserver.New(a.dataDir, onReload)
+	a.tgWebProxyService = tgwebproxy.New(a.dataDir, onReload)
+
+	// Cross-Component Ingress Coordinator and Crash Recovery
+	a.ingressCoordinator = serveringress.New(a.dataDir, a.xrayServerService, a.cdnDispatcher, a.tgWebProxyService)
+	recoveryErr := a.ingressCoordinator.StartupRecovery(context.Background())
+	if recoveryErr != nil {
+		a.bootLog.Error("ingress_coordinator", "startup_recovery", recoveryErr.Error())
+	}
+
+	recoveryReq, recoveryReason := a.ingressCoordinator.IsRecoveryRequired()
+	if recoveryReq {
+		a.bootLog.Error("ingress_coordinator", "recovery_required", "skipping ingress service auto-start: "+recoveryReason)
+	}
+
+	xrayReq, xrayReason, _ := a.xrayServerService.RecoveryInfo()
+	if xrayReq {
+		a.bootLog.Error("xrayserver", "recovery_required", "skipping ingress service auto-start: "+xrayReason)
+	}
+
+	tgSt := a.tgWebProxyService.GetStatus()
+	if tgSt.RecoveryRequired {
+		a.bootLog.Error("tgwebproxy", "startup", "initialization entered recovery_required state: "+tgSt.LastStartupError)
+	}
+
+	xCfg := a.xrayServerService.GetConfig()
+	tCfg := a.tgWebProxyService.GetConfig()
+
+	a.cdnDispatcher.UpdateConfig(cdndispatcher.Config{
+		ListenAddr:     ":9009",
+		XrayTarget:     "http://127.0.0.1:9008",
+		TgTarget:       "http://127.0.0.1:8085",
+		XrayPathPrefix: "/cdn-bridge",
+		XrayPublicHost: xCfg.PublicDomain,
+		TgPublicHost:   tCfg.PublicHostname,
+	})
+
+	started, autoStartErr := serveringress.StartIngressIfSafe(
+		context.Background(),
+		recoveryReq, recoveryReason,
+		xrayReq, xrayReason,
+		tgSt.RecoveryRequired, tgSt.LastStartupError,
+		xCfg.Enabled, a.xrayServerService,
+		tCfg.Enabled, a.tgWebProxyService,
+		a.cdnDispatcher,
+	)
+	if autoStartErr != nil {
+		a.bootLog.Error("ingress", "autostart", autoStartErr.Error())
+	} else if started {
+		a.bootLog.Info("ingress", "autostart", "ingress services started successfully")
+	}
+
+	a.deferOnExit(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownIngressRuntime(ctx, a.xrayServerService, a.tgWebProxyService, a.cdnDispatcher); err != nil {
+			a.bootLog.Error("ingress", "shutdown", err.Error())
+		}
+	})
 
 	a.srv = server.New(
 		server.Config{
@@ -112,10 +192,11 @@ func (a *app) setupServer() {
 			HydraService:        a.hydraService,
 			SingboxHandler:      a.singboxHandler,
 			MihomoHandler:       a.mihomoHandler,
-			SingboxOrch:         a.sbOrch,
-			ClashProxy:          a.clashProxy,
-			SingboxConnsHandler: a.singboxConnsHandler,
-			MonitoringService:   a.monitoringService,
+			XrayHandler:              api.NewXrayHandler(a.xrayServerService),
+			SingboxOrch:              a.sbOrch,
+			ClashProxy:               a.clashProxy,
+			SingboxConnsHandler:      a.singboxConnsHandler,
+			MonitoringService:        a.monitoringService,
 			SingboxSubMembers: func() []diagnostics.SingboxSubMember {
 				subs := a.subSvc.List()
 				out := make([]diagnostics.SingboxSubMember, 0, len(subs)*2)
@@ -136,6 +217,10 @@ func (a *app) setupServer() {
 			SingboxConfigPreview: func() (string, error) {
 				return singboxcfg.MergeDir(a.sbOrch.ConfigDir())
 			},
+			XrayServerService:        a.xrayServerService,
+			TgWebProxyService:        a.tgWebProxyService,
+			CDNDispatcher:            a.cdnDispatcher,
+			ServerIngressCoordinator: a.ingressCoordinator,
 		},
 	)
 
@@ -194,7 +279,13 @@ func (a *app) setupDeviceProxy() {
 	// Reflect deviceproxy storage state into the orchestrator slot so
 	// the saved Enabled flag matches the on-disk active/disabled
 	// location of 30-deviceproxy.json from boot.
-	_ = a.sbOrch.SetEnabled(singboxorch.SlotDeviceProxy, deviceProxyStore.Get().Enabled)
+	dpEnabled := deviceProxyStore.Get().Enabled
+	if a.settingsStore != nil {
+		if s, err := a.settingsStore.Load(); err == nil && s != nil && s.SingboxRouter.RoutingEngine == "mihomo" {
+			dpEnabled = false
+		}
+	}
+	_ = a.sbOrch.SetEnabled(singboxorch.SlotDeviceProxy, dpEnabled)
 	a.deviceProxySvc.SetTunnelInboundPorts(func() []int {
 		cfg, err := a.singboxOp.LoadCurrentConfig()
 		if err != nil {
@@ -386,14 +477,38 @@ func (a *app) setupRouter() {
 				logging.NewScopedLogger(a.loggingService, logging.GroupRouting, logging.SubDeviceProxy).
 					Warn("router-slots-changed", "", "re-apply device-proxy instances: "+err.Error())
 			}
+			if err := dynEngine.SyncMihomoRuntime(); err != nil {
+				logging.NewScopedLogger(a.loggingService, logging.GroupRouting, logging.SubSingboxRouter).
+					Warn("router-slots-changed", "", "sync mihomo runtime: "+err.Error())
+			}
 		},
 	})
 	dynEngine.OnMihomoReload = routerSvc.GenerateMihomoConfig
+	if a.mihomoOp != nil && a.mihomoNativeStore != nil {
+		validator := mihomo.NewBinaryValidator(a.mihomoOp.Binary())
+		coordinatorCfg := mihomo.CoordinatorConfig{
+			ConfigDir:     a.mihomoOp.ConfigDir(),
+			Operator:      a.mihomoOp,
+			Validator:     validator,
+			BridgeRuntime: a.mihomoBridgeRuntime,
+			StoreTx:       a.mihomoNativeStore.TxAdapter(),
+			LogFn: func(level, action, message string) {
+				if a.loggingService != nil {
+					a.loggingService.AppLog(logging.Level(level), logging.GroupMihomo, logging.SubSBProcess, action, "coordinator", message)
+				}
+			},
+		}
+		coordinator := mihomo.NewApplyCoordinator(coordinatorCfg)
+		dynEngine.SetCoordinator(coordinator)
+		dynEngine.SetNativeStore(a.mihomoNativeStore)
+		dynEngine.SetCompileFunc(routerSvc.CompileMihomoConfig)
+	}
 	if a.mihomoHandler != nil {
 		a.mihomoHandler.SetRouterService(routerSvc)
 		a.mihomoHandler.SetReloadFunc(dynEngine.Reload)
 		a.mihomoHandler.SetMutationTransaction(dynEngine.nativeMutationTransition, dynEngine.reloadWithinTransition)
 		a.mihomoHandler.SetReloadPublishesNativeBridges(true)
+		a.mihomoHandler.SetMutationApplier(dynEngine)
 	}
 	a.routerSvc = routerSvc
 	a.subSvc.SetBindInterfaceValidator(subscriptionBindValidator{adapter: bindableAdapter})
@@ -456,7 +571,13 @@ func (a *app) setupRouter() {
 		}
 	}()
 	a.routerScheduler = router.NewScheduler(routerSvc, a.settingsStore)
-	a.routerScheduler.Start()
+	dynEngine.OnReady = func() {
+		a.routerScheduler.Start()
+	}
+	startupRes := dynEngine.Startup(context.Background())
+	if startupRes.Status == StatusDegraded {
+		a.bootLog.Warn("mihomo-coordinator", "startup", fmt.Sprintf("Mihomo coordinator entered degraded mode: %v", startupRes.Error))
+	}
 
 	// Late-bind sing-box / router / Clash deps into the monitoring scheduler.
 	// monitoringService is constructed early (line ~421) so the matrix can
@@ -693,4 +814,28 @@ func (a *app) setupShutdown() {
 	a.srv.AddShutdownHook(a.trafficHistory.Stop)
 	a.srv.AddShutdownHook(func() { a.terminalManager.Shutdown(context.Background()) })
 
+}
+
+// shutdownIngressRuntime gracefully stops the runtime components without mutating their persistent on-disk configuration.
+func shutdownIngressRuntime(ctx context.Context, xray *xrayserver.Service, tg *tgwebproxy.Service, disp *cdndispatcher.Dispatcher) error {
+	var errs []error
+	if xray != nil {
+		if err := xray.ShutdownRuntime(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown xray runtime: %w", err))
+		}
+	}
+	if tg != nil {
+		if err := tg.ShutdownRuntime(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown tgwebproxy runtime: %w", err))
+		}
+		if err := tg.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close tgwebproxy: %w", err))
+		}
+	}
+	if disp != nil {
+		if err := disp.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop cdn dispatcher: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }

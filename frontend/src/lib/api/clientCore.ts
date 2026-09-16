@@ -68,6 +68,17 @@ export class CoreClient {
 		this.abortController = new AbortController();
 	}
 
+	async get<T>(endpoint: string): Promise<T> {
+		return this.request<T>(endpoint, { method: 'GET' });
+	}
+
+	async post<T>(endpoint: string, body?: unknown): Promise<T> {
+		return this.request<T>(endpoint, {
+			method: 'POST',
+			body: body !== undefined ? JSON.stringify(body) : undefined,
+		});
+	}
+
 	protected async request<T>(
 		endpoint: string,
 		options: RequestInit = {}

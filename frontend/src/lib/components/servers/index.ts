@@ -22,3 +22,7 @@ export { default as ServerAccessPolicyDropdown } from './ServerAccessPolicyDropd
 export { default as ServerEndpointSetting } from './ServerEndpointSetting.svelte';
 export { default as ServerSettingsPanel } from './ServerSettingsPanel.svelte';
 export { default as ServersPageSkeleton } from './ServersPageSkeleton.svelte';
+export { default as XrayServerCard } from './XrayServerCard.svelte';
+export { default as XrayShareModal } from './XrayShareModal.svelte';
+export { default as XrayAutoTunnelModal } from './XrayAutoTunnelModal.svelte';
+export { default as TelegramWebProxyCard } from './TelegramWebProxyCard.svelte';

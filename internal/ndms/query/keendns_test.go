@@ -61,3 +61,50 @@ func TestKeenDNSFetch_NotFoundIsNotError(t *testing.T) {
 		t.Fatalf("info=%v want nil", info)
 	}
 }
+
+func TestKeenDNSFetch_ExtractsRelayIPsAndDomains(t *testing.T) {
+	raw := []byte(`{
+		"name": "dacha",
+		"booked": "dacha",
+		"domain": "crazedns.ru",
+		"ttp": {
+			"tunnel": [
+				{
+					"target": "ndns115.omni.ru:80",
+					"target-remote": "87.228.71.67:80"
+				},
+				{
+					"target": "ndns113.omni.ru:80",
+					"target-remote": "95.213.212.50:80"
+				},
+				{
+					"target": "ndns115.omni.ru:80",
+					"target-remote": "87.228.71.67:80"
+				}
+			]
+		}
+	}`)
+	g := NewFakeGetter()
+	g.SetRaw("/show/ndns", raw)
+	s := NewKeenDNSStore(g, NopLogger())
+
+	info, err := s.Get(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if info == nil {
+		t.Fatalf("info is nil")
+	}
+	if len(info.RelayIPs) != 2 {
+		t.Fatalf("expected 2 unique relay IPs, got %d: %+v", len(info.RelayIPs), info.RelayIPs)
+	}
+	if info.RelayIPs[0] != "87.228.71.67" || info.RelayIPs[1] != "95.213.212.50" {
+		t.Errorf("unexpected relay IPs: %+v", info.RelayIPs)
+	}
+	if len(info.RelayDomains) != 2 {
+		t.Fatalf("expected 2 unique relay domains, got %d: %+v", len(info.RelayDomains), info.RelayDomains)
+	}
+	if info.RelayDomains[0] != "ndns115.omni.ru" || info.RelayDomains[1] != "ndns113.omni.ru" {
+		t.Errorf("unexpected relay domains: %+v", info.RelayDomains)
+	}
+}

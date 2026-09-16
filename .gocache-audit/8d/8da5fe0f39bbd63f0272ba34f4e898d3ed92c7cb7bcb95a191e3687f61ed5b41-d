@@ -1,0 +1,8 @@
+./endpoint_guard.go
+./endpoint_ndms.go
+./kmod_manager.go
+./names.go
+./operator.go
+./state_parser.go
+./sync.go
+./wg_tool.go

@@ -1,0 +1,8 @@
+./batcher.go
+./client.go
+./doc.go
+./errors.go
+./path_command.go
+./payload.go
+./semaphore.go
+./transport.go
