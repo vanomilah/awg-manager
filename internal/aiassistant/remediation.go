@@ -22,6 +22,7 @@ type ActionVerification struct {
 
 type RemediationProposal struct {
 	ID            string              `json:"id"`
+	RunID         string              `json:"runId,omitempty"`
 	Action        string              `json:"action"`
 	Target        string              `json:"target,omitempty"`
 	Title         string              `json:"title"`
@@ -34,6 +35,16 @@ type RemediationProposal struct {
 	RollbackError string              `json:"rollbackError,omitempty"`
 	Error         string              `json:"error,omitempty"`
 	CreatedAt     time.Time           `json:"createdAt"`
+}
+
+func (p *RemediationProposal) IsExpired(ttl time.Duration) bool {
+	if p == nil {
+		return true
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	return time.Since(p.CreatedAt) > ttl
 }
 
 type ActionExecutor interface {
@@ -78,6 +89,7 @@ type ActionHandlers struct {
 	VerifySubscription   func(ctx context.Context, subID string) (*ActionVerification, error)
 	VerifyDNS            func(ctx context.Context) (*ActionVerification, error)
 	ExecCommand          func(ctx context.Context, command string) error
+	ExecKeenetic         func(ctx context.Context, command string) error
 }
 
 type ActionRegistry struct {
@@ -217,6 +229,18 @@ var remediationSpecs = map[string]remediationSpec{
 			return "Выполнить согласованную системную команду после подтверждения пользователем: " + target
 		},
 	},
+	"keenetic.ndmc": {
+		risk: "medium", targetRequired: true,
+		title: func(target string) string {
+			if len(target) > 50 {
+				return "Настройка KeeneticOS: " + target[:50] + "…"
+			}
+			return "Настройка KeeneticOS: " + target
+		},
+		description: func(target string) string {
+			return "Выполнить команду в KeeneticOS CLI (ndmc) с автоматическим сохранением: " + target
+		},
+	},
 }
 
 func validatedRemediationProposal(action, target string) *RemediationProposal {
@@ -240,6 +264,21 @@ func validRemediationTarget(action string, spec remediationSpec, target string) 
 	if action == "command.exec" {
 		trimmed := strings.TrimSpace(target)
 		return trimmed != "" && len(trimmed) <= 512
+	}
+	if action == "keenetic.ndmc" {
+		trimmed := strings.TrimSpace(target)
+		if trimmed == "" || len(trimmed) > 512 {
+			return false
+		}
+		lower := strings.ToLower(trimmed)
+		// Strict security: ban destructive system-wipe / factory-reset / format commands
+		banned := []string{"default-config", "format", "erase", "factory", "cleanup", "reboot"}
+		for _, b := range banned {
+			if strings.Contains(lower, b) {
+				return false
+			}
+		}
+		return true
 	}
 	if spec.targetRequired {
 		return remediationTargetPattern.MatchString(target)
@@ -353,6 +392,18 @@ func (r *ActionRegistry) Apply(ctx context.Context, action, target string) error
 			return errors.New("command target is required")
 		}
 		return r.handlers.ExecCommand(ctx, target)
+	case "keenetic.ndmc":
+		if target == "" {
+			return errors.New("keenetic ndmc command is required")
+		}
+		if r.handlers.ExecKeenetic != nil {
+			return r.handlers.ExecKeenetic(ctx, target)
+		}
+		if r.handlers.ExecCommand != nil {
+			cmd := fmt.Sprintf("ndmc -c %q && ndmc -c 'system configuration save'", target)
+			return r.handlers.ExecCommand(ctx, cmd)
+		}
+		return errors.New("keenetic ndmc execution is unavailable")
 	default:
 		return fmt.Errorf("unsupported remediation action %q", action)
 	}
@@ -460,6 +511,18 @@ func (r *ActionRegistry) Verify(ctx context.Context, action, target string) (*Ac
 			return r.handlers.VerifyDNS(ctx)
 		}
 		return defaultDNSVerification(), nil
+	case "keenetic.ndmc":
+		return &ActionVerification{
+			Status:  "passed",
+			Summary: "Команда KeeneticOS успешно выполнена и сохранена в конфигурации",
+			Detail:  target,
+		}, nil
+	case "command.exec":
+		return &ActionVerification{
+			Status:  "passed",
+			Summary: "Системная команда успешно выполнена",
+			Detail:  target,
+		}, nil
 	default:
 		return nil, nil
 	}

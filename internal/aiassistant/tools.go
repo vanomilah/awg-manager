@@ -295,8 +295,8 @@ func (r *ToolRegistry) Tools() []ToolDefinition {
 			Name: "remediation.propose", Title: "Предложить исправление",
 			Description: "Формирует безопасное предложение штатного исправления. Ничего не применяет: действие появится в интерфейсе и потребует отдельного подтверждения пользователя.",
 			InputSchema: map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
-				"action": map[string]any{"type": "string", "enum": []string{"singbox.restart", "mihomo.restart", "mihomo.reload", "routing.reapply", "routing.switch_engine", "routing.switch_mode", "tunnel.restart", "subscription.update", "service.start", "service.stop", "service.restart", "opkg.update", "opkg.install", "opkg.upgrade", "opkg.remove", "command.exec"}},
-				"target": map[string]any{"type": "string", "description": "ID туннеля, имя сервиса или команда для command.exec; для действий без цели оставь пустым"},
+				"action": map[string]any{"type": "string", "enum": []string{"singbox.restart", "mihomo.restart", "mihomo.reload", "routing.reapply", "routing.switch_engine", "routing.switch_mode", "tunnel.restart", "subscription.update", "service.start", "service.stop", "service.restart", "opkg.update", "opkg.install", "opkg.upgrade", "opkg.remove", "command.exec", "keenetic.ndmc"}},
+				"target": map[string]any{"type": "string", "description": "ID туннеля, имя сервиса, команда Linux для command.exec или команда KeeneticOS (например: interface SSTP0 security-level private, ip route ...) для keenetic.ndmc; для действий без цели оставь пустым"},
 			}, "required": []string{"action"}}, ReadOnly: true, Risk: "none",
 		},
 		{

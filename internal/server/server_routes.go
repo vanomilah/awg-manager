@@ -427,6 +427,24 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		}
 		return nil
 	}
+	actionHandlers.ExecKeenetic = func(ctx context.Context, cmdStr string) error {
+		res, err := sysexec.Run(ctx, "ndmc", "-c", cmdStr)
+		if err != nil {
+			return fmt.Errorf("ndmc execution failed: %w", err)
+		}
+		if res != nil && res.ExitCode != 0 {
+			return fmt.Errorf("ndmc exited with code %d: %s", res.ExitCode, res.Stderr)
+		}
+		saveRes, err := sysexec.Run(ctx, "ndmc", "-c", "system configuration save")
+		if err != nil {
+			return fmt.Errorf("configuration save failed: %w", err)
+		}
+		if saveRes != nil && saveRes.ExitCode != 0 {
+			return fmt.Errorf("system configuration save exited with code %d: %s", saveRes.ExitCode, saveRes.Stderr)
+		}
+		s.loggingService.AppLog(logging.LevelInfo, logging.GroupSystem, "ai-assistant", "keenetic-ndmc", cmdStr, "applied and saved successfully")
+		return nil
+	}
 	actionRegistry := aiassistant.NewActionRegistry(actionHandlers)
 	aiService.SetActions(actionRegistry)
 	h.aiAssistantHandler = api.NewAIAssistantHandler(aiService)

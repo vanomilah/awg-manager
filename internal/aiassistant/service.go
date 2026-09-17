@@ -74,8 +74,38 @@ type Service struct {
 	memory       *MemoryStore
 	lastFindings []Finding
 
+	snapshotMgr SnapshotManager
+	activeRun   *AgentRun
+
 	mu    sync.RWMutex
 	state State
+}
+
+func (s *Service) SetSnapshotManager(sm SnapshotManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.snapshotMgr = sm
+}
+
+func (s *Service) SnapshotManager() SnapshotManager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.snapshotMgr
+}
+
+func (s *Service) SetActiveRun(run *AgentRun) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeRun = run
+}
+
+func (s *Service) ActiveRun() *AgentRun {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.activeRun == nil {
+		return nil
+	}
+	return s.activeRun.Clone()
 }
 
 func (s *Service) SetModel(config *ConfigStore, model ModelAnalyzer) {
@@ -179,6 +209,7 @@ func (s *Service) ClearChat() {
 	s.state.Messages = []ChatMessage{}
 	s.state.Proposal = nil
 	s.state.Error = ""
+	s.activeRun = nil
 }
 
 func (s *Service) Start(question string) error {
@@ -191,6 +222,9 @@ func (s *Service) Start(question string) error {
 	if s.state.Status == "running" {
 		s.mu.Unlock()
 		return ErrRunning
+	}
+	if s.activeRun == nil || s.activeRun.Status == AgentRunSuccess || s.activeRun.Status == AgentRunFailed {
+		s.activeRun = NewAgentRun(question)
 	}
 	messages := append([]ChatMessage(nil), s.state.Messages...)
 	messages = appendChatMessage(messages, ChatMessage{Role: "user", Content: question, CreatedAt: time.Now()})
@@ -382,6 +416,10 @@ func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer
 		proposal = remediationForFindings(findings, modelAnswer)
 	}
 	s.state.Proposal = proposal
+	if proposal != nil && s.activeRun != nil {
+		proposal.RunID = s.activeRun.ID
+		s.activeRun.AddProposal(RemediationToChangeProposal(proposal, s.activeRun.ID))
+	}
 	answer := modelAnswer
 	if answer == "" && modelErr != nil {
 		answer = "Модельный анализ недоступен: " + modelErr.Error()
@@ -509,12 +547,25 @@ func remediationForFindings(findings []Finding, modelAnswer string) *Remediation
 }
 
 func (s *Service) ApplyAction(id string) error {
+	return s.ApplyProposal(context.Background(), "", id)
+}
+
+func (s *Service) ApplyProposal(ctx context.Context, runID, proposalID string) error {
 	s.mu.Lock()
 	proposal := s.state.Proposal
 	actions := s.actions
-	if proposal == nil || proposal.ID != id || (proposal.Status != "pending" && !proposal.AutoApplied) {
+	activeRun := s.activeRun
+	if proposal == nil || proposal.ID != proposalID || (proposal.Status != "pending" && !proposal.AutoApplied) {
 		s.mu.Unlock()
 		return errors.New("remediation proposal is unavailable or expired")
+	}
+	if runID != "" && proposal.RunID != "" && proposal.RunID != runID {
+		s.mu.Unlock()
+		return errors.New("remediation proposal belongs to an inactive or expired run")
+	}
+	if activeRun != nil && runID != "" && activeRun.ID != runID {
+		s.mu.Unlock()
+		return errors.New("remediation proposal belongs to an inactive or expired run")
 	}
 	if time.Since(proposal.CreatedAt) > 10*time.Minute {
 		proposal.Status = "expired"
@@ -529,33 +580,58 @@ func (s *Service) ApplyAction(id string) error {
 	}
 	proposal.Status = "applying"
 	s.state.ReadOnly = false
+	if activeRun != nil {
+		activeRun.AddJournal("apply", fmt.Sprintf("Применение: %s (цель: %s)", proposal.Title, proposal.Target), "", "")
+	}
 	s.mu.Unlock()
+
 	if actions == nil {
 		return s.finishAction(errors.New("remediation executor is unavailable"), nil)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), actionTimeout(proposal.Action))
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, actionTimeout(proposal.Action))
 	defer cancel()
+
 	var snapshot *ActionSnapshot
 	transactional, hasTransaction := actions.(TransactionalActionExecutor)
 	if hasTransaction {
 		var snapshotErr error
-		snapshot, snapshotErr = transactional.Snapshot(ctx, proposal.Action, proposal.Target)
+		snapshot, snapshotErr = transactional.Snapshot(timeoutCtx, proposal.Action, proposal.Target)
 		if snapshotErr != nil {
 			return s.finishAction(fmt.Errorf("create rollback snapshot: %w", snapshotErr), nil)
 		}
 	}
-	err := actions.Apply(ctx, proposal.Action, proposal.Target)
+
+	var sysSnap *SystemSnapshot
+	if s.snapshotMgr != nil {
+		var sysSnapErr error
+		sysSnap, sysSnapErr = s.snapshotMgr.TakeSnapshot(timeoutCtx)
+		if sysSnapErr != nil && !hasTransaction {
+			return s.finishAction(fmt.Errorf("create system snapshot: %w", sysSnapErr), nil)
+		}
+	}
+
+	err := actions.Apply(timeoutCtx, proposal.Action, proposal.Target)
 	var ver *ActionVerification
 	if err == nil {
 		time.Sleep(1 * time.Second)
-		ver, _ = actions.Verify(ctx, proposal.Action, proposal.Target)
+		ver, _ = actions.Verify(timeoutCtx, proposal.Action, proposal.Target)
 	}
-	shouldRollback := snapshot != nil && (err != nil || (ver != nil && ver.Status == "failed"))
+	shouldRollback := (snapshot != nil || sysSnap != nil) && (err != nil || (ver != nil && ver.Status == "failed"))
 	if shouldRollback {
-		rollbackErr := transactional.Rollback(ctx, *snapshot)
+		var rollbackErr error
+		if snapshot != nil && hasTransaction {
+			rollbackErr = transactional.Rollback(timeoutCtx, *snapshot)
+		}
+		if sysSnap != nil && s.snapshotMgr != nil {
+			sysErr := s.snapshotMgr.RestoreSnapshot(timeoutCtx, sysSnap)
+			if rollbackErr == nil && sysErr != nil {
+				rollbackErr = sysErr
+			}
+		}
 		s.mu.Lock()
 		if s.state.Proposal != nil {
-			s.state.Proposal.RolledBack = rollbackErr == nil
+			s.state.Proposal.RolledBack = (rollbackErr == nil)
 			if rollbackErr != nil {
 				s.state.Proposal.RollbackError = rollbackErr.Error()
 			}
@@ -584,43 +660,154 @@ func (s *Service) finishAction(err error, ver *ActionVerification) error {
 	if s.state.Proposal == nil {
 		return err
 	}
+	proposal := s.state.Proposal
+	activeRun := s.activeRun
+
+	isFailure := err != nil || (ver != nil && ver.Status == "failed")
+
 	if err != nil {
-		if s.state.Proposal.RolledBack {
-			s.state.Proposal.Status = "rolled_back"
+		if proposal.RolledBack {
+			proposal.Status = "rolled_back"
 			s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{
-				Role: "assistant", Content: "Изменение не удалось применить. Предыдущее состояние автоматически восстановлено.", CreatedAt: time.Now(),
+				Role:      "assistant",
+				Content:   "Изменение не удалось применить. Предыдущее состояние автоматически восстановлено.",
+				CreatedAt: time.Now(),
 			})
 		} else {
-			s.state.Proposal.Status = "failed"
+			proposal.Status = "failed"
 		}
-		s.state.Proposal.Error = err.Error()
-		return err
-	}
-	s.state.Proposal.Status = "applied"
-	s.state.Proposal.Verification = ver
-	msg := "Исправление применено: " + s.state.Proposal.Title + "."
-	if s.state.Proposal.AutoApplied {
-		msg = "ИИ автоматически применил исправление: " + s.state.Proposal.Title + "."
-	}
-	if ver != nil {
-		switch ver.Status {
-		case "failed":
-			s.state.Proposal.Status = "verification_failed"
-			msg = "Действие выполнено, но проблема не устранена: " + s.state.Proposal.Title + "."
-		case "warning":
-			s.state.Proposal.Status = "verification_warning"
-			msg = "Действие выполнено, но результат требует дополнительной проверки: " + s.state.Proposal.Title + "."
+		proposal.Error = err.Error()
+	} else {
+		proposal.Status = "applied"
+		proposal.Verification = ver
+		msg := "Исправление применено: " + proposal.Title + "."
+		if proposal.AutoApplied {
+			msg = "ИИ автоматически применил исправление: " + proposal.Title + "."
 		}
-		if ver.Summary != "" {
-			msg += "\nПроверка: " + ver.Summary
+		if ver != nil {
+			switch ver.Status {
+			case "failed":
+				proposal.Status = "verification_failed"
+				msg = "Действие выполнено, но проблема не устранена: " + proposal.Title + "."
+			case "warning":
+				proposal.Status = "verification_warning"
+				msg = "Действие выполнено, но результат требует дополнительной проверки: " + proposal.Title + "."
+			}
+			if ver.Summary != "" {
+				msg += "\nПроверка: " + ver.Summary
+			}
+		}
+		if proposal.RolledBack {
+			proposal.Status = "rolled_back"
+			msg += "\nПредыдущее состояние автоматически восстановлено."
+		}
+		s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: msg, CreatedAt: time.Now()})
+	}
+
+	if activeRun != nil {
+		if isFailure {
+			errText := ""
+			if err != nil {
+				errText = err.Error()
+			} else if ver != nil {
+				errText = ver.Summary
+			}
+			rollbackStatus := "not_attempted"
+			if proposal.RolledBack {
+				rollbackStatus = "success"
+			} else if proposal.RollbackError != "" {
+				rollbackStatus = "failed: " + proposal.RollbackError
+			}
+			activeRun.AddJournal("apply_failed", "Действие не применилось или проверка не пройдена", errText, rollbackStatus)
+
+			if activeRun.CanRetry() {
+				activeRun.NextIteration()
+				go s.continueAfterFailure(activeRun, proposal, err, ver)
+			} else {
+				activeRun.Complete(false, "Исчерпан лимит попыток автоматического исправления")
+				s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{
+					Role:      "assistant",
+					Content:   fmt.Sprintf("Достигнут максимальный лимит попыток исправления (%d). Проблема требует ручного вмешательства.", activeRun.MaxIter),
+					CreatedAt: time.Now(),
+				})
+			}
+		} else {
+			activeRun.Complete(true, "Исправление успешно применено и проверено")
+			activeRun.AddJournal("verify", "Проверка успешно пройдена", "", "")
 		}
 	}
-	if s.state.Proposal.RolledBack {
-		s.state.Proposal.Status = "rolled_back"
-		msg += "\nПредыдущее состояние автоматически восстановлено."
+
+	return err
+}
+
+func (s *Service) continueAfterFailure(run *AgentRun, failedProposal *RemediationProposal, applyErr error, ver *ActionVerification) {
+	s.mu.Lock()
+	errDetail := ""
+	if applyErr != nil {
+		errDetail = applyErr.Error()
+	} else if ver != nil {
+		errDetail = ver.Summary
+		if ver.Detail != "" {
+			errDetail += " (" + ver.Detail + ")"
+		}
 	}
-	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: msg, CreatedAt: time.Now()})
-	return nil
+	retryMsg := fmt.Sprintf(
+		"⚠️ Изменение «%s» не применилось (%s).\n"+
+			"↩️ Исходное состояние восстановлено из snapshot.\n"+
+			"🔄 Анализирую причину сбоя (попытка %d из %d)...",
+		failedProposal.Title, errDetail, run.Iteration, run.MaxIter,
+	)
+	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{
+		Role:      "assistant",
+		Content:   retryMsg,
+		CreatedAt: time.Now(),
+	})
+	s.state.Status = "running"
+	s.state.Progress = fmt.Sprintf("ИИ анализирует причину сбоя (попытка %d/%d)…", run.Iteration, run.MaxIter)
+	s.mu.Unlock()
+
+	continuationPrompt := fmt.Sprintf(
+		"Предыдущее действие '%s' (цель: '%s') завершилось сбоем: %s. "+
+			"Система была возвращена к исходному состоянию (rollback). "+
+			"Проанализируй причину ошибки, выполни необходимые диагностические проверки и предложи альтернативное исправление.",
+		failedProposal.Action, failedProposal.Target, errDetail,
+	)
+
+	answer, modelErr, engineName := s.runModelWithQuestion(continuationPrompt, diagnostics.Report{}, nil, nil)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.state.Status = "done"
+	s.state.Progress = "Анализ завершён"
+	s.state.CompletedAt = time.Now()
+	if modelErr != nil && answer == "" {
+		answer = "Модельный анализ недоступен: " + modelErr.Error()
+	}
+	s.state.ModelAnswer = answer
+	if engineName != "" {
+		s.state.Engine = engineName
+	}
+	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{
+		Role:      "assistant",
+		Content:   answer,
+		CreatedAt: time.Now(),
+	})
+
+	newProposal := remediationFromToolSteps(s.state.ToolSteps)
+	if newProposal == nil {
+		newProposal = remediationForFindings(nil, answer)
+	}
+
+	if newProposal != nil {
+		newProposal.RunID = run.ID
+		run.AddProposal(RemediationToChangeProposal(newProposal, run.ID))
+		s.state.Proposal = newProposal
+		run.AddJournal("propose", fmt.Sprintf("Предложено альтернативное исправление: %s", newProposal.Title), "", "")
+	} else {
+		run.Complete(false, answer)
+		run.AddJournal("done", "Альтернативное исправление не найдено", "", "")
+	}
 }
 
 func (s *Service) completeChat() {
@@ -647,6 +834,10 @@ func (s *Service) completeChat() {
 	s.state.Proposal = remediationFromToolSteps(s.state.ToolSteps)
 	if s.state.Proposal == nil {
 		s.state.Proposal = remediationForFindings(nil, answer)
+	}
+	if s.state.Proposal != nil && s.activeRun != nil {
+		s.state.Proposal.RunID = s.activeRun.ID
+		s.activeRun.AddProposal(RemediationToChangeProposal(s.state.Proposal, s.activeRun.ID))
 	}
 }
 
@@ -968,7 +1159,14 @@ func formatBytesHelper(b int64) string {
 
 func (s *Service) runModel(report diagnostics.Report, findings []Finding, toolSteps []ToolStep) (string, error, string) {
 	s.mu.RLock()
-	configStore, model, embedded, question, tools := s.config, s.model, s.embedded, s.state.Question, s.tools
+	question := s.state.Question
+	s.mu.RUnlock()
+	return s.runModelWithQuestion(question, report, findings, toolSteps)
+}
+
+func (s *Service) runModelWithQuestion(question string, report diagnostics.Report, findings []Finding, toolSteps []ToolStep) (string, error, string) {
+	s.mu.RLock()
+	configStore, model, embedded, tools := s.config, s.model, s.embedded, s.tools
 	messages := append([]ChatMessage(nil), s.state.Messages...)
 	s.mu.RUnlock()
 	if configStore == nil || model == nil {
@@ -995,7 +1193,7 @@ func (s *Service) runModel(report diagnostics.Report, findings []Finding, toolSt
 	case "ollama":
 		timeout = 180 * time.Second
 	case "custom":
-		timeout = 90 * time.Second
+		timeout = 180 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
