@@ -174,7 +174,7 @@
 	<title>{pageTitle} - AWG Manager</title>
 </svelte:head>
 
-<PageContainer width="full">
+<PageContainer width="wide">
 	<PageHeader title="Инструменты" />
 
 	<Tabs

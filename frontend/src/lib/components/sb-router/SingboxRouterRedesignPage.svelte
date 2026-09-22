@@ -26,6 +26,7 @@
   } from '$lib/components/sb-router';
   import MihomoBeginnerView from './mihomo/MihomoBeginnerView.svelte';
   import MihomoExpertView from './mihomo/MihomoExpertView.svelte';
+  import MihomoRecoveryBanner from './mihomo/MihomoRecoveryBanner.svelte';
   import MihomoYamlViewerDrawer from './mihomo/MihomoYamlViewerDrawer.svelte';
   import type {
     MihomoNativeGroup,
@@ -62,11 +63,12 @@
   let mihomoRuntimeProviders = $state<Record<string, MihomoRuntimeProvider>>({});
   let mihomoLoading = $state(false);
   let mihomoInitialized = $state(false);
+  let mihomoDegraded = $state(false);
 
   async function loadMihomoData() {
     mihomoLoading = true;
     try {
-      const [r, g, rp, p, s, runtime, rProviders] = await Promise.all([
+      const [r, g, rp, p, s, runtime, rProviders, mStatus] = await Promise.all([
         api.mihomoNativeRules(),
         api.mihomoNativeGroups(),
         api.mihomoNativeRuleProviders(),
@@ -74,6 +76,7 @@
         api.mihomoNativeSubscriptions(),
         api.mihomoRuntimeProxies().then(res => Object.values(res.proxies || {})).catch(() => []),
         api.mihomoRuntimeProviders().then(res => res.providers || {}).catch(() => ({})),
+        api.mihomoStatus().catch(() => null),
       ]);
       mihomoRules = r;
       mihomoGroups = g;
@@ -82,6 +85,7 @@
       mihomoSubscriptions = s;
       mihomoRuntime = runtime;
       mihomoRuntimeProviders = rProviders;
+      mihomoDegraded = !!mStatus?.degraded;
       mihomoInitialized = true;
       void singboxRouterStore.reloadStatus();
     } catch (e) {
@@ -221,6 +225,8 @@
 >
   {#if !isMihomo}
     <StagingBanner />
+  {:else if mihomoDegraded}
+    <MihomoRecoveryBanner onRestored={loadMihomoData} />
   {/if}
   {#if inSubView}
     <button type="button" class="sub-back" onclick={clearSub}>

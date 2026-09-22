@@ -563,11 +563,21 @@ export class SbRouterClient extends SingboxClient {
 		await this.request('/mihomo/reload', { method: 'POST' });
 	}
 
-	async mihomoReconcile(action: 'rollback_to_lkg' | 'clear_marker', force = false): Promise<{ status: string }> {
+	async mihomoReconcile(action: 'rollback_to_lkg' | 'regenerate_from_desired', force = false): Promise<{ status: string }> {
 		return this.request('/mihomo/recovery/reconcile', {
 			method: 'POST',
 			body: JSON.stringify({ action, force })
 		});
+	}
+
+	async mihomoRecoveryEvidence(): Promise<Blob> {
+		const res = await fetch('/api/mihomo/recovery/evidence', {
+			headers: { 'Accept': 'application/json' }
+		});
+		if (!res.ok) {
+			throw new Error(`Failed to download evidence: ${res.statusText}`);
+		}
+		return res.blob();
 	}
 
 	async mihomoNativeProxies(): Promise<MihomoNativeProxy[]> {

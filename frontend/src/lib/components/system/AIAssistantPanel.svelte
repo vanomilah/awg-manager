@@ -386,6 +386,9 @@
 		try {
 			assistantState = await api.systemAIClearChat();
 			question = '';
+			if (typeof window !== 'undefined') {
+				try { sessionStorage.removeItem('awgm_ai_assistant_state'); } catch {}
+			}
 		} catch (error) {
 			loadError = error instanceof Error ? error.message : 'Не удалось очистить диалог';
 		} finally {
@@ -738,8 +741,27 @@
 		activeTimelineExpanded[index] = !activeTimelineExpanded[index];
 	}
 
+	$effect(() => {
+		if (typeof window !== 'undefined' && assistantState) {
+			try {
+				if ((assistantState.messages && assistantState.messages.length > 0) || assistantState.proposal) {
+					sessionStorage.setItem('awgm_ai_assistant_state', JSON.stringify(assistantState));
+				}
+			} catch {}
+		}
+	});
+
 	onMount(() => {
 		if (typeof window !== 'undefined') {
+			try {
+				const cached = sessionStorage.getItem('awgm_ai_assistant_state');
+				if (cached) {
+					const parsed = JSON.parse(cached);
+					if (parsed && typeof parsed === 'object') {
+						assistantState = parsed;
+					}
+				}
+			} catch {}
 			if (window.innerWidth <= 768) {
 				sidebarOpen = false;
 			}
@@ -1529,13 +1551,6 @@
 <AIMemoryDrawer open={memoryDrawerOpen} onClose={() => (memoryDrawerOpen = false)} />
 
 <style>
-	/* Allow AI Assistant chat to take full screen width, breaking out of compact 960px */
-	:global(html[data-layout-compact='true']) .main:has(.ai-wrapper),
-	:global(html[data-layout-compact='true']) :global(.panel:has(.ai-wrapper)) {
-		max-width: 100% !important;
-		padding-left: 0.5rem !important;
-		padding-right: 0.5rem !important;
-	}
 
 	.ai-wrapper {
 		display: flex;

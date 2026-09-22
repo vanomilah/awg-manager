@@ -428,17 +428,47 @@
 		submitting = true;
 		error = '';
 		try {
-			if (isInline && targetEngine === 'mihomo') {
-				await api.mihomoNativeCreateSubscription({
-					name: label.trim() || 'Mihomo group',
-					inline: inlineText.trim(),
-					format: 'share-links',
-					enginePreference: 'mihomo', refreshHours: 0, enabled,
-					mode,
-					testUrl: mode === 'urltest' ? utUrl : undefined,
-					testInterval: mode === 'urltest' ? utIntervalSec : undefined,
-					testTolerance: mode === 'urltest' ? utToleranceMs : undefined,
-				});
+			if (targetEngine === 'mihomo') {
+				if (isInline) {
+					await api.mihomoNativeCreateSubscription({
+						name: label.trim() || 'Mihomo group',
+						inline: inlineText.trim(),
+						format: 'share-links',
+						enginePreference: 'mihomo',
+						refreshHours: 0,
+						enabled,
+						mode,
+						testUrl: mode === 'urltest' ? utUrl : undefined,
+						testInterval: mode === 'urltest' ? utIntervalSec : undefined,
+						testTolerance: mode === 'urltest' ? utToleranceMs : undefined,
+					});
+				} else {
+					let filterExclude: string | undefined;
+					if (excludedKeys.size > 0 && previewMembers.length > 0) {
+						const excludedNames = previewMembers
+							.filter((m) => excludedKeys.has(m.key))
+							.map((m) => m.label || m.server)
+							.filter(Boolean);
+						if (excludedNames.length > 0) {
+							const escaped = excludedNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+							filterExclude = escaped.join('|');
+						}
+					}
+					await api.mihomoNativeCreateSubscription({
+						name: label.trim() || 'Mihomo subscription',
+						url: url.trim(),
+						format: 'mihomo-provider',
+						enginePreference: 'mihomo',
+						refreshHours,
+						enabled,
+						headers: parseHeadersText(headersText),
+						mode,
+						testUrl: mode === 'urltest' ? utUrl : undefined,
+						testInterval: mode === 'urltest' ? utIntervalSec : undefined,
+						testTolerance: mode === 'urltest' ? utToleranceMs : undefined,
+						filterExclude,
+					});
+				}
 				await mihomoNativeResources.refetch();
 				open = false;
 				reset();
@@ -602,9 +632,7 @@
 				else void submitSubscription();
 			}}
 		>
-			{#if kind !== 'url'}
-				{@render enginePicker()}
-			{/if}
+			{@render enginePicker()}
 			{#if kind === 'url'}
 				<div class="steps" aria-hidden="true">
 					<span class="step current">URL и заголовки</span>

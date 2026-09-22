@@ -476,7 +476,7 @@
     size="sm"
     onclose={() => (pendingTab = null)}
 >
-    <p>Правки sing-box сохранены как черновик, но <strong>ещё не применены</strong>. Если уйти с вкладки — маршрутизация не изменится, пока вы не нажмёте «Применить».</p>
+    <p>Правки {currentEngine === 'mihomo' ? 'Mihomo' : 'sing-box'} сохранены как черновик, но <strong>ещё не применены</strong>. Если уйти с вкладки — маршрутизация не изменится, пока вы не нажмёте «Применить».</p>
     {#snippet actions()}
         <Button variant="ghost" size="md" onclick={() => (pendingTab = null)}>Остаться</Button>
         <Button variant="primary" size="md" onclick={confirmLeave}>Уйти всё равно</Button>

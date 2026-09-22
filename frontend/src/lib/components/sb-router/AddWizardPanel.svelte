@@ -214,6 +214,8 @@
     outboundCategory: OutboundCategory;
     tunnelTags: string[];
   }): Promise<number> {
+    const operations: Array<(apply: boolean) => Promise<any>> = [];
+
     let targetOutbound = 'DIRECT';
     if (args.outboundCategory === 'direct') {
       targetOutbound = 'DIRECT';
@@ -232,7 +234,8 @@
           targetOutbound = matched.name;
         } else {
           const groupName = `Group-${args.tunnelTags.slice(0, 2).join('-')}${args.tunnelTags.length > 2 ? `+${args.tunnelTags.length - 2}` : ''}`;
-          const newGroup = await api.mihomoNativeSaveGroup({
+          targetOutbound = groupName;
+          operations.push((apply) => api.mihomoNativeSaveGroup({
             name: groupName,
             type: 'url-test',
             proxies: args.tunnelTags,
@@ -241,8 +244,7 @@
             lazy: true,
             tolerance: 50,
             enabled: true,
-          });
-          targetOutbound = newGroup.name;
+          }, apply));
         }
       }
     }
@@ -288,6 +290,9 @@
       }
     }
 
+    const existingProviders = await api.mihomoNativeRuleProviders().catch(() => []);
+    const knownProviderNames = new Set(existingProviders.map((p) => p.name));
+
     for (const item of targetItems) {
       const templateId = item.id;
       const preset = item.preset;
@@ -295,13 +300,13 @@
 
       if (tagLower.startsWith('geoip-')) {
         const geoTag = tagLower.replace(/^geoip-/, '');
-        await api.mihomoNativeSaveRule({
+        operations.push((apply) => api.mihomoNativeSaveRule({
           type: 'GEOIP',
           payload: geoTag,
           outbound: targetOutbound,
           noResolve: true,
           enabled: true,
-        });
+        }, apply));
         createdCount++;
       } else {
         const cleanTag = tagLower.replace(/^geosite-/, '');
@@ -311,21 +316,21 @@
           for (const d of preset.engines.dns.domains) {
             const cleanDomain = d.replace(/^\*\./, '').replace(/^\./, '').trim();
             if (cleanDomain) {
-              await api.mihomoNativeSaveRule({
+              operations.push((apply) => api.mihomoNativeSaveRule({
                 type: 'DOMAIN-SUFFIX',
                 payload: cleanDomain,
                 outbound: targetOutbound,
                 enabled: true,
-              });
+              }, apply));
               createdCount++;
             }
           }
         } else {
           // MetaCubeX MRS rule-provider support:
-          // Try to create modern .mrs rule-provider first and route via RULE-SET
           const mrsUrl = `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/${geoTag}.mrs`;
-          try {
-            await api.mihomoNativeSaveRuleProvider({
+          if (!knownProviderNames.has(geoTag)) {
+            knownProviderNames.add(geoTag);
+            operations.push((apply) => api.mihomoNativeSaveRuleProvider({
               name: geoTag,
               type: 'http',
               url: mrsUrl,
@@ -334,51 +339,42 @@
               format: 'mrs',
               interval: 86400,
               enabled: true,
-            });
-            await api.mihomoNativeSaveRule({
-              type: 'RULE-SET',
-              payload: geoTag,
-              outbound: targetOutbound,
-              enabled: true,
-            });
-            createdCount++;
-          } catch {
-            // Fallback to built-in GEOSITE if provider creation fails
-            await api.mihomoNativeSaveRule({
-              type: 'GEOSITE',
-              payload: geoTag,
-              outbound: targetOutbound,
-              enabled: true,
-            });
-            createdCount++;
+            }, apply));
           }
+          operations.push((apply) => api.mihomoNativeSaveRule({
+            type: 'RULE-SET',
+            payload: geoTag,
+            outbound: targetOutbound,
+            enabled: true,
+          }, apply));
+          createdCount++;
 
           if (geoTag === 'roblox') {
-            await api.mihomoNativeSaveRule({
+            operations.push((apply) => api.mihomoNativeSaveRule({
               type: 'DOMAIN-SUFFIX',
               payload: 'rbxcdn.com',
               outbound: targetOutbound,
               enabled: true,
-            });
-            await api.mihomoNativeSaveRule({
+            }, apply));
+            operations.push((apply) => api.mihomoNativeSaveRule({
               type: 'IP-CIDR',
               payload: '128.116.0.0/16',
               outbound: targetOutbound,
               noResolve: true,
               enabled: true,
-            });
+            }, apply));
             createdCount += 2;
           }
         }
 
         if (geoTag === 'telegram' || geoTag === 'netflix' || geoTag === 'twitter' || geoTag === 'facebook') {
-          await api.mihomoNativeSaveRule({
+          operations.push((apply) => api.mihomoNativeSaveRule({
             type: 'GEOIP',
             payload: geoTag,
             outbound: targetOutbound,
             noResolve: true,
             enabled: true,
-          });
+          }, apply));
           createdCount++;
         }
       }
@@ -398,76 +394,76 @@
         if (line.startsWith('geosite:')) {
           const rawTag = line.replace(/^geosite:\s*/i, '').trim();
           const tag = MIHOMO_ALIASES[rawTag.toLowerCase()] || rawTag;
-          await api.mihomoNativeSaveRule({
+          operations.push((apply) => api.mihomoNativeSaveRule({
             type: 'GEOSITE',
             payload: tag,
             outbound: targetOutbound,
             enabled: true,
-          });
+          }, apply));
           createdCount++;
         } else if (line.startsWith('geoip:')) {
           const rawTag = line.replace(/^geoip:\s*/i, '').trim();
           const tag = MIHOMO_ALIASES[rawTag.toLowerCase()] || rawTag;
-          await api.mihomoNativeSaveRule({
+          operations.push((apply) => api.mihomoNativeSaveRule({
             type: 'GEOIP',
             payload: tag,
             outbound: targetOutbound,
             noResolve: true,
             enabled: true,
-          });
+          }, apply));
           createdCount++;
         } else if (line.startsWith('domain:')) {
           const d = line.replace(/^domain:\s*/i, '').trim();
           if (d) {
-            await api.mihomoNativeSaveRule({
+            operations.push((apply) => api.mihomoNativeSaveRule({
               type: 'DOMAIN',
               payload: d,
               outbound: targetOutbound,
               enabled: true,
-            });
+            }, apply));
             createdCount++;
           }
         } else if (line.startsWith('keyword:') || line.startsWith('domain_keyword:')) {
           const kw = line.replace(/^(keyword|domain_keyword):\s*/i, '').trim();
           if (kw) {
-            await api.mihomoNativeSaveRule({
+            operations.push((apply) => api.mihomoNativeSaveRule({
               type: 'DOMAIN-KEYWORD',
               payload: kw,
               outbound: targetOutbound,
               enabled: true,
-            });
+            }, apply));
             createdCount++;
           }
         } else if (line.startsWith('domain_suffix:')) {
           const ds = line.replace(/^domain_suffix:\s*/i, '').replace(/^\*\./, '').replace(/^\./, '').trim();
           if (ds) {
-            await api.mihomoNativeSaveRule({
+            operations.push((apply) => api.mihomoNativeSaveRule({
               type: 'DOMAIN-SUFFIX',
               payload: ds,
               outbound: targetOutbound,
               enabled: true,
-            });
+            }, apply));
             createdCount++;
           }
         } else if (line.includes('/') && /^[\d\.:a-fA-F\/]+$/.test(line.replace(/^(ip|cidr|src_ip):\s*/i, ''))) {
           const cidr = line.replace(/^(ip|cidr|src_ip):\s*/i, '').trim();
-          await api.mihomoNativeSaveRule({
+          operations.push((apply) => api.mihomoNativeSaveRule({
             type: cidr.includes(':') ? 'IP-CIDR6' : 'IP-CIDR',
             payload: cidr,
             outbound: targetOutbound,
             noResolve: true,
             enabled: true,
-          });
+          }, apply));
           createdCount++;
         } else if (/^\d{1,3}(\.\d{1,3}){3}$/.test(line.replace(/^(ip|cidr|src_ip):\s*/i, '').trim())) {
           const ip = line.replace(/^(ip|cidr|src_ip):\s*/i, '').trim() + '/32';
-          await api.mihomoNativeSaveRule({
+          operations.push((apply) => api.mihomoNativeSaveRule({
             type: 'IP-CIDR',
             payload: ip,
             outbound: targetOutbound,
             noResolve: true,
             enabled: true,
-          });
+          }, apply));
           createdCount++;
         } else {
           let cleanDomain = line;
@@ -478,19 +474,23 @@
           } catch {}
           cleanDomain = cleanDomain.replace(/^\*\./, '').replace(/^\./, '').trim();
           if (cleanDomain) {
-            await api.mihomoNativeSaveRule({
+            operations.push((apply) => api.mihomoNativeSaveRule({
               type: 'DOMAIN-SUFFIX',
               payload: cleanDomain,
               outbound: targetOutbound,
               enabled: true,
-            });
+            }, apply));
             createdCount++;
           }
         }
       }
     }
 
-    await api.mihomoReload();
+    for (let i = 0; i < operations.length; i++) {
+      const isLast = (i === operations.length - 1);
+      await operations[i](isLast);
+    }
+
     return createdCount;
   }
 

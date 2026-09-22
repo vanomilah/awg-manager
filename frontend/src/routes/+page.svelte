@@ -156,11 +156,11 @@
 	let awgConnectivityMap = $derived($awgConnectivityStore);
 	// Wait for both system info AND the first tunnels snapshot before leaving
 	// the loading state — otherwise sysInfo arrives first and the empty-state
-	// flashes until /api/tunnels/all lands.
+	// flashes until /api/tunnels/all lands. If data is already cached, do not
+	// revert to loading state during background polls.
 	let loading = $derived(
 		!sysInfo ||
-		tunnelSnap.status === 'idle' ||
-		tunnelSnap.status === 'loading',
+		(tunnelSnap.data === null && (tunnelSnap.status === 'idle' || tunnelSnap.status === 'loading'))
 	);
 
 	// System tunnels don't emit tunnel:traffic stream events (no awg-manager

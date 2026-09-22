@@ -1796,13 +1796,3 @@ label {
 .traffic-rate.tx {
 	color: var(--success, #4ade80);
 }
-
-/* Uncap compact layout for AI Assistant so it occupies full viewport width */
-html[data-layout-compact='true'] .main:has(.ai-wrapper),
-html[data-layout-compact='true'] .main:has(.system-tools),
-html[data-layout-compact='true'] .page-container:has(.ai-wrapper),
-html[data-layout-compact='true'] .page-container:has(.system-tools) {
-	max-width: 100% !important;
-	padding-left: 0.5rem !important;
-	padding-right: 0.5rem !important;
-}

@@ -549,12 +549,6 @@
 		padding: 0 1rem;
 	}
 
-	:global(html[data-layout-compact='true']) .main:has(.ai-wrapper),
-	:global(html[data-layout-compact='true']) .main:has(.system-tools) {
-		max-width: 100% !important;
-		padding-left: 0.5rem !important;
-		padding-right: 0.5rem !important;
-	}
 
 	.offline-screen {
 		min-height: 100vh;
