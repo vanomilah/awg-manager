@@ -188,3 +188,123 @@ func TestNativeProxyKernelNames(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyManagerInspectProxy_ResolvesEmptySystemName(t *testing.T) {
+	pm := &ProxyManager{
+		pending: make(map[int]time.Time),
+		getInterface: func(_ context.Context, name string) (*ndms.Interface, error) {
+			if name == "Proxy1" {
+				return &ndms.Interface{
+					ID:          "Proxy1",
+					State:       "up",
+					Description: "test-proxy",
+					SystemName:  "", // empty in bulk/show query on Keenetic OS
+				}, nil
+			}
+			return nil, nil
+		},
+	}
+	pm.SetSystemNameResolver(func(_ context.Context, name string) string {
+		if name == "Proxy1" {
+			return "t2s1"
+		}
+		return ""
+	})
+
+	obs, err := pm.InspectProxy(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("InspectProxy failed: %v", err)
+	}
+	if !obs.Exists {
+		t.Fatalf("expected Exists=true")
+	}
+	if obs.SystemName != "t2s1" {
+		t.Fatalf("expected SystemName='t2s1', got %q", obs.SystemName)
+	}
+}
+
+func TestProxyManagerInspectProxy_PreservesExistingSystemName(t *testing.T) {
+	pm := &ProxyManager{
+		pending: make(map[int]time.Time),
+		getInterface: func(_ context.Context, name string) (*ndms.Interface, error) {
+			return &ndms.Interface{
+				ID:         "Proxy2",
+				State:      "up",
+				SystemName: "t2s2",
+			}, nil
+		},
+	}
+	pm.SetSystemNameResolver(func(_ context.Context, name string) string {
+		t.Fatal("resolver should not be called when SystemName is already populated")
+		return "unexpected"
+	})
+
+	obs, err := pm.InspectProxy(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("InspectProxy failed: %v", err)
+	}
+	if obs.SystemName != "t2s2" {
+		t.Fatalf("expected SystemName='t2s2', got %q", obs.SystemName)
+	}
+}
+
+func TestProxyManagerInspectProxy_GetProxyFallbackResolvesSystemName(t *testing.T) {
+	pm := &ProxyManager{
+		pending: make(map[int]time.Time),
+		getProxy: func(_ context.Context, name string) (*ndms.ProxyInfo, error) {
+			return &ndms.ProxyInfo{
+				Name:   "Proxy3",
+				Exists: true,
+				Up:     true,
+			}, nil
+		},
+	}
+	pm.SetSystemNameResolver(func(_ context.Context, name string) string {
+		if name == "Proxy3" {
+			return "t2s3"
+		}
+		return ""
+	})
+
+	obs, err := pm.InspectProxy(context.Background(), 3)
+	if err != nil {
+		t.Fatalf("InspectProxy failed: %v", err)
+	}
+	if obs.SystemName != "t2s3" {
+		t.Fatalf("expected SystemName='t2s3', got %q", obs.SystemName)
+	}
+}
+
+func TestProxyManagerListProxyObservations_ResolvesEmptySystemName(t *testing.T) {
+	pm := &ProxyManager{
+		pending: make(map[int]time.Time),
+		listInterfaces: func(context.Context) ([]ndms.Interface, error) {
+			return []ndms.Interface{
+				{ID: "Proxy1", State: "up", SystemName: ""},
+				{ID: "Proxy2", State: "up", SystemName: "t2s2"},
+				{ID: "Wireguard0", State: "up", SystemName: "nwg0"},
+			}, nil
+		},
+	}
+	pm.SetSystemNameResolver(func(_ context.Context, name string) string {
+		if name == "Proxy1" {
+			return "t2s1"
+		}
+		return ""
+	})
+
+	obs, err := pm.ListProxyObservations(context.Background())
+	if err != nil {
+		t.Fatalf("ListProxyObservations failed: %v", err)
+	}
+	if len(obs) != 2 {
+		t.Fatalf("expected 2 proxy observations, got %d", len(obs))
+	}
+	if obs[0].Name != "Proxy1" || obs[0].SystemName != "t2s1" {
+		t.Errorf("Proxy1 mismatch: name=%q sys=%q, want sys='t2s1'", obs[0].Name, obs[0].SystemName)
+	}
+	if obs[1].Name != "Proxy2" || obs[1].SystemName != "t2s2" {
+		t.Errorf("Proxy2 mismatch: name=%q sys=%q, want sys='t2s2'", obs[1].Name, obs[1].SystemName)
+	}
+}
+

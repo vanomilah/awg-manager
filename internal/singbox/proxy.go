@@ -65,8 +65,9 @@ type ProxyManager struct {
 	reserved       func() map[int]bool
 	listInterfaces func(context.Context) ([]ndms.Interface, error)
 	getProxy       func(context.Context, string) (*ndms.ProxyInfo, error)
-	getInterface   func(context.Context, string) (*ndms.Interface, error)
-	createProxy    func(context.Context, string, string, string, int, bool) error
+	getInterface      func(context.Context, string) (*ndms.Interface, error)
+	resolveSystemName func(context.Context, string) string
+	createProxy       func(context.Context, string, string, string, int, bool) error
 	downProxy      func(context.Context, string) error
 	deleteProxy    func(context.Context, string) error
 	hasComponent   func() bool
@@ -248,6 +249,26 @@ func (pm *ProxyManager) SetProxyPortGetter(fn func(context.Context, int) (int, e
 	pm.allocationMu.Unlock()
 }
 
+// SetSystemNameResolver supplies or overrides the kernel interface name resolver.
+func (pm *ProxyManager) SetSystemNameResolver(fn func(context.Context, string) string) {
+	pm.allocationMu.Lock()
+	pm.resolveSystemName = fn
+	pm.allocationMu.Unlock()
+}
+
+func (pm *ProxyManager) resolveSystemNameFor(ctx context.Context, name string) string {
+	pm.allocationMu.Lock()
+	resolver := pm.resolveSystemName
+	pm.allocationMu.Unlock()
+	if resolver != nil {
+		return resolver(ctx, name)
+	}
+	if pm.queries != nil && pm.queries.Interfaces != nil {
+		return pm.queries.Interfaces.ResolveSystemName(ctx, name)
+	}
+	return ""
+}
+
 // ProxyObservation is the read-only observed state of an NDMS Proxy interface.
 type ProxyObservation struct {
 	Name        string
@@ -318,6 +339,10 @@ func (pm *ProxyManager) InspectProxy(ctx context.Context, index int) (ProxyObser
 		if iface == nil {
 			return ProxyObservation{Name: name, Exists: false}, nil
 		}
+		sysName := iface.SystemName
+		if sysName == "" {
+			sysName = pm.resolveSystemNameFor(ctx, name)
+		}
 		return ProxyObservation{
 			Name:        iface.ID,
 			Exists:      true,
@@ -325,7 +350,7 @@ func (pm *ProxyManager) InspectProxy(ctx context.Context, index int) (ProxyObser
 			State:       iface.State,
 			Link:        iface.Link,
 			Up:          iface.State == "up",
-			SystemName:  iface.SystemName,
+			SystemName:  sysName,
 			Address:     iface.Address,
 			ListenPort:  listenPort,
 		}, nil
@@ -343,6 +368,7 @@ func (pm *ProxyManager) InspectProxy(ctx context.Context, index int) (ProxyObser
 		if pInfo == nil || !pInfo.Exists {
 			return ProxyObservation{Name: name, Exists: false}, nil
 		}
+		sysName := pm.resolveSystemNameFor(ctx, name)
 		return ProxyObservation{
 			Name:        pInfo.Name,
 			Exists:      true,
@@ -350,6 +376,7 @@ func (pm *ProxyManager) InspectProxy(ctx context.Context, index int) (ProxyObser
 			State:       pInfo.State,
 			Link:        pInfo.Link,
 			Up:          pInfo.Up,
+			SystemName:  sysName,
 			ListenPort:  listenPort,
 		}, nil
 	}
@@ -386,6 +413,10 @@ func (pm *ProxyManager) ListProxyObservations(ctx context.Context) ([]ProxyObser
 		} else if len(lines) > 0 {
 			port = parseProxyPortFromRunningConfig(lines, iface.ID)
 		}
+		sysName := iface.SystemName
+		if sysName == "" {
+			sysName = pm.resolveSystemNameFor(ctx, iface.ID)
+		}
 		observations = append(observations, ProxyObservation{
 			Name:        iface.ID,
 			Exists:      true,
@@ -393,7 +424,7 @@ func (pm *ProxyManager) ListProxyObservations(ctx context.Context) ([]ProxyObser
 			State:       iface.State,
 			Link:        iface.Link,
 			Up:          iface.State == "up",
-			SystemName:  iface.SystemName,
+			SystemName:  sysName,
 			Address:     iface.Address,
 			ListenPort:  port,
 		})
