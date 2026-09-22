@@ -168,6 +168,47 @@ func cleanStatusText(text string) string {
 	return text
 }
 
+// ResolveScript finds the matching init script name for scriptOrName.
+// If scriptOrName is already an existing init script (e.g. "S99telemt"), it returns it.
+// If scriptOrName is a service name (e.g. "telemt"), it scans InitDir to find "S99telemt" or "K99telemt".
+func (sc *Scanner) ResolveScript(scriptOrName string) string {
+	dir := sc.InitDir
+	if dir == "" {
+		dir = initDir
+	}
+	base := filepath.Base(scriptOrName)
+	if IsInitScriptName(base) {
+		full := filepath.Join(dir, base)
+		if _, err := os.Stat(full); err == nil {
+			return base
+		}
+	}
+	// Try matching service name without prefix
+	target := strings.ToLower(strings.TrimSpace(ServiceName(base)))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return base
+	}
+	var fallback string
+	for _, e := range entries {
+		if e.IsDir() || !IsInitScriptName(e.Name()) {
+			continue
+		}
+		if strings.ToLower(ServiceName(e.Name())) == target {
+			if strings.HasPrefix(e.Name(), "S") {
+				return e.Name() // prefer enabled script
+			}
+			if fallback == "" {
+				fallback = e.Name()
+			}
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return base
+}
+
 // RunAction executes start|stop|restart|status on a script.
 func (sc *Scanner) RunAction(script, action string) (output string, err error) {
 	action = strings.TrimSpace(strings.ToLower(action))
@@ -176,21 +217,22 @@ func (sc *Scanner) RunAction(script, action string) (output string, err error) {
 	default:
 		return "", fmt.Errorf("unsupported action: %s", action)
 	}
-	base := filepath.Base(script)
+	dir := sc.InitDir
+	if dir == "" {
+		dir = initDir
+	}
+	base := sc.ResolveScript(script)
 	if !IsInitScriptName(base) {
-		return "", fmt.Errorf("invalid script name")
+		return "", fmt.Errorf("invalid script name: %s", base)
 	}
 	// Остановить службу, которая отдаёт эту же страницу, можно, а включить
 	// обратно — уже нет. Перезапуск разрешён: панель вернётся сама.
 	if action == "stop" && ServiceName(base) == "awg-manager" {
 		return "", fmt.Errorf("cannot stop %s: остановка прервёт веб-интерфейс, включить обратно из UI будет нечем", base)
 	}
-	full := filepath.Join(sc.InitDir, base)
-	if sc.InitDir == "" {
-		full = filepath.Join(initDir, base)
-	}
+	full := filepath.Join(dir, base)
 	if _, statErr := os.Stat(full); statErr != nil {
-		return "", fmt.Errorf("script not found")
+		return "", fmt.Errorf("script not found: %s", base)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

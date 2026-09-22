@@ -261,6 +261,15 @@ func validatedRemediationProposal(action, target string) *RemediationProposal {
 }
 
 func validRemediationTarget(action string, spec remediationSpec, target string) bool {
+	if action == "service.stop" {
+		name := strings.ToLower(strings.TrimSpace(target))
+		if len(name) > 3 && (name[0] == 's' || name[0] == 'k') && name[1] >= '0' && name[1] <= '9' && name[2] >= '0' && name[2] <= '9' {
+			name = name[3:]
+		}
+		if name == "dropbear" || name == "awg-manager" || name == "ttyd" || name == "sing-box" {
+			return false
+		}
+	}
 	if action == "command.exec" {
 		trimmed := strings.TrimSpace(target)
 		return trimmed != "" && len(trimmed) <= 512
@@ -294,7 +303,7 @@ func validRoutingMode(target string) bool {
 	return target == "off" || target == "tproxy" || target == "fakeip-tun" || target == "policy-tun"
 }
 
-var serviceScriptPattern = regexp.MustCompile(`^[SK][0-9]{2}[A-Za-z0-9._-]+$`)
+var serviceScriptPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 var packageNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+._-]{0,127}$`)
 
 func validServiceScript(target string) bool { return serviceScriptPattern.MatchString(target) }

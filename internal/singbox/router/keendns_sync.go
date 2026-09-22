@@ -31,7 +31,6 @@ type KeenCloudRelayProvider interface {
 	KeenCloudRelays(ctx context.Context) (relayIPs []string, relayDomains []string, err error)
 }
 
-
 // KeenDNSPresetSyncer включает или снимает блок пресета keendns в слоте DNS.
 type KeenDNSPresetSyncer interface {
 	SetKeenDNSEnabled(on bool, extraDomain string) error

@@ -387,6 +387,9 @@ func (s *Service) UpdateConfig(cfg Config) error {
 		s.config.PublicPort = cfg.PublicPort
 	}
 	s.config.Path = strings.TrimSpace(cfg.Path)
+	if cfg.Transport != "" {
+		s.config.Transport = cfg.Transport
+	}
 	if cfg.Mode != "" {
 		s.config.Mode = cfg.Mode
 	}
@@ -395,6 +398,12 @@ func (s *Service) UpdateConfig(cfg Config) error {
 	}
 	if cfg.XmuxMaxConnections > 0 {
 		s.config.XmuxMaxConnections = cfg.XmuxMaxConnections
+	}
+	if cfg.OutboundMode != "" {
+		s.config.OutboundMode = cfg.OutboundMode
+	}
+	if cfg.OutboundInterface != "" {
+		s.config.OutboundInterface = cfg.OutboundInterface
 	}
 	s.config.OutboundSocksPort = cfg.OutboundSocksPort
 	if cfg.Clients != nil {
@@ -796,14 +805,14 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 	} else {
 		// Standard VLESS URL format for XHTTP
 		vlessURL = fmt.Sprintf(
-			"vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=xhttp&path=%s&mode=%s&uplinkHTTPMethod=%s#%s",
+			"vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=xhttp&host=%s&path=%s&mode=%s#%s",
 			client.ID,
 			domain,
 			port,
 			domain,
+			domain,
 			url.QueryEscape(path),
 			mode,
-			method,
 			url.QueryEscape(client.Remark),
 		)
 

@@ -458,7 +458,7 @@ func TestBridgeManagerLegacyOwnerMigrationClearsLegacyOwner(t *testing.T) {
 	bridge := ProxyBridge{
 		ListenPort: bridgePortBase, ProxyIndex: 7,
 		ProxyInterface: "Proxy7", KernelInterface: "t2s7",
-		LegacyOwner:    "old-legacy-token",
+		LegacyOwner: "old-legacy-token",
 	}
 	if err := store.SetBridge("proxy", proxy.ID, bridge); err != nil {
 		t.Fatal(err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,10 +65,12 @@ type ProxyManager struct {
 	reserved       func() map[int]bool
 	listInterfaces func(context.Context) ([]ndms.Interface, error)
 	getProxy       func(context.Context, string) (*ndms.ProxyInfo, error)
+	getInterface   func(context.Context, string) (*ndms.Interface, error)
 	createProxy    func(context.Context, string, string, string, int, bool) error
 	downProxy      func(context.Context, string) error
 	deleteProxy    func(context.Context, string) error
 	hasComponent   func() bool
+	getProxyPort   func(context.Context, int) (int, error)
 }
 
 func NewProxyManager(q *query.Queries, c *command.Commands) *ProxyManager {
@@ -236,6 +239,166 @@ func (pm *ProxyManager) lookupProxyLocked(ctx context.Context, index int) (descr
 		return "", false, nil
 	}
 	return info.Description, true, nil
+}
+
+// SetProxyPortGetter overrides or supplies proxy port inspection.
+func (pm *ProxyManager) SetProxyPortGetter(fn func(context.Context, int) (int, error)) {
+	pm.allocationMu.Lock()
+	pm.getProxyPort = fn
+	pm.allocationMu.Unlock()
+}
+
+// ProxyObservation is the read-only observed state of an NDMS Proxy interface.
+type ProxyObservation struct {
+	Name        string
+	Exists      bool
+	Description string
+	State       string
+	Link        string
+	Up          bool
+	SystemName  string
+	Address     string
+	ListenPort  int
+}
+
+func parseProxyPortFromRunningConfig(lines []string, ifaceName string) int {
+	prefix := "interface " + ifaceName
+	inIface := false
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, "\r\n")
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(line, "interface ") {
+			if line == prefix {
+				inIface = true
+				continue
+			}
+			if inIface {
+				break
+			}
+		}
+		if !inIface {
+			continue
+		}
+		if len(line) > 0 && line[0] != ' ' && line[0] != '\t' && !strings.HasPrefix(line, "!") {
+			break
+		}
+		if strings.HasPrefix(trimmed, "proxy upstream ") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 4 {
+				if p, err := strconv.Atoi(fields[3]); err == nil && p > 0 {
+					return p
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// InspectProxy inspects the live NDMS state of ProxyN.
+func (pm *ProxyManager) InspectProxy(ctx context.Context, index int) (ProxyObservation, error) {
+	name := fmt.Sprintf("%s%d", proxyIfacePrefix, index)
+	var listenPort int
+	if pm.getProxyPort != nil {
+		listenPort, _ = pm.getProxyPort(ctx, index)
+	} else if pm.queries != nil && pm.queries.RunningConfig != nil {
+		if lines, err := pm.queries.RunningConfig.Lines(ctx); err == nil {
+			listenPort = parseProxyPortFromRunningConfig(lines, name)
+		}
+	}
+
+	getIf := pm.getInterface
+	if getIf == nil && pm.queries != nil && pm.queries.Interfaces != nil {
+		getIf = pm.queries.Interfaces.Get
+	}
+	if getIf != nil {
+		iface, err := getIf(ctx, name)
+		if err != nil {
+			return ProxyObservation{}, err
+		}
+		if iface == nil {
+			return ProxyObservation{Name: name, Exists: false}, nil
+		}
+		return ProxyObservation{
+			Name:        iface.ID,
+			Exists:      true,
+			Description: iface.Description,
+			State:       iface.State,
+			Link:        iface.Link,
+			Up:          iface.State == "up",
+			SystemName:  iface.SystemName,
+			Address:     iface.Address,
+			ListenPort:  listenPort,
+		}, nil
+	}
+
+	getPr := pm.getProxy
+	if getPr == nil && pm.queries != nil && pm.queries.Interfaces != nil {
+		getPr = pm.queries.Interfaces.GetProxy
+	}
+	if getPr != nil {
+		pInfo, err := getPr(ctx, name)
+		if err != nil {
+			return ProxyObservation{}, err
+		}
+		if pInfo == nil || !pInfo.Exists {
+			return ProxyObservation{Name: name, Exists: false}, nil
+		}
+		return ProxyObservation{
+			Name:        pInfo.Name,
+			Exists:      true,
+			Description: pInfo.Description,
+			State:       pInfo.State,
+			Link:        pInfo.Link,
+			Up:          pInfo.Up,
+			ListenPort:  listenPort,
+		}, nil
+	}
+
+	return ProxyObservation{Name: name, Exists: false}, nil
+}
+
+// ListProxyObservations returns all observed NDMS Proxy interfaces.
+func (pm *ProxyManager) ListProxyObservations(ctx context.Context) ([]ProxyObservation, error) {
+	list := pm.listInterfaces
+	if list == nil && pm.queries != nil && pm.queries.Interfaces != nil {
+		list = pm.queries.Interfaces.List
+	}
+	if list == nil {
+		return nil, nil
+	}
+	ifaces, err := list(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list proxy observations: %w", err)
+	}
+	var lines []string
+	if pm.getProxyPort == nil && pm.queries != nil && pm.queries.RunningConfig != nil {
+		lines, _ = pm.queries.RunningConfig.Lines(ctx)
+	}
+	var observations []ProxyObservation
+	for _, iface := range ifaces {
+		if !strings.HasPrefix(iface.ID, proxyIfacePrefix) {
+			continue
+		}
+		var port int
+		idx, _ := strconv.Atoi(strings.TrimPrefix(iface.ID, proxyIfacePrefix))
+		if pm.getProxyPort != nil {
+			port, _ = pm.getProxyPort(ctx, idx)
+		} else if len(lines) > 0 {
+			port = parseProxyPortFromRunningConfig(lines, iface.ID)
+		}
+		observations = append(observations, ProxyObservation{
+			Name:        iface.ID,
+			Exists:      true,
+			Description: iface.Description,
+			State:       iface.State,
+			Link:        iface.Link,
+			Up:          iface.State == "up",
+			SystemName:  iface.SystemName,
+			Address:     iface.Address,
+			ListenPort:  port,
+		})
+	}
+	return observations, nil
 }
 
 // RemoveProxyIfOwned removes ProxyN only when its current stable description

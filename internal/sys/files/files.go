@@ -16,7 +16,8 @@ import (
 )
 
 const maxReadBytes = 512 * 1024
-const maxUploadBytes = 10 * 1024 * 1024
+const maxUploadBytes = 100 * 1024 * 1024
+const maxDownloadBytes = 100 * 1024 * 1024
 
 // Entry is one directory listing item.
 type Entry struct {
@@ -187,8 +188,8 @@ func (s *Sandbox) OpenDownload(path string) (io.ReadCloser, fs.FileInfo, error) 
 	if !fi.Mode().IsRegular() {
 		return nil, nil, fmt.Errorf("not a regular file")
 	}
-	if fi.Size() > 50*1024*1024 {
-		return nil, nil, fmt.Errorf("file too large for download (max 50MB)")
+	if fi.Size() > maxDownloadBytes {
+		return nil, nil, fmt.Errorf("file too large for download (max %dMB)", maxDownloadBytes/(1024*1024))
 	}
 	f, err := os.Open(abs)
 	if err != nil {
@@ -197,12 +198,52 @@ func (s *Sandbox) OpenDownload(path string) (io.ReadCloser, fs.FileInfo, error) 
 	return f, fi, nil
 }
 
+// SaveUploadStream writes an uploaded file from a stream into a directory inside the sandbox.
+// It streams directly to disk with constant memory footprint (~32KB).
+func (s *Sandbox) SaveUploadStream(dirPath, fileName string, src io.Reader, maxBytes int64) (string, int64, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxUploadBytes
+	}
+	cleanName := filepath.Base(fileName)
+	if strings.TrimSpace(cleanName) == "" || cleanName == "." || cleanName == ".." || strings.Contains(fileName, "/") || strings.Contains(fileName, "\\") {
+		return "", 0, fmt.Errorf("invalid file name")
+	}
+	absDir, err := s.ResolveWrite(dirPath)
+	if err != nil {
+		return "", 0, err
+	}
+	if st, err := os.Stat(absDir); err != nil || !st.IsDir() {
+		return "", 0, fmt.Errorf("target is not a directory")
+	}
+	target := filepath.Join(absDir, cleanName)
+
+	dst, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return "", 0, err
+	}
+
+	limited := io.LimitReader(src, maxBytes+1)
+	written, copyErr := io.Copy(dst, limited)
+	_ = dst.Close()
+
+	if copyErr != nil {
+		_ = os.Remove(target)
+		return "", 0, copyErr
+	}
+	if written > maxBytes {
+		_ = os.Remove(target)
+		return "", 0, fmt.Errorf("file too large (max %d bytes)", maxBytes)
+	}
+
+	return target, written, nil
+}
+
 // SaveUpload writes an uploaded file into a directory inside the sandbox.
 func (s *Sandbox) SaveUpload(dirPath, fileName string, data []byte) (string, error) {
 	if strings.TrimSpace(fileName) == "" || strings.Contains(fileName, "/") || strings.Contains(fileName, "..") {
 		return "", fmt.Errorf("invalid file name")
 	}
-	if len(data) > maxUploadBytes {
+	if int64(len(data)) > maxUploadBytes {
 		return "", fmt.Errorf("file too large (max %d bytes)", maxUploadBytes)
 	}
 	absDir, err := s.ResolveWrite(dirPath)

@@ -31,6 +31,32 @@ func (f *fakeSubscriptionOutboundSource) SubscriptionOutbounds() []map[string]an
 	return append([]map[string]any(nil), f.outbounds...)
 }
 
+// GenerateMihomoConfig is a test helper for router package unit tests.
+// It exercises CompileMihomoConfig and writes the resulting config.yaml for test assertions.
+// In production runtime, all configuration writing is exclusively performed by ApplyCoordinator.
+func (s *ServiceImpl) GenerateMihomoConfig() error {
+	res, err := s.CompileMihomoConfig(context.Background())
+	if err != nil {
+		return err
+	}
+	configDir := s.deps.MihomoConfigDir
+	if configDir == "" && s.deps.Engine != nil {
+		configDir = s.deps.Engine.ConfigDir()
+	}
+	if configDir == "" {
+		return fmt.Errorf("Mihomo config directory is unavailable")
+	}
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("create mihomo config directory: %w", err)
+	}
+	cfgPath := filepath.Join(configDir, "config.yaml")
+	if res.Mode == mihomo.RuntimeOff {
+		_ = os.Remove(cfgPath)
+		return nil
+	}
+	return os.WriteFile(cfgPath, res.ConfigYAML, 0644)
+}
+
 func newMihomoConfigTestService(t *testing.T, routingEngine string) (*ServiceImpl, string) {
 	t.Helper()
 
@@ -62,6 +88,7 @@ func newMihomoConfigTestService(t *testing.T, routingEngine string) (*ServiceImp
 	}
 
 	store := newTestSettingsStore(t, storage.SingboxRouterSettings{
+		Enabled:       true,
 		RoutingMode:   "tproxy",
 		RoutingEngine: routingEngine,
 		DeviceMode:    "all",
@@ -748,22 +775,26 @@ type fakeMihomoNativeProxySource struct {
 	ruleProviders map[string]map[string]interface{}
 }
 
-func (f *fakeMihomoNativeProxySource) ValidateRuntimeRules() error                        { return f.validateErr }
-func (f *fakeMihomoNativeProxySource) ConfigProxies() []map[string]interface{}            { return f.proxies }
-func (f *fakeMihomoNativeProxySource) ConfigProviders() map[string]map[string]interface{} { return f.providers }
-func (f *fakeMihomoNativeProxySource) ConfigProviderGroups() []map[string]interface{}     { return f.groups }
+func (f *fakeMihomoNativeProxySource) ValidateRuntimeRules() error             { return f.validateErr }
+func (f *fakeMihomoNativeProxySource) ConfigProxies() []map[string]interface{} { return f.proxies }
+func (f *fakeMihomoNativeProxySource) ConfigProviders() map[string]map[string]interface{} {
+	return f.providers
+}
+func (f *fakeMihomoNativeProxySource) ConfigProviderGroups() []map[string]interface{} {
+	return f.groups
+}
 func (f *fakeMihomoNativeProxySource) ConfigBridgeListeners() []mihomonative.BridgeListener {
 	return f.listeners
 }
-func (f *fakeMihomoNativeProxySource) ConfigRules() []string                              { return f.rules }
-func (f *fakeMihomoNativeProxySource) HasGroups() bool                                    { return f.hasGroups }
-func (f *fakeMihomoNativeProxySource) HasRules() bool                                     { return f.hasRules }
+func (f *fakeMihomoNativeProxySource) ConfigRules() []string { return f.rules }
+func (f *fakeMihomoNativeProxySource) HasGroups() bool       { return f.hasGroups }
+func (f *fakeMihomoNativeProxySource) HasRules() bool        { return f.hasRules }
 func (f *fakeMihomoNativeProxySource) ConfigRuleProviders() map[string]map[string]interface{} {
 	return f.ruleProviders
 }
 func (f *fakeMihomoNativeProxySource) ImportLegacyGroups([]storage.ProxyGroup) error { return nil }
-func (f *fakeMihomoNativeProxySource) ImportLegacyRules([]string) error               { return nil }
-func (f *fakeMihomoNativeProxySource) ListBridges() []mihomonative.BridgeRef          { return nil }
+func (f *fakeMihomoNativeProxySource) ImportLegacyRules([]string) error              { return nil }
+func (f *fakeMihomoNativeProxySource) ListBridges() []mihomonative.BridgeRef         { return nil }
 
 var _ MihomoNativeProxySource = (*fakeMihomoNativeProxySource)(nil)
 

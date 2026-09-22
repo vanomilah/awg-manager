@@ -43,6 +43,36 @@ func (s *ServiceImpl) computeIssues(cfg *RouterConfig) []Issue {
 			}
 		}
 	}
+	// Mihomo proxy groups and native proxies / bridges (e.g. "Задний ход", "Самый быстрый", etc.)
+	if s.deps.Settings != nil {
+		if st, err := s.deps.Settings.Get(); err == nil {
+			for _, pg := range st.SingboxRouter.ProxyGroups {
+				if pg.Name != "" {
+					outboundTags[pg.Name] = struct{}{}
+				}
+			}
+		}
+	}
+	if s.deps.MihomoNativeProxies != nil {
+		for _, g := range s.deps.MihomoNativeProxies.ConfigProviderGroups() {
+			if name, ok := g["name"].(string); ok && name != "" {
+				outboundTags[name] = struct{}{}
+			}
+		}
+		for _, p := range s.deps.MihomoNativeProxies.ConfigProxies() {
+			if name, ok := p["name"].(string); ok && name != "" {
+				outboundTags[name] = struct{}{}
+			}
+		}
+		for _, b := range s.deps.MihomoNativeProxies.ListBridges() {
+			if b.Label != "" {
+				outboundTags[b.Label] = struct{}{}
+			}
+			if b.ID != "" {
+				outboundTags[b.ID] = struct{}{}
+			}
+		}
+	}
 	for i, r := range cfg.Route.Rules {
 		issues = append(issues, s.computeRuleOutboundIssues(r, i, outboundTags)...)
 	}
@@ -139,7 +169,8 @@ func (s *ServiceImpl) computeRuleOutboundIssues(r Rule, index int, outboundTags 
 }
 
 func isKnownOutboundRef(tag string, outboundTags map[string]struct{}) bool {
-	if tag == "direct" || tag == "block" || tag == "dns" {
+	lower := strings.ToLower(tag)
+	if lower == "direct" || lower == "block" || lower == "dns" || lower == "reject" || lower == "global" || lower == "compatible" {
 		return true
 	}
 	_, ok := outboundTags[tag]

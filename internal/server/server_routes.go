@@ -19,6 +19,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	sysexec "github.com/hoaxisr/awg-manager/internal/sys/exec"
 	sysports "github.com/hoaxisr/awg-manager/internal/sys/ports"
+	sysservices "github.com/hoaxisr/awg-manager/internal/sys/services"
 	systraffic "github.com/hoaxisr/awg-manager/internal/sys/traffic"
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/serverwizard"
@@ -196,11 +197,118 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 	h.diagHandler = api.NewDiagnosticsHandler(h.diagRunner)
 
 	aiService := aiassistant.NewService(h.diagRunner)
+	if s.settings != nil && s.settings.DataDir() != "" {
+		aiService.SetChatStore(filepath.Join(s.settings.DataDir(), "ai-chat.json"))
+	}
 	aiToolSources := s.aiToolSources(func() *connections.Service {
 		return h.connectionsService
 	}, h.diagRunner, h.systemToolsHandler)
 	aiToolRegistry := aiassistant.NewToolRegistryWithSources(aiToolSources)
 	aiService.SetTools(aiToolRegistry)
+	actionHandlers := s.buildAIActionHandlers(h)
+	actionRegistry := aiassistant.NewActionRegistry(actionHandlers)
+	aiService.SetActions(actionRegistry)
+	h.aiAssistantHandler = api.NewAIAssistantHandler(aiService)
+	h.aiAssistantHandler.SetRoutes(s.downloadSvc)
+	if s.settings != nil {
+		aiConfig, err := aiassistant.NewConfigStore(filepath.Join(s.settings.DataDir(), "ai-assistant.json"))
+		if err != nil {
+			s.loggingService.AppLog(logging.LevelWarn, logging.GroupSystem, "ai-assistant", "config-load", "", err.Error())
+		} else {
+			embeddedMgr := aiassistant.NewEmbeddedManager(aiConfig)
+			aiService.SetModel(aiConfig, aiassistant.NewRoutedResponsesClient(s.downloadSvc))
+			aiService.SetEmbedded(embeddedMgr)
+			h.aiAssistantHandler.SetConfigStore(aiConfig)
+			h.aiAssistantHandler.SetEmbedded(embeddedMgr)
+		}
+
+		memStore, err := aiassistant.NewMemoryStore(filepath.Join(s.settings.DataDir(), "ai-memory.json"))
+		if err != nil {
+			s.loggingService.AppLog(logging.LevelWarn, logging.GroupSystem, "ai-assistant", "memory-load", "", err.Error())
+		} else {
+			aiService.SetMemory(memStore)
+			aiToolRegistry.SetMemoryStore(memStore)
+			h.aiAssistantHandler.SetMemoryStore(memStore)
+
+			sentinel := aiassistant.NewSentinel(aiService, memStore, aiToolSources, actionRegistry)
+			sentinel.Start()
+			h.aiAssistantHandler.SetSentinel(sentinel)
+		}
+	}
+
+	trafficSvc := systraffic.NewService(s.accessPolicyService, s.ndmsTransport, s.loggingService)
+	if s.settings != nil {
+		trafficSvc.SetSettingsStore(s.settings)
+	}
+	if s.presetCatalog != nil {
+		trafficSvc.SetPresetCatalog(s.presetCatalog)
+	}
+	if s.hydraService != nil {
+		trafficSvc.SetHydraService(s.hydraService)
+	}
+	if s.staticRouteService != nil {
+		trafficSvc.SetStaticRouteService(s.staticRouteService)
+	}
+	if s.singboxRouterHandler != nil && s.singboxRouterHandler.Service() != nil {
+		trafficSvc.SetRouterService(s.singboxRouterHandler.Service())
+	}
+	if s.mihomoHandler != nil {
+		if s.mihomoHandler.NativeStore() != nil {
+			trafficSvc.SetNativeStore(s.mihomoHandler.NativeStore())
+		}
+		trafficSvc.SetNativeBatchRuleSaver(s.mihomoHandler.BatchSaveRules)
+	}
+	h.trafficHandler = systraffic.NewHandler(trafficSvc)
+
+	// Connections viewer
+	h.connectionsService = connections.NewService(s.catalog, s.ndmsTransport, s.dnsRouteService, s.loggingService)
+	if s.connectionsMarkProvider != nil {
+		h.connectionsService.SetSingboxMarkProvider(s.connectionsMarkProvider)
+	}
+	h.connectionsHandler = api.NewConnectionsHandler(h.connectionsService)
+
+	h.signatureHandler = api.NewSignatureHandler()
+	h.terminalHandler = api.NewTerminalHandler(s.terminalManager, s.loggingService)
+
+	h.eventsHandler = api.NewEventsHandler(s.bus, s.instanceID)
+
+	h.controlHandler.SetProxyControl(s.tunnels, s.proxyRuntime)
+
+	h.proxyListenerHandler = api.NewProxyListenerHandler(s.proxyRecords)
+
+	if s.xrayServerService != nil {
+		h.xrayServerHandler = api.NewXrayServerHandler(s.xrayServerService, s.serverIngressCoordinator)
+	}
+	if s.tgWebProxyService != nil {
+		h.tgWebProxyHandler = api.NewTgWebProxyHandler(s.tgWebProxyService, s.sessions)
+	}
+	if s.xrayServerService != nil || s.tgWebProxyService != nil {
+		egressAdp := egress.NewAdapter(s.catalog)
+		preflight := serverwizard.NewPreflightEngine(s.xrayServerService, s.cdnDispatcher, s.tgWebProxyService, s.serverIngressCoordinator, egressAdp)
+		fingerprint := serverwizard.NewFingerprintEngine(s.xrayServerService, s.cdnDispatcher, s.tgWebProxyService, s.serverIngressCoordinator, egressAdp)
+		planStore := serverwizard.NewPlanStore()
+		jobRunner := serverwizard.NewJobRunner()
+		wizardSvc := serverwizard.NewWizardService(
+			s.serverIngressCoordinator,
+			s.xrayServerService,
+			s.tgWebProxyService,
+			s.cdnDispatcher,
+			preflight,
+			fingerprint,
+			planStore,
+			jobRunner,
+			egressAdp,
+		)
+		h.serverWizardHandler = api.NewServerWizardHandler(wizardSvc, s.sessions)
+	}
+
+	// Auth middleware helper
+	h.guarded = s.authMiddleware.RequireAuthFunc
+
+	return h
+}
+
+func (s *Server) buildAIActionHandlers(h *routeHandlers) aiassistant.ActionHandlers {
 	actionHandlers := aiassistant.ActionHandlers{}
 	if s.singboxOrch != nil {
 		actionHandlers.RestartSingbox = func(ctx context.Context) error {
@@ -279,6 +387,11 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		if err != nil {
 			return err
 		}
+		if engine == "mihomo" || settings.RoutingEngine == "mihomo" {
+			if err := s.mihomoHandler.CheckMutationAllowed(); err != nil {
+				return err
+			}
+		}
 		settings.RoutingEngine = engine
 		return service.UpdateSettings(ctx, settings)
 	}
@@ -305,9 +418,19 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		if s.mihomoHandler == nil || s.mihomoHandler.RouterService() == nil {
 			return errors.New("router service is unavailable")
 		}
-		return s.mihomoHandler.RouterService().SwitchRoutingMode(ctx, mode)
+		service := s.mihomoHandler.RouterService()
+		settings, err := service.GetSettings(ctx)
+		if err != nil {
+			return err
+		}
+		if settings.RoutingEngine == "mihomo" {
+			if err := s.mihomoHandler.CheckMutationAllowed(); err != nil {
+				return err
+			}
+		}
+		return service.SwitchRoutingMode(ctx, mode)
 	}
-	if h.systemToolsHandler != nil {
+	if h != nil && h.systemToolsHandler != nil {
 		actionHandlers.ServiceAction = func(_ context.Context, script, action string) error {
 			_, err := h.systemToolsHandler.AssistantServiceAction(script, action)
 			return err
@@ -317,8 +440,12 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 			if err != nil {
 				return false, err
 			}
+			targetName := strings.ToLower(strings.TrimSpace(sysservices.ServiceName(filepath.Base(script))))
+			targetBase := strings.ToLower(strings.TrimSpace(filepath.Base(script)))
 			for _, item := range items {
-				if filepath.Base(item.Script) == filepath.Base(script) {
+				itemBase := strings.ToLower(filepath.Base(item.Script))
+				itemName := strings.ToLower(item.Name)
+				if itemBase == targetBase || itemName == targetName || itemBase == targetName {
 					return item.Running, nil
 				}
 			}
@@ -442,109 +569,12 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		if saveRes != nil && saveRes.ExitCode != 0 {
 			return fmt.Errorf("system configuration save exited with code %d: %s", saveRes.ExitCode, saveRes.Stderr)
 		}
-		s.loggingService.AppLog(logging.LevelInfo, logging.GroupSystem, "ai-assistant", "keenetic-ndmc", cmdStr, "applied and saved successfully")
+		if s.loggingService != nil {
+			s.loggingService.AppLog(logging.LevelInfo, logging.GroupSystem, "ai-assistant", "keenetic-ndmc", cmdStr, "applied and saved successfully")
+		}
 		return nil
 	}
-	actionRegistry := aiassistant.NewActionRegistry(actionHandlers)
-	aiService.SetActions(actionRegistry)
-	h.aiAssistantHandler = api.NewAIAssistantHandler(aiService)
-	h.aiAssistantHandler.SetRoutes(s.downloadSvc)
-	if s.settings != nil {
-		aiConfig, err := aiassistant.NewConfigStore(filepath.Join(s.settings.DataDir(), "ai-assistant.json"))
-		if err != nil {
-			s.loggingService.AppLog(logging.LevelWarn, logging.GroupSystem, "ai-assistant", "config-load", "", err.Error())
-		} else {
-			embeddedMgr := aiassistant.NewEmbeddedManager(aiConfig)
-			aiService.SetModel(aiConfig, aiassistant.NewRoutedResponsesClient(s.downloadSvc))
-			aiService.SetEmbedded(embeddedMgr)
-			h.aiAssistantHandler.SetConfigStore(aiConfig)
-			h.aiAssistantHandler.SetEmbedded(embeddedMgr)
-		}
-
-		memStore, err := aiassistant.NewMemoryStore(filepath.Join(s.settings.DataDir(), "ai-memory.json"))
-		if err != nil {
-			s.loggingService.AppLog(logging.LevelWarn, logging.GroupSystem, "ai-assistant", "memory-load", "", err.Error())
-		} else {
-			aiService.SetMemory(memStore)
-			aiToolRegistry.SetMemoryStore(memStore)
-			h.aiAssistantHandler.SetMemoryStore(memStore)
-
-			sentinel := aiassistant.NewSentinel(aiService, memStore, aiToolSources, actionRegistry)
-			sentinel.Start()
-			h.aiAssistantHandler.SetSentinel(sentinel)
-		}
-	}
-
-	trafficSvc := systraffic.NewService(s.accessPolicyService, s.ndmsTransport, s.loggingService)
-	if s.settings != nil {
-		trafficSvc.SetSettingsStore(s.settings)
-	}
-	if s.presetCatalog != nil {
-		trafficSvc.SetPresetCatalog(s.presetCatalog)
-	}
-	if s.hydraService != nil {
-		trafficSvc.SetHydraService(s.hydraService)
-	}
-	if s.staticRouteService != nil {
-		trafficSvc.SetStaticRouteService(s.staticRouteService)
-	}
-	if s.singboxRouterHandler != nil && s.singboxRouterHandler.Service() != nil {
-		trafficSvc.SetRouterService(s.singboxRouterHandler.Service())
-	}
-	if s.mihomoHandler != nil {
-		if s.mihomoHandler.NativeStore() != nil {
-			trafficSvc.SetNativeStore(s.mihomoHandler.NativeStore())
-		}
-		trafficSvc.SetNativeBatchRuleSaver(s.mihomoHandler.BatchSaveRules)
-	}
-	h.trafficHandler = systraffic.NewHandler(trafficSvc)
-
-	// Connections viewer
-	h.connectionsService = connections.NewService(s.catalog, s.ndmsTransport, s.dnsRouteService, s.loggingService)
-	if s.connectionsMarkProvider != nil {
-		h.connectionsService.SetSingboxMarkProvider(s.connectionsMarkProvider)
-	}
-	h.connectionsHandler = api.NewConnectionsHandler(h.connectionsService)
-
-	h.signatureHandler = api.NewSignatureHandler()
-	h.terminalHandler = api.NewTerminalHandler(s.terminalManager, s.loggingService)
-
-	h.eventsHandler = api.NewEventsHandler(s.bus, s.instanceID)
-
-	h.controlHandler.SetProxyControl(s.tunnels, s.proxyRuntime)
-
-	h.proxyListenerHandler = api.NewProxyListenerHandler(s.proxyRecords)
-
-	if s.xrayServerService != nil {
-		h.xrayServerHandler = api.NewXrayServerHandler(s.xrayServerService, s.serverIngressCoordinator)
-	}
-	if s.tgWebProxyService != nil {
-		h.tgWebProxyHandler = api.NewTgWebProxyHandler(s.tgWebProxyService, s.sessions)
-	}
-	if s.xrayServerService != nil || s.tgWebProxyService != nil {
-		egressAdp := egress.NewAdapter(s.catalog)
-		preflight := serverwizard.NewPreflightEngine(s.xrayServerService, s.cdnDispatcher, s.tgWebProxyService, s.serverIngressCoordinator, egressAdp)
-		fingerprint := serverwizard.NewFingerprintEngine(s.xrayServerService, s.cdnDispatcher, s.tgWebProxyService, s.serverIngressCoordinator, egressAdp)
-		planStore := serverwizard.NewPlanStore()
-		jobRunner := serverwizard.NewJobRunner()
-		wizardSvc := serverwizard.NewWizardService(
-			s.serverIngressCoordinator,
-			s.xrayServerService,
-			s.tgWebProxyService,
-			s.cdnDispatcher,
-			preflight,
-			fingerprint,
-			planStore,
-			jobRunner,
-			egressAdp,
-		)
-		h.serverWizardHandler = api.NewServerWizardHandler(wizardSvc, s.sessions)
-	}
-
-	// Auth middleware helper
-	h.guarded = s.authMiddleware.RequireAuthFunc
-
-	return h
+	return actionHandlers
 }
 
 // registerCoreRoutes — auth, health, OpenAPI spec, SSE events, NDM hooks, WAN status.

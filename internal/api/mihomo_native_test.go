@@ -345,6 +345,50 @@ func TestMihomoNativeGroupUpdateRollsBackWhenApplyFails(t *testing.T) {
 	}
 }
 
+func TestMihomoNativeGroupDeleteRoute(t *testing.T) {
+	store, err := mihomonative.NewStore(filepath.Join(t.TempDir(), "native.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	group, err := store.SaveGroup(mihomonative.ProxyGroup{
+		Name:    "DeleteMe",
+		Type:    "url-test",
+		Proxies: []string{"DIRECT"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewMihomoHandler(&fakeMihomoEngine{})
+	h.SetNativeStore(store)
+	h.SetSettingsStore(newMihomoHandlerSettings(t, "mihomo", true))
+	var reloaded bool
+	h.SetReloadFunc(func() error {
+		reloaded = true
+		return nil
+	})
+
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/mihomo/native/groups/"+group.ID, nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("DELETE status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !reloaded {
+		t.Fatal("expected reload to be called on group delete")
+	}
+	groups := store.ListGroups()
+	if len(groups) != 0 {
+		t.Fatalf("expected 0 groups, got: %+v", groups)
+	}
+}
+
+
 func TestMihomoNativeConfigMutationsShareTransactionMutex(t *testing.T) {
 	store, err := mihomonative.NewStore(filepath.Join(t.TempDir(), "native.json"))
 	if err != nil {

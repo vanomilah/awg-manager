@@ -16,12 +16,15 @@ import (
 
 // GenerationStoreHooks allows injecting failpoints during generation bundle publication.
 type GenerationStoreHooks struct {
-	FailFileFsync       bool
-	FailStagingDirFsync bool
-	FailRename          bool
-	FailParentDirFsync  bool
-	FailPointerWrite    bool
-	FailPointerFsync    bool
+	FailFileFsync                 bool
+	FailStagingDirFsync           bool
+	FailRename                    bool
+	FailParentDirFsync            bool
+	FailPointerWrite              bool
+	FailPointerFsync              bool
+	FailPreexistingStagingRemoval bool
+	FailStagingRemoval            bool
+	FailCandidateDirRemoval       bool
 }
 
 // GenerationStore manages immutable generation bundles and the LKG pointer.
@@ -106,16 +109,29 @@ func (s *GenerationStore) PublishStagedBundle(
 		return fmt.Errorf("secure generations directory: %w", err)
 	}
 
-	// 4. Create staging directory generations/.tmp.<genID>
+	// 4. Clean up any pre-existing staging directory generations/.tmp.<genID>
 	stagingName := ".tmp." + genID
-	_ = secureGens.RemoveAll(stagingName)
 	stagingDir := filepath.Join(s.generationsDir, stagingName)
+	if s.hooks.FailPreexistingStagingRemoval {
+		return errors.New("failpoint: pre-existing staging directory removal failed")
+	}
+	if err := secureGens.RemoveAll(stagingName); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("pre-clean staging directory %s: %w", stagingName, err)
+	}
+	if _, err := os.Stat(stagingDir); err == nil {
+		return fmt.Errorf("verify staging directory removed %s: directory still exists", stagingName)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat staging directory %s: %w", stagingName, err)
+	}
+
 	if err := os.MkdirAll(stagingDir, 0700); err != nil {
 		return fmt.Errorf("create staging directory: %w", err)
 	}
 	defer func() {
 		// Clean up staging dir if publication did not rename it
-		_ = secureGens.RemoveAll(stagingName)
+		if !s.hooks.FailStagingRemoval {
+			_ = secureGens.RemoveAll(stagingName)
+		}
 	}()
 
 	secureStaging, err := strictfs.NewSecureDir(stagingDir)
@@ -148,17 +164,31 @@ func (s *GenerationStore) PublishStagedBundle(
 	}
 
 	// 7. Write generation.manifest.json
+	bridgeIdentVer := appliedRec.BridgeIdentityVersion
+	if bridgeIdentVer == 0 {
+		bridgeIdentVer = CurrentBridgeIdentityVersion
+	}
+	appliedBridgesDigest := appliedRec.AppliedBridgesDigest
+	if appliedBridgesDigest == "" && len(appliedRec.AppliedBridges) > 0 {
+		appliedBridgesDigest = BridgesDigest(appliedRec.AppliedBridges)
+	}
+	archivedAt := appliedRec.AppliedAt
+	if archivedAt.IsZero() {
+		archivedAt = time.Now()
+	}
 	gm := GenerationManifest{
-		Version:             1,
-		GenerationID:        genID,
-		GenerationNumber:    genNum,
-		ArchivedAt:          time.Now(),
-		AppliedStoreDigest:  appliedRec.AppliedStoreDigest,
-		AppliedConfigDigest: appliedRec.AppliedConfigDigest,
-		AppliedInputDigest:  appliedRec.AppliedInputDigest,
-		AppliedListeners:    appliedRec.AppliedListeners,
-		AppliedBridges:      appliedRec.AppliedBridges,
-		RuntimeMode:         appliedRec.RuntimeMode,
+		Version:               1,
+		BridgeIdentityVersion: bridgeIdentVer,
+		GenerationID:          genID,
+		GenerationNumber:      genNum,
+		ArchivedAt:            archivedAt,
+		AppliedStoreDigest:    appliedRec.AppliedStoreDigest,
+		AppliedConfigDigest:   appliedRec.AppliedConfigDigest,
+		AppliedInputDigest:    appliedRec.AppliedInputDigest,
+		AppliedListeners:      appliedRec.AppliedListeners,
+		AppliedBridges:        appliedRec.AppliedBridges,
+		AppliedBridgesDigest:  appliedBridgesDigest,
+		RuntimeMode:           appliedRec.RuntimeMode,
 	}
 	manifestBytes, err := json.MarshalIndent(gm, "", "  ")
 	if err != nil {
@@ -203,6 +233,77 @@ func (s *GenerationStore) PublishStagedBundle(
 	return nil
 }
 
+// RemoveCandidateGeneration safely removes an uncommitted generation bundle directory.
+// It verifies that genID is well-formed, non-empty, and matches neither activeGenID nor lkgGenID.
+func (s *GenerationStore) RemoveCandidateGeneration(genID, activeGenID, lkgGenID string) error {
+	if err := ValidateBasename(genID); err != nil {
+		return fmt.Errorf("invalid generation ID %q: %w", genID, err)
+	}
+	if genID == "" {
+		return nil
+	}
+	if genID == activeGenID || (lkgGenID != "" && genID == lkgGenID) {
+		return fmt.Errorf("refusing to remove active or LKG generation %s", genID)
+	}
+
+	if _, err := os.Stat(s.generationsDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	targetDir := filepath.Join(s.generationsDir, genID)
+	stagingName := ".tmp." + genID
+	stagingDir := filepath.Join(s.generationsDir, stagingName)
+	_, tErr := os.Stat(targetDir)
+	_, sErr := os.Stat(stagingDir)
+	if os.IsNotExist(tErr) && os.IsNotExist(sErr) {
+		return nil
+	}
+
+	secureGens, err := strictfs.NewSecureDir(s.generationsDir)
+	if err != nil {
+		return fmt.Errorf("secure generations directory: %w", err)
+	}
+	defer secureGens.Close()
+
+	if s.hooks.FailStagingRemoval {
+		return errors.New("failpoint: staging directory removal failed")
+	}
+
+	// Remove lingering staging if present
+	if !os.IsNotExist(sErr) {
+		if err := secureGens.RemoveAll(stagingName); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove staging directory %s: %w", stagingName, err)
+		}
+		if _, err := os.Stat(stagingDir); err == nil {
+			return fmt.Errorf("verify staging directory removed %s: still exists", stagingName)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("verify staging directory removed %s: %w", stagingName, err)
+		}
+	}
+
+	if s.hooks.FailCandidateDirRemoval {
+		return errors.New("failpoint: candidate directory removal failed")
+	}
+
+	if !os.IsNotExist(tErr) {
+		if err := secureGens.RemoveAll(genID); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove generation directory %s: %w", genID, err)
+		}
+
+		if _, err := os.Stat(targetDir); err == nil {
+			return fmt.Errorf("verify generation directory removed %s: still exists", genID)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("verify generation directory removed %s: %w", genID, err)
+		}
+	}
+
+	if err := strictfs.FsyncDirectory(s.generationsDir); err != nil {
+		return fmt.Errorf("fsync generations directory: %w", err)
+	}
+
+	return nil
+}
+
 // ReadLKGPointer loads and validates lkg.pointer.json.
 func (s *GenerationStore) ReadLKGPointer() (*LKGPointer, error) {
 	secureBase, err := strictfs.NewSecureDir(s.baseDir)
@@ -217,7 +318,7 @@ func (s *GenerationStore) ReadLKGPointer() (*LKGPointer, error) {
 		return nil, fmt.Errorf("read lkg.pointer.json: %w", err)
 	}
 	var ptr LKGPointer
-	if err := json.Unmarshal(data, &ptr); err != nil {
+	if err := DecodeJSONStrict(data, &ptr); err != nil {
 		return nil, fmt.Errorf("unmarshal lkg pointer: %w", err)
 	}
 	if err := ptr.ValidateSchema(); err != nil {
@@ -250,7 +351,7 @@ func (s *GenerationStore) ReadGenerationBundle(genID string) (*GenerationManifes
 		return nil, "", "", fmt.Errorf("read generation.manifest.json: %w", err)
 	}
 	var gm GenerationManifest
-	if err := json.Unmarshal(data, &gm); err != nil {
+	if err := DecodeJSONStrict(data, &gm); err != nil {
 		return nil, "", "", fmt.Errorf("unmarshal generation manifest: %w", err)
 	}
 	if err := gm.ValidateSchema(); err != nil {

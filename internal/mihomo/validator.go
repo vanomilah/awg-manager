@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	defaultValidationTimeout = 10 * time.Second
+	defaultValidationTimeout = 60 * time.Second
 	maxValidationOutputBytes = 64 * 1024 // 64 KiB
 )
 

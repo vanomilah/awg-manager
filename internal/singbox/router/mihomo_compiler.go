@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/strictfs"
+	"gopkg.in/yaml.v3"
 )
 
 // MihomoCompileInput is the immutable, deep-copied aggregate snapshot of all input sources
@@ -23,6 +27,7 @@ type MihomoCompileInput struct {
 	TargetBridges     []mihomo.BridgeRef            `json:"target_bridges"`
 	Sidecar           bool                          `json:"sidecar"`
 	Mode              mihomo.RuntimeMode            `json:"mode"`
+	VersionVector     mihomo.SourceVersionVector    `json:"version_vector,omitempty"`
 }
 
 // ComputeDigest computes a canonical SHA-256 digest of the input snapshot.
@@ -86,23 +91,96 @@ func CompileMihomoConfigFromInput(input *MihomoCompileInput) (*mihomo.CompileRes
 
 	configDigest := strictfs.ComputeBytesDigest(yamlBytes)
 
-	// Collect required listeners
-	var reqListeners []mihomo.ListenerSpec
-	mixedPort := input.RouterSettings.MihomoMixedPort
-	if mixedPort <= 0 {
-		mixedPort = 1099
+	var parsedCfg mihomo.Config
+	if err := yaml.Unmarshal(yamlBytes, &parsedCfg); err != nil {
+		return nil, fmt.Errorf("unmarshal compiled mihomo config for listeners: %w", err)
 	}
-	reqListeners = append(reqListeners,
-		mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(mixedPort), Purpose: "mihomo-mixed-port"},
-		mihomo.ListenerSpec{Network: "udp", Protocol: "udp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(mixedPort), Purpose: "mihomo-mixed-port"},
-	)
 
-	for _, l := range input.NativeResources.Listeners {
+	// Derive required listeners strictly from the compiled typed config AST
+	var reqListeners []mihomo.ListenerSpec
+
+	// 1. Controller listener
+	if parsedCfg.ExternalCtl != "" {
+		host, portStr, err := net.SplitHostPort(parsedCfg.ExternalCtl)
+		if err == nil {
+			if port, err := strconv.Atoi(portStr); err == nil && port > 0 {
+				family := "ipv4"
+				if strings.Contains(host, ":") {
+					family = "ipv6"
+				}
+				reqListeners = append(reqListeners, mihomo.ListenerSpec{
+					Network:  "tcp",
+					Protocol: "tcp",
+					Family:   family,
+					Address:  host,
+					Port:     uint16(port),
+					Purpose:  "external-controller",
+				})
+			}
+		}
+	}
+
+	// 2. Global transparent intercept ports (only if present and > 0 in compiled config)
+	if parsedCfg.TProxyPort > 0 {
+		reqListeners = append(reqListeners,
+			mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.TProxyPort), Purpose: "tproxy-port"},
+			mihomo.ListenerSpec{Network: "udp", Protocol: "udp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.TProxyPort), Purpose: "tproxy-port"},
+		)
+	}
+	if parsedCfg.RedirPort > 0 {
+		reqListeners = append(reqListeners,
+			mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.RedirPort), Purpose: "redir-port"},
+		)
+	}
+
+	// 3. Local proxy ports (mixed, http, socks)
+	if parsedCfg.MixedPort > 0 {
+		reqListeners = append(reqListeners,
+			mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.MixedPort), Purpose: "mihomo-mixed-port"},
+			mihomo.ListenerSpec{Network: "udp", Protocol: "udp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.MixedPort), Purpose: "mihomo-mixed-port"},
+		)
+	}
+	if parsedCfg.Port > 0 {
+		reqListeners = append(reqListeners,
+			mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.Port), Purpose: "mihomo-http-port"},
+		)
+	}
+	if parsedCfg.SocksPort > 0 {
+		reqListeners = append(reqListeners,
+			mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.SocksPort), Purpose: "mihomo-socks-port"},
+			mihomo.ListenerSpec{Network: "udp", Protocol: "udp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(parsedCfg.SocksPort), Purpose: "mihomo-socks-port"},
+		)
+	}
+
+	// 4. Inbound listener array (native bridges and custom listeners)
+	for _, l := range parsedCfg.Listeners {
 		if l.Port > 0 {
-			reqListeners = append(reqListeners,
-				mihomo.ListenerSpec{Network: "tcp", Protocol: "tcp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(l.Port), Purpose: l.Name},
-				mihomo.ListenerSpec{Network: "udp", Protocol: "udp", Family: "ipv4", Address: "0.0.0.0", Port: uint16(l.Port), Purpose: l.Name},
-			)
+			addr := l.Listen
+			if addr == "" {
+				addr = "0.0.0.0"
+			}
+			family := "ipv4"
+			if strings.Contains(addr, ":") {
+				family = "ipv6"
+			}
+			reqListeners = append(reqListeners, mihomo.ListenerSpec{
+				Network:  "tcp",
+				Protocol: "tcp",
+				Family:   family,
+				Address:  addr,
+				Port:     uint16(l.Port),
+				Purpose:  l.Name,
+			})
+			if l.Type == "mixed" || l.Type == "socks" || l.Type == "" || l.UDP {
+				reqListeners = append(reqListeners, mihomo.ListenerSpec{
+					Network:  "udp",
+					Protocol: "udp",
+					Family:   family,
+					Address:  addr,
+					Port:     uint16(l.Port),
+					Purpose:  l.Name,
+				})
+			}
 		}
 	}
 

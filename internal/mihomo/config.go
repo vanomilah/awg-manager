@@ -569,6 +569,8 @@ func GenerateConfigWithResources(
 	if settings.RoutingMode == "fakeip-tun" || settings.RoutingMode == "policy-tun" {
 		cfg.DNS.Enhanced = "fake-ip"
 		cfg.DNS.FakeIPRange = settings.FakeIPPool4 // E.g. "198.18.0.0/15"
+		cfg.TProxyPort = 0
+		cfg.RedirPort = 0
 
 		cfg.Tun = &Tun{
 			Enable:              true,

@@ -67,6 +67,118 @@ type AIMemoryData struct {
 	UpdatedAt time.Time              `json:"updatedAt"`
 }
 
+func (f *MemoryFact) UnmarshalJSON(data []byte) error {
+	type Alias MemoryFact
+	aux := struct {
+		*Alias
+		CreatedAtSnake *time.Time `json:"created_at"`
+		UpdatedAtSnake *time.Time `json:"updated_at"`
+	}{
+		Alias: (*Alias)(f),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if f.CreatedAt.IsZero() && aux.CreatedAtSnake != nil {
+		f.CreatedAt = *aux.CreatedAtSnake
+	}
+	if f.UpdatedAt.IsZero() && aux.UpdatedAtSnake != nil {
+		f.UpdatedAt = *aux.UpdatedAtSnake
+	}
+	return nil
+}
+
+func (p *LearnedPlaybook) UnmarshalJSON(data []byte) error {
+	type Alias LearnedPlaybook
+	aux := struct {
+		*Alias
+		SuccessCountSnake int        `json:"success_count"`
+		LearnedFromSnake  string     `json:"learned_from"`
+		CreatedAtSnake    *time.Time `json:"created_at"`
+		LastUsedAtSnake   *time.Time `json:"last_used_at"`
+	}{
+		Alias: (*Alias)(p),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if p.SuccessCount == 0 && aux.SuccessCountSnake > 0 {
+		p.SuccessCount = aux.SuccessCountSnake
+	}
+	if p.LearnedFrom == "" && aux.LearnedFromSnake != "" {
+		p.LearnedFrom = aux.LearnedFromSnake
+	}
+	if p.CreatedAt.IsZero() && aux.CreatedAtSnake != nil {
+		p.CreatedAt = *aux.CreatedAtSnake
+	}
+	if p.LastUsedAt.IsZero() && aux.LastUsedAtSnake != nil {
+		p.LastUsedAt = *aux.LastUsedAtSnake
+	}
+	if p.Title == "" {
+		if p.Trigger != "" {
+			p.Title = p.Trigger
+		} else if p.Action != "" {
+			p.Title = p.Action
+		}
+	}
+	return nil
+}
+
+func (j *LearningJournalEntry) UnmarshalJSON(data []byte) error {
+	type Alias LearningJournalEntry
+	aux := struct {
+		*Alias
+		Diagnosis   string `json:"diagnosis"`
+		Action      string `json:"action"`
+		ActionSnake string `json:"action_taken"`
+		CloudSnake  string `json:"cloud_advice"`
+	}{
+		Alias: (*Alias)(j),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if j.CloudAdvice == "" {
+		if aux.CloudSnake != "" {
+			j.CloudAdvice = aux.CloudSnake
+		} else if aux.Diagnosis != "" {
+			j.CloudAdvice = aux.Diagnosis
+		}
+	}
+	if j.ActionTaken == "" {
+		if aux.ActionSnake != "" {
+			j.ActionTaken = aux.ActionSnake
+		} else if aux.Action != "" {
+			j.ActionTaken = aux.Action
+		}
+	}
+	if j.ID == "" {
+		j.ID = genMemoryID()
+	}
+	return nil
+}
+
+func (d *AIMemoryData) UnmarshalJSON(data []byte) error {
+	type Alias AIMemoryData
+	aux := struct {
+		*Alias
+		LearningJournal []LearningJournalEntry `json:"learning_journal"`
+		UpdatedAtSnake  *time.Time             `json:"updated_at"`
+	}{
+		Alias: (*Alias)(d),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(d.Journal) == 0 && len(aux.LearningJournal) > 0 {
+		d.Journal = aux.LearningJournal
+	}
+	if d.UpdatedAt.IsZero() && aux.UpdatedAtSnake != nil {
+		d.UpdatedAt = *aux.UpdatedAtSnake
+	}
+	return nil
+}
+
 func defaultSentinelSettings() SentinelSettings {
 	return SentinelSettings{
 		Enabled:         true,

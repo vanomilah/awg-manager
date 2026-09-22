@@ -149,14 +149,24 @@ func (d *DynamicEngine) Startup(ctx context.Context) StartupResult {
 
 func (d *DynamicEngine) ApplyNativeMutation(ctx context.Context, mutateFn func() error) error {
 	if d.coordinator == nil {
-		return mutateFn()
+		if mutateFn != nil {
+			return mutateFn()
+		}
+		return nil
 	}
-	return d.coordinator.MutateAndApply(ctx, mutateFn, func(c context.Context) (*mihomo.CompileResult, error) {
+	err := d.coordinator.MutateAndApply(ctx, mutateFn, func(c context.Context) (*mihomo.CompileResult, error) {
 		if d.compileFn != nil {
 			return d.compileFn(c)
 		}
 		return nil, errors.New("compile function not configured")
 	})
+	if err != nil {
+		return err
+	}
+	if readyErr := d.markMihomoReady(); readyErr != nil {
+		return d.failMihomo(readyErr)
+	}
+	return nil
 }
 
 func (d *DynamicEngine) ApplyDraftOnly(ctx context.Context, mutateFn func() error) error {
@@ -207,6 +217,20 @@ func (d *DynamicEngine) IsDegraded() bool {
 	return d.coordinator.State() == mihomo.StateRecoveryRequired
 }
 
+func (d *DynamicEngine) CheckMutationAllowed() error {
+	if d.coordinator == nil {
+		return nil
+	}
+	return d.coordinator.CheckMutationAllowed()
+}
+
+func (d *DynamicEngine) ExportEvidence(ctx context.Context) (*mihomo.RecoveryEvidenceDTO, error) {
+	if d.coordinator == nil {
+		return nil, errors.New("coordinator unavailable")
+	}
+	return d.coordinator.ExportSafeEvidence(ctx)
+}
+
 func (d *DynamicEngine) Reconcile(ctx context.Context, action string, force bool) error {
 	if d.coordinator == nil {
 		return errors.New("coordinator unavailable")
@@ -216,6 +240,23 @@ func (d *DynamicEngine) Reconcile(ctx context.Context, action string, force bool
 	}
 	d.triggerReady()
 	return nil
+}
+
+func (d *DynamicEngine) HasUnallocatedBridges() bool {
+	if d.nativeStore == nil {
+		return false
+	}
+	for _, p := range d.nativeStore.ListProxies() {
+		if p.SourceID == "" && p.Bridge == nil && p.Enabled && p.SelectedEngine == mihomonative.EngineMihomo {
+			return true
+		}
+	}
+	for _, s := range d.nativeStore.ListSubscriptions() {
+		if s.Bridge == nil && d.nativeStore.IsSubscriptionExportable(s.ID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *DynamicEngine) activeRoutingEngine() string {
@@ -301,10 +342,19 @@ func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
 	if d.coordinator != nil && d.compileFn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
-		if err := d.coordinator.MutateAndApply(ctx, nil, d.compileFn); err != nil {
+		var mutateFn func() error
+		if d.HasUnallocatedBridges() && d.OnMihomoPrepare != nil {
+			mutateFn = func() error {
+				return d.OnMihomoPrepare()
+			}
+		}
+		if err := d.coordinator.MutateAndApply(ctx, mutateFn, d.compileFn); err != nil {
 			return d.failMihomo(fmt.Errorf("mihomo coordinator apply: %w", err))
 		}
 		d.currentMihomoMode = mode
+		if err := d.markMihomoReady(); err != nil {
+			return d.failMihomo(err)
+		}
 		return nil
 	}
 	if mode == mihomoRuntimeOff {

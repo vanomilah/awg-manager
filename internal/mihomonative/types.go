@@ -87,11 +87,11 @@ type Subscription struct {
 	FilterExclude    string              `json:"filterExclude,omitempty"`
 	BindInterface    string              `json:"bindInterface,omitempty"`
 	Bridge           *ProxyBridge        `json:"bridge,omitempty"`
-	LastFetched      time.Time          `json:"lastFetched,omitempty"`
-	LastError        string             `json:"lastError,omitempty"`
-	Members          []MemberInfo       `json:"members,omitempty"`
-	CreatedAt        time.Time          `json:"createdAt"`
-	UpdatedAt        time.Time          `json:"updatedAt"`
+	LastFetched      time.Time           `json:"lastFetched,omitempty"`
+	LastError        string              `json:"lastError,omitempty"`
+	Members          []MemberInfo        `json:"members,omitempty"`
+	CreatedAt        time.Time           `json:"createdAt"`
+	UpdatedAt        time.Time           `json:"updatedAt"`
 }
 
 type MemberInfo struct {

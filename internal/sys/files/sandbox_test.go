@@ -3,6 +3,7 @@ package files
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -194,5 +195,33 @@ func TestResolve_SymlinkEscapeDenied(t *testing.T) {
 	}
 	if abs, err := sb.ResolveWrite(filepath.Join(tmp, "dir", "new.txt")); err == nil {
 		t.Errorf("создание файла за симлинком-каталогом наружу разрешено: %s", abs)
+	}
+}
+
+func TestSaveUploadStream(t *testing.T) {
+	dir := t.TempDir()
+	sb := NewSandbox([]Root{{Path: dir, Label: "root"}})
+
+	// Successful upload
+	content := "test ipk package data content"
+	saved, written, err := sb.SaveUploadStream(dir, "package.ipk", strings.NewReader(content), 1024*1024)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if written != int64(len(content)) {
+		t.Fatalf("written = %d, want %d", written, len(content))
+	}
+	data, err := os.ReadFile(saved)
+	if err != nil || string(data) != content {
+		t.Fatalf("content mismatch: got %q, err %v", string(data), err)
+	}
+
+	// File exceeds max limit
+	_, _, err = sb.SaveUploadStream(dir, "too_large.bin", strings.NewReader("1234567890"), 5)
+	if err == nil {
+		t.Fatalf("expected error for file exceeding limit, got nil")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "too_large.bin")); !os.IsNotExist(statErr) {
+		t.Fatalf("expected overflow file to be cleaned up, but it exists")
 	}
 }

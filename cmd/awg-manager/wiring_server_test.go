@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/api"
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/xrayserver"
 )
@@ -78,5 +80,42 @@ func TestWiringServer_ShutdownHookPreservesEnabledState(t *testing.T) {
 	reloadedTG := tgwebproxy.New(tmpDir, nil)
 	if !reloadedTG.GetConfig().Enabled {
 		t.Errorf("expected persistent on-disk tgwebproxy Enabled to remain true across shutdown/reload")
+	}
+}
+
+type testMutationApplier struct{}
+
+func (testMutationApplier) IsDegraded() bool                                    { return false }
+func (testMutationApplier) CheckMutationAllowed() error                         { return nil }
+func (testMutationApplier) ApplyNativeMutation(context.Context, func() error) error { return nil }
+func (testMutationApplier) ApplyDraftOnly(context.Context, func() error) error     { return nil }
+func (testMutationApplier) ApplyPendingDraft(context.Context) error             { return nil }
+func (testMutationApplier) Reconcile(context.Context, string, bool) error       { return nil }
+func (testMutationApplier) ExportEvidence(context.Context) (*mihomo.RecoveryEvidenceDTO, error) {
+	return nil, nil
+}
+
+func TestWiring_AssertProductionWiring_RequiresMutationApplier(t *testing.T) {
+	// Nil mihomoHandler is valid (e.g. if mihomo is disabled)
+	aNil := &app{}
+	if err := assertProductionWiring(aNil); err != nil {
+		t.Fatalf("expected nil error for nil mihomoHandler, got: %v", err)
+	}
+
+	// MihomoHandler without mutation applier must fail
+	mh := api.NewMihomoHandler(nil)
+	aMissing := &app{mihomoHandler: mh}
+	if err := assertProductionWiring(aMissing); err == nil {
+		t.Fatal("expected error when mihomoHandler has no mutation applier")
+	}
+
+	// MihomoHandler with mutation applier must pass
+	mh.SetMutationApplier(testMutationApplier{})
+	aConfigured := &app{mihomoHandler: mh}
+	if err := assertProductionWiring(aConfigured); err != nil {
+		t.Fatalf("expected nil error when applier is set, got: %v", err)
+	}
+	if aConfigured.mihomoHandler.MutationApplier() == nil {
+		t.Fatal("expected MutationApplier() to be non-nil")
 	}
 }

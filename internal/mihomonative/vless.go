@@ -1,6 +1,7 @@
 package mihomonative
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -40,16 +41,22 @@ func CompileVLESS(raw string, preference, routingEngine EnginePreference) (*Prox
 		"uuid": u.User.Username(), "udp": true, "network": transport,
 		"encryption": q.Get("encryption"),
 	}
+	if pe := firstNonEmpty(q.Get("packetEncoding"), q.Get("packet-encoding"), q.Get("packet_encoding")); pe != "" {
+		proxy["packet-encoding"] = pe
+	}
 	if flow := q.Get("flow"); flow != "" && flow != "none" {
 		proxy["flow"] = flow
+	}
+	if tfo := q.Get("tfo"); tfo == "1" || strings.EqualFold(tfo, "true") {
+		proxy["tfo"] = true
 	}
 	security := strings.ToLower(q.Get("security"))
 	if security == "tls" || security == "reality" {
 		proxy["tls"] = true
-		if sni := q.Get("sni"); sni != "" {
+		if sni := firstNonEmpty(q.Get("sni"), q.Get("servername")); sni != "" {
 			proxy["servername"] = sni
 		}
-		if fp := q.Get("fp"); fp != "" {
+		if fp := firstNonEmpty(q.Get("fp"), q.Get("fingerprint")); fp != "" {
 			proxy["client-fingerprint"] = fp
 		}
 	}
@@ -106,7 +113,7 @@ func addTransportOptions(proxy map[string]interface{}, transport string, q url.V
 			opts["headers"] = map[string][]string{"Host": []string{host}}
 		}
 		proxy["http-opts"] = opts
-	case "xhttp":
+	case "xhttp", "splithttp":
 		opts := map[string]interface{}{}
 		if path != "" {
 			opts["path"] = path
@@ -117,7 +124,105 @@ func addTransportOptions(proxy map[string]interface{}, transport string, q url.V
 		if mode := q.Get("mode"); mode != "" {
 			opts["mode"] = mode
 		}
+		populateXHTTPExtra(opts, q.Get("extra"))
 		proxy["xhttp-opts"] = opts
+	}
+}
+
+func populateXHTTPExtra(opts map[string]interface{}, extraRaw string) {
+	extraRaw = strings.TrimSpace(extraRaw)
+	if extraRaw == "" {
+		return
+	}
+	var extra map[string]interface{}
+	if err := json.Unmarshal([]byte(extraRaw), &extra); err != nil {
+		return
+	}
+
+	mapping := map[string]string{
+		"uplinkHTTPMethod":         "uplink-http-method",
+		"uplink-http-method":       "uplink-http-method",
+		"seqKey":                   "seq-key",
+		"seq-key":                  "seq-key",
+		"seqPlacement":             "seq-placement",
+		"seq-placement":            "seq-placement",
+		"sessionIDKey":             "session-key",
+		"sessionIdKey":             "session-key",
+		"sessionKey":               "session-key",
+		"session-id-key":           "session-key",
+		"session-key":              "session-key",
+		"sessionIDPlacement":       "session-placement",
+		"sessionIdPlacement":       "session-placement",
+		"sessionPlacement":         "session-placement",
+		"session-id-placement":     "session-placement",
+		"session-placement":        "session-placement",
+		"xPaddingBytes":            "x-padding-bytes",
+		"x-padding-bytes":          "x-padding-bytes",
+		"xPaddingHeader":           "x-padding-header",
+		"x-padding-header":         "x-padding-header",
+		"xPaddingKey":              "x-padding-key",
+		"x-padding-key":            "x-padding-key",
+		"xPaddingMethod":           "x-padding-method",
+		"x-padding-method":         "x-padding-method",
+		"xPaddingObfsMode":         "x-padding-obfs-mode",
+		"x-padding-obfs-mode":      "x-padding-obfs-mode",
+		"xPaddingPlacement":        "x-padding-placement",
+		"x-padding-placement":      "x-padding-placement",
+		"scMaxEachPostBytes":       "sc-max-each-post-bytes",
+		"sc-max-each-post-bytes":   "sc-max-each-post-bytes",
+		"scMinPostsIntervalMs":     "sc-min-posts-interval-ms",
+		"sc-min-posts-interval-ms": "sc-min-posts-interval-ms",
+		"noGRPCHeader":             "no-grpc-header",
+		"no-grpc-header":           "no-grpc-header",
+		"noSSEHeader":              "no-sse-header",
+		"no-sse-header":            "no-sse-header",
+	}
+
+	for srcKey, targetKey := range mapping {
+		if val, ok := extra[srcKey]; ok && val != nil {
+			if _, exists := opts[targetKey]; !exists {
+				opts[targetKey] = val
+			}
+		}
+	}
+
+	if headers, ok := extra["headers"].(map[string]interface{}); ok && len(headers) > 0 {
+		opts["headers"] = headers
+	}
+
+	reuseRaw, hasReuse := extra["reuse-settings"].(map[string]interface{})
+	if !hasReuse {
+		reuseRaw, hasReuse = extra["reuseSettings"].(map[string]interface{})
+	}
+	if !hasReuse {
+		reuseRaw, hasReuse = extra["xmux"].(map[string]interface{})
+	}
+	if hasReuse && len(reuseRaw) > 0 {
+		reuseOpts := map[string]interface{}{}
+		reuseMap := map[string]string{
+			"maxConcurrency":      "max-concurrency",
+			"max-concurrency":     "max-concurrency",
+			"maxConnections":      "max-connections",
+			"max-connections":     "max-connections",
+			"cMaxReuseTimes":      "c-max-reuse-times",
+			"c-max-reuse-times":   "c-max-reuse-times",
+			"hMaxRequestTimes":    "h-max-request-times",
+			"h-max-request-times": "h-max-request-times",
+			"hMaxReusableSecs":    "h-max-reusable-secs",
+			"h-max-reusable-secs": "h-max-reusable-secs",
+			"hKeepAlivePeriod":    "h-keep-alive-period",
+			"h-keep-alive-period": "h-keep-alive-period",
+		}
+		for rSrc, rTarget := range reuseMap {
+			if rVal, ok := reuseRaw[rSrc]; ok && rVal != nil {
+				if _, exists := reuseOpts[rTarget]; !exists {
+					reuseOpts[rTarget] = rVal
+				}
+			}
+		}
+		if len(reuseOpts) > 0 {
+			opts["reuse-settings"] = reuseOpts
+		}
 	}
 }
 
@@ -129,4 +234,13 @@ func splitCSV(value string) []string {
 		}
 	}
 	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

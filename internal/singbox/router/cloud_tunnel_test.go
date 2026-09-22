@@ -228,5 +228,3 @@ func TestSyncKeeneticCloudRelays(t *testing.T) {
 		t.Errorf("expected 198.51.100.1/32 in enriched rules, got %v", ruleCIDRs)
 	}
 }
-
-

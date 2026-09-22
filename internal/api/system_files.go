@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -378,12 +377,19 @@ func (h *SystemToolsHandler) FilesUpload(w http.ResponseWriter, r *http.Request)
 		response.MethodNotAllowed(w)
 		return
 	}
-	const maxMem = 12 << 20 // 12 MB
-	// Protect against memory exhaustion DoS
-	r.Body = http.MaxBytesReader(w, r.Body, int64(maxUploadBytes())+1<<20)
+	maxLimit := int64(maxUploadBytes())
+	// Protect against memory exhaustion DoS; allow maxUploadBytes + 2MB for multipart boundaries/headers
+	r.Body = http.MaxBytesReader(w, r.Body, maxLimit+2<<20)
 
+	// Keep only up to 2MB in memory during multipart parsing, spool rest to temporary disk file
+	const maxMem = 2 << 20
 	if err := r.ParseMultipartForm(maxMem); err != nil {
-		response.Error(w, "invalid multipart form", "INVALID_FORM")
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) || strings.Contains(strings.ToLower(err.Error()), "too large") {
+			response.Error(w, fmt.Sprintf("файл слишком большой (максимум %d МБ)", maxLimit/(1024*1024)), "FILE_TOO_LARGE")
+			return
+		}
+		response.Error(w, fmt.Sprintf("ошибка загрузки формы: %s", err.Error()), "INVALID_FORM")
 		return
 	}
 	defer func() {
@@ -391,32 +397,29 @@ func (h *SystemToolsHandler) FilesUpload(w http.ResponseWriter, r *http.Request)
 			_ = r.MultipartForm.RemoveAll()
 		}
 	}()
+
 	dir := strings.TrimSpace(r.FormValue("path"))
+	if dir == "" {
+		dir = strings.TrimSpace(r.URL.Query().Get("path"))
+	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		response.Error(w, "file required", "INVALID_FILE")
+		response.Error(w, "файл не передан", "INVALID_FILE")
 		return
 	}
 	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, int64(maxUploadBytes())+1))
-	if err != nil {
-		response.Error(w, err.Error(), "READ_ERROR")
-		return
-	}
-	if len(data) > maxUploadBytes() {
-		response.Error(w, fmt.Sprintf("file too large (max %d bytes)", maxUploadBytes()), "FILE_TOO_LARGE")
-		return
-	}
-	saved, err := h.files.SaveUpload(dir, filepath.Base(header.Filename), data)
+
+	saved, written, err := h.files.SaveUploadStream(dir, header.Filename, file, maxLimit)
 	if err != nil {
 		h.filesError(w, err)
 		return
 	}
-	h.emitEvent("upload", saved, fmt.Sprintf("%d bytes", len(data)))
+
+	h.emitEvent("upload", saved, fmt.Sprintf("%d bytes", written))
 	response.Success(w, SystemUploadData{Path: saved})
 }
 
-func maxUploadBytes() int { return 10 * 1024 * 1024 }
+func maxUploadBytes() int { return 100 * 1024 * 1024 }
 
 func (h *SystemToolsHandler) filesError(w http.ResponseWriter, err error) {
 	if errors.Is(err, sysfiles.ErrPathDenied) {

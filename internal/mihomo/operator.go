@@ -7,45 +7,206 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/sys/procnet"
 	"gopkg.in/yaml.v3"
 )
 
 // Operator manages the Mihomo process and implements proxyengine.Engine
 type Operator struct {
-	mu             sync.Mutex
-	binaryPath     string
-	configDir      string
-	cmd            *exec.Cmd
-	stopping       *exec.Cmd
-	done           chan struct{}
-	running        bool
-	pid            int
-	generation     uint64
-	lastError      string
-	commandFn      func(string, ...string) *exec.Cmd
-	readyFn        func(context.Context) error
-	afterWait      func()
-	cleanupStaleFn func(string, string) error
-	onExit         func(uint64)
-	logFn          func(level, action, message string)
+	mu               sync.Mutex
+	binaryPath       string
+	configDir        string
+	logFilePath      string
+	maxLogSize       int64
+	gracefulTimeout  time.Duration
+	controllerAddr   string
+	controllerSecret string
+	cmd              *exec.Cmd
+	stopping         *exec.Cmd
+	done             chan struct{}
+	running          bool
+	pid              int
+	generation       uint64
+	lastError        string
+	commandFn        func(string, ...string) *exec.Cmd
+	readyFn          func(context.Context) error
+	afterWait        func()
+	cleanupStaleFn   func(string, string) error
+	onExit           func(uint64)
+	logFn            func(level, action, message string)
+	socketCheckFn    func(addr string, port int, expectedPID int) error
+	procDir          string
+	signalGracefulFn func(*os.Process) error
+	killFn           func(*os.Process) error
+	reapTimeout      time.Duration
 }
 
 func NewOperator(binaryPath, configDir string) *Operator {
 	return &Operator{
-		binaryPath:     binaryPath,
-		configDir:      configDir,
-		commandFn:      exec.Command,
-		cleanupStaleFn: cleanupStaleManagedProcesses,
+		binaryPath:      binaryPath,
+		configDir:       configDir,
+		logFilePath:     "/tmp/mihomo.log",
+		maxLogSize:      512 * 1024,
+		gracefulTimeout: 3 * time.Second,
+		commandFn:       exec.Command,
+		cleanupStaleFn:  cleanupStaleManagedProcesses,
 	}
+}
+
+// SetProcessSeam allows injecting deterministic process signaling, killing, and reap timeout for testing.
+func (o *Operator) SetProcessSeam(sigFn func(*os.Process) error, killFn func(*os.Process) error, reapTimeout time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.signalGracefulFn = sigFn
+	o.killFn = killFn
+	o.reapTimeout = reapTimeout
+}
+
+// SetLogPath configures a custom log file path.
+func (o *Operator) SetLogPath(path string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.logFilePath = path
+}
+
+// SetMaxLogSize sets the maximum size in bytes before log file rotation.
+func (o *Operator) SetMaxLogSize(size int64) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.maxLogSize = size
+}
+
+// SetGracefulTimeout sets the time to wait for SIGTERM before escalating to SIGKILL.
+func (o *Operator) SetGracefulTimeout(d time.Duration) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.gracefulTimeout = d
+}
+
+// SetController sets an explicit external-controller address and secret override.
+func (o *Operator) SetController(addr, secret string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.controllerAddr = addr
+	o.controllerSecret = secret
+}
+
+func (o *Operator) getControllerConfig() (addr string, secret string, host string, port int) {
+	o.mu.Lock()
+	addr = o.controllerAddr
+	secret = o.controllerSecret
+	configDir := o.configDir
+	o.mu.Unlock()
+
+	if addr == "" {
+		cfgPath := filepath.Join(configDir, "config.yaml")
+		if data, err := os.ReadFile(cfgPath); err == nil {
+			var probe struct {
+				ExternalCtl string `yaml:"external-controller"`
+				Secret      string `yaml:"secret"`
+			}
+			if err := yaml.Unmarshal(data, &probe); err == nil {
+				if probe.ExternalCtl != "" {
+					addr = probe.ExternalCtl
+				}
+				if secret == "" && probe.Secret != "" {
+					secret = probe.Secret
+				}
+			}
+		}
+	}
+
+	if addr == "" {
+		addr = "127.0.0.1:9090"
+	}
+
+	h, pStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = "127.0.0.1"
+		port = 9090
+	} else {
+		p, _ := strconv.Atoi(pStr)
+		if p <= 0 {
+			p = 9090
+		}
+		port = p
+		if h == "" || h == "0.0.0.0" || h == "::" {
+			h = "127.0.0.1"
+		}
+		host = h
+	}
+
+	return addr, secret, host, port
+}
+
+// ControllerTarget returns the configured controller address (host:port) and bearer secret.
+func (o *Operator) ControllerTarget() (string, string) {
+	addr, secret, host, port := o.getControllerConfig()
+	if addr == "" {
+		addr = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return addr, secret
+}
+
+// MihomoProviderRefresher triggers a runtime update for an external proxy provider.
+type MihomoProviderRefresher interface {
+	RefreshProvider(ctx context.Context, providerName string) error
+}
+
+// RefreshProvider requests the local Mihomo controller to refresh a named proxy provider.
+func (o *Operator) RefreshProvider(ctx context.Context, providerName string) error {
+	if strings.TrimSpace(providerName) == "" {
+		return errors.New("provider name is required")
+	}
+	path := "/providers/proxies/" + url.PathEscape(providerName)
+	req, err := o.newControllerRequest(ctx, http.MethodPut, path, nil)
+	if err != nil {
+		return fmt.Errorf("create provider refresh request: %w", err)
+	}
+
+	_, secret, _, _ := o.getControllerConfig()
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		msg := err.Error()
+		if secret != "" && strings.Contains(msg, secret) {
+			msg = strings.ReplaceAll(msg, secret, "[REDACTED]")
+		}
+		return fmt.Errorf("mihomo provider refresh request failed: %s", msg)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("mihomo provider refresh returned %s", resp.Status)
+	}
+	return nil
+}
+
+func (o *Operator) newControllerRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	_, secret, host, port := o.getControllerConfig()
+	baseURL := fmt.Sprintf("http://%s", net.JoinHostPort(host, strconv.Itoa(port)))
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
+	return req, nil
 }
 
 // SetLogger sets an optional logging callback for early startup and process errors.
@@ -98,6 +259,18 @@ func (o *Operator) configHasTunEnabled() bool {
 	return probe.Tun.Enable
 }
 
+// ResetCache explicitly wipes cache.db if needed for manual/administrative reset.
+// Normal reload and start preserve cache.db to retain user selector choices and url-test latencies.
+func (o *Operator) ResetCache() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	cachePath := filepath.Join(o.configDir, "cache.db")
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func (o *Operator) Reload() error {
 	if running, _ := o.IsRunning(); !running {
 		return o.Start()
@@ -106,13 +279,11 @@ func (o *Operator) Reload() error {
 	// Mihomo cannot dynamically bind or attach a Linux TUN device via hot reload
 	// (PUT /configs). When TUN is enabled in config.yaml, Mihomo must restart cleanly.
 	if o.configHasTunEnabled() {
-		_ = o.Stop()
+		if err := o.Stop(); err != nil {
+			return o.recordError(fmt.Errorf("mihomo stop before tun reload: %w", err))
+		}
 		return o.Start()
 	}
-
-	// Remove cache.db so url-test groups start fresh without fixed selections
-	// that were persisted when the group was in selector mode.
-	_ = os.Remove(filepath.Join(o.configDir, "cache.db"))
 
 	payload := map[string]string{
 		"path": filepath.Join(o.configDir, "config.yaml"),
@@ -122,7 +293,9 @@ func (o *Operator) Reload() error {
 		return o.recordError(err)
 	}
 
-	req, err := http.NewRequest(http.MethodPut, "http://127.0.0.1:9090/configs?force=true", bytes.NewReader(body))
+	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer reqCancel()
+	req, err := o.newControllerRequest(reqCtx, http.MethodPut, "/configs?force=true", bytes.NewReader(body))
 	if err != nil {
 		return o.recordError(err)
 	}
@@ -197,22 +370,32 @@ func (o *Operator) Start() error {
 		}
 	}
 
-	// Remove cache.db so url-test groups start fresh without fixed selections
-	// that were persisted when the group was in selector mode.
-	_ = os.Remove(filepath.Join(o.configDir, "cache.db"))
-
 	cmd := o.commandFn(o.resolveBinary(), "-d", o.configDir)
-	var stdout, stderr bytes.Buffer
-	logFile, logErr := os.OpenFile("/tmp/mihomo.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	stdout := NewBoundedRingBuffer(64 * 1024)
+	stderr := NewBoundedRingBuffer(64 * 1024)
+
+	logFilePath := o.logFilePath
+	if logFilePath == "" {
+		logFilePath = "/tmp/mihomo.log"
+	}
+	maxLogSize := o.maxLogSize
+	if maxLogSize <= 0 {
+		maxLogSize = 512 * 1024
+	}
+
+	logWriter, logErr := NewRotatingLogWriter(logFilePath, maxLogSize)
 	if logErr == nil {
-		cmd.Stdout = io.MultiWriter(&stdout, logFile)
-		cmd.Stderr = io.MultiWriter(&stderr, logFile)
+		cmd.Stdout = io.MultiWriter(stdout, logWriter)
+		cmd.Stderr = io.MultiWriter(stderr, logWriter)
 	} else {
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
 	}
 
 	if err := cmd.Start(); err != nil {
+		if logWriter != nil {
+			_ = logWriter.Close()
+		}
 		o.lastError = err.Error()
 		o.mu.Unlock()
 		return err
@@ -228,7 +411,7 @@ func (o *Operator) Start() error {
 
 	readyFn := o.readyFn
 	o.mu.Unlock()
-	go o.wait(cmd, generation, &stdout, &stderr, done)
+	go o.wait(cmd, generation, stdout, stderr, logWriter, done)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -259,19 +442,80 @@ func (o *Operator) Start() error {
 	return nil
 }
 
+// SetSocketCheckFn injects an address/port/PID check callback for testing or customization.
+func (o *Operator) SetSocketCheckFn(fn func(addr string, port int, expectedPID int) error) {
+	o.mu.Lock()
+	o.socketCheckFn = fn
+	o.mu.Unlock()
+}
+
+// SetProcDir overrides the procfs root directory (used for testing with fake /proc).
+func (o *Operator) SetProcDir(dir string) {
+	o.mu.Lock()
+	o.procDir = dir
+	o.mu.Unlock()
+}
+
+func (o *Operator) verifyControllerSocket(expectedPID int) error {
+	o.mu.Lock()
+	fn := o.socketCheckFn
+	procDir := o.procDir
+	o.mu.Unlock()
+
+	_, _, host, port := o.getControllerConfig()
+
+	if fn != nil {
+		return fn(host, port, expectedPID)
+	}
+
+	if procDir == "" {
+		procDir = "/proc"
+	}
+	lookup, err := procnet.FindListeningProcess(procDir, host, port)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // On platforms/environments without proc tables, proceed
+		}
+		return err
+	}
+	endpointStr := net.JoinHostPort(host, strconv.Itoa(port))
+	if !lookup.SocketFound {
+		return fmt.Errorf("controller socket %s not yet open", endpointStr)
+	}
+	if lookup.PID != 0 && lookup.PID != expectedPID {
+		return fmt.Errorf("%w: controller socket %s owned by pid %d, expected %d", ErrControllerSocketMismatch, endpointStr, lookup.PID, expectedPID)
+	}
+	return nil
+}
+
 func (o *Operator) waitForController(ctx context.Context) error {
 	client := &http.Client{Timeout: 300 * time.Millisecond}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if running, _ := o.IsRunning(); !running {
+		running, pid := o.IsRunning()
+		if !running {
 			detail := o.LastError()
 			if detail == "" {
 				detail = "process exited before controller became ready"
 			}
 			return fmt.Errorf("%s", detail)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:9090/version", nil)
+
+		// Pre-HTTP socket ownership proof: verify controller socket belongs to this process before HTTP /version
+		if err := o.verifyControllerSocket(pid); err != nil {
+			if errors.Is(err, ErrControllerSocketMismatch) {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("controller readiness (socket): %w", ctx.Err())
+			case <-ticker.C:
+				continue
+			}
+		}
+
+		req, err := o.newControllerRequest(ctx, http.MethodGet, "/version", nil)
 		if err == nil {
 			if resp, requestErr := client.Do(req); requestErr == nil {
 				_ = resp.Body.Close()
@@ -288,7 +532,13 @@ func (o *Operator) waitForController(ctx context.Context) error {
 	}
 }
 
-func (o *Operator) wait(cmd *exec.Cmd, generation uint64, stdout, stderr *bytes.Buffer, done chan struct{}) {
+func (o *Operator) wait(cmd *exec.Cmd, generation uint64, stdout, stderr *BoundedRingBuffer, logCloser io.Closer, done chan struct{}) {
+	defer func() {
+		if logCloser != nil {
+			_ = logCloser.Close()
+		}
+	}()
+
 	err := cmd.Wait()
 	if o.afterWait != nil {
 		o.afterWait()
@@ -338,7 +588,6 @@ func (o *Operator) ClearManualStop() error {
 }
 
 func (o *Operator) ValidateConfigDir(ctx context.Context) error {
-	// Mihomo test config command: mihomo -d configDir -t
 	cmd := exec.CommandContext(ctx, o.binaryPath, "-d", o.configDir, "-t")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -352,6 +601,9 @@ func (o *Operator) ConfigDir() string {
 }
 
 func (o *Operator) resolveBinary() string {
+	if o.binaryPath == "ignored" {
+		return "ignored"
+	}
 	if _, err := os.Stat(o.binaryPath); err == nil {
 		return o.binaryPath
 	}
@@ -384,9 +636,9 @@ func (o *Operator) Stop() error {
 	return o.StopAndWait(ctx)
 }
 
-// StopAndWait does not return until the child has been reaped (or ctx
-// expires). This makes an immediate Start deterministic and prevents it from
-// observing the dying process as an already-running no-op.
+// StopAndWait gracefully stops Mihomo (SIGTERM with configurable timeout on Unix,
+// kill on Windows) and escalates to SIGKILL if the process does not terminate.
+// It guarantees the process is fully reaped before returning.
 func (o *Operator) StopAndWait(ctx context.Context) error {
 	o.mu.Lock()
 	if !o.running || o.cmd == nil || o.cmd.Process == nil {
@@ -398,12 +650,26 @@ func (o *Operator) StopAndWait(ctx context.Context) error {
 				return fmt.Errorf("cleanup stale Mihomo process during stop: %w", err)
 			}
 		}
+		reapTimeout := o.reapTimeout
+		if reapTimeout <= 0 {
+			reapTimeout = 5 * time.Second
+		}
 		o.mu.Unlock()
 		if done != nil {
+			reapTimer := time.NewTimer(reapTimeout)
+			defer reapTimer.Stop()
 			select {
 			case <-done:
+				return nil
 			case <-ctx.Done():
-				return fmt.Errorf("wait for Mihomo shutdown: %w", ctx.Err())
+				select {
+				case <-done:
+					return fmt.Errorf("wait for Mihomo shutdown: %w", ctx.Err())
+				case <-reapTimer.C:
+					return fmt.Errorf("%w: process failed to exit within %v after context cancel (%v)", ErrProcessNotReaped, reapTimeout, ctx.Err())
+				}
+			case <-reapTimer.C:
+				return fmt.Errorf("%w: process failed to exit within %v", ErrProcessNotReaped, reapTimeout)
 			}
 		}
 		return nil
@@ -411,24 +677,82 @@ func (o *Operator) StopAndWait(ctx context.Context) error {
 
 	cmd := o.cmd
 	done := o.done
-	var killErr error
+	if done == nil {
+		o.mu.Unlock()
+		return fmt.Errorf("%w: operator marked running but missing termination channel", ErrProcessNotReaped)
+	}
+
+	gracefulTimeout := o.gracefulTimeout
+	if gracefulTimeout <= 0 {
+		gracefulTimeout = 3 * time.Second
+	}
+	reapTimeout := o.reapTimeout
+	if reapTimeout <= 0 {
+		reapTimeout = 5 * time.Second
+	}
+	sigFn := o.signalGracefulFn
+	if sigFn == nil {
+		sigFn = sendGracefulStop
+	}
+	killFn := o.killFn
+	if killFn == nil {
+		killFn = func(p *os.Process) error { return p.Kill() }
+	}
+
+	var sigErr error
 	if o.stopping == nil {
 		o.stopping = cmd
-		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			killErr = fmt.Errorf("kill Mihomo process: %w", err)
-			o.lastError = killErr.Error()
+		sigErr = sigFn(cmd.Process)
+		if sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
+			o.log("warn", "stop", fmt.Sprintf("graceful stop failed: %v; falling back to kill", sigErr))
+			_ = killFn(cmd.Process)
 		}
 	}
 	o.mu.Unlock()
 
-	if done == nil {
-		return killErr
-	}
+	// Wait for graceful exit up to gracefulTimeout or ctx.Done()
+	graceTimer := time.NewTimer(gracefulTimeout)
+	defer graceTimer.Stop()
+
+	needKill := false
+	var initialErr error
+
 	select {
 	case <-done:
-		return killErr
+		return nil
+	case <-graceTimer.C:
+		// Process did not exit within graceful timeout: escalate to SIGKILL
+		o.log("warn", "stop", fmt.Sprintf("process %d did not terminate within %v; sending SIGKILL", cmd.Process.Pid, gracefulTimeout))
+		needKill = true
 	case <-ctx.Done():
-		return errors.Join(killErr, fmt.Errorf("wait for Mihomo shutdown: %w", ctx.Err()))
+		initialErr = ctx.Err()
+		needKill = true
+	}
+
+	if needKill {
+		if err := killFn(cmd.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			o.recordError(fmt.Errorf("escalate to SIGKILL: %w", err))
+		}
+	}
+
+	// Always wait for reap using an internal bounded timeout (reapTimeout), NOT the already-canceled ctx
+	reapTimer := time.NewTimer(reapTimeout)
+	defer reapTimer.Stop()
+
+	select {
+	case <-done:
+		if initialErr != nil {
+			return fmt.Errorf("wait for Mihomo shutdown: %w", initialErr)
+		}
+		return nil
+	case <-reapTimer.C:
+		pid := 0
+		if cmd.Process != nil {
+			pid = cmd.Process.Pid
+		}
+		err := fmt.Errorf("%w: pid %d failed to exit within %v after SIGKILL", ErrProcessNotReaped, pid, reapTimeout)
+		_ = o.recordError(err)
+		return err
 	}
 }
 
@@ -448,8 +772,15 @@ func (o *Operator) clearError() {
 
 func (o *Operator) warmupGroups() {
 	time.Sleep(300 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+
+	req, err := o.newControllerRequest(ctx, http.MethodGet, "/proxies", nil)
+	if err != nil {
+		return
+	}
 	client := &http.Client{Timeout: 4 * time.Second}
-	resp, err := client.Get("http://127.0.0.1:9090/proxies")
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
@@ -470,10 +801,10 @@ func (o *Operator) warmupGroups() {
 			if testURL == "" {
 				testURL = "https://www.gstatic.com/generate_204"
 			}
-			endpoint := fmt.Sprintf("http://127.0.0.1:9090/group/%s/delay?url=%s&timeout=5000", url.PathEscape(name), url.QueryEscape(testURL))
-			req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+			endpoint := fmt.Sprintf("/group/%s/delay?url=%s&timeout=5000", url.PathEscape(name), url.QueryEscape(testURL))
+			delayReq, err := o.newControllerRequest(ctx, http.MethodGet, endpoint, nil)
 			if err == nil {
-				r, err := client.Do(req)
+				r, err := client.Do(delayReq)
 				if err == nil {
 					_ = r.Body.Close()
 				}

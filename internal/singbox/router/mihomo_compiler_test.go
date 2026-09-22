@@ -11,8 +11,8 @@ import (
 func TestCompileMihomoConfigFromInput_PureNoWrites(t *testing.T) {
 	input := &MihomoCompileInput{
 		RouterSettings: storage.SingboxRouterSettings{
-			RoutingEngine:  "mihomo",
-			Enabled:        true,
+			RoutingEngine:   "mihomo",
+			Enabled:         true,
 			MihomoMixedPort: 1099,
 		},
 		TunIface:      "netaid-tun",
@@ -123,5 +123,149 @@ func TestMigrateLegacyMihomoResources(t *testing.T) {
 	err = MigrateLegacyMihomoResources(context.Background(), store, groups, rules)
 	if err != nil {
 		t.Fatalf("second migration call failed: %v", err)
+	}
+}
+
+func TestCompileMihomoConfig_PrimaryTProxyListeners(t *testing.T) {
+	input := &MihomoCompileInput{
+		RouterSettings: storage.SingboxRouterSettings{
+			RoutingEngine:   "mihomo",
+			Enabled:         true,
+			RoutingMode:     "tproxy",
+			MihomoMixedPort: 1099,
+		},
+		FinalOutbound: "DIRECT",
+		Mode:          mihomo.RuntimeEnforced,
+	}
+
+	res, err := CompileMihomoConfigFromInput(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var has51271TCP, has51271UDP, has51272TCP, has1099, has9090 bool
+	for _, l := range res.RequiredListeners {
+		if l.Port == 51271 && l.Network == "tcp" {
+			has51271TCP = true
+		}
+		if l.Port == 51271 && l.Network == "udp" {
+			has51271UDP = true
+		}
+		if l.Port == 51272 && l.Network == "tcp" {
+			has51272TCP = true
+		}
+		if l.Port == 1099 {
+			has1099 = true
+		}
+		if l.Port == 9090 && l.Purpose == "external-controller" {
+			has9090 = true
+		}
+	}
+
+	if !has51271TCP || !has51271UDP || !has51272TCP || !has1099 || !has9090 {
+		t.Fatalf("missing required listener in primary TProxy: 51271(tcp=%v,udp=%v), 51272(%v), 1099(%v), 9090(%v)",
+			has51271TCP, has51271UDP, has51272TCP, has1099, has9090)
+	}
+}
+
+func TestCompileMihomoConfig_PolicyTunListeners(t *testing.T) {
+	input := &MihomoCompileInput{
+		RouterSettings: storage.SingboxRouterSettings{
+			RoutingEngine:   "mihomo",
+			Enabled:         true,
+			RoutingMode:     "policy-tun",
+			MihomoMixedPort: 1099,
+			FakeIPPool4:     "198.18.0.0/15",
+		},
+		TunIface:      "netaid-tun",
+		FinalOutbound: "DIRECT",
+		Mode:          mihomo.RuntimeEnforced,
+	}
+
+	res, err := CompileMihomoConfigFromInput(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, l := range res.RequiredListeners {
+		if l.Port == 51271 || l.Port == 51272 {
+			t.Fatalf("policy-tun must not include transparent tproxy/redir listeners, found: %+v", l)
+		}
+	}
+
+	var has1099, has9090 bool
+	for _, l := range res.RequiredListeners {
+		if l.Port == 1099 {
+			has1099 = true
+		}
+		if l.Port == 9090 {
+			has9090 = true
+		}
+	}
+	if !has1099 || !has9090 {
+		t.Fatalf("policy-tun should include 1099(%v) and 9090(%v)", has1099, has9090)
+	}
+}
+
+func TestCompileMihomoConfig_SidecarOnlyListeners(t *testing.T) {
+	input := &MihomoCompileInput{
+		Sidecar: true,
+		Mode:    mihomo.RuntimePermissive,
+		NativeResources: mihomo.NativeResources{
+			Listeners: []mihomo.Listener{
+				{Name: "bridge-1", Port: 12005, Type: "mixed", Listen: "127.0.0.1", Proxy: "DIRECT"},
+			},
+		},
+	}
+
+	res, err := CompileMihomoConfigFromInput(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, l := range res.RequiredListeners {
+		if l.Port == 1099 {
+			t.Fatalf("sidecar config must NOT include mixed port 1099: %+v", l)
+		}
+		if l.Port == 51271 || l.Port == 51272 {
+			t.Fatalf("sidecar config must NOT include tproxy/redir ports: %+v", l)
+		}
+	}
+
+	var hasBridge12005, has9090 bool
+	for _, l := range res.RequiredListeners {
+		if l.Port == 12005 {
+			hasBridge12005 = true
+		}
+		if l.Port == 9090 {
+			has9090 = true
+		}
+	}
+	if !hasBridge12005 || !has9090 {
+		t.Fatalf("sidecar should include bridge 12005(%v) and controller 9090(%v)", hasBridge12005, has9090)
+	}
+}
+
+func TestCompileMihomoConfig_PortZeroDisabled(t *testing.T) {
+	input := &MihomoCompileInput{
+		RouterSettings: storage.SingboxRouterSettings{
+			RoutingEngine:   "mihomo",
+			Enabled:         true,
+			RoutingMode:     "tproxy",
+			MihomoMixedPort: 0, // Explicitly disabled
+		},
+		FinalOutbound: "DIRECT",
+		Mode:          mihomo.RuntimeEnforced,
+	}
+
+	res, err := CompileMihomoConfigFromInput(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, l := range res.RequiredListeners {
+		if l.Port == 1099 {
+			t.Fatalf("port 0 must disable listener, but found 1099: %+v", l)
+		}
 	}
 }

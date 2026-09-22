@@ -378,6 +378,11 @@ type Deps struct {
 	// EnsureRouterNetfilterModules). Tests set this to avoid real syscalls.
 	NetfilterPreflight func(context.Context) error
 
+	// LoadAppliedDeviceProxy is an optional override for reading applied DeviceProxy configuration.
+	// When nil, Orch.LoadApplied(orchestrator.SlotDeviceProxy) is called.
+	// Tests set this to inject deterministic read failures without mutable package state.
+	LoadAppliedDeviceProxy func() ([]byte, error)
+
 	// FirmwareRelease is an optional override for the KeeneticOS release
 	// string (osdetect by default). Only tests set it — the tun-mode gate
 	// needs a firmware version it can steer.

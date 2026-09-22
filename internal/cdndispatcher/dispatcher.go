@@ -166,9 +166,32 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(xrayURL)
 				pr.Out.Host = pr.In.Host
+
+				// 1. Ensure trailing slash if request path is exactly prefix (/cdn-bridge -> /cdn-bridge/)
+				// Xray's splithttp handler strictly expects path prefix with trailing slash.
+				if pr.Out.URL.Path == normPrefix {
+					pr.Out.URL.Path = normPrefix + "/"
+				}
+
+				// 2. Fix: When requests arrive via CDN or KeenDNS relay, the Referer header
+				// (which Xray SplitHTTP uses to carry x_padding) is often stripped by edge servers
+				// or local reverse proxies. If neither Referer nor x_padding query parameter is present,
+				// inject a valid padding Referer header so Xray server's padding validation succeeds.
+				if pr.Out.Header.Get("Referer") == "" && pr.Out.URL.Query().Get("x_padding") == "" {
+					dummyPadding := strings.Repeat("X", 300)
+					targetHost := normXray
+					if targetHost == "" {
+						targetHost = pr.Out.Host
+					}
+					pr.Out.Header.Set("Referer", "https://"+targetHost+normPrefix+"/?x_padding="+dummyPadding)
+				}
 			},
 			ModifyResponse: func(resp *http.Response) error {
 				resp.Header.Set("X-CDN-Route", "xray")
+				resp.Header.Set("X-Accel-Buffering", "no")
+				resp.Header.Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0, no-transform")
+				resp.Header.Set("Pragma", "no-cache")
+				resp.Header.Set("Expires", "0")
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

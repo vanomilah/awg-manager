@@ -14,6 +14,7 @@ import (
 	"github.com/hoaxisr/awg-manager/frontend"
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/backup"
+	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
 	"github.com/hoaxisr/awg-manager/internal/deviceproxy"
 	"github.com/hoaxisr/awg-manager/internal/diagnostics"
 	"github.com/hoaxisr/awg-manager/internal/dnscheck"
@@ -23,6 +24,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
 	"github.com/hoaxisr/awg-manager/internal/server"
+	"github.com/hoaxisr/awg-manager/internal/serveringress"
 	"github.com/hoaxisr/awg-manager/internal/singbox"
 	"github.com/hoaxisr/awg-manager/internal/singbox/awgoutbounds"
 	singboxcfg "github.com/hoaxisr/awg-manager/internal/singbox/configmerge"
@@ -31,11 +33,9 @@ import (
 	singboxorch "github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router/bypassset"
-	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
-	"github.com/hoaxisr/awg-manager/internal/serveringress"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/xrayserver"
 )
@@ -192,11 +192,11 @@ func (a *app) setupServer() {
 			HydraService:        a.hydraService,
 			SingboxHandler:      a.singboxHandler,
 			MihomoHandler:       a.mihomoHandler,
-			XrayHandler:              api.NewXrayHandler(a.xrayServerService),
-			SingboxOrch:              a.sbOrch,
-			ClashProxy:               a.clashProxy,
-			SingboxConnsHandler:      a.singboxConnsHandler,
-			MonitoringService:        a.monitoringService,
+			XrayHandler:         api.NewXrayHandler(a.xrayServerService),
+			SingboxOrch:         a.sbOrch,
+			ClashProxy:          a.clashProxy,
+			SingboxConnsHandler: a.singboxConnsHandler,
+			MonitoringService:   a.monitoringService,
 			SingboxSubMembers: func() []diagnostics.SingboxSubMember {
 				subs := a.subSvc.List()
 				out := make([]diagnostics.SingboxSubMember, 0, len(subs)*2)
@@ -483,7 +483,6 @@ func (a *app) setupRouter() {
 			}
 		},
 	})
-	dynEngine.OnMihomoReload = routerSvc.GenerateMihomoConfig
 	if a.mihomoOp != nil && a.mihomoNativeStore != nil {
 		validator := mihomo.NewBinaryValidator(a.mihomoOp.Binary())
 		coordinatorCfg := mihomo.CoordinatorConfig{
@@ -492,6 +491,7 @@ func (a *app) setupRouter() {
 			Validator:     validator,
 			BridgeRuntime: a.mihomoBridgeRuntime,
 			StoreTx:       a.mihomoNativeStore.TxAdapter(),
+			Compiler:      routerSvc.CompileMihomoConfig,
 			LogFn: func(level, action, message string) {
 				if a.loggingService != nil {
 					a.loggingService.AppLog(logging.Level(level), logging.GroupMihomo, logging.SubSBProcess, action, "coordinator", message)
@@ -499,6 +499,9 @@ func (a *app) setupRouter() {
 			},
 		}
 		coordinator := mihomo.NewApplyCoordinator(coordinatorCfg)
+		if a.mihomoBridgeRuntime != nil {
+			a.mihomoBridgeRuntime.SetDurableManifestFile(filepath.Join(a.mihomoOp.ConfigDir(), "config.yaml.txn.json"))
+		}
 		dynEngine.SetCoordinator(coordinator)
 		dynEngine.SetNativeStore(a.mihomoNativeStore)
 		dynEngine.SetCompileFunc(routerSvc.CompileMihomoConfig)
@@ -577,6 +580,10 @@ func (a *app) setupRouter() {
 	startupRes := dynEngine.Startup(context.Background())
 	if startupRes.Status == StatusDegraded {
 		a.bootLog.Warn("mihomo-coordinator", "startup", fmt.Sprintf("Mihomo coordinator entered degraded mode: %v", startupRes.Error))
+	} else if dynEngine.HasUnallocatedBridges() && a.settingsStore.IsSingboxNDMSProxyEnabled() {
+		if err := dynEngine.SyncMihomoRuntime(); err != nil {
+			a.bootLog.Warn("mihomo-bridges", "boot-heal", err.Error())
+		}
 	}
 
 	// Late-bind sing-box / router / Clash deps into the monitoring scheduler.
@@ -667,9 +674,19 @@ func (a *app) setupRouter() {
 
 }
 
+func assertProductionWiring(a *app) error {
+	if a.mihomoHandler != nil && a.mihomoHandler.MutationApplier() == nil {
+		return errors.New("mihomoHandler mutation applier must be configured before serving routes")
+	}
+	return nil
+}
+
 // setupListen wires DNS rewrites, selects the HTTP port, applies the
 // listen spec and logs startup.
 func (a *app) setupListen() {
+	if err := assertProductionWiring(a); err != nil {
+		panic(err)
+	}
 	// DNS Rewrites — sing-box slot 17-dns-rewrites.json.
 	dnsRewriteStorePath := filepath.Join(a.dataDir, "dns_rewrites.json")
 	dnsRewriteStore := storage.NewDNSRewriteStore(dnsRewriteStorePath)

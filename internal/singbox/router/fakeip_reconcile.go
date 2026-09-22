@@ -138,9 +138,7 @@ func (s *ServiceImpl) reconcileFakeIPTun(ctx context.Context, sr storage.Singbox
 
 	// Движок может быть жив, а его стек отцепиться от tun — это состояние не
 	// лечит никто другой, см. healDetachedTun. Слот он проверяет сам.
-	if sr.RoutingEngine != "mihomo" {
-		s.healDetachedTun(iface, "fakeip-reconcile", orchestrator.SlotFakeIP)
-	}
+	s.healDetachedTun(iface, "fakeip-reconcile", orchestrator.SlotFakeIP)
 
 	// One-shot (до первого УСПЕХА) ассерт permit-ACL: покрывает апгрейд
 	// awg-manager поверх уже включённого fakeip (ACL появился в этой версии)

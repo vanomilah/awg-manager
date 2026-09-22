@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -779,5 +780,50 @@ func TestDispatcherHostAwareRouting_LoopbackReverseProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDispatcherXrayPaddingAndTrailingSlash(t *testing.T) {
+	var capturedPath string
+	var capturedReferer string
+
+	xrayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		capturedReferer = r.Header.Get("Referer")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer xrayServer.Close()
+
+	d := New(Config{
+		XrayTarget:     xrayServer.URL,
+		XrayPathPrefix: "/cdn-bridge",
+		XrayPublicHost: "vkcdn.example.com",
+	})
+
+	// 1. Request to exact prefix without trailing slash and without padding
+	req := httptest.NewRequest(http.MethodGet, "/cdn-bridge", nil)
+	req.Host = "vkcdn.example.com"
+	w := httptest.NewRecorder()
+	d.ServeHTTP(w, req)
+
+	if capturedPath != "/cdn-bridge/" {
+		t.Fatalf("expected path to be rewritten to '/cdn-bridge/', got %q", capturedPath)
+	}
+	if !strings.Contains(capturedReferer, "x_padding=") {
+		t.Fatalf("expected injected padding Referer, got %q", capturedReferer)
+	}
+
+	// 2. Request with preexisting Referer should preserve it
+	req2 := httptest.NewRequest(http.MethodGet, "/cdn-bridge/session1", nil)
+	req2.Host = "vkcdn.example.com"
+	req2.Header.Set("Referer", "https://custom.com/path")
+	w2 := httptest.NewRecorder()
+	d.ServeHTTP(w2, req2)
+
+	if capturedPath != "/cdn-bridge/session1" {
+		t.Fatalf("expected path '/cdn-bridge/session1', got %q", capturedPath)
+	}
+	if capturedReferer != "https://custom.com/path" {
+		t.Fatalf("expected preserved Referer, got %q", capturedReferer)
 	}
 }

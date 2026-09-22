@@ -2509,7 +2509,7 @@ definitions:
   api.MihomoRecoveryReconcileRequest:
     properties:
       action:
-        description: '"rollback_to_lkg" | "clear_marker"'
+        description: '"rollback_to_lkg" | "regenerate_from_desired"'
         type: string
       force:
         type: boolean

@@ -36,9 +36,9 @@ func CompileSocks(raw string, preference, routingEngine EnginePreference) (*Prox
 	}
 
 	proxy := map[string]interface{}{
-		"name":   name,
-		"type":   "socks5",
-		"server": u.Hostname(),
+		"name":         name,
+		"type":         "socks5",
+		"server":       u.Hostname(),
 		"port":         port,
 		"udp":          true,
 		"routing-mark": 666,

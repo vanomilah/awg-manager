@@ -113,13 +113,13 @@ func compileVMessBase64(raw, payload string, preference, routingEngine EnginePre
 	}
 
 	proxy := map[string]interface{}{
-		"name":    name,
-		"type":    "vmess",
-		"server":  server,
-		"port":    port,
-		"uuid":    uuid,
-		"alterId": alterID,
-		"cipher":  cipher,
+		"name":         name,
+		"type":         "vmess",
+		"server":       server,
+		"port":         port,
+		"uuid":         uuid,
+		"alterId":      alterID,
+		"cipher":       cipher,
 		"udp":          true,
 		"network":      transport,
 		"routing-mark": 666,
@@ -255,13 +255,13 @@ func compileVMessURI(raw string, preference, routingEngine EnginePreference) (*P
 	}
 
 	proxy := map[string]interface{}{
-		"name":    name,
-		"type":    "vmess",
-		"server":  u.Hostname(),
-		"port":    port,
-		"uuid":    u.User.Username(),
-		"alterId": alterID,
-		"cipher":  cipher,
+		"name":         name,
+		"type":         "vmess",
+		"server":       u.Hostname(),
+		"port":         port,
+		"uuid":         u.User.Username(),
+		"alterId":      alterID,
+		"cipher":       cipher,
 		"udp":          true,
 		"network":      transport,
 		"routing-mark": 666,

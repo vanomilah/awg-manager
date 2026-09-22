@@ -14,6 +14,7 @@ func TestCoordinator_CAS_ConcurrentTransitions(t *testing.T) {
 
 	cfg := CoordinatorConfig{
 		ConfigDir: tmpDir,
+		Verifier:  &NoopProcessVerifier{},
 	}
 
 	coord := NewApplyCoordinator(cfg)
@@ -74,6 +75,7 @@ func TestCoordinator_CAS_CorruptedManifest(t *testing.T) {
 
 	cfg := CoordinatorConfig{
 		ConfigDir: tmpDir,
+		Verifier:  &NoopProcessVerifier{},
 	}
 
 	coord := NewApplyCoordinator(cfg)
@@ -110,6 +112,7 @@ func TestCoordinator_CAS_TxIDConflict(t *testing.T) {
 
 	cfg := CoordinatorConfig{
 		ConfigDir: tmpDir,
+		Verifier:  &NoopProcessVerifier{},
 	}
 
 	coord := NewApplyCoordinator(cfg)
@@ -140,5 +143,37 @@ func TestCoordinator_CAS_TxIDConflict(t *testing.T) {
 	json.Unmarshal(data, &finalM)
 	if finalM.TxID != "20260916120000-AAA" {
 		t.Fatalf("manifest TxID was overwritten: %v", finalM.TxID)
+	}
+}
+
+func TestCoordinator_CAS_ExpectedManifestMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	coord := NewApplyCoordinator(CoordinatorConfig{
+		ConfigDir: tmpDir,
+		Verifier:  &NoopProcessVerifier{},
+	})
+
+	expected := &TransactionManifest{
+		Version:  1,
+		TxID:     "20260921120000-missing",
+		Sequence: 1,
+		State:    StateSnapshotSecured,
+	}
+	next := &TransactionManifest{
+		Version:  1,
+		TxID:     "20260921120000-missing",
+		Sequence: 2,
+		State:    StateCandidateBuilt,
+	}
+
+	// manifestFile does not exist on disk
+	err := coord.casManifest(expected, next)
+	if err == nil {
+		t.Fatal("expected error when expected manifest does not exist, got nil")
+	}
+
+	// Verify that next manifest was NOT written to disk
+	if _, statErr := os.Stat(coord.manifestFile); !os.IsNotExist(statErr) {
+		t.Fatalf("manifest must NOT be created when expected manifest is missing: %v", statErr)
 	}
 }

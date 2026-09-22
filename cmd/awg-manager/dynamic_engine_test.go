@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/proxyengine"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
@@ -401,5 +402,46 @@ func TestDynamicEngineStop_SingboxWithoutExportsWithdrawsStaleMihomo(t *testing.
 	}
 	if mh.stopCalls != 1 || down != 1 || sb.stopCalls != 1 {
 		t.Fatalf("stop calls mh=%d down=%d sb=%d", mh.stopCalls, down, sb.stopCalls)
+	}
+}
+
+func TestDynamicEngine_HasUnallocatedBridges(t *testing.T) {
+	native, err := mihomonative.NewStore(t.TempDir() + "/native.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDynamicEngine(nil, nil, nil)
+	d.SetNativeStore(native)
+
+	if d.HasUnallocatedBridges() {
+		t.Fatal("expected no unallocated bridges initially")
+	}
+
+	err = native.RestoreProxy(mihomonative.ProxyNode{
+		ID:             "test-1",
+		Name:           "TestNode",
+		SelectedEngine: mihomonative.EngineMihomo,
+		Enabled:        true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !d.HasUnallocatedBridges() {
+		t.Fatal("expected unallocated bridges after adding proxy without bridge")
+	}
+
+	err = native.SetBridge("proxy", "test-1", mihomonative.ProxyBridge{
+		ListenPort:      12000,
+		ProxyIndex:      1,
+		ProxyInterface:  "Proxy1",
+		KernelInterface: "t2s1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d.HasUnallocatedBridges() {
+		t.Fatal("expected no unallocated bridges after setting bridge")
 	}
 }

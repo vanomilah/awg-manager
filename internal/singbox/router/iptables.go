@@ -31,14 +31,14 @@ const (
 	// conntrack tracks the DNAT for established flows, ACKs are
 	// auto-translated, and sing-box's accept()ed socket handles them
 	// like any normal TCP connection. SKeen ships the same split.
-	RedirectPort  = 51272
-	Fwmark        = 0x1
-	RoutingTable  = 100
-	ChainName     = "AWGM-TPROXY"
-	RedirectChain = "AWGM-REDIRECT"
-	OutputChain   = "AWGM-OUTPUT"
+	RedirectPort        = 51272
+	Fwmark              = 0x1
+	RoutingTable        = 100
+	ChainName           = "AWGM-TPROXY"
+	RedirectChain       = "AWGM-REDIRECT"
+	OutputChain         = "AWGM-OUTPUT"
 	CloudOutputUDPChain = "AWGM-OUTPUT-UDP"
-	MihomoRoutingMark = 666
+	MihomoRoutingMark   = 666
 	// BlackholeChain is the fail-closed DROP chain (mangle). It is engaged
 	// ONLY while sing-box is dead AND the PREROUTING interception jumps were
 	// wiped (e.g. an NDMS firewall reload): without it, policy-marked traffic

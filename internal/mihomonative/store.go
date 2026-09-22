@@ -44,9 +44,10 @@ type state struct {
 }
 
 type Store struct {
-	path string
-	mu   sync.RWMutex
-	data state
+	path     string
+	mu       sync.RWMutex
+	revision uint64
+	data     state
 }
 
 func NewStore(path string) (*Store, error) {
@@ -101,7 +102,21 @@ func NewStore(path string) (*Store, error) {
 // boundary. JSON is deliberate here: it gives us an exact copy of every
 // nested nativeConfig/header/slice without leaking the private state type.
 type StoreSnapshot struct {
-	data []byte
+	data     []byte
+	revision uint64
+	digest   string
+}
+
+func (sn StoreSnapshot) Data() []byte {
+	return sn.data
+}
+
+func (sn StoreSnapshot) Revision() uint64 {
+	return sn.revision
+}
+
+func (sn StoreSnapshot) Digest() string {
+	return sn.digest
 }
 
 func (s *Store) Snapshot() (StoreSnapshot, error) {
@@ -111,7 +126,18 @@ func (s *Store) Snapshot() (StoreSnapshot, error) {
 	if err != nil {
 		return StoreSnapshot{}, err
 	}
-	return StoreSnapshot{data: b}, nil
+	digest := strictfs.ComputeBytesDigest(b)
+	return StoreSnapshot{
+		data:     b,
+		revision: s.revision,
+		digest:   digest,
+	}, nil
+}
+
+func (s *Store) SnapshotRevision() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revision
 }
 
 func (s *Store) RestoreSnapshot(snapshot StoreSnapshot) error {
@@ -242,30 +268,65 @@ func (s *Store) SetBridge(kind, id string, bridge ProxyBridge) error {
 	return nil
 }
 
-func (s *Store) saveLocked() error {
-	b, err := json.MarshalIndent(s.data, "", "  ")
-	if err != nil {
-		return err
-	}
-	return strictfs.StrictWriteAtomic(s.path, b, 0600)
+// marshalLocked serializes the in-memory store state while holding s.mu (RLock or Lock).
+func (s *Store) marshalLocked() ([]byte, error) {
+	return json.MarshalIndent(s.data, "", "  ")
 }
 
-func (s *Store) CreateSnapshotFile(txid string) (string, error) {
+func (s *Store) saveLocked() error {
+	s.revision++
+	b, err := s.marshalLocked()
+	if err != nil {
+		s.revision--
+		return err
+	}
+	if err := strictfs.StrictWriteAtomic(s.path, b, 0600); err != nil {
+		s.revision--
+		return err
+	}
+	return nil
+}
+
+func (s *Store) SnapshotFilePath(txid string) (string, error) {
 	if err := strictfs.ValidateTxID(txid); err != nil {
 		return "", err
 	}
+	dir := filepath.Dir(s.path)
+	return filepath.Join(dir, fmt.Sprintf("store.snapshot.%s.json", txid)), nil
+}
+
+func (s *Store) CreateSnapshotFileAt(txid, targetPath string) (string, error) {
+	expectedPath, err := s.SnapshotFilePath(txid)
+	if err != nil {
+		return "", err
+	}
+	cleanTarget := filepath.Clean(targetPath)
+	if cleanTarget != expectedPath {
+		return "", fmt.Errorf("target snapshot path %q does not match canonical %q", targetPath, expectedPath)
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	b, err := json.MarshalIndent(s.data, "", "  ")
+	b, err := s.marshalLocked()
 	if err != nil {
 		return "", fmt.Errorf("mihomo native: marshal store snapshot: %w", err)
 	}
 
-	dir := filepath.Dir(s.path)
-	snapshotPath := filepath.Join(dir, fmt.Sprintf("store.snapshot.%s.json", txid))
-	if err := strictfs.StrictWriteAtomic(snapshotPath, b, 0600); err != nil {
-		return "", fmt.Errorf("mihomo native: write snapshot %s: %w", snapshotPath, err)
+	digest := strictfs.ComputeBytesDigest(b)
+	if err := strictfs.StrictWriteAtomic(cleanTarget, b, 0600); err != nil {
+		return "", fmt.Errorf("mihomo native: write snapshot %s: %w", cleanTarget, err)
+	}
+	return digest, nil
+}
+
+func (s *Store) CreateSnapshotFile(txid string) (string, error) {
+	snapshotPath, err := s.SnapshotFilePath(txid)
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.CreateSnapshotFileAt(txid, snapshotPath); err != nil {
+		return "", err
 	}
 	return snapshotPath, nil
 }
@@ -301,7 +362,7 @@ func (s *Store) CurrentDigest() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	b, err := json.MarshalIndent(s.data, "", "  ")
+	b, err := s.marshalLocked()
 	if err != nil {
 		return "", fmt.Errorf("mihomo native: marshal data for digest: %w", err)
 	}
@@ -353,8 +414,16 @@ func (s *Store) TxAdapter() *StoreTxAdapter {
 	return NewStoreTxAdapter(s)
 }
 
+func (a *StoreTxAdapter) SnapshotFilePath(txid string) (string, error) {
+	return a.store.SnapshotFilePath(txid)
+}
+
 func (a *StoreTxAdapter) CreateSnapshotFile(txid string) (string, error) {
 	return a.store.CreateSnapshotFile(txid)
+}
+
+func (a *StoreTxAdapter) CreateSnapshotFileAt(txid, targetPath string) (string, error) {
+	return a.store.CreateSnapshotFileAt(txid, targetPath)
 }
 
 func (a *StoreTxAdapter) RestoreSnapshotFile(snapshotPath string) error {
@@ -377,12 +446,13 @@ func (a *StoreTxAdapter) ListBridges() []mihomo.BridgeRef {
 			ProxyIndex:      nb.Bridge.ProxyIndex,
 			ProxyInterface:  nb.Bridge.ProxyInterface,
 			KernelInterface: nb.Bridge.KernelInterface,
+			ListenPort:      nb.Bridge.ListenPort,
 			LegacyOwner:     nb.LegacyOwner,
+			OwnerUUID:       BridgeOwnershipDescription(nb.Kind, nb.ID),
 		}
 	}
 	return out
 }
-
 
 func (s *Store) ListProxies() []ProxyNode {
 	s.mu.RLock()
@@ -466,6 +536,12 @@ func (s *Store) ConfigProviders() map[string]map[string]interface{} {
 		}
 		if len(sub.Headers) > 0 {
 			out[sub.ProviderName]["header"] = cloneHeaders(sub.Headers)
+		}
+		if strings.TrimSpace(sub.FilterInclude) != "" {
+			out[sub.ProviderName]["filter"] = strings.TrimSpace(sub.FilterInclude)
+		}
+		if strings.TrimSpace(sub.FilterExclude) != "" {
+			out[sub.ProviderName]["exclude-filter"] = strings.TrimSpace(sub.FilterExclude)
 		}
 	}
 	return out
@@ -838,10 +914,64 @@ func (s *Store) DeleteGroup(id string) error {
 	defer s.mu.Unlock()
 	for i, group := range s.data.Groups {
 		if group.ID == id {
-			old := s.data.Groups
-			s.data.Groups = append(append([]*ProxyGroup(nil), old[:i]...), old[i+1:]...)
+			deletedName := group.Name
+
+			oldGroups := s.data.Groups
+			oldRules := s.data.Rules
+			oldRuleProviders := s.data.RuleProviders
+
+			// 1. Remove group
+			s.data.Groups = append(append([]*ProxyGroup(nil), oldGroups[:i]...), oldGroups[i+1:]...)
+
+			// 2. Repoint any rule referencing the deleted group to "DIRECT"
+			newRules := make([]*Rule, len(s.data.Rules))
+			for ri, r := range s.data.Rules {
+				if r.Outbound == deletedName {
+					rcp := *r
+					rcp.Outbound = "DIRECT"
+					newRules[ri] = &rcp
+				} else {
+					newRules[ri] = r
+				}
+			}
+			s.data.Rules = newRules
+
+			// 3. Remove deleted group name from any other group's Proxies list
+			for _, g := range s.data.Groups {
+				var newProxies []string
+				changed := false
+				for _, p := range g.Proxies {
+					if p == deletedName {
+						changed = true
+					} else {
+						newProxies = append(newProxies, p)
+					}
+				}
+				if changed {
+					if len(newProxies) == 0 && len(g.Use) == 0 {
+						newProxies = []string{"DIRECT"}
+					}
+					g.Proxies = newProxies
+				}
+			}
+
+			// 4. Repoint any rule provider referencing deleted group to "DIRECT"
+			newProviders := make([]*RuleProvider, len(s.data.RuleProviders))
+			for pi, rp := range s.data.RuleProviders {
+				if rp.Proxy == deletedName {
+					rpcp := *rp
+					rpcp.Proxy = "DIRECT"
+					newProviders[pi] = &rpcp
+				} else {
+					newProviders[pi] = rp
+				}
+			}
+			s.data.RuleProviders = newProviders
+
 			if err := s.saveLocked(); err != nil {
-				s.data.Groups = old
+				s.data.Groups = oldGroups
+				s.data.Rules = oldRules
+				s.data.RuleProviders = oldRuleProviders
 				return err
 			}
 			return nil

@@ -32,7 +32,7 @@ const (
 )
 
 var (
-	txidRegex   = regexp.MustCompile(`^[0-9]{14,24}$`)
+	txidRegex   = regexp.MustCompile(`^[0-9]{14,24}(?:-[a-zA-Z0-9_]+)?$`)
 	baseRegex   = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]+$`)
 	failpointMu sync.RWMutex
 	failpoints  = make(map[string]error)

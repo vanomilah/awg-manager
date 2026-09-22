@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/diagnostics"
+	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
 var ErrRunning = errors.New("AI diagnostics are already running")
@@ -73,6 +75,7 @@ type Service struct {
 	actions      ActionExecutor
 	memory       *MemoryStore
 	lastFindings []Finding
+	chatPath     string
 
 	snapshotMgr SnapshotManager
 	activeRun   *AgentRun
@@ -195,6 +198,62 @@ func NewService(runner DiagnosticsRunner) *Service {
 	}
 }
 
+type persistedChat struct {
+	Messages  []ChatMessage        `json:"messages"`
+	Proposal  *RemediationProposal `json:"proposal,omitempty"`
+	Question  string               `json:"question,omitempty"`
+	Findings  []Finding            `json:"findings,omitempty"`
+	Summary   string               `json:"summary,omitempty"`
+	UpdatedAt time.Time            `json:"updatedAt"`
+}
+
+func (s *Service) SetChatStore(filePath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chatPath = filePath
+	if filePath != "" {
+		if data, err := os.ReadFile(filePath); err == nil {
+			var pc persistedChat
+			if json.Unmarshal(data, &pc) == nil {
+				if len(pc.Messages) > 0 {
+					s.state.Messages = pc.Messages
+				}
+				if pc.Proposal != nil {
+					s.state.Proposal = pc.Proposal
+				}
+				if pc.Question != "" {
+					s.state.Question = pc.Question
+				}
+				if len(pc.Findings) > 0 {
+					s.state.Findings = pc.Findings
+					s.lastFindings = append([]Finding(nil), pc.Findings...)
+				}
+				if pc.Summary != "" {
+					s.state.Summary = pc.Summary
+				}
+			}
+		}
+	}
+}
+
+func (s *Service) saveChatLocked() {
+	if s.chatPath == "" {
+		return
+	}
+	pc := persistedChat{
+		Messages:  s.state.Messages,
+		Proposal:  s.state.Proposal,
+		Question:  s.state.Question,
+		Findings:  s.state.Findings,
+		Summary:   s.state.Summary,
+		UpdatedAt: time.Now(),
+	}
+	raw, err := json.MarshalIndent(pc, "", "  ")
+	if err == nil {
+		_ = storage.AtomicWritePerm(s.chatPath, append(raw, '\n'), 0600)
+	}
+}
+
 func (s *Service) ClearChat() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -210,6 +269,10 @@ func (s *Service) ClearChat() {
 	s.state.Proposal = nil
 	s.state.Error = ""
 	s.activeRun = nil
+	s.lastFindings = nil
+	if s.chatPath != "" {
+		_ = os.Remove(s.chatPath)
+	}
 }
 
 func (s *Service) Start(question string) error {
@@ -243,6 +306,7 @@ func (s *Service) Start(question string) error {
 		ToolSteps: []ToolStep{},
 		Messages:  messages,
 	}
+	s.saveChatLocked()
 	s.mu.Unlock()
 
 	go s.run()
@@ -472,6 +536,7 @@ func (s *Service) completeDiagnosis(stats Stats, findings []Finding, modelAnswer
 	if shouldAutoFix {
 		proposal.AutoApplied = true
 	}
+	s.saveChatLocked()
 	s.mu.Unlock()
 
 	if shouldAutoFix {
@@ -734,10 +799,74 @@ func (s *Service) finishAction(err error, ver *ActionVerification) error {
 		} else {
 			activeRun.Complete(true, "Исправление успешно применено и проверено")
 			activeRun.AddJournal("verify", "Проверка успешно пройдена", "", "")
+			s.recordAutoResolutionLocked(proposal, ver)
 		}
 	}
 
+	s.saveChatLocked()
 	return err
+}
+
+func (s *Service) recordAutoResolutionLocked(proposal *RemediationProposal, ver *ActionVerification) {
+	mem := s.memory
+	question := s.state.Question
+
+	if mem == nil || proposal == nil {
+		return
+	}
+
+	category := "routing"
+	switch {
+	case strings.HasPrefix(proposal.Action, "keenetic."):
+		category = "network"
+	case strings.HasPrefix(proposal.Action, "tunnel."):
+		category = "tunnel"
+	case strings.HasPrefix(proposal.Action, "service.") || strings.HasPrefix(proposal.Action, "opkg."):
+		category = "system"
+	case strings.HasPrefix(proposal.Action, "singbox.") || strings.HasPrefix(proposal.Action, "mihomo."):
+		category = "routing"
+	}
+
+	trigger := strings.TrimSpace(question)
+	if trigger == "" {
+		trigger = proposal.Title
+	}
+
+	diag := proposal.Description
+	if ver != nil && ver.Summary != "" {
+		diag = ver.Summary
+		if ver.Detail != "" {
+			diag += " (" + ver.Detail + ")"
+		}
+	}
+
+	pb := LearnedPlaybook{
+		Category:     category,
+		Title:        proposal.Title,
+		Trigger:      trigger,
+		Diagnosis:    diag,
+		Action:       proposal.Action,
+		Target:       proposal.Target,
+		SuccessCount: 1,
+		LearnedFrom:  "ai_assistant",
+		CreatedAt:    time.Now(),
+		LastUsedAt:   time.Now(),
+	}
+	mem.AddOrUpdatePlaybook(pb)
+
+	actionDesc := proposal.Action
+	if proposal.Target != "" {
+		actionDesc = fmt.Sprintf("%s: %s", proposal.Action, proposal.Target)
+	}
+	mem.AddJournalEntry(LearningJournalEntry{
+		ID:          genMemoryID(),
+		Timestamp:   time.Now(),
+		Trigger:     trigger,
+		Query:       question,
+		CloudAdvice: diag,
+		ActionTaken: actionDesc,
+		Outcome:     "success",
+	})
 }
 
 func (s *Service) continueAfterFailure(run *AgentRun, failedProposal *RemediationProposal, applyErr error, ver *ActionVerification) {
@@ -808,6 +937,7 @@ func (s *Service) continueAfterFailure(run *AgentRun, failedProposal *Remediatio
 		run.Complete(false, answer)
 		run.AddJournal("done", "Альтернативное исправление не найдено", "", "")
 	}
+	s.saveChatLocked()
 }
 
 func (s *Service) completeChat() {
@@ -839,6 +969,7 @@ func (s *Service) completeChat() {
 		s.state.Proposal.RunID = s.activeRun.ID
 		s.activeRun.AddProposal(RemediationToChangeProposal(s.state.Proposal, s.activeRun.ID))
 	}
+	s.saveChatLocked()
 }
 
 func (s *Service) autonomousChatAnswer(question string, findings []Finding) string {
@@ -987,6 +1118,7 @@ func (s *Service) completeTargeted() {
 	if s.state.Proposal == nil {
 		s.state.Proposal = remediationForFindings(nil, modelAnswer)
 	}
+	s.saveChatLocked()
 }
 
 func remediationFromToolSteps(steps []ToolStep) *RemediationProposal {
@@ -1483,6 +1615,7 @@ func (s *Service) fail(err error) {
 	s.state.CompletedAt = time.Now()
 	s.state.Error = err.Error()
 	s.state.Messages = appendChatMessage(s.state.Messages, ChatMessage{Role: "assistant", Content: "Не удалось завершить диагностику: " + err.Error(), CreatedAt: time.Now()})
+	s.saveChatLocked()
 }
 
 func analyze(report diagnostics.Report) (Stats, []Finding) {

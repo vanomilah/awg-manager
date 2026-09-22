@@ -1,6 +1,13 @@
 package api
 
-import "context"
+import (
+	"context"
+	"sync"
+	"time"
+
+	ndms "github.com/hoaxisr/awg-manager/internal/ndms"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/external"
+)
 
 // TunnelsSnapshotBuilder composes the {tunnels, external, system}
 // payload used by GET /api/tunnels/all and by the hook-driven
@@ -38,18 +45,61 @@ func (b *TunnelsSnapshotBuilder) Build(ctx context.Context) map[string]interface
 	if b.tunnels == nil {
 		return nil
 	}
-	items, err := b.tunnels.listItems(ctx)
-	if err != nil {
+
+	var wg sync.WaitGroup
+	var items []tunnelItem
+	var itemsErr error
+	var externalList []external.TunnelInfo
+	var systemList []ndms.SystemWireguardTunnel
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		items, itemsErr = b.tunnels.listItems(ctx)
+	}()
+
+	if b.external != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			ext, err := b.external.listExternal(subCtx)
+			if err == nil && ext != nil {
+				externalList = ext
+			} else {
+				externalList = []external.TunnelInfo{}
+			}
+		}()
+	}
+
+	if b.systemTun != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			subCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			defer cancel()
+			sys, err := b.systemTun.listSystemTunnels(subCtx)
+			if err == nil && sys != nil {
+				systemList = sys
+			} else {
+				systemList = []ndms.SystemWireguardTunnel{}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if itemsErr != nil || items == nil {
 		return nil
 	}
+
 	payload := map[string]interface{}{"tunnels": items}
 	if b.external != nil {
-		external, _ := b.external.listExternal(ctx)
-		payload["external"] = external
+		payload["external"] = externalList
 	}
 	if b.systemTun != nil {
-		system, _ := b.systemTun.listSystemTunnels(ctx)
-		payload["system"] = system
+		payload["system"] = systemList
 	}
 	return payload
 }

@@ -366,12 +366,27 @@ func (s *ServiceImpl) enableFakeIPTun(ctx context.Context, settings *storage.Set
 		s.appLog.Warn("fakeip-enable", "orchestrator", fmt.Sprintf("sing-box orchestrator reload failed while Mihomo is primary: %v", err))
 	}
 
-	// Wait for sing-box to be truly ready (process + tun carrier + live fakeip
+	if mihomoPrimary && !s.singboxReady(ctx, true) {
+		engine := s.routingEngineController()
+		if engine == nil {
+			return fmt.Errorf("enable fakeip-tun: Mihomo routing engine is unavailable")
+		}
+		if err = engine.Reload(); err != nil {
+			return fmt.Errorf("enable fakeip-tun: start Mihomo routing engine: %w", err)
+		}
+	}
+
+	// Wait for sing-box/Mihomo to be truly ready (process + tun carrier + live fakeip
 	// DNS). The address flush already ran PRE-start (above), so the tun keeps the
-	// address sing-box assigns on attach. HARD fail: an unready sing-box means the
+	// address assigned on attach. HARD fail: an unready engine means the
 	// tun and its hijack-dns path never come up, so we roll the whole thing back.
 	bootWait := bootWaitWithFloor()
 	if err = s.waitForSingbox(ctx, bootWait); err != nil {
+		if mihomoPrimary {
+			if engine := s.routingEngineController(); engine != nil {
+				_ = engine.Stop()
+			}
+		}
 		return fmt.Errorf("enable fakeip-tun: %w: waited %s (%v)", ErrSingboxNotReady, bootWait, err)
 	}
 

@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"errors"
+
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 )
 
 var (
@@ -15,5 +17,7 @@ type NativeMutationApplier interface {
 	ApplyDraftOnly(ctx context.Context, mutateFn func() error) error
 	ApplyPendingDraft(ctx context.Context) error
 	IsDegraded() bool
+	CheckMutationAllowed() error
 	Reconcile(ctx context.Context, action string, force bool) error
+	ExportEvidence(ctx context.Context) (*mihomo.RecoveryEvidenceDTO, error)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,6 +31,7 @@ func setupGate1Coordinator(t *testing.T) (*ApplyCoordinator, *fakeStoreTx, *fake
 		Validator:     validator,
 		BridgeRuntime: bridges,
 		StoreTx:       store,
+		Verifier:      &NoopProcessVerifier{},
 	}
 	coord := NewApplyCoordinator(cfg)
 	return coord, store, bridges, tmpDir
@@ -62,7 +64,7 @@ func TestCoordinator_Gate1_S01_SnapshotSecured_WriteFail(t *testing.T) {
 	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
 
 	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
-	if err == nil || !strings.Contains(err.Error(), "create store snapshot") {
+	if err == nil || (!strings.Contains(err.Error(), "create store snapshot") && !strings.Contains(err.Error(), "create pre-mutation store snapshot")) {
 		t.Fatalf("expected create store snapshot error, got: %v", err)
 	}
 
@@ -527,9 +529,10 @@ func TestCoordinator_Gate1_S16_Rollback_NonConsumingLKG(t *testing.T) {
 	// Verify LKG bundle exists
 	_, err := coord.GenStore().ReadLKGPointer()
 	// 2. Gen 3 fails during process restart
-	coord.cfg.Operator.mu.Lock()
-	coord.cfg.Operator.commandFn = helperCommand(t, "fail")
-	coord.cfg.Operator.mu.Unlock()
+	op := coord.cfg.Operator.(*Operator)
+	op.mu.Lock()
+	op.commandFn = helperCommand(t, "fail")
+	op.mu.Unlock()
 
 	err = coord.MutateAndApply(context.Background(), nil, makeGate1CompileFn("config: generation-3", RuntimeEnforced))
 	if err == nil || !strings.Contains(err.Error(), "runtime restart failed") {
@@ -573,9 +576,10 @@ func TestCoordinator_Gate1_S17_Rollback_FirstInstall_Cleanup(t *testing.T) {
 	}
 
 	// Fail operator restart
-	coord.cfg.Operator.mu.Lock()
-	coord.cfg.Operator.commandFn = helperCommand(t, "fail")
-	coord.cfg.Operator.mu.Unlock()
+	opFail := coord.cfg.Operator.(*Operator)
+	opFail.mu.Lock()
+	opFail.commandFn = helperCommand(t, "fail")
+	opFail.mu.Unlock()
 
 	err := coord.MutateAndApply(context.Background(), nil, makeGate1CompileFn("bad: candidate", RuntimeEnforced))
 	if err == nil {
@@ -817,9 +821,10 @@ func TestCoordinator_Gate1_CommitIntent_VerifiedActiveFail(t *testing.T) {
 
 	txid := "20260915120001"
 	m := TransactionManifest{
-		Version: 1,
-		TxID:    txid,
-		State:   StateCommitIntent,
+		Version:               1,
+		TxID:                  txid,
+		State:                 StateCommitIntent,
+		CandidateGenerationID: "gen-01",
 	}
 	mBytes, _ := json.Marshal(m)
 	_ = os.WriteFile(coord.manifestFile, mBytes, 0600)
@@ -879,8 +884,11 @@ func TestCoordinator_Gate1_CommitIntent_RollForward(t *testing.T) {
 
 	gen3Dir := filepath.Join(coord.GenStore().GenerationsDir(), "gen-03")
 	os.MkdirAll(gen3Dir, 0700)
-	os.WriteFile(filepath.Join(gen3Dir, "config.yaml"), []byte("gen3"), 0600)
-	os.WriteFile(filepath.Join(gen3Dir, "generation.manifest.json"), []byte(`{"version": 1, "generation_id": "gen-03", "generation_number": 3, "applied_config_digest": "digest3"}`), 0600)
+	cfgBytes := []byte("gen3")
+	cfgDigest := strictfs.ComputeBytesDigest(cfgBytes)
+	os.WriteFile(filepath.Join(gen3Dir, "config.yaml"), cfgBytes, 0600)
+	gmJSON := fmt.Sprintf(`{"version": 1, "bridge_identity_version": %d, "generation_id": "gen-03", "generation_number": 3, "applied_config_digest": "%s"}`, CurrentBridgeIdentityVersion, cfgDigest)
+	os.WriteFile(filepath.Join(gen3Dir, "generation.manifest.json"), []byte(gmJSON), 0600)
 
 	err := coord.RecoverOnStartup(context.Background())
 	if err != nil {
@@ -1038,30 +1046,34 @@ func TestCoordinator_Gate1_CleanupPartialFailure_PreservesJournal(t *testing.T) 
 func TestCoordinator_Gate1_BridgePartialSuccess_NoRepeat(t *testing.T) {
 	coord, _, bridges, _ := setupGate1Coordinator(t)
 
+	refs := []BridgeRef{
+		{ProxyIndex: 1, ProxyInterface: "Proxy1", KernelInterface: "op1", ListenPort: 1080, OwnerUUID: "gate1-owner"},
+		{ProxyIndex: 2, ProxyInterface: "Proxy2", KernelInterface: "op2", ListenPort: 1081, OwnerUUID: "gate1-owner"},
+	}
+
 	m := TransactionManifest{
 		Version: 1,
 		TxID:    "20260915120002",
 		State:   StateBridgesReconciling,
 		BridgeOperations: []BridgeOperation{
 			{
-				OperationID: "20260915120002-create-op1",
-				Action:      "create",
-				State:       BridgeOpVerified,
+				OperationID:  fmt.Sprintf("%s-%s-%s-%s", "20260915120002", "create", refs[0].SlotKey(), refs[0].Digest()),
+				Action:       "create",
+				TargetDigest: refs[0].Digest(),
+				BridgeRef:    refs[0],
+				State:        BridgeOpVerified,
 			},
 			{
-				OperationID: "20260915120002-create-op2",
-				Action:      "create",
-				State:       BridgeOpIntent,
+				OperationID:  fmt.Sprintf("%s-%s-%s-%s", "20260915120002", "create", refs[1].SlotKey(), refs[1].Digest()),
+				Action:       "create",
+				TargetDigest: refs[1].Digest(),
+				BridgeRef:    refs[1],
+				State:        BridgeOpIntent,
 			},
 		},
 	}
 	mBytes, _ := json.Marshal(m)
 	_ = os.WriteFile(coord.manifestFile, mBytes, 0600)
-
-	refs := []BridgeRef{
-		{KernelInterface: "op1"},
-		{KernelInterface: "op2"},
-	}
 
 	err := coord.syncBridgesLocked(context.Background(), &m, nil, refs)
 	if err != nil {
@@ -1080,20 +1092,20 @@ func TestCoordinator_Gate1_S10_Rollback_FailClosed(t *testing.T) {
 	coord, _, bridges, _ := setupGate1Coordinator(t)
 
 	coord.appliedRecord = &AppliedGenerationRecord{
-		AppliedBridges: []BridgeRef{{KernelInterface: "test-br"}},
+		AppliedBridges: []BridgeRef{{KernelInterface: "test-br", OwnerUUID: "gate1-owner"}},
 	}
 	m := TransactionManifest{
 		Version:                      1,
 		TxID:                         "20260915120002",
 		State:                        StateAbortInProgress,
 		DesiredMode:                  RuntimeEnforced,
-		PreMutationStoreSnapshotFile: filepath.Join(coord.cfg.ConfigDir, "snapshot.db"),
+		PreMutationStoreSnapshotFile: filepath.Join(coord.cfg.ConfigDir, "snapshot.20260915120002"),
 	}
 	mBytes, _ := json.MarshalIndent(m, "", "  ")
 	_ = os.WriteFile(coord.manifestFile, mBytes, 0600)
 
 	// Create mock snapshot file so it doesn't fail
-	_ = os.WriteFile(filepath.Join(coord.cfg.ConfigDir, "snapshot.db"), []byte("data"), 0600)
+	_ = os.WriteFile(filepath.Join(coord.cfg.ConfigDir, "snapshot.20260915120002"), []byte("data"), 0600)
 
 	err := coord.rollbackActiveLocked(context.Background(), &m)
 	// It may return an error if it requires manual recovery or if there are other issues,
@@ -1143,8 +1155,10 @@ func TestCoordinator_Gate1_S11_CleanupPartialFailure(t *testing.T) {
 }
 
 // 12. Bridge checkpoint error triggers recovery
-func TestCoordinator_Gate1_S12_BridgeCheckpointError(t *testing.T) {
-	coord, _, bridges, _ := setupGate1Coordinator(t)
+func TestCoordinator_Gate1_S12_BridgeCheckpointFailure_BlocksStartup(t *testing.T) {
+	coord, _, bridges, tmpDir := setupGate1Coordinator(t)
+
+	refs := []BridgeRef{{ProxyIndex: 1, ProxyInterface: "Proxy1", KernelInterface: "op1", ListenPort: 1080, OwnerUUID: "gate1-owner"}}
 
 	m := TransactionManifest{
 		Version: 1,
@@ -1152,9 +1166,11 @@ func TestCoordinator_Gate1_S12_BridgeCheckpointError(t *testing.T) {
 		State:   StateBridgesReconciling,
 		BridgeOperations: []BridgeOperation{
 			{
-				OperationID: "20260915120003-create-op1",
-				Action:      "create",
-				State:       BridgeOpIntent,
+				OperationID:  fmt.Sprintf("%s-%s-%s-%s", "20260915120003", "create", refs[0].SlotKey(), refs[0].Digest()),
+				Action:       "create",
+				TargetDigest: refs[0].Digest(),
+				BridgeRef:    refs[0],
+				State:        BridgeOpIntent,
 			},
 		},
 	}
@@ -1165,21 +1181,1250 @@ func TestCoordinator_Gate1_S12_BridgeCheckpointError(t *testing.T) {
 		FailManifestPersistBridgeOpState: BridgeOpApplied,
 	})
 
-	refs := []BridgeRef{{KernelInterface: "op1"}}
-
 	err := coord.syncBridgesLocked(context.Background(), &m, nil, refs)
 	if err == nil {
 		t.Fatalf("expected syncBridgesLocked to fail")
 	}
-	if !strings.Contains(err.Error(), "checkpoint failed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if len(bridges.applied) != 1 || bridges.applied[0].KernelInterface != "op1" {
-		t.Fatalf("expected op1 to be applied before checkpoint failure, got: %v", bridges.applied)
-	}
-
 	if coord.State() != StateRecoveryRequired {
 		t.Fatalf("expected state StateRecoveryRequired, got %s", coord.State())
 	}
+	if bridges.applyCalls != 1 {
+		t.Fatalf("expected exactly 1 apply call before restart, got %d", bridges.applyCalls)
+	}
+
+	// Now restart coordinator to ensure reconciler does not repeat side effect
+	cfg := coord.cfg
+	cfg.ConfigDir = tmpDir
+	coord2 := NewApplyCoordinator(cfg)
+
+	err = coord2.RecoverOnStartup(context.Background())
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("expected ErrRecoveryRequired on restart, got: %v", err)
+	}
+	if coord2.State() != StateRecoveryRequired {
+		t.Fatalf("expected state StateRecoveryRequired after restart, got: %s", coord2.State())
+	}
+	if bridges.applyCalls != 1 {
+		t.Fatalf("expected bridge op to not be repeated, got %d apply calls", bridges.applyCalls)
+	}
+	if _, err := os.Stat(coord2.recoveryMarkerFile); err != nil {
+		t.Fatalf("recovery marker must exist: %v", err)
+	}
+	if _, err := os.Stat(coord2.manifestFile); err != nil {
+		t.Fatalf("manifest should be preserved: %v", err)
+	}
+}
+
+// 14. Data race in State() / setState() reader-writer test
+func TestCoordinator_Gate1_S14_StateRace(t *testing.T) {
+	coord, _, _, _ := setupGate1Coordinator(t)
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			coord.setState(StateRollbackInProgress)
+			coord.setState(StateIdle)
+		}
+		close(done)
+	}()
+	for i := 0; i < 1000; i++ {
+		_ = coord.State()
+	}
+	<-done
+}
+
+// 15. Partial mutation failure restores pre-mutation store before cleanup
+func TestCoordinator_Gate1_PartialMutate_RestoresStoreBeforeCleanup(t *testing.T) {
+	coord, store, _, _ := setupGate1Coordinator(t)
+
+	initialData := "initial-store-data"
+	store.data = initialData
+	baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+	store.digest = baseDigest
+
+	mutateErr := errors.New("mutation failed midway")
+	mutateFn := func() error {
+		store.data = "partially-mutated-data"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		return mutateErr
+	}
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if !errors.Is(err, mutateErr) {
+		t.Fatalf("expected mutateErr, got: %v", err)
+	}
+
+	// Verify store data was restored to pre-mutation state
+	if store.data != initialData {
+		t.Fatalf("store data was not restored: got %q, want %q", store.data, initialData)
+	}
+	currentDigest, _ := store.CurrentDigest()
+	if currentDigest != baseDigest {
+		t.Fatalf("store digest mismatch: got %s, want %s", currentDigest, baseDigest)
+	}
+
+	// Coordinator state must be StateIdle
+	if coord.State() != StateIdle {
+		t.Fatalf("expected state StateIdle, got: %s", coord.State())
+	}
+
+	// Recovery marker must not exist
+	if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+		t.Fatalf("recovery marker should not exist on clean restore")
+	}
+
+	// Manifest should be removed
+	if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest should not exist after clean abort")
+	}
+}
+
+func TestCoordinator_Gate1_PartialMutate_RestoreFailure_EntersRecoveryRequired(t *testing.T) {
+	coord, store, _, _ := setupGate1Coordinator(t)
+
+	initialData := "initial-store-data"
+	store.data = initialData
+	baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+	store.digest = baseDigest
+
+	mutateErr := errors.New("mutation failed midway")
+	mutateFn := func() error {
+		store.data = "partially-mutated-data"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		store.restoreFail = true
+		return mutateErr
+	}
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if err == nil {
+		t.Fatalf("expected error on restore failure")
+	}
+	if !errors.Is(err, mutateErr) {
+		t.Fatalf("expected error chain to contain mutateErr, got: %v", err)
+	}
+
+	if coord.State() != StateRecoveryRequired {
+		t.Fatalf("expected state StateRecoveryRequired, got: %s", coord.State())
+	}
+	if _, err := os.Stat(coord.recoveryMarkerFile); err != nil {
+		t.Fatalf("recovery marker must exist: %v", err)
+	}
+}
+
+// 16. Post-mutation failures restore pre-mutation store before cleanup (table-driven)
+func TestCoordinator_Gate1_PostMutationFailures_RestoreStoreBeforeCleanup(t *testing.T) {
+	tests := []struct {
+		name      string
+		setupFail func(coord *ApplyCoordinator, store *fakeStoreTx, val *fakeValidator)
+		wantErr   string
+	}{
+		{
+			name: "post_snapshot_failure",
+			setupFail: func(coord *ApplyCoordinator, store *fakeStoreTx, val *fakeValidator) {
+				store.postSnapshotFail = true
+			},
+			wantErr: "create post-mutation store snapshot",
+		},
+		{
+			name: "candidate_validation_failure",
+			setupFail: func(coord *ApplyCoordinator, store *fakeStoreTx, val *fakeValidator) {
+				val.fail = true
+			},
+			wantErr: "validate candidate config",
+		},
+		{
+			name: "generation_bundle_publication_failure",
+			setupFail: func(coord *ApplyCoordinator, store *fakeStoreTx, val *fakeValidator) {
+				coord.genStore.SetHooks(GenerationStoreHooks{FailParentDirFsync: true})
+			},
+			wantErr: "publish LKG generation bundle",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			coord, store, _, _ := setupGate1Coordinator(t)
+			val := &fakeValidator{}
+			coord.cfg.Validator = val
+
+			initialData := "initial-store-data"
+			store.data = initialData
+			baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+			store.digest = baseDigest
+
+			mutateFn := func() error {
+				store.data = "mutated-data-before-apply"
+				store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+				return nil
+			}
+
+			tt.setupFail(coord, store, val)
+
+			compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+			err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantErr, err)
+			}
+
+			// Store data and digest must be restored to pre-mutation state
+			if store.data != initialData {
+				t.Fatalf("store data was not restored: got %q, want %q", store.data, initialData)
+			}
+			curDigest, _ := store.CurrentDigest()
+			if curDigest != baseDigest {
+				t.Fatalf("store digest mismatch: got %s, want %s", curDigest, baseDigest)
+			}
+
+			// State must return to StateIdle
+			if coord.State() != StateIdle {
+				t.Fatalf("expected state StateIdle after clean abort, got: %s", coord.State())
+			}
+
+			// Recovery marker must not exist
+			if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+				t.Fatalf("recovery marker should not exist after clean abort")
+			}
+
+			// Manifest must be cleaned up
+			if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+				t.Fatalf("manifest should not exist after clean abort")
+			}
+
+			// Snapshot files must be cleaned up on disk
+			for snapPath := range store.snapshots {
+				if _, err := os.Stat(snapPath); !os.IsNotExist(err) {
+					t.Fatalf("snapshot file %s should be cleaned up on disk after clean abort", snapPath)
+				}
+			}
+		})
+	}
+}
+
+func TestCoordinator_Gate1_PostMutationFailures_RestoreFailure_EntersRecoveryRequired(t *testing.T) {
+	coord, store, _, _ := setupGate1Coordinator(t)
+	val := &fakeValidator{fail: true}
+	coord.cfg.Validator = val
+
+	initialData := "initial-store-data"
+	store.data = initialData
+	baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+	store.digest = baseDigest
+
+	mutateFn := func() error {
+		store.data = "mutated-data-before-apply"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		store.restoreFail = true // cause restore in abortEarlyLocked to fail
+		return nil
+	}
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if err == nil {
+		t.Fatalf("expected error on validation + restore failure")
+	}
+
+	// Coordinator state must be RECOVERY_REQUIRED
+	if coord.State() != StateRecoveryRequired {
+		t.Fatalf("expected state StateRecoveryRequired, got: %s", coord.State())
+	}
+
+	// Recovery marker must exist
+	if _, err := os.Stat(coord.recoveryMarkerFile); err != nil {
+		t.Fatalf("recovery marker must exist: %v", err)
+	}
+
+	// Manifest must be preserved
+	mData, err := os.ReadFile(coord.manifestFile)
+	if err != nil {
+		t.Fatalf("manifest must exist on disk: %v", err)
+	}
+
+	var m TransactionManifest
+	if err := json.Unmarshal(mData, &m); err != nil {
+		t.Fatalf("manifest must be valid JSON: %v", err)
+	}
+	if m.PreMutationStoreSnapshotFile == "" {
+		t.Fatalf("manifest must record PreMutationStoreSnapshotFile")
+	}
+
+	// Pre-mutation snapshot must be preserved on disk
+	if _, err := os.Stat(m.PreMutationStoreSnapshotFile); err != nil {
+		t.Fatalf("pre-mutation snapshot file must be preserved on disk: %v", err)
+	}
+
+	// Store data remains partially changed and not applied as clean
+	if store.data == initialData {
+		t.Fatalf("store data should still reflect interrupted state prior to manual recovery")
+	}
+	if coord.appliedRecord != nil {
+		t.Fatalf("applied record must not be set on failed transaction")
+	}
+}
+
+// 17. Candidate config rename succeeded but directory fsync failed: candidate config must be cleaned up and state Idle
+func TestCoordinator_Gate1_CandidateConfig_AfterRenamePreSyncFail_CleansCandidateFile(t *testing.T) {
+	coord, _, _, _ := setupGate1Coordinator(t)
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	// Inject failpoint right after atomic rename of candidate config, before dir sync
+	strictfs.SetFailpoint(strictfs.FPAfterRenamePreSync, errors.New("simulated dir sync error after atomic rename"))
+	defer strictfs.ClearFailpoints()
+
+	err := coord.MutateAndApply(context.Background(), nil, compileFn)
+	if err == nil {
+		t.Fatalf("expected error from FPAfterRenamePreSync")
+	}
+
+	// Coordinator state must return to StateIdle
+	if coord.State() != StateIdle {
+		t.Fatalf("expected state StateIdle after clean abort, got: %s", coord.State())
+	}
+
+	// Recovery marker must not exist
+	if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+		t.Fatalf("recovery marker should not exist after clean abort")
+	}
+
+	// Manifest must be cleaned up
+	if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest should not exist after clean abort")
+	}
+
+	// Candidate file must NOT be left on disk!
+	entries, err := os.ReadDir(coord.cfg.ConfigDir)
+	if err != nil {
+		t.Fatalf("failed to read config dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "config.yaml.candidate.") {
+			t.Fatalf("candidate config file was left orphaned on disk: %s", e.Name())
+		}
+	}
+}
+
+// 18. Generation bundle publish post-rename fsync failed: bundle directory must be cleaned up and state Idle
+func TestCoordinator_Gate1_GenerationBundle_PostRenameFsyncFail_CleansCandidateBundle(t *testing.T) {
+	coord, store, _, _ := setupGate1Coordinator(t)
+
+	initialData := "initial-store-data"
+	store.data = initialData
+	baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+	store.digest = baseDigest
+
+	mutateFn := func() error {
+		store.data = "mutated-data-before-apply"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		return nil
+	}
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	// Inject failpoint after directory rename in PublishStagedBundle
+	coord.genStore.SetHooks(GenerationStoreHooks{FailParentDirFsync: true})
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if err == nil || !strings.Contains(err.Error(), "publish LKG generation bundle") {
+		t.Fatalf("expected error containing 'publish LKG generation bundle', got: %v", err)
+	}
+
+	// Coordinator state must return to StateIdle
+	if coord.State() != StateIdle {
+		t.Fatalf("expected state StateIdle after clean abort, got: %s", coord.State())
+	}
+
+	// Recovery marker must not exist
+	if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+		t.Fatalf("recovery marker should not exist after clean abort")
+	}
+
+	// Manifest must be cleaned up
+	if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest should not exist after clean abort")
+	}
+
+	// Cleanup journal must be cleaned up
+	if _, err := os.Stat(coord.cleanupJournalFile); !os.IsNotExist(err) {
+		t.Fatalf("cleanup journal should not exist after clean abort")
+	}
+
+	// No candidate generation bundles or staging directories may remain in generationsDir
+	gensDir := coord.genStore.GenerationsDir()
+	if entries, err := os.ReadDir(gensDir); err == nil {
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "gen-") || strings.HasPrefix(e.Name(), ".tmp.") {
+				t.Fatalf("orphan bundle or staging directory was left on disk: %s", e.Name())
+			}
+		}
+	}
+
+	// Store data and digest must be restored to pre-mutation state
+	if store.data != initialData {
+		t.Fatalf("store data was not restored: got %q, want %q", store.data, initialData)
+	}
+	curDigest, _ := store.CurrentDigest()
+	if curDigest != baseDigest {
+		t.Fatalf("store digest mismatch: got %s, want %s", curDigest, baseDigest)
+	}
+}
+
+// 19. Generation bundle publish fails AND cleanup fails: enters RecoveryRequired with marker and manifest preserved
+func TestCoordinator_Gate1_GenerationBundle_PostRenameFsyncFail_CleanupFail_EntersRecoveryRequired(t *testing.T) {
+	coord, store, _, _ := setupGate1Coordinator(t)
+
+	initialData := "initial-store-data"
+	store.data = initialData
+	baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+	store.digest = baseDigest
+
+	mutateFn := func() error {
+		store.data = "mutated-data-before-apply"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		return nil
+	}
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	// Inject failpoint after directory rename in PublishStagedBundle
+	coord.genStore.SetHooks(GenerationStoreHooks{FailParentDirFsync: true})
+	// Inject cleanup failure so candidate bundle cannot be safely confirmed removed
+	coord.SetHooks(ApplyCoordinatorHooks{FailCleanupUnlink: true})
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if err == nil {
+		t.Fatalf("expected error when publication and cleanup both fail")
+	}
+
+	// Coordinator state must be RECOVERY_REQUIRED
+	if coord.State() != StateRecoveryRequired {
+		t.Fatalf("expected state StateRecoveryRequired, got: %s", coord.State())
+	}
+
+	// Recovery marker must exist
+	if _, err := os.Stat(coord.recoveryMarkerFile); err != nil {
+		t.Fatalf("recovery marker must exist: %v", err)
+	}
+
+	// Manifest must be preserved with CandidateGenerationID
+	mData, err := os.ReadFile(coord.manifestFile)
+	if err != nil {
+		t.Fatalf("manifest must exist on disk: %v", err)
+	}
+	var m TransactionManifest
+	if err := json.Unmarshal(mData, &m); err != nil {
+		t.Fatalf("manifest must be valid JSON: %v", err)
+	}
+	if m.CandidateGenerationID == "" {
+		t.Fatalf("manifest must durably record CandidateGenerationID")
+	}
+}
+
+// 20. Candidate config rename succeeds but crash occurs immediately after write without calling abortEarlyLocked:
+// RecoverOnStartup must clean candidate config, restore pre-mutation store, clean manifest/snapshots, not run runtime, and reach Idle.
+func TestCoordinator_Gate1_CandidateConfig_CrashAfterRename_RecoverOnStartupCleansArtifacts(t *testing.T) {
+	t.Run("with_mutation", func(t *testing.T) {
+		coord, store, _, tmpDir := setupGate1Coordinator(t)
+
+		initialData := "initial-store-data"
+		store.data = initialData
+		baseDigest := strictfs.ComputeBytesDigest([]byte(initialData))
+		store.digest = baseDigest
+
+		mutateFn := func() error {
+			store.data = "mutated-data-in-flight"
+			store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+			return nil
+		}
+
+		compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+		// Inject failpoint right after candidate config atomic rename, simulating process crash
+		coord.SetHooks(ApplyCoordinatorHooks{
+			FailAfterCandidateWrite: true,
+		})
+
+		err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+		if !errors.Is(err, ErrSimulatedCrash) {
+			t.Fatalf("expected ErrSimulatedCrash, got: %v", err)
+		}
+
+		// Verify crash state before recovery:
+		// 1. Manifest must exist on disk in StateCandidateWriteIntent
+		mData, err := os.ReadFile(coord.manifestFile)
+		if err != nil {
+			t.Fatalf("manifest must exist on disk after crash: %v", err)
+		}
+		var m TransactionManifest
+		if err := json.Unmarshal(mData, &m); err != nil {
+			t.Fatalf("manifest must be valid JSON: %v", err)
+		}
+		if m.State != StateCandidateWriteIntent {
+			t.Fatalf("manifest state must be StateCandidateWriteIntent, got: %s", m.State)
+		}
+		if m.CandidateConfigFile == "" {
+			t.Fatalf("manifest must durably record CandidateConfigFile before file write")
+		}
+		if m.CandidateGenerationID == "" {
+			t.Fatalf("manifest must durably record CandidateGenerationID before file write")
+		}
+		if m.PreMutationStoreSnapshotFile == "" {
+			t.Fatalf("manifest must durably record PreMutationStoreSnapshotFile")
+		}
+
+		// 2. Candidate file must exist on disk
+		if _, err := os.Stat(m.CandidateConfigFile); err != nil {
+			t.Fatalf("candidate config file must exist on disk after write: %v", err)
+		}
+
+		// 3. Pre-mutation store snapshot must exist on disk
+		if _, err := os.Stat(m.PreMutationStoreSnapshotFile); err != nil {
+			t.Fatalf("pre-mutation store snapshot file must exist on disk: %v", err)
+		}
+
+		// 4. Store is currently mutated (abortEarlyLocked was not called)
+		if store.data != "mutated-data-in-flight" {
+			t.Fatalf("store data should still be mutated before recovery")
+		}
+
+		// Now simulate restart with a fresh coordinator instance
+		coord2 := NewApplyCoordinator(coord.cfg)
+		if err := coord2.RecoverOnStartup(context.Background()); err != nil {
+			t.Fatalf("RecoverOnStartup failed: %v", err)
+		}
+
+		// Verify post-recovery state:
+		// 1. Coordinator state must be StateIdle
+		if coord2.State() != StateIdle {
+			t.Fatalf("expected state StateIdle after recovery, got: %s", coord2.State())
+		}
+
+		// 2. Candidate config file must be removed
+		if _, err := os.Stat(m.CandidateConfigFile); !os.IsNotExist(err) {
+			t.Fatalf("candidate config file should be removed after recovery")
+		}
+
+		// 3. Pre-mutation store must be restored
+		if store.data != initialData {
+			t.Fatalf("store data not restored: got %q, want %q", store.data, initialData)
+		}
+		curDigest, _ := store.CurrentDigest()
+		if curDigest != baseDigest {
+			t.Fatalf("store digest not restored: got %s, want %s", curDigest, baseDigest)
+		}
+
+		// 4. Manifest and snapshots must be cleaned up
+		if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+			t.Fatalf("manifest file must be removed after recovery")
+		}
+		if _, err := os.Stat(m.PreMutationStoreSnapshotFile); !os.IsNotExist(err) {
+			t.Fatalf("pre-mutation snapshot must be removed after recovery")
+		}
+		if m.CandidatePostMutationStoreSnapshotFile != "" {
+			if _, err := os.Stat(m.CandidatePostMutationStoreSnapshotFile); !os.IsNotExist(err) {
+				t.Fatalf("post-mutation snapshot must be removed after recovery")
+			}
+		}
+
+		// 5. Recovery marker must not exist
+		if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+			t.Fatalf("recovery marker should not exist after clean recovery")
+		}
+
+		// 6. Runtime must not have been started
+		if running, _ := coord.cfg.Operator.IsRunning(); running {
+			t.Fatalf("runtime operator must not be running")
+		}
+
+		// 7. No orphan candidate config files left in directory
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			t.Fatalf("failed to read config dir: %v", err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "config.yaml.candidate.") {
+				t.Fatalf("orphan candidate file left in dir: %s", e.Name())
+			}
+		}
+	})
+
+	t.Run("without_mutation", func(t *testing.T) {
+		coord, _, _, tmpDir := setupGate1Coordinator(t)
+
+		compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+		coord.SetHooks(ApplyCoordinatorHooks{
+			FailAfterCandidateWrite: true,
+		})
+
+		err := coord.MutateAndApply(context.Background(), nil, compileFn)
+		if !errors.Is(err, ErrSimulatedCrash) {
+			t.Fatalf("expected ErrSimulatedCrash, got: %v", err)
+		}
+
+		// Manifest must exist on disk in StateCandidateWriteIntent
+		mData, err := os.ReadFile(coord.manifestFile)
+		if err != nil {
+			t.Fatalf("manifest must exist on disk after crash: %v", err)
+		}
+		var m TransactionManifest
+		if err := json.Unmarshal(mData, &m); err != nil {
+			t.Fatalf("manifest must be valid JSON: %v", err)
+		}
+		if m.State != StateCandidateWriteIntent {
+			t.Fatalf("manifest state must be StateCandidateWriteIntent, got: %s", m.State)
+		}
+		if m.CandidateConfigFile == "" {
+			t.Fatalf("manifest must durably record CandidateConfigFile before file write")
+		}
+
+		// Candidate file must exist on disk
+		if _, err := os.Stat(m.CandidateConfigFile); err != nil {
+			t.Fatalf("candidate config file must exist on disk after write: %v", err)
+		}
+
+		// Simulate restart
+		coord2 := NewApplyCoordinator(coord.cfg)
+		if err := coord2.RecoverOnStartup(context.Background()); err != nil {
+			t.Fatalf("RecoverOnStartup failed: %v", err)
+		}
+
+		if coord2.State() != StateIdle {
+			t.Fatalf("expected state StateIdle after recovery, got: %s", coord2.State())
+		}
+		if _, err := os.Stat(m.CandidateConfigFile); !os.IsNotExist(err) {
+			t.Fatalf("candidate config file should be removed after recovery")
+		}
+		if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+			t.Fatalf("manifest file must be removed after recovery")
+		}
+		if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+			t.Fatalf("recovery marker should not exist after clean recovery")
+		}
+
+		entries, err := os.ReadDir(tmpDir)
+		if err != nil {
+			t.Fatalf("failed to read config dir: %v", err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), "config.yaml.candidate.") {
+				t.Fatalf("orphan candidate file left in dir: %s", e.Name())
+			}
+		}
+	})
+}
+
+// 21. Staging generation removal failure during abort: enters RecoveryRequired, preserves journal, marker, and manifest
+func TestCoordinator_Gate1_GenerationBundle_StagingRemovalFailure_EntersRecoveryRequired(t *testing.T) {
+	coord, _, _, _ := setupGate1Coordinator(t)
+
+	compileFn := makeGate1CompileFn("mode: test", RuntimeEnforced)
+
+	// Inject publication failure to force abort early while staging directory exists
+	// And inject staging removal failure so RemoveCandidateGeneration fails
+	coord.genStore.SetHooks(GenerationStoreHooks{
+		FailFileFsync:      true,
+		FailStagingRemoval: true,
+	})
+
+	err := coord.MutateAndApply(context.Background(), nil, compileFn)
+	if err == nil {
+		t.Fatalf("expected error when staging publication and removal both fail")
+	}
+
+	// Coordinator state must be RECOVERY_REQUIRED
+	if coord.State() != StateRecoveryRequired {
+		t.Fatalf("expected state StateRecoveryRequired, got: %s", coord.State())
+	}
+
+	// Recovery marker must exist
+	if _, err := os.Stat(coord.recoveryMarkerFile); err != nil {
+		t.Fatalf("recovery marker must exist: %v", err)
+	}
+
+	// Cleanup journal must exist and contain the generation ID
+	jBytes, err := os.ReadFile(coord.cleanupJournalFile)
+	if err != nil {
+		t.Fatalf("cleanup journal must exist on disk: %v", err)
+	}
+	var cj CleanupJournal
+	if err := json.Unmarshal(jBytes, &cj); err != nil {
+		t.Fatalf("cleanup journal must be valid JSON: %v", err)
+	}
+	foundGen := false
+	for _, f := range cj.Files {
+		if strings.HasPrefix(f, "gen-") {
+			foundGen = true
+			break
+		}
+	}
+	if !foundGen {
+		t.Fatalf("cleanup journal must retain candidate generation ID, got files: %v", cj.Files)
+	}
+
+	// Manifest must be preserved
+	if _, err := os.Stat(coord.manifestFile); err != nil {
+		t.Fatalf("manifest must exist on disk: %v", err)
+	}
+}
+
+type spyOperator struct {
+	mu         sync.Mutex
+	running    bool
+	pid        int
+	generation uint64
+	startCount int
+	stopCount  int
+}
+
+func newSpyOperator(running bool, generation uint64) *spyOperator {
+	pid := 0
+	if running {
+		pid = 12345
+	}
+	return &spyOperator{
+		running:    running,
+		pid:        pid,
+		generation: generation,
+	}
+}
+
+func (s *spyOperator) IsRunning() (bool, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running, s.pid
+}
+
+func (s *spyOperator) StopAndWait(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stopCount++
+	s.running = false
+	s.pid = 0
+	return nil
+}
+
+func (s *spyOperator) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startCount++
+	s.running = true
+	s.pid = 12346
+	s.generation++
+	return nil
+}
+
+// 22. Crash immediately after post-mutation snapshot creation: recovery cleanly removes snapshot and restores store
+func TestCoordinator_Gate1_CandidateConfig_CrashAfterPostSnapshot_RecoverOnStartupCleansArtifacts(t *testing.T) {
+	coord, store, _, tmpDir := setupGate1Coordinator(t)
+	baseDigest, _ := store.CurrentDigest()
+
+	mutateFn := func() error {
+		store.data = "mutated-data-post-snap-crash"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		return nil
+	}
+	compileFn := makeGate1CompileFn("config: candidate-post-snap", RuntimeEnforced)
+
+	coord.SetHooks(ApplyCoordinatorHooks{
+		FailAfterPostSnapshot: true,
+	})
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if !errors.Is(err, ErrSimulatedCrash) {
+		t.Fatalf("expected ErrSimulatedCrash, got: %v", err)
+	}
+
+	// 1. Manifest must exist in StateCandidateWriteIntent
+	mData, err := os.ReadFile(coord.manifestFile)
+	if err != nil {
+		t.Fatalf("manifest must exist on disk: %v", err)
+	}
+	var m TransactionManifest
+	if err := json.Unmarshal(mData, &m); err != nil {
+		t.Fatalf("manifest must be valid JSON: %v", err)
+	}
+	if m.State != StateCandidateWriteIntent {
+		t.Fatalf("expected StateCandidateWriteIntent, got: %s", m.State)
+	}
+	if m.CandidatePostMutationStoreSnapshotFile == "" {
+		t.Fatalf("manifest must record CandidatePostMutationStoreSnapshotFile before creation")
+	}
+
+	// 2. Both snapshots must exist on disk before recovery
+	if _, err := os.Stat(m.PreMutationStoreSnapshotFile); err != nil {
+		t.Fatalf("pre-mutation snapshot must exist before recovery: %v", err)
+	}
+	if _, err := os.Stat(m.CandidatePostMutationStoreSnapshotFile); err != nil {
+		t.Fatalf("post-mutation snapshot must exist before recovery: %v", err)
+	}
+
+	// 3. Run startup recovery
+	coord2 := NewApplyCoordinator(coord.cfg)
+	if err := coord2.RecoverOnStartup(context.Background()); err != nil {
+		t.Fatalf("RecoverOnStartup failed: %v", err)
+	}
+
+	// 4. Store restored to base digest
+	curDigest, _ := store.CurrentDigest()
+	if curDigest != baseDigest {
+		t.Fatalf("store digest not restored: got %s, want %s", curDigest, baseDigest)
+	}
+
+	// 5. Manifest and both snapshot files must be cleanly deleted
+	if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest file must be removed after recovery")
+	}
+	if _, err := os.Stat(m.PreMutationStoreSnapshotFile); !os.IsNotExist(err) {
+		t.Fatalf("pre-mutation snapshot must be removed after recovery")
+	}
+	if _, err := os.Stat(m.CandidatePostMutationStoreSnapshotFile); !os.IsNotExist(err) {
+		t.Fatalf("post-mutation snapshot must be removed after recovery")
+	}
+
+	// 6. No orphan snapshots left in directory
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read dir failed: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "snapshot") {
+			t.Fatalf("orphan snapshot file left in dir: %s", e.Name())
+		}
+	}
+}
+
+// 23. Compilation failure leaves no post-mutation snapshot or candidate files on disk
+func TestCoordinator_Gate1_CompileFailure_LeavesNoPostSnapshotOrCandidateArtifacts(t *testing.T) {
+	coord, store, _, tmpDir := setupGate1Coordinator(t)
+	baseDigest, _ := store.CurrentDigest()
+
+	mutateFn := func() error {
+		store.data = "mutated-data-compile-fail"
+		store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+		return nil
+	}
+	compileFn := func(ctx context.Context) (*CompileResult, error) {
+		return nil, errors.New("simulated compilation failure")
+	}
+
+	err := coord.MutateAndApply(context.Background(), mutateFn, compileFn)
+	if err == nil || !strings.Contains(err.Error(), "simulated compilation failure") {
+		t.Fatalf("expected simulated compilation failure, got: %v", err)
+	}
+
+	// Store must be restored to pre-mutation digest
+	curDigest, _ := store.CurrentDigest()
+	if curDigest != baseDigest {
+		t.Fatalf("store digest not restored: got %s, want %s", curDigest, baseDigest)
+	}
+
+	// No manifest or orphan files left
+	if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest file must be unlinked after abort")
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("read dir failed: %v", err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "-post") || strings.HasPrefix(e.Name(), "config.yaml.candidate.") {
+			t.Fatalf("orphan artifact left after compile failure: %s", e.Name())
+		}
+	}
+}
+
+// 24. Pre-existing staging directory removal failure fails closed before publishing bundle files
+func TestCoordinator_Gate1_PublishBundle_PreexistingStagingRemovalFailure_FailsClosed(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewGenerationStore(tmpDir)
+
+	genID := "gen-000001-test"
+	stagingDir := filepath.Join(store.GenerationsDir(), ".tmp."+genID)
+	if err := os.MkdirAll(stagingDir, 0700); err != nil {
+		t.Fatalf("failed to create staging dir: %v", err)
+	}
+	dirtyFile := filepath.Join(stagingDir, "dirty.txt")
+	if err := os.WriteFile(dirtyFile, []byte("garbage from previous run"), 0600); err != nil {
+		t.Fatalf("failed to write dirty file: %v", err)
+	}
+
+	store.SetHooks(GenerationStoreHooks{
+		FailPreexistingStagingRemoval: true,
+	})
+
+	configBytes := []byte("config")
+	rec := AppliedGenerationRecord{
+		Version:             1,
+		GenerationID:        genID,
+		Generation:          1,
+		AppliedConfigDigest: strictfs.ComputeBytesDigest(configBytes),
+		RuntimeMode:         RuntimeEnforced,
+	}
+
+	err := store.PublishStagedBundle(genID, 1, configBytes, "", rec, "epoch")
+	if err == nil || !strings.Contains(err.Error(), "pre-existing staging directory removal failed") {
+		t.Fatalf("expected pre-existing staging removal error, got: %v", err)
+	}
+
+	// Verify that dirty file still exists and was NOT overwritten
+	b, err := os.ReadFile(dirtyFile)
+	if err != nil || string(b) != "garbage from previous run" {
+		t.Fatalf("dirty staging file should remain untouched, got: %s (err: %v)", string(b), err)
+	}
+
+	// Verify that config.yaml was NOT written to stagingDir
+	if _, err := os.Stat(filepath.Join(stagingDir, "config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("config.yaml must not be written when pre-clean fails")
+	}
+}
+
+// 25. Crash before swap preserves pre-existing running runtime without any StopAndWait calls
+func TestCoordinator_Gate1_CrashBeforeSwap_PreservesRunningRuntime(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := newFakeStoreTx(tmpDir, "store-v1")
+	bridges := &fakeBridgeRuntime{}
+	validator := &fakeValidator{}
+	spy := newSpyOperator(true, 100)
+
+	cfg := CoordinatorConfig{
+		ConfigDir:     tmpDir,
+		Operator:      spy,
+		Validator:     validator,
+		BridgeRuntime: bridges,
+		StoreTx:       store,
+		Verifier:      &NoopProcessVerifier{},
+	}
+	coord := NewApplyCoordinator(cfg)
+
+	// Verify runtime is initially running
+	if running, _ := spy.IsRunning(); !running {
+		t.Fatalf("spy operator must initially be running")
+	}
+
+	// Crash before swap (right after candidate write)
+	coord.SetHooks(ApplyCoordinatorHooks{
+		FailAfterCandidateWrite: true,
+	})
+
+	err := coord.MutateAndApply(context.Background(), nil, makeGate1CompileFn("config: candidate", RuntimeEnforced))
+	if !errors.Is(err, ErrSimulatedCrash) {
+		t.Fatalf("expected ErrSimulatedCrash, got: %v", err)
+	}
+
+	// Run recovery
+	coord2 := NewApplyCoordinator(cfg)
+	if err := coord2.RecoverOnStartup(context.Background()); err != nil {
+		t.Fatalf("RecoverOnStartup failed: %v", err)
+	}
+
+	// CRITICAL ASSERTIONS:
+	// 1. StopAndWait must NOT have been called!
+	if spy.stopCount != 0 {
+		t.Fatalf("expected 0 StopAndWait calls, got: %d", spy.stopCount)
+	}
+	// 2. Start must NOT have been called!
+	if spy.startCount != 0 {
+		t.Fatalf("expected 0 Start calls, got: %d", spy.startCount)
+	}
+	// 3. Process generation must be completely unchanged!
+	if spy.generation != 100 {
+		t.Fatalf("expected generation 100, got: %d", spy.generation)
+	}
+	// 4. Operator must STILL BE RUNNING!
+	if running, _ := spy.IsRunning(); !running {
+		t.Fatalf("operator must remain running across crash-before-swap recovery")
+	}
+}
+
+// 26. Pre-mutation snapshot crash after creation: RecoverOnStartup cleans artifacts, leaves store untouched, reaches StateIdle.
+func TestCoordinator_Gate1_PreMutationSnapshot_CrashAfterCreation_RecoverOnStartupCleansArtifacts(t *testing.T) {
+	tmpDir := t.TempDir()
+	initialStoreData := "store-pre-mutation-initial"
+	store := newFakeStoreTx(tmpDir, initialStoreData)
+	initialDigest, _ := store.CurrentDigest()
+	bridges := &fakeBridgeRuntime{}
+	validator := &fakeValidator{}
+	spy := newSpyOperator(true, 100)
+
+	cfg := CoordinatorConfig{
+		ConfigDir:     tmpDir,
+		Operator:      spy,
+		Validator:     validator,
+		BridgeRuntime: bridges,
+		StoreTx:       store,
+		Verifier:      &NoopProcessVerifier{},
+	}
+	coord := NewApplyCoordinator(cfg)
+
+	// Verify runtime is initially running
+	if running, _ := spy.IsRunning(); !running {
+		t.Fatalf("spy operator must initially be running")
+	}
+
+	// Trigger simulated crash right after pre-mutation snapshot is created
+	coord.SetHooks(ApplyCoordinatorHooks{
+		FailAfterPreSnapshot: true,
+	})
+
+	err := coord.MutateAndApply(context.Background(), func() error {
+		store.data = "mutated-should-not-happen-on-crash"
+		return nil
+	}, makeGate1CompileFn("config: candidate", RuntimeEnforced))
+
+	if !errors.Is(err, ErrSimulatedCrash) {
+		t.Fatalf("expected ErrSimulatedCrash, got: %v", err)
+	}
+
+	// Verify crash state before recovery:
+	// 1. Manifest exists on disk in StatePreSnapshotWriteIntent
+	mData, err := os.ReadFile(coord.manifestFile)
+	if err != nil {
+		t.Fatalf("manifest must exist on disk after crash: %v", err)
+	}
+	var m TransactionManifest
+	if err := json.Unmarshal(mData, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if m.State != StatePreSnapshotWriteIntent {
+		t.Fatalf("expected manifest state %s, got: %s", StatePreSnapshotWriteIntent, m.State)
+	}
+	if m.PreMutationStoreSnapshotFile == "" {
+		t.Fatalf("pre_mutation_store_snapshot_file must be recorded in manifest")
+	}
+	if m.BaseDesiredStoreDigest != initialDigest {
+		t.Fatalf("expected BaseDesiredStoreDigest %s, got: %s", initialDigest, m.BaseDesiredStoreDigest)
+	}
+
+	// 2. Snapshot file exists on disk and contains initial store data
+	snapBytes, err := os.ReadFile(m.PreMutationStoreSnapshotFile)
+	if err != nil {
+		t.Fatalf("snapshot file must exist on disk: %v", err)
+	}
+	if string(snapBytes) != initialStoreData {
+		t.Fatalf("snapshot file data mismatch: got %q, want %q", string(snapBytes), initialStoreData)
+	}
+
+	// 3. Store data in-memory was NOT mutated because crash happened before mutateFn was called
+	currStoreDigest, _ := store.CurrentDigest()
+	if currStoreDigest != initialDigest {
+		t.Fatalf("store must remain untouched before mutation: got %s, want %s", currStoreDigest, initialDigest)
+	}
+
+	// 4. Strict lifecycle: new coordinator rejects MutateAndApply with ErrTxInProgress before recovery
+	coord2 := NewApplyCoordinator(cfg)
+	err = coord2.MutateAndApply(context.Background(), nil, makeGate1CompileFn("config: candidate", RuntimeEnforced))
+	if !errors.Is(err, ErrTxInProgress) {
+		t.Fatalf("expected ErrTxInProgress before recovery, got: %v", err)
+	}
+
+	// 5. Run startup recovery
+	if err := coord2.RecoverOnStartup(context.Background()); err != nil {
+		t.Fatalf("RecoverOnStartup failed: %v", err)
+	}
+
+	// CRITICAL ASSERTIONS:
+	// 1. Coordinator state is StateIdle
+	if coord2.State() != StateIdle {
+		t.Fatalf("expected StateIdle after recovery, got: %s", coord2.State())
+	}
+	// 2. Manifest file is cleanly unlinked
+	if _, err := os.Stat(coord2.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest file must be unlinked after pre-snapshot crash recovery")
+	}
+	// 3. Snapshot file is cleanly unlinked
+	if _, err := os.Stat(m.PreMutationStoreSnapshotFile); !os.IsNotExist(err) {
+		t.Fatalf("snapshot file must be unlinked after pre-snapshot crash recovery")
+	}
+	// 4. Store digest is intact
+	finalStoreDigest, _ := store.CurrentDigest()
+	if finalStoreDigest != initialDigest {
+		t.Fatalf("store digest must be intact: got %s, want %s", finalStoreDigest, initialDigest)
+	}
+	// 5. Runtime was untouched (never stopped or started)
+	if spy.stopCount != 0 {
+		t.Fatalf("expected 0 StopAndWait calls, got: %d", spy.stopCount)
+	}
+	if spy.startCount != 0 {
+		t.Fatalf("expected 0 Start calls, got: %d", spy.startCount)
+	}
+	if spy.generation != 100 {
+		t.Fatalf("expected generation 100, got: %d", spy.generation)
+	}
+
+	// 6. Subsequent MutateAndApply succeeds cleanly
+	err = coord2.MutateAndApply(context.Background(), func() error {
+		store.data = "store-v2-applied"
+		return nil
+	}, makeGate1CompileFn("config: candidate-v2", RuntimeEnforced))
+	if err != nil {
+		t.Fatalf("subsequent MutateAndApply failed: %v", err)
+	}
+	if coord2.State() != StateIdle {
+		t.Fatalf("expected StateIdle after successful apply, got: %s", coord2.State())
+	}
+}
+
+// 27. Pre-mutation snapshot digest mismatch fails safe: aborts via abortPreMutationIntentLocked, cleans artifacts, leaves coordinator Idle.
+func TestCoordinator_Gate1_PreMutationSnapshot_StoreDigestMismatch_FailsSafe(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := newFakeStoreTx(tmpDir, "store-pre-mutation-v1")
+	initialDigest, _ := store.CurrentDigest()
+	bridges := &fakeBridgeRuntime{}
+	validator := &fakeValidator{}
+	spy := newSpyOperator(true, 100)
+
+	cfg := CoordinatorConfig{
+		ConfigDir:     tmpDir,
+		Operator:      spy,
+		Validator:     validator,
+		BridgeRuntime: bridges,
+		StoreTx:       store,
+		Verifier:      &NoopProcessVerifier{},
+	}
+	coord := NewApplyCoordinator(cfg)
+
+	// Simulate store snapshot returning a digest that does not match BaseDesiredStoreDigest
+	store.mismatchSnapshotAtDigest = "diverged-digest-9999"
+
+	err := coord.MutateAndApply(context.Background(), func() error {
+		store.data = "should-never-be-reached"
+		return nil
+	}, makeGate1CompileFn("config: candidate", RuntimeEnforced))
+
+	if err == nil || !strings.Contains(err.Error(), "store changed while securing snapshot") {
+		t.Fatalf("expected store changed while securing snapshot error, got: %v", err)
+	}
+
+	// Verify fail-safe abort:
+	// 1. Coordinator returned to StateIdle (not RecoveryRequired)
+	if coord.State() != StateIdle {
+		t.Fatalf("expected StateIdle after abort, got: %s", coord.State())
+	}
+	// 2. Manifest file is unlinked
+	if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+		t.Fatalf("manifest must be unlinked after digest mismatch abort")
+	}
+	// 3. Snapshot file is unlinked
+	snapPath, _ := store.SnapshotFilePath(coord.activeTxID)
+	if snapPath != "" {
+		if _, err := os.Stat(snapPath); !os.IsNotExist(err) {
+			t.Fatalf("snapshot file must be unlinked after digest mismatch abort")
+		}
+	}
+	// 4. Store was not mutated
+	currStoreDigest, _ := store.CurrentDigest()
+	if currStoreDigest != initialDigest {
+		t.Fatalf("store must remain unmutated: got %s, want %s", currStoreDigest, initialDigest)
+	}
+	// 5. Runtime was never stopped or started
+	if spy.stopCount != 0 || spy.startCount != 0 {
+		t.Fatalf("runtime must not be touched during pre-mutation abort: stops=%d, starts=%d", spy.stopCount, spy.startCount)
+	}
+}
+
+// 28. Manifest ownership validation rejects paths outside canonical boundaries during startup recovery.
+func TestCoordinator_Gate1_ManifestOwnershipValidation(t *testing.T) {
+	bridges := &fakeBridgeRuntime{}
+	validator := &fakeValidator{}
+	spy := newSpyOperator(false, 0)
+
+	t.Run("SnapshotPathOutsideStoreDir_QuarantinesManifest", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		storeDir := filepath.Join(tmpDir, "store")
+		_ = os.MkdirAll(storeDir, 0700)
+		store := newFakeStoreTx(storeDir, "store-v1")
+
+		configDir := filepath.Join(tmpDir, "config")
+		_ = os.MkdirAll(configDir, 0700)
+
+		cfg := CoordinatorConfig{
+			ConfigDir:     configDir,
+			Operator:      spy,
+			Validator:     validator,
+			BridgeRuntime: bridges,
+			StoreTx:       store,
+			Verifier:      &NoopProcessVerifier{},
+		}
+
+		coord := NewApplyCoordinator(cfg)
+		txid := "20260916150001"
+		outsideSnap := filepath.Join(tmpDir, "outside_dir", "snapshot."+txid)
+		_ = os.MkdirAll(filepath.Dir(outsideSnap), 0700)
+		_ = os.WriteFile(outsideSnap, []byte("fake"), 0600)
+
+		m := TransactionManifest{
+			Version:                      1,
+			TxID:                         txid,
+			State:                        StatePreSnapshotWriteIntent,
+			PreMutationStoreSnapshotFile: outsideSnap,
+		}
+		mBytes, _ := json.Marshal(m)
+		_ = os.WriteFile(coord.manifestFile, mBytes, 0600)
+
+		err := coord.RecoverOnStartup(context.Background())
+		if !errors.Is(err, ErrRecoveryRequired) {
+			t.Fatalf("expected ErrRecoveryRequired for foreign snapshot path, got: %v", err)
+		}
+		if coord.State() != StateRecoveryRequired {
+			t.Fatalf("expected StateRecoveryRequired, got: %s", coord.State())
+		}
+		// Manifest must have been quarantined
+		if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+			t.Fatalf("manifest should be removed from original path and quarantined")
+		}
+	})
+
+	t.Run("CandidateConfigFileOutsideConfigDir_QuarantinesManifest", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		storeDir := filepath.Join(tmpDir, "store")
+		_ = os.MkdirAll(storeDir, 0700)
+		store := newFakeStoreTx(storeDir, "store-v1")
+
+		configDir := filepath.Join(tmpDir, "config")
+		_ = os.MkdirAll(configDir, 0700)
+
+		cfg := CoordinatorConfig{
+			ConfigDir:     configDir,
+			Operator:      spy,
+			Validator:     validator,
+			BridgeRuntime: bridges,
+			StoreTx:       store,
+			Verifier:      &NoopProcessVerifier{},
+		}
+
+		coord := NewApplyCoordinator(cfg)
+		txid := "20260916150002"
+		outsideConfig := filepath.Join(tmpDir, "other_config", "config.yaml.candidate."+txid)
+		_ = os.MkdirAll(filepath.Dir(outsideConfig), 0700)
+		_ = os.WriteFile(outsideConfig, []byte("fake"), 0600)
+
+		m := TransactionManifest{
+			Version:               1,
+			TxID:                  txid,
+			State:                 StateCandidateWriteIntent,
+			CandidateGenerationID: "gen-000001-" + txid,
+			ConfigPresent:         true,
+			CandidateConfigFile:   outsideConfig,
+			CandidateConfigDigest: "sha256-digest-placeholder",
+		}
+		mBytes, _ := json.Marshal(m)
+		_ = os.WriteFile(coord.manifestFile, mBytes, 0600)
+
+		err := coord.RecoverOnStartup(context.Background())
+		if !errors.Is(err, ErrRecoveryRequired) {
+			t.Fatalf("expected ErrRecoveryRequired for foreign candidate config path, got: %v", err)
+		}
+		if coord.State() != StateRecoveryRequired {
+			t.Fatalf("expected StateRecoveryRequired, got: %s", coord.State())
+		}
+		if _, err := os.Stat(coord.manifestFile); !os.IsNotExist(err) {
+			t.Fatalf("manifest should be quarantined")
+		}
+	})
 }

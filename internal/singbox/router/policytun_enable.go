@@ -351,10 +351,25 @@ func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Set
 		s.appLog.Warn("policy-tun-enable", "orchestrator", fmt.Sprintf("sing-box orchestrator reload failed while Mihomo is primary: %v", err))
 	}
 
-	// HARD gate: an unready sing-box means the tun never attaches, and parking
+	if mihomoPrimary && !s.singboxReady(ctx, true) {
+		engine := s.routingEngineController()
+		if engine == nil {
+			return fmt.Errorf("enable policy-tun: Mihomo routing engine is unavailable")
+		}
+		if err = engine.Reload(); err != nil {
+			return fmt.Errorf("enable policy-tun: start Mihomo routing engine: %w", err)
+		}
+	}
+
+	// HARD gate: an unready sing-box/Mihomo means the tun never attaches, and parking
 	// the NDMS default route on a dead tun blackholes every policy client.
 	bootWait := bootWaitWithFloor()
 	if err = s.waitForSingbox(ctx, bootWait); err != nil {
+		if mihomoPrimary {
+			if engine := s.routingEngineController(); engine != nil {
+				_ = engine.Stop()
+			}
+		}
 		return fmt.Errorf("enable policy-tun: %w: waited %s (%v)", ErrSingboxNotReady, bootWait, err)
 	}
 

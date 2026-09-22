@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/events"
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/mihomo/installer"
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/proxyengine"
@@ -32,6 +33,7 @@ type MihomoHandler struct {
 	settingsStore *storage.SettingsStore
 	routerSvc     router.Service
 	reloadFn      func() error
+	restartFn     func() error
 	nativeStore   *mihomonative.Store
 	nativeBridge  *mihomonative.BridgeManager
 	bridgePrepare func(context.Context, []mihomonative.BridgeRef) error
@@ -44,6 +46,7 @@ type MihomoHandler struct {
 	mutationTx            func(func() error) error
 	mutationReloadFn      func() error
 	mutationApplier       NativeMutationApplier
+	providerRefresher     mihomo.MihomoProviderRefresher
 	nativeMu              sync.Mutex
 }
 
@@ -111,9 +114,48 @@ func (h *MihomoHandler) StatusSnapshot() (MihomoStatusSnapshot, error) {
 }
 
 func NewMihomoHandler(op proxyengine.Engine) *MihomoHandler {
-	return &MihomoHandler{
+	h := &MihomoHandler{
 		op: op,
 	}
+	if refresher, ok := op.(mihomo.MihomoProviderRefresher); ok {
+		h.providerRefresher = refresher
+	}
+	return h
+}
+
+func (h *MihomoHandler) SetProviderRefresher(refresher mihomo.MihomoProviderRefresher) {
+	h.nativeMu.Lock()
+	defer h.nativeMu.Unlock()
+	h.providerRefresher = refresher
+}
+
+func (h *MihomoHandler) checkMutationAllowed() error {
+	h.nativeMu.Lock()
+	applier := h.mutationApplier
+	h.nativeMu.Unlock()
+	if applier == nil {
+		return nil
+	}
+	if applier.IsDegraded() {
+		return ErrRecoveryRequired
+	}
+	if err := applier.CheckMutationAllowed(); err != nil {
+		return ErrRecoveryRequired
+	}
+	return nil
+}
+
+// CheckMutationAllowed returns ErrRecoveryRequired if the engine is degraded
+// or if mutations are otherwise blocked.
+func (h *MihomoHandler) CheckMutationAllowed() error {
+	return h.checkMutationAllowed()
+}
+
+// MutationApplier returns the configured mutation applier, if any.
+func (h *MihomoHandler) MutationApplier() NativeMutationApplier {
+	h.nativeMu.Lock()
+	defer h.nativeMu.Unlock()
+	return h.mutationApplier
 }
 
 func (h *MihomoHandler) SetInstaller(inst *installer.Installer) {
@@ -133,6 +175,12 @@ func (h *MihomoHandler) SetRouterService(svc router.Service) {
 }
 
 func (h *MihomoHandler) Restart() error {
+	if err := h.checkMutationAllowed(); err != nil {
+		return err
+	}
+	if h.restartFn != nil {
+		return h.restartFn()
+	}
 	if h.op == nil {
 		return errors.New("mihomo engine is unavailable")
 	}
@@ -143,7 +191,14 @@ func (h *MihomoHandler) Restart() error {
 	return h.op.Start()
 }
 
+func (h *MihomoHandler) SetRestartFunc(fn func() error) {
+	h.restartFn = fn
+}
+
 func (h *MihomoHandler) Reload() error {
+	if err := h.checkMutationAllowed(); err != nil {
+		return err
+	}
 	if h.reloadFn != nil {
 		return h.reloadFn()
 	}
@@ -183,6 +238,9 @@ func (h *MihomoHandler) SetNativeBridgeManager(manager *mihomonative.BridgeManag
 }
 
 func (h *MihomoHandler) BatchSaveRules(ctx context.Context, rules []mihomonative.Rule) error {
+	if err := h.checkMutationAllowed(); err != nil {
+		return err
+	}
 	_, err := h.withNativeMutation(ctx, true, func() (interface{}, error) {
 		return h.nativeStore.SaveRulesBatch(rules)
 	})
@@ -211,8 +269,31 @@ func (h *MihomoHandler) SetMutationApplier(applier NativeMutationApplier) {
 
 // MihomoRecoveryReconcileRequest specifies recovery parameters for degraded mode.
 type MihomoRecoveryReconcileRequest struct {
-	Action string `json:"action"` // "rollback_to_lkg" | "clear_marker"
+	Action string `json:"action"` // "rollback_to_lkg" | "regenerate_from_desired"
 	Force  bool   `json:"force"`
+}
+
+//	@Summary		Export redacted diagnostic recovery evidence
+//	@Description	Returns safely redacted coordinator and runtime state for degraded diagnostics
+//	@Tags			mihomo
+//	@Produce		json
+//	@Success		200		{object}	APIEnvelope{data=mihomo.RecoveryEvidenceDTO}
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Failure		503		{object}	APIErrorEnvelope
+//	@Router			/mihomo/recovery/evidence [get]
+func (h *MihomoHandler) HandleRecoveryEvidence(w http.ResponseWriter, r *http.Request) {
+	if h.mutationApplier == nil {
+		response.ErrorWithStatus(w, http.StatusServiceUnavailable, "recovery applier unavailable", "UNAVAILABLE")
+		return
+	}
+	evidence, err := h.mutationApplier.ExportEvidence(r.Context())
+	if err != nil {
+		response.ErrorWithStatus(w, http.StatusInternalServerError, err.Error(), "EVIDENCE_EXPORT_FAILED")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"mihomo-recovery-evidence.json\"")
+	response.Success(w, evidence)
 }
 
 //	@Summary		Reconcile degraded Mihomo coordinator state
@@ -235,6 +316,10 @@ func (h *MihomoHandler) HandleRecoveryReconcile(w http.ResponseWriter, r *http.R
 		response.BadRequest(w, "invalid request body")
 		return
 	}
+	if req.Action != "rollback_to_lkg" && req.Action != "regenerate_from_desired" {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "unsupported recovery action: "+req.Action, "INVALID_ACTION")
+		return
+	}
 	if err := h.mutationApplier.Reconcile(r.Context(), req.Action, req.Force); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "RECONCILE_FAILED")
 		return
@@ -242,7 +327,16 @@ func (h *MihomoHandler) HandleRecoveryReconcile(w http.ResponseWriter, r *http.R
 	response.Success(w, map[string]string{"status": "ok"})
 }
 
+// RouteRegistrar represents an HTTP route registration target such as *http.ServeMux.
+type RouteRegistrar interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
 func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.HandlerFunc) http.HandlerFunc) {
+	h.RegisterRoutesTo(mux, guarded)
+}
+
+func (h *MihomoHandler) RegisterRoutesTo(mux RouteRegistrar, guarded func(http.HandlerFunc) http.HandlerFunc) {
 	if guarded == nil {
 		guarded = func(next http.HandlerFunc) http.HandlerFunc { return next }
 	}
@@ -252,6 +346,7 @@ func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.Han
 	mux.HandleFunc("POST /api/mihomo/uninstall", guarded(h.handleUninstall))
 	mux.HandleFunc("GET /api/mihomo/config", guarded(h.handleConfig))
 	mux.HandleFunc("POST /api/mihomo/reload", guarded(h.handleReload))
+	mux.HandleFunc("GET /api/mihomo/recovery/evidence", guarded(h.HandleRecoveryEvidence))
 	mux.HandleFunc("POST /api/mihomo/recovery/reconcile", guarded(h.HandleRecoveryReconcile))
 	if h.nativeStore != nil {
 		mux.HandleFunc("GET /api/mihomo/native/proxies", guarded(h.handleNativeProxyList))
@@ -268,6 +363,7 @@ func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.Han
 		mux.HandleFunc("GET /api/mihomo/native/groups", guarded(h.handleNativeGroupList))
 		mux.HandleFunc("POST /api/mihomo/native/groups", guarded(h.handleNativeGroupSave))
 		mux.HandleFunc("PUT /api/mihomo/native/groups/{id}", guarded(h.handleNativeGroupSave))
+		mux.HandleFunc("DELETE /api/mihomo/native/groups/{id}", guarded(h.handleNativeGroupDelete))
 		mux.HandleFunc("GET /api/mihomo/native/rules", guarded(h.handleNativeRuleList))
 		mux.HandleFunc("GET /api/mihomo/native/rules/unsupported", guarded(h.HandleNativeUnsupportedRulesList))
 		mux.HandleFunc("POST /api/mihomo/native/rules/unsupported/delete", guarded(h.HandleNativeUnsupportedRulesDelete))
@@ -287,7 +383,7 @@ func (h *MihomoHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.Han
 	}
 
 	// Mount the clash proxy under /api/mihomo/clash/
-	clashProxy := NewMihomoClashProxy(h.op)
+	clashProxy := NewMihomoClashProxy(h.op, h)
 	mux.HandleFunc("/api/mihomo/clash", guarded(clashProxy.ServeHTTP))
 	mux.HandleFunc("/api/mihomo/clash/", guarded(clashProxy.ServeHTTP))
 }
@@ -309,6 +405,10 @@ func (h *MihomoHandler) handleNativeGroupList(w http.ResponseWriter, _ *http.Req
 	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListGroups()})
 }
 func (h *MihomoHandler) handleNativeGroupSave(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var group mihomonative.ProxyGroup
 	if err := json.NewDecoder(r.Body).Decode(&group); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -332,6 +432,10 @@ func (h *MihomoHandler) handleNativeGroupSave(w http.ResponseWriter, r *http.Req
 	response.Success(w, result)
 }
 func (h *MihomoHandler) handleNativeGroupDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	apply := r.URL.Query().Get("apply") != "false"
 	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
 		if deleteErr := h.nativeStore.DeleteGroup(r.PathValue("id")); deleteErr != nil {
@@ -349,6 +453,10 @@ func (h *MihomoHandler) handleNativeRuleList(w http.ResponseWriter, _ *http.Requ
 	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListRules()})
 }
 func (h *MihomoHandler) handleNativeRuleCreate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var input mihomonative.RuleInput
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -377,6 +485,10 @@ func (h *MihomoHandler) handleNativeRuleCreate(w http.ResponseWriter, r *http.Re
 }
 
 func (h *MihomoHandler) handleNativeRuleUpdate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	id := r.PathValue("id")
 	if id == "" {
 		response.ErrorWithStatus(w, http.StatusNotFound, "rule id required", "NOT_FOUND")
@@ -410,6 +522,10 @@ func (h *MihomoHandler) handleNativeRuleUpdate(w http.ResponseWriter, r *http.Re
 }
 
 func (h *MihomoHandler) handleNativeRuleDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	apply := r.URL.Query().Get("apply") != "false"
 	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
 		if deleteErr := h.nativeStore.DeleteRule(r.PathValue("id")); deleteErr != nil {
@@ -472,6 +588,10 @@ func (h *MihomoHandler) HandleNativeUnsupportedRulesList(w http.ResponseWriter, 
 //	@Failure		500		{object}	APIErrorEnvelope
 //	@Router			/mihomo/native/rules/unsupported/delete [post]
 func (h *MihomoHandler) HandleNativeUnsupportedRulesDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var body NativeDeleteUnsupportedRulesRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -521,6 +641,10 @@ func (h *MihomoHandler) HandleNativeUnsupportedRulesDelete(w http.ResponseWriter
 }
 
 func (h *MihomoHandler) handleNativeRuleOrder(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var body struct {
 		IDs []string `json:"ids"`
 	}
@@ -545,6 +669,10 @@ func (h *MihomoHandler) handleNativeRuleProviderList(w http.ResponseWriter, _ *h
 	response.Success(w, map[string]interface{}{"items": h.nativeStore.ListRuleProviders()})
 }
 func (h *MihomoHandler) handleNativeRuleProviderSave(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var provider mihomonative.RuleProvider
 	if err := json.NewDecoder(r.Body).Decode(&provider); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -568,6 +696,10 @@ func (h *MihomoHandler) handleNativeRuleProviderSave(w http.ResponseWriter, r *h
 	response.Success(w, result)
 }
 func (h *MihomoHandler) handleNativeRuleProviderDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	apply := r.URL.Query().Get("apply") != "false"
 	_, err := h.withNativeMutation(r.Context(), apply, func() (interface{}, error) {
 		if deleteErr := h.nativeStore.DeleteRuleProvider(r.PathValue("id")); deleteErr != nil {
@@ -595,7 +727,7 @@ func (e nativeInputError) Error() string { return e.err.Error() }
 func (e nativeInputError) Unwrap() error { return e.err }
 
 func writeNativeMutationError(w http.ResponseWriter, err error, invalidCode string) {
-	if errors.Is(err, ErrRecoveryRequired) {
+	if errors.Is(err, ErrRecoveryRequired) || errors.Is(err, mihomo.ErrRecoveryRequired) {
 		response.ErrorWithStatus(w, http.StatusServiceUnavailable, "Mihomo engine is in degraded recovery mode; mutation rejected", "RECOVERY_REQUIRED")
 		return
 	}
@@ -673,11 +805,32 @@ func (h *MihomoHandler) withNativeMutation(
 		if h.mutationApplier.IsDegraded() {
 			return nil, ErrRecoveryRequired
 		}
+		if err := h.mutationApplier.CheckMutationAllowed(); err != nil {
+			return nil, ErrRecoveryRequired
+		}
 		var result interface{}
 		var mutErr error
+		var beforeBridges []mihomonative.BridgeRef
+		if h.nativeStore != nil {
+			beforeBridges = h.nativeStore.ListBridges()
+		}
 		fn := func() error {
-			result, mutErr = mutate()
-			return mutErr
+			if mutate != nil {
+				result, mutErr = mutate()
+				if mutErr != nil {
+					return mutErr
+				}
+			}
+			if h.bridgePrepare != nil {
+				if bridgeErr := h.bridgePrepare(ctx, beforeBridges); bridgeErr != nil {
+					return fmt.Errorf("prepare bridges: %w", bridgeErr)
+				}
+			} else if h.nativeBridge != nil {
+				if bridgeErr := h.nativeBridge.Reconcile(ctx, beforeBridges); bridgeErr != nil {
+					return fmt.Errorf("reconcile bridges: %w", bridgeErr)
+				}
+			}
+			return nil
 		}
 		if apply {
 			if err := h.mutationApplier.ApplyNativeMutation(ctx, fn); err != nil {
@@ -798,6 +951,10 @@ func (h *MihomoHandler) handleNativeProxyList(w http.ResponseWriter, _ *http.Req
 }
 
 func (h *MihomoHandler) handleNativeProxyCreate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var req nativeProxyCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -835,6 +992,10 @@ func (h *MihomoHandler) handleNativeProxyGet(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *MihomoHandler) handleNativeProxyUpdate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var req nativeProxyCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -865,6 +1026,10 @@ func (h *MihomoHandler) handleNativeProxyUpdate(w http.ResponseWriter, r *http.R
 }
 
 func (h *MihomoHandler) handleNativeProxyDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	id := r.PathValue("id")
 	_, err := h.withNativeMutation(r.Context(), r.URL.Query().Get("apply") != "false", func() (interface{}, error) {
 		if deleteErr := h.nativeStore.DeleteProxy(id); deleteErr != nil {
@@ -905,6 +1070,10 @@ func (h *MihomoHandler) handleNativeSubscriptionList(w http.ResponseWriter, _ *h
 }
 
 func (h *MihomoHandler) handleNativeSubscriptionCreate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var req nativeSubscriptionCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -951,6 +1120,10 @@ func (h *MihomoHandler) handleNativeSubscriptionGet(w http.ResponseWriter, r *ht
 }
 
 func (h *MihomoHandler) handleNativeSubscriptionUpdate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	var req nativeSubscriptionCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, "invalid JSON body", "INVALID_REQUEST")
@@ -980,6 +1153,10 @@ func (h *MihomoHandler) handleNativeSubscriptionUpdate(w http.ResponseWriter, r 
 }
 
 func (h *MihomoHandler) handleNativeSubscriptionDelete(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	id := r.PathValue("id")
 	_, err := h.withNativeMutation(r.Context(), r.URL.Query().Get("apply") != "false", func() (interface{}, error) {
 		if deleteErr := h.nativeStore.DeleteSubscription(id); deleteErr != nil {
@@ -995,8 +1172,16 @@ func (h *MihomoHandler) handleNativeSubscriptionDelete(w http.ResponseWriter, r 
 }
 
 func (h *MihomoHandler) handleNativeSubscriptionRefresh(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	id := r.PathValue("id")
 	if err := h.RefreshNativeSubscription(r.Context(), id); err != nil {
+		if errors.Is(err, ErrRecoveryRequired) || errors.Is(err, mihomo.ErrRecoveryRequired) {
+			writeNativeMutationError(w, err, "")
+			return
+		}
 		status, code := http.StatusBadGateway, "PROVIDER_REFRESH_FAILED"
 		if errors.Is(err, mihomonative.ErrNotFound) {
 			status, code = http.StatusNotFound, "NOT_FOUND"
@@ -1015,6 +1200,9 @@ var errNativeSubscriptionNotRuntimeProvider = errors.New("only Mihomo provider s
 // controller. The same method is shared by the HTTP API and confirmed AI
 // remediation actions.
 func (h *MihomoHandler) RefreshNativeSubscription(ctx context.Context, id string) error {
+	if err := h.checkMutationAllowed(); err != nil {
+		return err
+	}
 	if h == nil || h.nativeStore == nil {
 		return errors.New("mihomo native subscription store is unavailable")
 	}
@@ -1025,27 +1213,30 @@ func (h *MihomoHandler) RefreshNativeSubscription(ctx context.Context, id string
 	if sub.Format != mihomonative.FormatMihomoProvider || sub.ProviderName == "" {
 		return errNativeSubscriptionNotRuntimeProvider
 	}
-	target := "http://127.0.0.1:9090/providers/proxies/" + url.PathEscape(sub.ProviderName)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, nil)
-	if err == nil {
-		var upstream *http.Response
-		upstream, err = mihomoHTTPClient.Do(req)
-		if err == nil {
-			defer upstream.Body.Close()
-			if upstream.StatusCode < 200 || upstream.StatusCode >= 300 {
-				err = fmt.Errorf("mihomo provider refresh returned %s", upstream.Status)
-			}
+	refresher := func() mihomo.MihomoProviderRefresher {
+		h.nativeMu.Lock()
+		defer h.nativeMu.Unlock()
+		if h.providerRefresher != nil {
+			return h.providerRefresher
 		}
+		if opRefresher, ok := h.op.(mihomo.MihomoProviderRefresher); ok {
+			return opRefresher
+		}
+		return nil
+	}()
+	if refresher == nil {
+		return errors.New("mihomo provider refresher is unavailable")
 	}
+	refreshErr := refresher.RefreshProvider(ctx, sub.ProviderName)
 	recordErr := func() error {
 		h.nativeMu.Lock()
 		defer h.nativeMu.Unlock()
-		return h.nativeStore.RecordSubscriptionRefresh(id, err)
+		return h.nativeStore.RecordSubscriptionRefresh(id, refreshErr)
 	}()
-	if recordErr != nil && err == nil {
-		err = recordErr
+	if recordErr != nil && refreshErr == nil {
+		return recordErr
 	}
-	return err
+	return refreshErr
 }
 
 //	@Summary		Get Mihomo engine status
@@ -1084,6 +1275,10 @@ func (h *MihomoHandler) HandleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MihomoHandler) handleInstall(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	if h.installer == nil {
 		response.ErrorWithStatus(w, http.StatusNotImplemented, "mihomo installer not configured", "NOT_CONFIGURED")
 		return
@@ -1100,6 +1295,10 @@ func (h *MihomoHandler) handleInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MihomoHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	if h.installer == nil {
 		response.ErrorWithStatus(w, http.StatusNotImplemented, "mihomo installer not configured", "NOT_CONFIGURED")
 		return
@@ -1126,6 +1325,10 @@ func (h *MihomoHandler) handleUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MihomoHandler) handleUninstall(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	if h.installer == nil {
 		response.ErrorWithStatus(w, http.StatusNotImplemented, "mihomo installer not configured", "NOT_CONFIGURED")
 		return
@@ -1145,6 +1348,10 @@ func (h *MihomoHandler) handleUninstall(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *MihomoHandler) handleReload(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	if h.settingsStore != nil {
 		settings, err := h.settingsStore.Load()
 		if err != nil {
@@ -1173,33 +1380,53 @@ func (h *MihomoHandler) handleReload(w http.ResponseWriter, r *http.Request) {
 // MihomoClashProxy forwards /api/mihomo/clash/* to the Mihomo API.
 type MihomoClashProxy struct {
 	op proxyengine.Engine
+	h  *MihomoHandler
 }
 
-func NewMihomoClashProxy(op proxyengine.Engine) *MihomoClashProxy {
-	return &MihomoClashProxy{op: op}
+func NewMihomoClashProxy(op proxyengine.Engine, handlers ...*MihomoHandler) *MihomoClashProxy {
+	p := &MihomoClashProxy{op: op}
+	if len(handlers) > 0 {
+		p.h = handlers[0]
+	}
+	return p
 }
 
 const mihomoClashPrefix = "/api/mihomo/clash"
 
 func (p *MihomoClashProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	isMutating := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+	if isMutating && p.h != nil {
+		if err := p.h.checkMutationAllowed(); err != nil {
+			writeNativeMutationError(w, err, "")
+			return
+		}
+	}
+
 	upstreamPath := strings.TrimPrefix(r.URL.Path, mihomoClashPrefix)
 	if upstreamPath == "" {
 		upstreamPath = "/"
 	}
 
-	// Mihomo is configured to listen on 127.0.0.1:9090
 	addr := "127.0.0.1:9090"
+	var secret string
+	if resolver, ok := p.op.(interface{ ControllerTarget() (string, string) }); ok && resolver != nil {
+		a, s := resolver.ControllerTarget()
+		if a != "" {
+			addr = a
+		}
+		secret = s
+	}
 
 	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		p.proxyWebSocket(w, r, addr, upstreamPath)
+		p.proxyWebSocket(w, r, addr, secret, upstreamPath)
 		return
 	}
-	p.proxyHTTP(w, r, addr, upstreamPath)
+	p.proxyHTTP(w, r, addr, secret, upstreamPath)
 }
 
 var mihomoHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
-func (p *MihomoClashProxy) proxyHTTP(w http.ResponseWriter, r *http.Request, addr, path string) {
+func (p *MihomoClashProxy) proxyHTTP(w http.ResponseWriter, r *http.Request, addr, secret, path string) {
 	target := &url.URL{Scheme: "http", Host: addr, Path: path, RawQuery: r.URL.RawQuery}
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), r.Body)
 	if err != nil {
@@ -1207,9 +1434,15 @@ func (p *MihomoClashProxy) proxyHTTP(w http.ResponseWriter, r *http.Request, add
 		return
 	}
 	for k, vv := range r.Header {
+		if strings.EqualFold(k, "Authorization") {
+			continue
+		}
 		for _, v := range vv {
 			req.Header.Add(k, v)
 		}
+	}
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
 	}
 	resp, err := mihomoHTTPClient.Do(req)
 	if err != nil {
@@ -1226,7 +1459,7 @@ func (p *MihomoClashProxy) proxyHTTP(w http.ResponseWriter, r *http.Request, add
 	_, _ = io.Copy(w, resp.Body)
 }
 
-func (p *MihomoClashProxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, addr, path string) {
+func (p *MihomoClashProxy) proxyWebSocket(w http.ResponseWriter, r *http.Request, addr, secret, path string) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "hijacking not supported", http.StatusInternalServerError)
@@ -1248,7 +1481,17 @@ func (p *MihomoClashProxy) proxyWebSocket(w http.ResponseWriter, r *http.Request
 
 	target := &url.URL{Scheme: "http", Host: addr, Path: path, RawQuery: r.URL.RawQuery}
 	req, _ := http.NewRequest(r.Method, target.String(), nil)
-	req.Header = r.Header
+	for k, vv := range r.Header {
+		if strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	if secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
+	}
 
 	if err := req.Write(upstream); err != nil {
 		return
@@ -1267,6 +1510,10 @@ func (p *MihomoClashProxy) proxyWebSocket(w http.ResponseWriter, r *http.Request
 }
 
 func (h *MihomoHandler) handleNativeReset(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
 	if h.nativeStore == nil {
 		response.Error(w, "native store not initialized", "NATIVE_STORE_UNAVAILABLE")
 		return

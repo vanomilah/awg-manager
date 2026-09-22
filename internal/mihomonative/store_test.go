@@ -10,6 +10,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/storage"
+	"github.com/hoaxisr/awg-manager/internal/strictfs"
 )
 
 func TestStoreVLESSRoundTrip(t *testing.T) {
@@ -995,6 +996,7 @@ func TestStoreTxAdapter(t *testing.T) {
 	}
 
 	// Compile-time interface check
+	var _ mihomo.NativeStoreTx = (*StoreTxAdapter)(nil)
 	var tx mihomo.NativeStoreTx = store.TxAdapter()
 	if tx == nil {
 		t.Fatal("TxAdapter returned nil")
@@ -1003,6 +1005,53 @@ func TestStoreTxAdapter(t *testing.T) {
 	digest, err := tx.CurrentDigest()
 	if err != nil || digest == "" {
 		t.Fatalf("tx.CurrentDigest failed: %v", err)
+	}
+}
+
+func TestStore_CreateSnapshotFileAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mihomo-native.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	txid := "20260916120000000001"
+	expectedPath, err := store.SnapshotFilePath(txid)
+	if err != nil {
+		t.Fatalf("SnapshotFilePath failed: %v", err)
+	}
+
+	// Negative test: mismatched targetPath
+	badPath := filepath.Join(filepath.Dir(expectedPath), "store.snapshot.mismatch.json")
+	if _, err := store.CreateSnapshotFileAt(txid, badPath); err == nil {
+		t.Fatalf("expected error for mismatched target path %s, got nil", badPath)
+	}
+	if _, err := os.Stat(badPath); !os.IsNotExist(err) {
+		t.Fatalf("mismatched file should not have been created")
+	}
+
+	// Positive test: exact canonical path
+	currentDigestBefore, err := store.CurrentDigest()
+	if err != nil {
+		t.Fatalf("CurrentDigest failed: %v", err)
+	}
+
+	returnedDigest, err := store.CreateSnapshotFileAt(txid, expectedPath)
+	if err != nil {
+		t.Fatalf("CreateSnapshotFileAt failed: %v", err)
+	}
+
+	fileDigest, err := strictfs.ComputeFileDigest(expectedPath)
+	if err != nil {
+		t.Fatalf("ComputeFileDigest failed: %v", err)
+	}
+
+	// Verify all 3 digests match
+	if returnedDigest != currentDigestBefore {
+		t.Fatalf("digest mismatch: returned %q != currentBefore %q", returnedDigest, currentDigestBefore)
+	}
+	if returnedDigest != fileDigest {
+		t.Fatalf("digest mismatch: returned %q != fileDigest %q", returnedDigest, fileDigest)
 	}
 }
 
@@ -1050,5 +1099,159 @@ func TestStoreDraftJournal(t *testing.T) {
 	loaded, err = store.LoadDraftJournal()
 	if err != nil || loaded != nil {
 		t.Fatalf("expected nil after removal, got: %+v (err: %v)", loaded, err)
+	}
+}
+
+func TestStore_AtomicSnapshotContract(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "store.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+
+	snap0, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot 0 failed: %v", err)
+	}
+	if snap0.Revision() != 0 {
+		t.Fatalf("expected revision 0 for fresh store, got %d", snap0.Revision())
+	}
+	if store.SnapshotRevision() != snap0.Revision() {
+		t.Fatalf("SnapshotRevision mismatch: store=%d, snap=%d", store.SnapshotRevision(), snap0.Revision())
+	}
+	if snap0.Digest() == "" {
+		t.Fatal("expected non-empty digest for snap0")
+	}
+
+	// Mutation 1: add group
+	_, err = store.SaveGroup(ProxyGroup{
+		Name:    "TestGroup",
+		Type:    "select",
+		Proxies: []string{"DIRECT"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup failed: %v", err)
+	}
+
+	snap1, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot 1 failed: %v", err)
+	}
+	if snap1.Revision() != 1 {
+		t.Fatalf("expected revision 1 after mutation, got %d", snap1.Revision())
+	}
+	if store.SnapshotRevision() != 1 {
+		t.Fatalf("expected store revision 1, got %d", store.SnapshotRevision())
+	}
+	if snap1.Digest() == snap0.Digest() {
+		t.Fatalf("digest should change after mutation: %s vs %s", snap1.Digest(), snap0.Digest())
+	}
+
+	// Mutation 2: create rule
+	_, err = store.CreateRule(RuleInput{
+		Type:     "DOMAIN-SUFFIX",
+		Payload:  "google.com",
+		Outbound: "TestGroup",
+	})
+	if err != nil {
+		t.Fatalf("CreateRule failed: %v", err)
+	}
+
+	snap2, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot 2 failed: %v", err)
+	}
+	if snap2.Revision() != 2 {
+		t.Fatalf("expected revision 2 after second mutation, got %d", snap2.Revision())
+	}
+	if snap2.Digest() == snap1.Digest() {
+		t.Fatalf("digest should change after second mutation: %s vs %s", snap2.Digest(), snap1.Digest())
+	}
+
+	// Restore snap1
+	if err := store.RestoreSnapshot(snap1); err != nil {
+		t.Fatalf("RestoreSnapshot failed: %v", err)
+	}
+
+	snapRestored, err := store.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot after restore failed: %v", err)
+	}
+	// Restoring snap1 re-persists state, increasing revision counter, but data digest must match snap1 exactly!
+	if snapRestored.Digest() != snap1.Digest() {
+		t.Fatalf("restored data digest mismatch: got %s, want %s", snapRestored.Digest(), snap1.Digest())
+	}
+	if len(store.ListRules()) != 0 {
+		t.Fatalf("expected 0 rules after rollback to snap1, got %d", len(store.ListRules()))
+	}
+	if len(store.ListGroups()) != 1 {
+		t.Fatalf("expected 1 group after rollback to snap1, got %d", len(store.ListGroups()))
+	}
+}
+
+func TestStoreDeleteGroup_CascadeRepointsRulesAndMembers(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "native.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Create two groups: TargetGroup and ParentGroup
+	targetGroup, err := store.SaveGroup(ProxyGroup{
+		Name:    "TargetGroup",
+		Type:    "url-test",
+		Proxies: []string{"DIRECT"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup TargetGroup failed: %v", err)
+	}
+
+	_, err = store.SaveGroup(ProxyGroup{
+		Name:    "ParentGroup",
+		Type:    "select",
+		Proxies: []string{"TargetGroup", "DIRECT"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup ParentGroup failed: %v", err)
+	}
+
+	// 2. Create a rule pointing to TargetGroup
+	enabled := true
+	rule, err := store.CreateRule(RuleInput{
+		Type:     "GEOSITE",
+		Payload:  "xai",
+		Outbound: "TargetGroup",
+		Enabled:  &enabled,
+	})
+	if err != nil {
+		t.Fatalf("CreateRule failed: %v", err)
+	}
+
+	// 3. Delete TargetGroup
+	if err := store.DeleteGroup(targetGroup.ID); err != nil {
+		t.Fatalf("DeleteGroup failed: %v", err)
+	}
+
+	// 4. Verify TargetGroup is gone
+	groups := store.ListGroups()
+	if len(groups) != 1 || groups[0].Name != "ParentGroup" {
+		t.Fatalf("expected only ParentGroup remaining, got: %+v", groups)
+	}
+
+	// 5. Verify ParentGroup members no longer contain TargetGroup
+	if len(groups[0].Proxies) != 1 || groups[0].Proxies[0] != "DIRECT" {
+		t.Fatalf("expected ParentGroup members to be [DIRECT], got: %+v", groups[0].Proxies)
+	}
+
+	// 6. Verify rule pointing to TargetGroup was repointed to DIRECT
+	rules := store.ListRules()
+	if len(rules) != 1 || rules[0].ID != rule.ID {
+		t.Fatalf("expected 1 rule remaining, got: %+v", rules)
+	}
+	if rules[0].Outbound != "DIRECT" {
+		t.Fatalf("expected rule Outbound to be repointed to DIRECT, got: %s", rules[0].Outbound)
 	}
 }

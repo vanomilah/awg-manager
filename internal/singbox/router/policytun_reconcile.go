@@ -298,9 +298,7 @@ func (s *ServiceImpl) reconcilePolicyTun(ctx context.Context, sr storage.Singbox
 
 	// Интерфейс наш и на месте — но стек мог отцепиться от tun. Это состояние
 	// не ловит ни один другой heal, см. healDetachedTun. Слот он проверяет сам.
-	if sr.RoutingEngine != "mihomo" {
-		s.healDetachedTun(iface, "policy-tun-reconcile", orchestrator.SlotRouter)
-	}
+	s.healDetachedTun(iface, "policy-tun-reconcile", orchestrator.SlotRouter)
 
 	// One-shot (до первого УСПЕХА) ассерт permit-ACL: покрывает апгрейд поверх
 	// уже включённого режима и удаление списка мимо нас. Гейт probeErr == nil —

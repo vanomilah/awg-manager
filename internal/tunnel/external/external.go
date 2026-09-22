@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
@@ -69,24 +70,48 @@ func (s *Service) List(ctx context.Context) ([]TunnelInfo, error) {
 	// Deduplicate by number: opkgtunX and awgX both produce the same number,
 	// so without dedup the same interface would appear twice.
 	seen := make(map[int]bool)
-	var external []TunnelInfo
+	var candidateNums []int
 	for _, num := range systemNumbers {
 		if managed[num] || seen[num] {
 			continue
 		}
 		seen[num] = true
+		candidateNums = append(candidateNums, num)
+	}
 
-		// Get interface name
-		names := tunnel.NewNames(fmt.Sprintf("awg%d", num))
-		ifaceName := names.IfaceName
+	if len(candidateNums) == 0 {
+		return []TunnelInfo{}, nil
+	}
 
-		// Check if it's an AWG interface
-		info, isAWG := sysinfo.IsAWGInterface(ctx, ifaceName)
-		if isAWG && info != nil {
-			external = append(external, *info)
+	type checkResult struct {
+		info  *TunnelInfo
+		isAWG bool
+	}
+
+	results := make([]checkResult, len(candidateNums))
+	var wg sync.WaitGroup
+
+	for i, num := range candidateNums {
+		wg.Add(1)
+		go func(idx, n int) {
+			defer wg.Done()
+			names := tunnel.NewNames(fmt.Sprintf("awg%d", n))
+			info, isAWG := sysinfo.IsAWGInterface(ctx, names.IfaceName)
+			results[idx] = checkResult{info: info, isAWG: isAWG}
+		}(i, num)
+	}
+	wg.Wait()
+
+	var external []TunnelInfo
+	for _, res := range results {
+		if res.isAWG && res.info != nil {
+			external = append(external, *res.info)
 		}
 	}
 
+	if external == nil {
+		external = []TunnelInfo{}
+	}
 	return external, nil
 }
 

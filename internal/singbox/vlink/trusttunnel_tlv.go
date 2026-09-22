@@ -11,18 +11,18 @@ import (
 
 // TrustTunnel deep link TLV tags (TrustTunnel/DEEP_LINK.md).
 const (
-	ttTagVersion           uint64 = 0x00
-	ttTagHostname          uint64 = 0x01
-	ttTagAddresses         uint64 = 0x02
-	ttTagCustomSNI         uint64 = 0x03
-	ttTagUsername          uint64 = 0x05
-	ttTagPassword          uint64 = 0x06
-	ttTagSkipVerification  uint64 = 0x07
-	ttTagUpstreamProtocol  uint64 = 0x09
-	ttTagAntiDPI           uint64 = 0x0A
-	ttTagClientRandomPref  uint64 = 0x0B
-	ttTagName              uint64 = 0x0C
-	ttTagDNSUpstreams      uint64 = 0x0D
+	ttTagVersion          uint64 = 0x00
+	ttTagHostname         uint64 = 0x01
+	ttTagAddresses        uint64 = 0x02
+	ttTagCustomSNI        uint64 = 0x03
+	ttTagUsername         uint64 = 0x05
+	ttTagPassword         uint64 = 0x06
+	ttTagSkipVerification uint64 = 0x07
+	ttTagUpstreamProtocol uint64 = 0x09
+	ttTagAntiDPI          uint64 = 0x0A
+	ttTagClientRandomPref uint64 = 0x0B
+	ttTagName             uint64 = 0x0C
+	ttTagDNSUpstreams     uint64 = 0x0D
 )
 
 const (
