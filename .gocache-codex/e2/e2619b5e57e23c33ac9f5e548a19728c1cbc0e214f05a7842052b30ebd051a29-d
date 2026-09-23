@@ -1,6 +1,0 @@
-./clientroute.go
-./factory.go
-./operator.go
-./operator_os4.go
-./operator_os5.go
-./operator_os5_routing.go

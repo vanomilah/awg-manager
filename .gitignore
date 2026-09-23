@@ -4,6 +4,8 @@ dist/
 /awg-manager
 /changelog-gen
 .gocache/
+.gocache-codex/
+scratch/
 *.test
 kmod/awg-proxy/out/awg-proxy-build.log
 kmod/awg-proxy/tests/__pycache__/
