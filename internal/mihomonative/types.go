@@ -134,6 +134,12 @@ type ProxyGroup struct {
 	Enabled             bool     `json:"enabled"`
 }
 
+type GroupReference struct {
+	Kind string `json:"kind"` // "rule" | "group" | "susanin"
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type Rule struct {
 	ID        string `json:"id"`
 	Type      string `json:"type"`

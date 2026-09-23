@@ -43,11 +43,20 @@ type state struct {
 	LegacyRulesImported  bool            `json:"legacyRulesImported,omitempty"`
 }
 
+type InUseChecker func(kind string, id string, name string) (bool, string)
+
 type Store struct {
-	path     string
-	mu       sync.RWMutex
-	revision uint64
-	data     state
+	path          string
+	mu            sync.RWMutex
+	revision      uint64
+	data          state
+	inUseChecker  InUseChecker
+}
+
+func (s *Store) SetInUseChecker(checker InUseChecker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inUseChecker = checker
 }
 
 func NewStore(path string) (*Store, error) {
@@ -358,15 +367,164 @@ func (s *Store) RemoveSnapshotFile(snapshotPath string) error {
 	return strictfs.StrictUnlink(snapshotPath)
 }
 
-func (s *Store) CurrentDigest() (string, error) {
+type desiredProxy struct {
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name"`
+	Protocol         string                 `json:"protocol"`
+	Transport        string                 `json:"transport"`
+	EnginePreference EnginePreference       `json:"enginePreference"`
+	SelectedEngine   EnginePreference       `json:"selectedEngine"`
+	SourceID         string                 `json:"sourceId,omitempty"`
+	RawURI           string                 `json:"rawUri,omitempty"`
+	NativeConfig     map[string]interface{} `json:"nativeConfig"`
+	Compatibility    Compatibility          `json:"compatibility"`
+	Enabled          bool                   `json:"enabled"`
+	Bridge           *ProxyBridge           `json:"bridge,omitempty"`
+}
+
+type desiredSubscription struct {
+	ID               string              `json:"id"`
+	Name             string              `json:"name"`
+	URL              string              `json:"url,omitempty"`
+	Inline           string              `json:"inline,omitempty"`
+	Format           SubscriptionFormat  `json:"format"`
+	EnginePreference EnginePreference    `json:"enginePreference"`
+	ProviderName     string              `json:"providerName,omitempty"`
+	GroupName        string              `json:"groupName,omitempty"`
+	Headers          map[string][]string `json:"headers,omitempty"`
+	RefreshHours     int                 `json:"refreshHours"`
+	Enabled          bool                `json:"enabled"`
+	Mode             string              `json:"mode,omitempty"`
+	TestURL          string              `json:"testUrl,omitempty"`
+	TestInterval     int                 `json:"testInterval,omitempty"`
+	TestTolerance    int                 `json:"testTolerance,omitempty"`
+	FilterInclude    string              `json:"filterInclude,omitempty"`
+	FilterExclude    string              `json:"filterExclude,omitempty"`
+	BindInterface    string              `json:"bindInterface,omitempty"`
+	Bridge           *ProxyBridge        `json:"bridge,omitempty"`
+	Members          []MemberInfo        `json:"members,omitempty"`
+}
+
+type desiredState struct {
+	Version              int                   `json:"version"`
+	Proxies              []desiredProxy        `json:"proxies,omitempty"`
+	Subscriptions        []desiredSubscription `json:"subscriptions,omitempty"`
+	Groups               []*ProxyGroup         `json:"groups,omitempty"`
+	Rules                []*Rule               `json:"rules,omitempty"`
+	RuleProviders        []*RuleProvider       `json:"ruleProviders,omitempty"`
+	LegacyGroupsImported bool                  `json:"legacyGroupsImported,omitempty"`
+	LegacyRulesImported  bool                  `json:"legacyRulesImported,omitempty"`
+}
+
+func (s *Store) desiredDigestLocked() (string, error) {
+	proj := desiredState{
+		Version:              s.data.Version,
+		LegacyGroupsImported: s.data.LegacyGroupsImported,
+		LegacyRulesImported:  s.data.LegacyRulesImported,
+	}
+
+	if len(s.data.Proxies) > 0 {
+		proj.Proxies = make([]desiredProxy, len(s.data.Proxies))
+		for i, p := range s.data.Proxies {
+			proj.Proxies[i] = desiredProxy{
+				ID:               p.ID,
+				Name:             p.Name,
+				Protocol:         p.Protocol,
+				Transport:        p.Transport,
+				EnginePreference: p.EnginePreference,
+				SelectedEngine:   p.SelectedEngine,
+				SourceID:         p.SourceID,
+				RawURI:           p.RawURI,
+				NativeConfig:     p.NativeConfig,
+				Compatibility:    p.Compatibility,
+				Enabled:          p.Enabled,
+				Bridge:           p.Bridge,
+			}
+		}
+		sort.Slice(proj.Proxies, func(i, j int) bool {
+			return proj.Proxies[i].ID < proj.Proxies[j].ID
+		})
+	}
+
+	if len(s.data.Subscriptions) > 0 {
+		proj.Subscriptions = make([]desiredSubscription, len(s.data.Subscriptions))
+		for i, sub := range s.data.Subscriptions {
+			proj.Subscriptions[i] = desiredSubscription{
+				ID:               sub.ID,
+				Name:             sub.Name,
+				URL:              sub.URL,
+				Inline:           sub.Inline,
+				Format:           sub.Format,
+				EnginePreference: sub.EnginePreference,
+				ProviderName:     sub.ProviderName,
+				GroupName:        sub.GroupName,
+				Headers:          sub.Headers,
+				RefreshHours:     sub.RefreshHours,
+				Enabled:          sub.Enabled,
+				Mode:             sub.Mode,
+				TestURL:          sub.TestURL,
+				TestInterval:     sub.TestInterval,
+				TestTolerance:    sub.TestTolerance,
+				FilterInclude:    sub.FilterInclude,
+				FilterExclude:    sub.FilterExclude,
+				BindInterface:    sub.BindInterface,
+				Bridge:           sub.Bridge,
+				Members:          sub.Members,
+			}
+		}
+		sort.Slice(proj.Subscriptions, func(i, j int) bool {
+			return proj.Subscriptions[i].ID < proj.Subscriptions[j].ID
+		})
+	}
+
+	if len(s.data.Groups) > 0 {
+		proj.Groups = make([]*ProxyGroup, len(s.data.Groups))
+		copy(proj.Groups, s.data.Groups)
+		sort.Slice(proj.Groups, func(i, j int) bool {
+			return proj.Groups[i].ID < proj.Groups[j].ID
+		})
+	}
+
+	if len(s.data.Rules) > 0 {
+		proj.Rules = make([]*Rule, len(s.data.Rules))
+		copy(proj.Rules, s.data.Rules)
+	}
+
+	if len(s.data.RuleProviders) > 0 {
+		proj.RuleProviders = make([]*RuleProvider, len(s.data.RuleProviders))
+		copy(proj.RuleProviders, s.data.RuleProviders)
+		sort.Slice(proj.RuleProviders, func(i, j int) bool {
+			return proj.RuleProviders[i].Name < proj.RuleProviders[j].Name
+		})
+	}
+
+	b, err := json.MarshalIndent(proj, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("mihomo native: marshal desired state for digest: %w", err)
+	}
+	return strictfs.ComputeBytesDigest(b), nil
+}
+
+func (s *Store) CurrentDesiredDigest() (string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return s.desiredDigestLocked()
+}
+
+func (s *Store) CurrentSnapshotDigest() (string, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	b, err := s.marshalLocked()
 	if err != nil {
-		return "", fmt.Errorf("mihomo native: marshal data for digest: %w", err)
+		return "", fmt.Errorf("mihomo native: marshal data for snapshot digest: %w", err)
 	}
 	return strictfs.ComputeBytesDigest(b), nil
+}
+
+func (s *Store) CurrentDigest() (string, error) {
+	return s.CurrentSnapshotDigest()
 }
 
 func (s *Store) DraftJournalPath() string {
@@ -436,6 +594,14 @@ func (a *StoreTxAdapter) RemoveSnapshotFile(snapshotPath string) error {
 
 func (a *StoreTxAdapter) CurrentDigest() (string, error) {
 	return a.store.CurrentDigest()
+}
+
+func (a *StoreTxAdapter) CurrentDesiredDigest() (string, error) {
+	return a.store.CurrentDesiredDigest()
+}
+
+func (a *StoreTxAdapter) CurrentSnapshotDigest() (string, error) {
+	return a.store.CurrentSnapshotDigest()
 }
 
 func (a *StoreTxAdapter) ListBridges() []mihomo.BridgeRef {
@@ -811,6 +977,50 @@ func (s *Store) ImportLegacyGroups(groups []storage.ProxyGroup) error {
 	return nil
 }
 
+func (s *Store) checkGroupCyclesLocked(in ProxyGroup) error {
+	groupMembers := make(map[string][]string)
+	for _, g := range s.data.Groups {
+		if (in.ID != "" && g.ID == in.ID) || strings.EqualFold(g.Name, in.Name) {
+			continue
+		}
+		groupMembers[strings.ToLower(g.Name)] = g.Proxies
+	}
+	groupMembers[strings.ToLower(in.Name)] = in.Proxies
+
+	visited := make(map[string]int) // 0: unvisited, 1: visiting, 2: visited
+	var checkDFS func(name string, path []string) error
+	checkDFS = func(name string, path []string) error {
+		state := visited[name]
+		if state == 1 {
+			cyclePath := append(path, name)
+			return fmt.Errorf("обнаружен цикл в ссылках групп: %s", strings.Join(cyclePath, " -> "))
+		}
+		if state == 2 {
+			return nil
+		}
+		visited[name] = 1
+		for _, member := range groupMembers[name] {
+			lowerMember := strings.ToLower(member)
+			if _, exists := groupMembers[lowerMember]; exists {
+				if err := checkDFS(lowerMember, append(path, name)); err != nil {
+					return err
+				}
+			}
+		}
+		visited[name] = 2
+		return nil
+	}
+
+	for name := range groupMembers {
+		if visited[name] == 0 {
+			if err := checkDFS(name, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Store) SaveGroup(in ProxyGroup) (ProxyGroup, error) {
 	in.Name, in.Type = strings.TrimSpace(in.Name), strings.TrimSpace(in.Type)
 	if in.Name == "" {
@@ -847,6 +1057,9 @@ func (s *Store) SaveGroup(in ProxyGroup) (ProxyGroup, error) {
 		if strings.EqualFold(sub.GroupName, in.Name) {
 			return ProxyGroup{}, fmt.Errorf("mihomo native: group name conflicts with subscription %q", sub.Name)
 		}
+	}
+	if err := s.checkGroupCyclesLocked(in); err != nil {
+		return ProxyGroup{}, err
 	}
 	if in.ID == "" {
 		for i, group := range s.data.Groups {
@@ -914,6 +1127,11 @@ func (s *Store) DeleteGroup(id string) error {
 	defer s.mu.Unlock()
 	for i, group := range s.data.Groups {
 		if group.ID == id {
+			if s.inUseChecker != nil {
+				if inUse, reason := s.inUseChecker("group", group.ID, group.Name); inUse {
+					return fmt.Errorf("нельзя удалить группу %q: %s", group.Name, reason)
+				}
+			}
 			deletedName := group.Name
 
 			oldGroups := s.data.Groups
@@ -978,6 +1196,67 @@ func (s *Store) DeleteGroup(id string) error {
 		}
 	}
 	return ErrNotFound
+}
+
+func (s *Store) GetGroupReferences(idOrName string) []GroupReference {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.getGroupReferencesLocked(idOrName)
+}
+
+func (s *Store) getGroupReferencesLocked(idOrName string) []GroupReference {
+	var targetName string
+	var targetID string
+	for _, g := range s.data.Groups {
+		if g.ID == idOrName || strings.EqualFold(g.Name, idOrName) {
+			targetName = g.Name
+			targetID = g.ID
+			break
+		}
+	}
+	if targetName == "" {
+		targetName = idOrName
+		targetID = idOrName
+	}
+
+	var refs []GroupReference
+	// Check other groups
+	for _, g := range s.data.Groups {
+		if g.ID == targetID {
+			continue
+		}
+		for _, member := range g.Proxies {
+			if strings.EqualFold(member, targetName) {
+				refs = append(refs, GroupReference{
+					Kind: "group",
+					ID:   g.ID,
+					Name: g.Name,
+				})
+				break
+			}
+		}
+	}
+	// Check rules
+	for _, r := range s.data.Rules {
+		if strings.EqualFold(r.Outbound, targetName) {
+			refs = append(refs, GroupReference{
+				Kind: "rule",
+				ID:   r.ID,
+				Name: fmt.Sprintf("%s %s", r.Type, r.Payload),
+			})
+		}
+	}
+	// Check Susanin / external inUseChecker
+	if s.inUseChecker != nil {
+		if inUse, reason := s.inUseChecker("group", targetID, targetName); inUse {
+			refs = append(refs, GroupReference{
+				Kind: "susanin",
+				ID:   targetID,
+				Name: reason,
+			})
+		}
+	}
+	return refs
 }
 
 func (s *Store) ListRules() []Rule {
@@ -1398,9 +1677,14 @@ func (s *Store) DeleteRule(id string) error {
 	return ErrNotFound
 }
 
-func (s *Store) ReorderRules(ids []string) error {
+// ReorderRulesWithRevision reorders rules if expectedRevision is nil or matches s.revision.
+// Returns ErrRulesStale if expectedRevision is non-nil and does not match s.revision.
+func (s *Store) ReorderRulesWithRevision(ids []string, expectedRevision *uint64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if expectedRevision != nil && *expectedRevision != s.revision {
+		return ErrRulesStale
+	}
 	if len(ids) != len(s.data.Rules) {
 		return fmt.Errorf("mihomo native: rule order size mismatch")
 	}
@@ -1424,6 +1708,10 @@ func (s *Store) ReorderRules(ids []string) error {
 		return err
 	}
 	return nil
+}
+
+func (s *Store) ReorderRules(ids []string) error {
+	return s.ReorderRulesWithRevision(ids, nil)
 }
 
 func (s *Store) ConfigRules() []string {
@@ -2165,6 +2453,11 @@ func (s *Store) UpdateSubscription(id string, in UpdateSubscriptionInput) (Subsc
 }
 
 func (s *Store) referenceToLocked(name string) string {
+	if s.inUseChecker != nil {
+		if inUse, reason := s.inUseChecker("name", "", name); inUse {
+			return reason
+		}
+	}
 	for _, group := range s.data.Groups {
 		for _, member := range group.Proxies {
 			if member == name {

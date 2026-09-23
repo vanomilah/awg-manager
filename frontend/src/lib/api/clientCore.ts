@@ -151,11 +151,13 @@ export class CoreClient {
 		}
 
 		if (!response.ok || data.error) {
-			const err: Error & { status?: number; body?: unknown } = new Error(
+			const err: Error & { status?: number; body?: unknown; code?: string; data?: unknown } = new Error(
 				data.message || `Ошибка запроса (${response.status})`
 			);
 			err.status = response.status;
 			err.body = data;
+			err.code = data.code;
+			err.data = data.data;
 			throw err;
 		}
 

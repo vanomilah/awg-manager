@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -1031,9 +1032,9 @@ func TestStore_CreateSnapshotFileAt(t *testing.T) {
 	}
 
 	// Positive test: exact canonical path
-	currentDigestBefore, err := store.CurrentDigest()
+	currentDigestBefore, err := store.CurrentSnapshotDigest()
 	if err != nil {
-		t.Fatalf("CurrentDigest failed: %v", err)
+		t.Fatalf("CurrentSnapshotDigest failed: %v", err)
 	}
 
 	returnedDigest, err := store.CreateSnapshotFileAt(txid, expectedPath)
@@ -1253,5 +1254,230 @@ func TestStoreDeleteGroup_CascadeRepointsRulesAndMembers(t *testing.T) {
 	}
 	if rules[0].Outbound != "DIRECT" {
 		t.Fatalf("expected rule Outbound to be repointed to DIRECT, got: %s", rules[0].Outbound)
+	}
+}
+
+func TestStoreSaveGroup_DetectsCycles(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "native.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Group 1
+	g1, err := store.SaveGroup(ProxyGroup{
+		Name:    "Group1",
+		Type:    "select",
+		Proxies: []string{"DIRECT"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup g1: %v", err)
+	}
+
+	// Group 2 referencing Group 1
+	g2, err := store.SaveGroup(ProxyGroup{
+		Name:    "Group2",
+		Type:    "select",
+		Proxies: []string{"Group1"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup g2: %v", err)
+	}
+	_ = g2
+
+	// Update Group 1 to reference Group 2 -> Cycle!
+	g1.Proxies = []string{"Group2"}
+	_, err = store.SaveGroup(g1)
+	if err == nil {
+		t.Fatal("expected error when creating cycle Group1 -> Group2 -> Group1, got nil")
+	}
+	if !strings.Contains(err.Error(), "цикл") {
+		t.Fatalf("expected cycle error, got: %v", err)
+	}
+
+	// Indirect cycle: Group 3 referencing Group 2
+	g3, err := store.SaveGroup(ProxyGroup{
+		Name:    "Group3",
+		Type:    "select",
+		Proxies: []string{"Group2"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup g3: %v", err)
+	}
+	_ = g3
+
+	// Update Group 1 to reference Group 3: Group2 -> Group1 -> Group3 -> Group2
+	g1.Proxies = []string{"Group3"}
+	_, err = store.SaveGroup(g1)
+	if err == nil {
+		t.Fatal("expected error on indirect cycle, got nil")
+	}
+}
+
+func TestStoreGetGroupReferences_AndInUse(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "native.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g1, err := store.SaveGroup(ProxyGroup{
+		Name:    "GroupAlpha",
+		Type:    "select",
+		Proxies: []string{"DIRECT"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup g1: %v", err)
+	}
+
+	_, err = store.SaveGroup(ProxyGroup{
+		Name:    "GroupBeta",
+		Type:    "select",
+		Proxies: []string{"GroupAlpha"},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SaveGroup g2: %v", err)
+	}
+
+	enabled := true
+	_, err = store.CreateRule(RuleInput{
+		Type:     "DOMAIN",
+		Payload:  "example.com",
+		Outbound: "GroupAlpha",
+		Enabled:  &enabled,
+	})
+	if err != nil {
+		t.Fatalf("CreateRule: %v", err)
+	}
+
+	refs := store.GetGroupReferences(g1.ID)
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 references (group and rule), got: %+v", refs)
+	}
+
+	// Register inUseChecker to simulate Susanin egress reference
+	store.SetInUseChecker(func(kind string, id string, name string) (bool, string) {
+		if kind == "group" && (id == g1.ID || name == g1.Name) {
+			return true, "используется в Susanin как основной выход"
+		}
+		return false, ""
+	})
+
+	refsWithSusanin := store.GetGroupReferences(g1.ID)
+	if len(refsWithSusanin) != 3 {
+		t.Fatalf("expected 3 references with Susanin, got: %+v", refsWithSusanin)
+	}
+
+	// Attempt to delete g1 -> must be blocked
+	err = store.DeleteGroup(g1.ID)
+	if err == nil {
+		t.Fatal("expected DeleteGroup to fail when in use by Susanin, got nil")
+	}
+	if !strings.Contains(err.Error(), "нельзя удалить группу") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestStore_DesiredDigest_SubscriptionRefresh(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "native.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	sub, err := store.CreateSubscription(CreateSubscriptionInput{
+		Name:             "Sub1",
+		URL:              "http://example.com/sub.yaml",
+		Format:           FormatMihomoProvider,
+		EnginePreference: EngineAuto,
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatalf("CreateSubscription: %v", err)
+	}
+
+	desiredBefore, err := store.CurrentDesiredDigest()
+	if err != nil {
+		t.Fatalf("CurrentDesiredDigest: %v", err)
+	}
+	snapBefore, err := store.CurrentSnapshotDigest()
+	if err != nil {
+		t.Fatalf("CurrentSnapshotDigest: %v", err)
+	}
+
+	// Wait 10ms to ensure time changes
+	time.Sleep(10 * time.Millisecond)
+
+	// Simulate subscription refresh
+	if err := store.RecordSubscriptionRefresh(sub.ID, nil); err != nil {
+		t.Fatalf("RecordSubscriptionRefresh: %v", err)
+	}
+
+	desiredAfter, err := store.CurrentDesiredDigest()
+	if err != nil {
+		t.Fatalf("CurrentDesiredDigest after refresh: %v", err)
+	}
+	snapAfter, err := store.CurrentSnapshotDigest()
+	if err != nil {
+		t.Fatalf("CurrentSnapshotDigest after refresh: %v", err)
+	}
+
+	// Snapshot digest MUST change because LastFetched and UpdatedAt changed
+	if snapBefore == snapAfter {
+		t.Errorf("expected snapshot digest to change after RecordSubscriptionRefresh, got same: %s", snapBefore)
+	}
+
+	// Desired digest MUST NOT change because configuration is unaffected!
+	if desiredBefore != desiredAfter {
+		t.Errorf("expected desired digest to remain invariant across refresh: before=%s, after=%s", desiredBefore, desiredAfter)
+	}
+}
+
+func TestStore_DesiredDigest_RuleMutation(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(filepath.Join(dir, "native.json"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	r1, err := store.CreateRule(RuleInput{
+		Type:     "DOMAIN-SUFFIX",
+		Payload:  "google.com",
+		Outbound: "DIRECT",
+	})
+	if err != nil {
+		t.Fatalf("CreateRule r1: %v", err)
+	}
+
+	r2, err := store.CreateRule(RuleInput{
+		Type:     "DOMAIN-KEYWORD",
+		Payload:  "youtube",
+		Outbound: "DIRECT",
+	})
+	if err != nil {
+		t.Fatalf("CreateRule r2: %v", err)
+	}
+
+	desiredOrder1, err := store.CurrentDesiredDigest()
+	if err != nil {
+		t.Fatalf("CurrentDesiredDigest: %v", err)
+	}
+
+	// Reorder rules: [r2, r1]
+	if err := store.ReorderRules([]string{r2.ID, r1.ID}); err != nil {
+		t.Fatalf("ReorderRules: %v", err)
+	}
+
+	desiredOrder2, err := store.CurrentDesiredDigest()
+	if err != nil {
+		t.Fatalf("CurrentDesiredDigest after reorder: %v", err)
+	}
+
+	// First-match rule order matters! Digest must change!
+	if desiredOrder1 == desiredOrder2 {
+		t.Errorf("expected desired digest to change when rule order changes: %s == %s", desiredOrder1, desiredOrder2)
 	}
 }

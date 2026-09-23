@@ -403,6 +403,11 @@
     {#if subscription.lastError}
         <div class="sub-error mono">{subscription.lastError}</div>
     {/if}
+	{#if subscription.refreshError && !subscription.lastError}
+		<div class="refresh-warning" title={subscription.refreshError}>
+			Последнее обновление не удалось. Используется сохранённый рабочий список серверов.
+		</div>
+	{/if}
 
     <div class="details-dense-cols">
         <div class="details-dense-col">
@@ -591,6 +596,11 @@
     {#if subscription.lastError}
         <div class="sub-error mono">{subscription.lastError}</div>
     {/if}
+	{#if subscription.refreshError && !subscription.lastError}
+		<div class="refresh-warning" title={subscription.refreshError}>
+			Последнее обновление не удалось. Используется сохранённый рабочий список серверов.
+		</div>
+	{/if}
 
     <div class="server-section">
     <div class="server-row">
@@ -1224,6 +1234,17 @@
         font-size: var(--sbx-card-meta);
         color: #f85149;
     }
+
+	.refresh-warning {
+		margin-top: 8px;
+		padding: 8px 10px;
+		border: 1px solid var(--color-warning-border, #c89b47);
+		border-radius: 8px;
+		background: var(--color-warning-bg, rgba(200, 155, 71, 0.12));
+		color: var(--color-text, inherit);
+		font-size: 12px;
+		line-height: 1.35;
+	}
     .mono {
         font-family: var(--font-mono, ui-monospace, monospace);
     }

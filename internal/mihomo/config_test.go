@@ -615,3 +615,81 @@ func TestGenerateConfig_KeeneticCloudDynamicCIDRs(t *testing.T) {
 		t.Fatalf("missing dynamic cloud CIDR rules in Mihomo rules: %+v", cfg.Rules)
 	}
 }
+
+func TestGenerateConfig_AdaptiveEgress(t *testing.T) {
+	settings := storage.SingboxRouterSettings{
+		MihomoMixedPort: 1099,
+	}
+	native := NativeResources{
+		ProxyGroups: []ProxyGroup{
+			{Name: "TargetGroup", Type: "fallback", Proxies: []string{"DIRECT"}},
+		},
+		AdaptiveEgress: &AdaptiveEgressConfig{
+			Enabled:       true,
+			Device:        "awgsus0",
+			SelectedGroup: "TargetGroup",
+		},
+	}
+
+	raw, err := GenerateConfigWithResources(settings, "", nil, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources failed: %v", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+
+	if cfg.Tun == nil || !cfg.Tun.Enable {
+		t.Fatalf("expected Tun enabled, got %#v", cfg.Tun)
+	}
+	if cfg.Tun.Device != "awgsus0" {
+		t.Errorf("expected Tun.Device awgsus0, got %s", cfg.Tun.Device)
+	}
+	if cfg.Tun.Stack != "system" {
+		t.Errorf("expected Tun.Stack system, got %s", cfg.Tun.Stack)
+	}
+	if cfg.Tun.AutoRoute {
+		t.Errorf("expected Tun.AutoRoute false")
+	}
+	if cfg.TProxyPort != 0 || cfg.RedirPort != 0 {
+		t.Errorf("expected TProxyPort=0 and RedirPort=0, got %d, %d", cfg.TProxyPort, cfg.RedirPort)
+	}
+	if cfg.MixedPort != 1099 {
+		t.Errorf("expected MixedPort 1099 preserved, got %d", cfg.MixedPort)
+	}
+	if len(cfg.Rules) == 0 || cfg.Rules[0] != "IN-TYPE,TUN,TargetGroup" {
+		t.Fatalf("expected first rule IN-TYPE,TUN,TargetGroup, got: %v", cfg.Rules)
+	}
+}
+
+func TestGenerateSidecarConfig_AdaptiveEgress(t *testing.T) {
+	native := NativeResources{
+		ProxyGroups: []ProxyGroup{
+			{Name: "Fastest", Type: "url-test", Proxies: []string{"DIRECT"}},
+		},
+		AdaptiveEgress: &AdaptiveEgressConfig{
+			Enabled:       true,
+			Device:        "awgsus0",
+			SelectedGroup: "Fastest",
+		},
+	}
+
+	raw, err := GenerateSidecarConfig(native)
+	if err != nil {
+		t.Fatalf("GenerateSidecarConfig failed: %v", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal sidecar yaml: %v", err)
+	}
+
+	if cfg.Tun == nil || !cfg.Tun.Enable || cfg.Tun.Device != "awgsus0" {
+		t.Fatalf("expected sidecar Tun enabled with awgsus0, got %#v", cfg.Tun)
+	}
+	if len(cfg.Rules) < 2 || cfg.Rules[0] != "IN-TYPE,TUN,Fastest" || cfg.Rules[1] != "MATCH,DIRECT" {
+		t.Fatalf("unexpected sidecar rules: %v", cfg.Rules)
+	}
+}

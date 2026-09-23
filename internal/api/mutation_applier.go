@@ -14,6 +14,7 @@ var (
 // NativeMutationApplier coordinates transactional mutations against the Mihomo engine.
 type NativeMutationApplier interface {
 	ApplyNativeMutation(ctx context.Context, mutateFn func() error) error
+	ApplyNativeMutationWithOutcome(ctx context.Context, mutateFn func() error) (*mihomo.MutationOutcome, error)
 	ApplyDraftOnly(ctx context.Context, mutateFn func() error) error
 	ApplyPendingDraft(ctx context.Context) error
 	IsDegraded() bool

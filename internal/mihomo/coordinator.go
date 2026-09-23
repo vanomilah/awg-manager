@@ -47,6 +47,8 @@ type ApplyCoordinatorHooks struct {
 	FailMigrationRollForwardManifestCAS    bool
 	FailMigrationRollForwardManifestUnlink bool
 	FailMigrationRollForwardBackupUnlink   bool
+	FailHotReload                          bool
+	FailHotRollback                        bool
 	OnAuthoritativeWrite                   func(op string, path string)
 	CrashAtHook                            func(point string)
 }
@@ -78,6 +80,7 @@ func (defaultAuthoritativeWriter) RenameAuthoritative(oldPath, newPath string) e
 type CoordinatorConfig struct {
 	ConfigDir           string
 	Operator            MihomoOperator
+	ConfigReloader      ConfigReloader
 	Validator           ConfigFileValidator
 	BridgeRuntime       BridgeRuntime
 	StoreTx             NativeStoreTx
@@ -86,6 +89,86 @@ type CoordinatorConfig struct {
 	Compiler            func(ctx context.Context) (*CompileResult, error)
 	AuthoritativeWriter AuthoritativeWriter
 	Stat                func(name string) (os.FileInfo, error)
+}
+
+// TransactionTiming instruments the individual phases of an apply transaction.
+type TransactionTiming struct {
+	TxID           string        `json:"txid"`
+	Path           ApplyPath     `json:"path"`
+	LockWait       time.Duration `json:"lock_wait"`
+	PreSnapshot    time.Duration `json:"pre_snapshot"`
+	Mutate         time.Duration `json:"mutate"`
+	PostSnapshot   time.Duration `json:"post_snapshot"`
+	Compile        time.Duration `json:"compile"`
+	CandidateWrite time.Duration `json:"candidate_write"`
+	Validate       time.Duration `json:"validate"`
+	RuntimeApply   time.Duration `json:"runtime_apply"`
+	StopWait       time.Duration `json:"stop_wait"`
+	StartWait      time.Duration `json:"start_wait"`
+	ReloadWait     time.Duration `json:"reload_wait"`
+	Verify         time.Duration `json:"verify"`
+	Commit         time.Duration `json:"commit"`
+	Rollback       time.Duration `json:"rollback"`
+	TotalDuration  time.Duration `json:"total_duration"`
+}
+
+// ServerTimingHeader formats the transaction timing as a W3C Server-Timing header value.
+func (t *TransactionTiming) ServerTimingHeader() string {
+	if t == nil {
+		return ""
+	}
+	var parts []string
+	if t.LockWait > 0 {
+		parts = append(parts, fmt.Sprintf("lock;dur=%.1f", float64(t.LockWait)/float64(time.Millisecond)))
+	}
+	if t.PreSnapshot > 0 {
+		parts = append(parts, fmt.Sprintf("pre_snap;dur=%.1f", float64(t.PreSnapshot)/float64(time.Millisecond)))
+	}
+	if t.Mutate > 0 {
+		parts = append(parts, fmt.Sprintf("mutate;dur=%.1f", float64(t.Mutate)/float64(time.Millisecond)))
+	}
+	if t.PostSnapshot > 0 {
+		parts = append(parts, fmt.Sprintf("post_snap;dur=%.1f", float64(t.PostSnapshot)/float64(time.Millisecond)))
+	}
+	if t.Compile > 0 {
+		parts = append(parts, fmt.Sprintf("compile;dur=%.1f", float64(t.Compile)/float64(time.Millisecond)))
+	}
+	if t.CandidateWrite > 0 {
+		parts = append(parts, fmt.Sprintf("cand_write;dur=%.1f", float64(t.CandidateWrite)/float64(time.Millisecond)))
+	}
+	if t.Validate > 0 {
+		parts = append(parts, fmt.Sprintf("validate;dur=%.1f", float64(t.Validate)/float64(time.Millisecond)))
+	}
+	if t.RuntimeApply > 0 {
+		parts = append(parts, fmt.Sprintf("runtime;dur=%.1f;desc=%s", float64(t.RuntimeApply)/float64(time.Millisecond), t.Path))
+	}
+	if t.Verify > 0 {
+		parts = append(parts, fmt.Sprintf("verify;dur=%.1f", float64(t.Verify)/float64(time.Millisecond)))
+	}
+	if t.Commit > 0 {
+		parts = append(parts, fmt.Sprintf("commit;dur=%.1f", float64(t.Commit)/float64(time.Millisecond)))
+	}
+	if t.Rollback > 0 {
+		parts = append(parts, fmt.Sprintf("rollback;dur=%.1f", float64(t.Rollback)/float64(time.Millisecond)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// CoordinatorCounters tracks transaction path frequencies.
+type CoordinatorCounters struct {
+	HotReloadCount   uint64 `json:"hot_reload_count"`
+	FullRestartCount uint64 `json:"full_restart_count"`
+	DraftOnlyCount   uint64 `json:"draft_only_count"`
+	RollbackCount    uint64 `json:"rollback_count"`
+}
+
+// MutationOutcome returns the result details of an executed mutation.
+type MutationOutcome struct {
+	TxID         string
+	ApplyPath    ApplyPath
+	Generation   uint64
+	Timing       *TransactionTiming
+	ServerTiming string
 }
 
 // ApplyCoordinator is the single authoritative coordinator for configuration compiling,
@@ -106,6 +189,8 @@ type ApplyCoordinator struct {
 	verifier       ProcessVerifier
 	stat           func(name string) (os.FileInfo, error)
 	processReceipt *ProcessReceipt
+	counters       CoordinatorCounters
+	lastTiming     *TransactionTiming
 
 	// File paths
 	activeConfigFile     string
@@ -185,6 +270,24 @@ func (c *ApplyCoordinator) SetVerifier(v ProcessVerifier) {
 		v = DefaultProcessVerifier
 	}
 	c.verifier = v
+}
+
+// Counters returns snapshot of coordinator transaction counters.
+func (c *ApplyCoordinator) Counters() CoordinatorCounters {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.counters
+}
+
+// LastTiming returns the timing details of the most recent apply transaction.
+func (c *ApplyCoordinator) LastTiming() *TransactionTiming {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.lastTiming == nil {
+		return nil
+	}
+	cp := *c.lastTiming
+	return &cp
 }
 
 func (c *ApplyCoordinator) statActiveConfigAbsenceLocked() error {
@@ -478,18 +581,19 @@ func (c *ApplyCoordinator) rollForwardMigrationLocked(m *TransactionManifest) er
 
 	// Reconstruct candidate record from fully validated bundle
 	reconstructedRec := AppliedGenerationRecord{
-		Version:               1,
-		BridgeIdentityVersion: CurrentBridgeIdentityVersion,
-		Generation:            gm.GenerationNumber,
-		GenerationID:          gm.GenerationID,
-		AppliedAt:             gm.ArchivedAt,
-		AppliedStoreDigest:    gm.AppliedStoreDigest,
-		AppliedConfigDigest:   gm.AppliedConfigDigest,
-		AppliedInputDigest:    gm.AppliedInputDigest,
-		AppliedListeners:      gm.AppliedListeners,
-		AppliedBridges:        gm.AppliedBridges,
-		AppliedBridgesDigest:  gm.AppliedBridgesDigest,
-		RuntimeMode:           gm.RuntimeMode,
+		Version:                   1,
+		BridgeIdentityVersion:     CurrentBridgeIdentityVersion,
+		Generation:                gm.GenerationNumber,
+		GenerationID:              gm.GenerationID,
+		AppliedAt:                 gm.ArchivedAt,
+		AppliedStoreDigest:        gm.AppliedStoreDigest,
+		AppliedDesiredStoreDigest: gm.AppliedDesiredStoreDigest,
+		AppliedConfigDigest:       gm.AppliedConfigDigest,
+		AppliedInputDigest:        gm.AppliedInputDigest,
+		AppliedListeners:          gm.AppliedListeners,
+		AppliedBridges:            gm.AppliedBridges,
+		AppliedBridgesDigest:      gm.AppliedBridgesDigest,
+		RuntimeMode:               gm.RuntimeMode,
 	}
 	if err := reconstructedRec.ValidateSchema(); err != nil {
 		return fmt.Errorf("validate reconstructed candidate record schema: %w", err)
@@ -1964,32 +2068,34 @@ func (c *ApplyCoordinator) recoverManifestLocked(ctx context.Context) error {
 				return ErrRecoveryRequired
 			}
 			rec = AppliedGenerationRecord{
-				Version:               1,
-				BridgeIdentityVersion: genMan.BridgeIdentityVersion,
-				Generation:            genMan.GenerationNumber,
-				GenerationID:          genMan.GenerationID,
-				AppliedAt:             time.Now(),
-				AppliedStoreDigest:    genMan.AppliedStoreDigest,
-				AppliedConfigDigest:   genMan.AppliedConfigDigest,
-				AppliedInputDigest:    genMan.AppliedInputDigest,
-				AppliedListeners:      genMan.AppliedListeners,
-				AppliedBridges:        genMan.AppliedBridges,
-				AppliedBridgesDigest:  genMan.AppliedBridgesDigest,
-				RuntimeMode:           genMan.RuntimeMode,
+				Version:                   1,
+				BridgeIdentityVersion:     genMan.BridgeIdentityVersion,
+				Generation:                genMan.GenerationNumber,
+				GenerationID:              genMan.GenerationID,
+				AppliedAt:                 time.Now(),
+				AppliedStoreDigest:        genMan.AppliedStoreDigest,
+				AppliedDesiredStoreDigest: genMan.AppliedDesiredStoreDigest,
+				AppliedConfigDigest:       genMan.AppliedConfigDigest,
+				AppliedInputDigest:        genMan.AppliedInputDigest,
+				AppliedListeners:          genMan.AppliedListeners,
+				AppliedBridges:            genMan.AppliedBridges,
+				AppliedBridgesDigest:      genMan.AppliedBridgesDigest,
+				RuntimeMode:               genMan.RuntimeMode,
 			}
 		} else {
 			rec = AppliedGenerationRecord{
-				Version:               1,
-				BridgeIdentityVersion: CurrentBridgeIdentityVersion,
-				Generation:            m.VerifiedActiveGeneration + 1,
-				GenerationID:          m.CandidateGenerationID,
-				AppliedAt:             time.Now(),
-				AppliedStoreDigest:    m.TargetDesiredStoreDigest,
-				AppliedConfigDigest:   m.CandidateConfigDigest,
-				AppliedInputDigest:    m.TargetInputDigest,
-				AppliedBridges:        m.TargetBridges,
-				AppliedBridgesDigest:  m.TargetBridgesDigest,
-				RuntimeMode:           m.DesiredMode,
+				Version:                   1,
+				BridgeIdentityVersion:     CurrentBridgeIdentityVersion,
+				Generation:                m.VerifiedActiveGeneration + 1,
+				GenerationID:              m.CandidateGenerationID,
+				AppliedAt:                 time.Now(),
+				AppliedStoreDigest:        m.CandidatePostMutationStoreDigest,
+				AppliedDesiredStoreDigest: m.TargetDesiredStoreDigest,
+				AppliedConfigDigest:       m.CandidateConfigDigest,
+				AppliedInputDigest:        m.TargetInputDigest,
+				AppliedBridges:            m.TargetBridges,
+				AppliedBridgesDigest:      m.TargetBridgesDigest,
+				RuntimeMode:               m.DesiredMode,
 			}
 		}
 
@@ -2166,13 +2272,13 @@ func (c *ApplyCoordinator) abortEarlyLocked(m *TransactionManifest, causeErr err
 			recoveryErrs = append(recoveryErrs, fmt.Errorf("restore pre-mutation store: %w", err))
 			_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("early abort restore snapshot failed: %v", err))
 		} else {
-			digest, err := c.cfg.StoreTx.CurrentDigest()
+			digest, err := c.cfg.StoreTx.CurrentSnapshotDigest()
 			if err != nil {
 				recoveryErrs = append(recoveryErrs, fmt.Errorf("read store digest after restore: %w", err))
 				_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("early abort read store digest failed: %v", err))
-			} else if digest != m.BaseDesiredStoreDigest {
-				recoveryErrs = append(recoveryErrs, fmt.Errorf("restored digest mismatch: got %s, want %s", digest, m.BaseDesiredStoreDigest))
-				_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("early abort restored digest mismatch: got %s, want %s", digest, m.BaseDesiredStoreDigest))
+			} else if digest != m.PreMutationStoreDigest {
+				recoveryErrs = append(recoveryErrs, fmt.Errorf("restored snapshot digest mismatch: got %s, want %s", digest, m.PreMutationStoreDigest))
+				_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("early abort restored snapshot digest mismatch: got %s, want %s", digest, m.PreMutationStoreDigest))
 			}
 		}
 	}
@@ -2374,52 +2480,78 @@ func (c *ApplyCoordinator) MutateAndApply(
 	mutateFn func() error,
 	compileFn func(ctx context.Context) (*CompileResult, error),
 ) error {
+	_, err := c.ApplyMutationWithOutcome(ctx, mutateFn, compileFn)
+	return err
+}
+
+func (c *ApplyCoordinator) ApplyMutationWithOutcome(
+	ctx context.Context,
+	mutateFn func() error,
+	compileFn func(ctx context.Context) (*CompileResult, error),
+) (*MutationOutcome, error) {
+	t0 := time.Now()
+	var timing TransactionTiming
+
 	c.applyMu.Lock()
 	defer c.applyMu.Unlock()
+	timing.LockWait = time.Since(t0)
 
 	ipcLock, err := strictfs.LockTransaction(c.cfg.ConfigDir)
 	if err != nil {
-		return fmt.Errorf("acquire transaction lock: %w", err)
+		return nil, fmt.Errorf("acquire transaction lock: %w", err)
 	}
 	defer ipcLock.Close()
 
 	if c.State() == StateRecoveryRequired {
-		return ErrRecoveryRequired
+		return nil, ErrRecoveryRequired
 	}
 	if _, err := os.Stat(c.recoveryMarkerFile); err == nil {
 		c.setState(StateRecoveryRequired)
-		return ErrRecoveryRequired
+		return nil, ErrRecoveryRequired
 	}
 
 	if _, err := os.Stat(c.manifestFile); err == nil {
-		return ErrTxInProgress
+		return nil, ErrTxInProgress
 	}
 
 	txid := GenerateTxID()
 	c.activeTxID = txid
+	timing.TxID = txid
 	defer func() { c.activeTxID = "" }()
 
-	var baseAppliedStoreDigest, baseAppliedInputDigest, previousGenID string
+	var baseAppliedStoreDigest, baseAppliedDesiredStoreDigest, baseAppliedInputDigest, previousGenID string
 	var verifiedGeneration uint64
 
 	if c.appliedRecord != nil {
 		baseAppliedStoreDigest = c.appliedRecord.AppliedStoreDigest
+		baseAppliedDesiredStoreDigest = c.appliedRecord.AppliedDesiredStoreDigest
 		baseAppliedInputDigest = c.appliedRecord.AppliedInputDigest
 		verifiedGeneration = c.appliedRecord.Generation
 		previousGenID = c.appliedRecord.GenerationID
 	}
 
-	baseDesiredStoreDigest, dErr := c.cfg.StoreTx.CurrentDigest()
+	baseDesiredStoreDigest, dErr := c.cfg.StoreTx.CurrentDesiredDigest()
 	if dErr != nil {
-		return fmt.Errorf("failed to get current store digest: %w", dErr)
+		return nil, fmt.Errorf("failed to get current desired store digest: %w", dErr)
+	}
+	baseSnapshotStoreDigest, dErr := c.cfg.StoreTx.CurrentSnapshotDigest()
+	if dErr != nil {
+		return nil, fmt.Errorf("failed to get current store snapshot digest: %w", dErr)
 	}
 
 	if c.appliedRecord != nil {
-		if c.appliedRecord.AppliedStoreDigest != baseDesiredStoreDigest {
-			c.setState(StateRecoveryRequired)
-			_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("store digest mismatch: applied=%s actual=%s", c.appliedRecord.AppliedStoreDigest, baseDesiredStoreDigest))
-			return fmt.Errorf("preflight store digest mismatch: applied=%s actual=%s", c.appliedRecord.AppliedStoreDigest, baseDesiredStoreDigest)
+		// Legacy records used a single snapshot digest. Upgrade them on the next
+		// successful commit without treating metadata-only drift as corruption.
+		if baseAppliedDesiredStoreDigest == "" {
+			baseAppliedDesiredStoreDigest = baseDesiredStoreDigest
 		}
+		// The desired store is the editable model. A difference from the last
+		// applied desired digest is therefore the normal condition that causes an
+		// Apply (for example after adding, deleting or reordering a rule), not
+		// evidence of runtime corruption. Runtime drift is guarded independently
+		// by the active-config digest below. Keep the applied digest in the
+		// manifest as lineage metadata, but build the candidate from the current
+		// desired digest.
 
 		actualConfigBytes, err := os.ReadFile(c.activeConfigFile)
 		if err == nil {
@@ -2427,7 +2559,7 @@ func (c *ApplyCoordinator) MutateAndApply(
 			if c.appliedRecord.AppliedConfigDigest != actualConfigDigest {
 				c.setState(StateRecoveryRequired)
 				_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("active config digest mismatch: applied=%s actual=%s", c.appliedRecord.AppliedConfigDigest, actualConfigDigest))
-				return fmt.Errorf("preflight active config digest mismatch: applied=%s actual=%s", c.appliedRecord.AppliedConfigDigest, actualConfigDigest)
+				return nil, fmt.Errorf("preflight active config digest mismatch: applied=%s actual=%s", c.appliedRecord.AppliedConfigDigest, actualConfigDigest)
 			}
 		}
 	}
@@ -2436,7 +2568,7 @@ func (c *ApplyCoordinator) MutateAndApply(
 	if lkgErr != nil && !errors.Is(lkgErr, os.ErrNotExist) && !os.IsNotExist(lkgErr) {
 		c.setState(StateRecoveryRequired)
 		_ = c.writeRecoveryMarkerLocked("read existing LKG pointer failed at transaction start: " + lkgErr.Error())
-		return fmt.Errorf("read existing LKG pointer: %w", lkgErr)
+		return nil, fmt.Errorf("read existing LKG pointer: %w", lkgErr)
 	}
 	var lkgGenID string
 	var lkgPointerDigest string
@@ -2446,26 +2578,27 @@ func (c *ApplyCoordinator) MutateAndApply(
 		if rErr != nil {
 			c.setState(StateRecoveryRequired)
 			_ = c.writeRecoveryMarkerLocked("read existing LKG pointer file failed: " + rErr.Error())
-			return fmt.Errorf("read existing LKG pointer file: %w", rErr)
+			return nil, fmt.Errorf("read existing LKG pointer file: %w", rErr)
 		}
 		lkgPointerDigest = strictfs.ComputeBytesDigest(prevBytes)
 	}
 
 	manifest := TransactionManifest{
-		Version:                  1,
-		TxID:                     txid,
-		OperationKind:            OperationApply,
-		State:                    StateIdle,
-		CreatedAt:                time.Now(),
-		UpdatedAt:                time.Now(),
-		PreviousGenerationID:     previousGenID,
-		LKGGenerationID:          lkgGenID,
-		PreviousLKGGenerationID:  lkgGenID,
-		PreviousLKGPointerDigest: lkgPointerDigest,
-		BaseAppliedStoreDigest:   baseAppliedStoreDigest,
-		BaseDesiredStoreDigest:   baseDesiredStoreDigest,
-		BaseAppliedInputDigest:   baseAppliedInputDigest,
-		VerifiedActiveGeneration: verifiedGeneration,
+		Version:                       1,
+		TxID:                          txid,
+		OperationKind:                 OperationApply,
+		State:                         StateIdle,
+		CreatedAt:                     time.Now(),
+		UpdatedAt:                     time.Now(),
+		PreviousGenerationID:          previousGenID,
+		LKGGenerationID:               lkgGenID,
+		PreviousLKGGenerationID:       lkgGenID,
+		PreviousLKGPointerDigest:      lkgPointerDigest,
+		BaseAppliedStoreDigest:        baseAppliedStoreDigest,
+		BaseAppliedDesiredStoreDigest: baseAppliedDesiredStoreDigest,
+		BaseDesiredStoreDigest:        baseDesiredStoreDigest,
+		BaseAppliedInputDigest:        baseAppliedInputDigest,
+		VerifiedActiveGeneration:      verifiedGeneration,
 	}
 
 	var snapPath string
@@ -2473,7 +2606,7 @@ func (c *ApplyCoordinator) MutateAndApply(
 		var err error
 		snapPath, err = c.cfg.StoreTx.SnapshotFilePath(txid)
 		if err != nil {
-			return fmt.Errorf("resolve pre-mutation snapshot path: %w", err)
+			return nil, fmt.Errorf("resolve pre-mutation snapshot path: %w", err)
 		}
 		manifest.PreMutationStoreSnapshotFile = snapPath
 
@@ -2487,14 +2620,14 @@ func (c *ApplyCoordinator) MutateAndApply(
 			for i, b := range c.appliedRecord.AppliedBridges {
 				eb, err := c.enrichLegacyBridgeRefLocked(b, preMutationSnapshot)
 				if err != nil {
-					return fmt.Errorf("enrich legacy previous bridge %s: %w", b.SlotKey(), err)
+					return nil, fmt.Errorf("enrich legacy previous bridge %s: %w", b.SlotKey(), err)
 				}
 				if err := eb.ValidateComplete(); err != nil {
-					return fmt.Errorf("enriched previous bridge %s invalid: %w", eb.SlotKey(), err)
+					return nil, fmt.Errorf("enriched previous bridge %s invalid: %w", eb.SlotKey(), err)
 				}
 				slot := eb.SlotKey()
 				if _, exists := seenPrevSlots[slot]; exists {
-					return fmt.Errorf("duplicate slot key %q in enriched previous bridges", slot)
+					return nil, fmt.Errorf("duplicate slot key %q in enriched previous bridges", slot)
 				}
 				seenPrevSlots[slot] = struct{}{}
 				enrichedPrev[i] = eb
@@ -2506,31 +2639,34 @@ func (c *ApplyCoordinator) MutateAndApply(
 		}
 
 		if err := c.initManifestLocked(&manifest, StatePreSnapshotWriteIntent); err != nil {
-			return err
+			return nil, err
 		}
 
+		tPre := time.Now()
 		snapshotDigest, err := c.cfg.StoreTx.CreateSnapshotFileAt(txid, snapPath)
+		timing.PreSnapshot = time.Since(tPre)
 		if err != nil {
-			return c.abortPreMutationIntentLocked(&manifest, fmt.Errorf("create pre-mutation store snapshot: %w", err))
+			return nil, c.abortPreMutationIntentLocked(&manifest, fmt.Errorf("create pre-mutation store snapshot: %w", err))
 		}
 		manifest.PreMutationStoreDigest = snapshotDigest
 
-		if snapshotDigest != manifest.BaseDesiredStoreDigest {
-			return c.abortPreMutationIntentLocked(&manifest,
-				fmt.Errorf("store changed while securing snapshot: preflight=%s snapshot=%s",
-					manifest.BaseDesiredStoreDigest, snapshotDigest))
+		if snapshotDigest != baseSnapshotStoreDigest {
+			return nil, c.abortPreMutationIntentLocked(&manifest,
+				fmt.Errorf("store changed while securing snapshot: snapshot preflight=%s snapshot=%s",
+					baseSnapshotStoreDigest, snapshotDigest))
 		}
 
 		if c.hooks.FailAfterPreSnapshot {
-			return ErrSimulatedCrash
+			return nil, ErrSimulatedCrash
 		}
 
 		// 5. Persist PreviousBridges together with the secured pre-mutation snapshot
 		if err := c.transitionManifestLocked(&manifest, StateSnapshotSecured); err != nil {
-			return c.abortEarlyLocked(&manifest, err)
+			return nil, c.abortEarlyLocked(&manifest, err)
 		}
 
 		// 6. Only then invoke mutateFn
+		tMut := time.Now()
 		mutErr := func() (retErr error) {
 			defer func() {
 				if r := recover(); r != nil {
@@ -2539,20 +2675,37 @@ func (c *ApplyCoordinator) MutateAndApply(
 			}()
 			return mutateFn()
 		}()
+		timing.Mutate = time.Since(tMut)
 
 		if mutErr != nil {
-			return c.abortEarlyLocked(&manifest, mutErr)
+			return nil, c.abortEarlyLocked(&manifest, mutErr)
 		}
 
-		targetStoreDigest, _ := c.cfg.StoreTx.CurrentDigest()
+		targetStoreDigest, _ := c.cfg.StoreTx.CurrentDesiredDigest()
 		manifest.TargetDesiredStoreDigest = targetStoreDigest
 	} else {
 		manifest.TargetDesiredStoreDigest = baseDesiredStoreDigest
 	}
 
+	tComp := time.Now()
 	compileResult, err := compileFn(ctx)
+	timing.Compile = time.Since(tComp)
 	if err != nil {
-		return c.abortEarlyLocked(&manifest, fmt.Errorf("compile mihomo config: %w", err))
+		return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("compile mihomo config: %w", err))
+	}
+
+	// Detect a concurrent writer that bypassed this coordinator while the
+	// candidate was being compiled. This is an ordinary transaction conflict:
+	// abort without poisoning the otherwise healthy runtime with a recovery
+	// marker.
+	compiledDesiredStoreDigest, digestErr := c.cfg.StoreTx.CurrentDesiredDigest()
+	if digestErr != nil {
+		return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("read desired store digest after compile: %w", digestErr))
+	}
+	if compiledDesiredStoreDigest != manifest.TargetDesiredStoreDigest {
+		return nil, c.abortEarlyLocked(&manifest, fmt.Errorf(
+			"desired store changed while compiling candidate: expected=%s actual=%s",
+			manifest.TargetDesiredStoreDigest, compiledDesiredStoreDigest))
 	}
 
 	manifest.TargetInputDigest = compileResult.InputDigest
@@ -2567,14 +2720,14 @@ func (c *ApplyCoordinator) MutateAndApply(
 		for i, b := range c.appliedRecord.AppliedBridges {
 			eb, err := c.enrichLegacyBridgeRefLocked(b, preSnap)
 			if err != nil {
-				return c.abortEarlyLocked(&manifest, fmt.Errorf("enrich legacy previous bridge %s: %w", b.SlotKey(), err))
+				return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("enrich legacy previous bridge %s: %w", b.SlotKey(), err))
 			}
 			if err := eb.ValidateComplete(); err != nil {
-				return c.abortEarlyLocked(&manifest, fmt.Errorf("enriched previous bridge %s invalid: %w", eb.SlotKey(), err))
+				return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("enriched previous bridge %s invalid: %w", eb.SlotKey(), err))
 			}
 			slot := eb.SlotKey()
 			if _, exists := seenPrevSlots[slot]; exists {
-				return c.abortEarlyLocked(&manifest, fmt.Errorf("duplicate slot key %q in enriched previous bridges", slot))
+				return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("duplicate slot key %q in enriched previous bridges", slot))
 			}
 			seenPrevSlots[slot] = struct{}{}
 			enrichedPrev[i] = eb
@@ -2589,11 +2742,11 @@ func (c *ApplyCoordinator) MutateAndApply(
 	targetBridges := make([]BridgeRef, len(compileResult.TargetBridges))
 	for i, b := range compileResult.TargetBridges {
 		if err := b.ValidateComplete(); err != nil {
-			return c.abortEarlyLocked(&manifest, fmt.Errorf("compileResult target bridge %d invalid: %w", i, err))
+			return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("compileResult target bridge %d invalid: %w", i, err))
 		}
 		slot := b.SlotKey()
 		if _, exists := seenTargetSlots[slot]; exists {
-			return c.abortEarlyLocked(&manifest, fmt.Errorf("duplicate slot key %q in target bridges", slot))
+			return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("duplicate slot key %q in target bridges", slot))
 		}
 		seenTargetSlots[slot] = struct{}{}
 		targetBridges[i] = b
@@ -2618,7 +2771,7 @@ func (c *ApplyCoordinator) MutateAndApply(
 	if mutateFn != nil {
 		postSnapPath, err := c.cfg.StoreTx.SnapshotFilePath(txid + "-post")
 		if err != nil {
-			return c.abortEarlyLocked(&manifest, fmt.Errorf("resolve post-mutation snapshot path: %w", err))
+			return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("resolve post-mutation snapshot path: %w", err))
 		}
 		manifest.CandidatePostMutationStoreSnapshotFile = postSnapPath
 	}
@@ -2626,55 +2779,66 @@ func (c *ApplyCoordinator) MutateAndApply(
 	// 5. Checkpoint the manifest before candidate config write/promotion, runtime restart or bridge reconciliation
 	if manifest.Sequence == 0 {
 		if err := c.initManifestLocked(&manifest, StateCandidateWriteIntent); err != nil {
-			return c.abortEarlyLocked(&manifest, err)
+			return nil, c.abortEarlyLocked(&manifest, err)
 		}
 	} else {
 		if err := c.transitionManifestLocked(&manifest, StateCandidateWriteIntent); err != nil {
-			return c.abortEarlyLocked(&manifest, err)
+			return nil, c.abortEarlyLocked(&manifest, err)
 		}
 	}
 	c.crashAt("after_target_bridges_persist")
 
 	if mutateFn != nil {
+		tPost := time.Now()
 		postDigest, err := c.cfg.StoreTx.CreateSnapshotFileAt(txid+"-post", manifest.CandidatePostMutationStoreSnapshotFile)
+		timing.PostSnapshot = time.Since(tPost)
 		if err != nil {
-			return c.abortEarlyLocked(&manifest, fmt.Errorf("create post-mutation store snapshot: %w", err))
+			return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("create post-mutation store snapshot: %w", err))
 		}
 		manifest.CandidatePostMutationStoreDigest = postDigest
 		if c.hooks.FailAfterPostSnapshot {
-			return ErrSimulatedCrash
+			return nil, ErrSimulatedCrash
 		}
+	}
+	targetSnapshotStoreDigest := manifest.CandidatePostMutationStoreDigest
+	if targetSnapshotStoreDigest == "" {
+		targetSnapshotStoreDigest = baseSnapshotStoreDigest
 	}
 
 	if compileResult.Mode != RuntimeOff {
+		tCand := time.Now()
 		if err := strictfs.StrictWriteAtomic(manifest.CandidateConfigFile, compileResult.ConfigYAML, 0600); err != nil {
-			return c.abortEarlyLocked(&manifest, fmt.Errorf("write candidate config: %w", err))
+			return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("write candidate config: %w", err))
 		}
+		timing.CandidateWrite = time.Since(tCand)
 		if c.hooks.FailAfterCandidateWrite {
-			return ErrSimulatedCrash
+			return nil, ErrSimulatedCrash
 		}
+		tVal := time.Now()
 		if err := c.cfg.Validator.ValidateConfigFile(ctx, manifest.CandidateConfigFile); err != nil {
-			return c.abortEarlyLocked(&manifest, fmt.Errorf("validate candidate config: %w", err))
+			return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("validate candidate config: %w", err))
 		}
+		timing.Validate = time.Since(tVal)
 	}
 
 	if err := c.transitionManifestLocked(&manifest, StateCandidateBuilt); err != nil {
-		return c.abortEarlyLocked(&manifest, err)
+		return nil, c.abortEarlyLocked(&manifest, err)
 	}
 
 	newRec := AppliedGenerationRecord{
-		Version:               1,
-		BridgeIdentityVersion: CurrentBridgeIdentityVersion,
-		GenerationID:          newGenID,
-		Generation:            newGen,
-		AppliedStoreDigest:    manifest.TargetDesiredStoreDigest,
-		AppliedConfigDigest:   manifest.CandidateConfigDigest,
-		AppliedInputDigest:    manifest.TargetInputDigest,
-		AppliedListeners:      compileResult.RequiredListeners,
-		AppliedBridges:        compileResult.TargetBridges,
-		AppliedBridgesDigest:  manifest.TargetBridgesDigest,
-		RuntimeMode:           compileResult.Mode,
-		AppliedAt:             time.Now(),
+		Version:                   1,
+		BridgeIdentityVersion:     CurrentBridgeIdentityVersion,
+		GenerationID:              newGenID,
+		Generation:                newGen,
+		AppliedStoreDigest:        targetSnapshotStoreDigest,
+		AppliedDesiredStoreDigest: manifest.TargetDesiredStoreDigest,
+		AppliedConfigDigest:       manifest.CandidateConfigDigest,
+		AppliedInputDigest:        manifest.TargetInputDigest,
+		AppliedListeners:          compileResult.RequiredListeners,
+		AppliedBridges:            compileResult.TargetBridges,
+		AppliedBridgesDigest:      manifest.TargetBridgesDigest,
+		RuntimeMode:               compileResult.Mode,
+		AppliedAt:                 time.Now(),
 	}
 
 	if err := c.genStore.PublishStagedBundle(
@@ -2685,40 +2849,46 @@ func (c *ApplyCoordinator) MutateAndApply(
 		newRec,
 		c.DaemonEpoch(),
 	); err != nil {
-		return c.abortEarlyLocked(&manifest, fmt.Errorf("publish LKG generation bundle: %w", err))
+		return nil, c.abortEarlyLocked(&manifest, fmt.Errorf("publish LKG generation bundle: %w", err))
 	}
 
 	if err := c.transitionManifestLocked(&manifest, StateCandidatePublished); err != nil {
-		return c.abortEarlyLocked(&manifest, err)
+		return nil, c.abortEarlyLocked(&manifest, err)
 	}
 
+	tRuntime := time.Now()
 	if compileResult.Mode == RuntimeOff {
+		manifest.ApplyPath = ApplyPathFullRestart
+		timing.Path = ApplyPathFullRestart
+
 		if err := c.transitionManifestLocked(&manifest, StateRuntimeIntent); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
 		}
 		// Safe transactional order: stop runtime first, ensuring previous active config is intact if stop fails
+		tStop := time.Now()
 		if err := c.stopControlledLocked(ctx, manifest.TxID, "RuntimeOff"); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("failed to stop operator for RuntimeOff: %w", err))
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("failed to stop operator for RuntimeOff: %w", err))
 		}
+		timing.StopWait = time.Since(tStop)
 		c.processReceipt = nil
 
 		if c.hooks.FailActiveConfigUnlink {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("failpoint: failed to unlink active config for RuntimeOff"))
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("failpoint: failed to unlink active config for RuntimeOff"))
 		}
 		if err := strictfs.StrictUnlink(c.activeConfigFile); err != nil && !os.IsNotExist(err) {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("failed to unlink active config for RuntimeOff: %w", err))
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("failed to unlink active config for RuntimeOff: %w", err))
 		}
 		if statErr := c.statActiveConfigAbsenceLocked(); statErr != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, statErr)
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, statErr)
 		}
 		if err := c.transitionManifestLocked(&manifest, StateRuntimeApplied); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
 		}
 		if err := c.transitionManifestLocked(&manifest, StateRuntimeVerified); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
 		}
 		if err := c.transitionManifestLocked(&manifest, StateBridgesReconciling); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
 		}
 		var beforeBridges []BridgeRef
 		if len(manifest.PreviousBridges) > 0 {
@@ -2732,78 +2902,176 @@ func (c *ApplyCoordinator) MutateAndApply(
 		}
 		bridgeErr := c.syncBridgesLocked(ctx, &manifest, beforeBridges, targetBridges)
 		if bridgeErr != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("bridge sync failed: %w", bridgeErr))
+			return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("bridge sync failed: %w", bridgeErr))
 		}
+		c.counters.FullRestartCount++
 	} else {
-		if err := c.transitionManifestLocked(&manifest, StateSwapIntent); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
+		preBytes, _ := os.ReadFile(manifest.PreMutationStoreSnapshotFile)
+		postBytes, _ := os.ReadFile(manifest.CandidatePostMutationStoreSnapshotFile)
+		activeConfigBytes, _ := os.ReadFile(c.activeConfigFile)
+		changeKind := ClassifyMutation(
+			preBytes, postBytes,
+			activeConfigBytes, compileResult.ConfigYAML,
+			c.appliedRecord,
+			compileResult,
+			c.cfg.Operator,
+			manifest.TargetBridgesDigest,
+			manifest.PreviousBridgesDigest,
+		)
+
+		reloader := c.cfg.ConfigReloader
+		if reloader == nil && c.cfg.Operator != nil {
+			reloader, _ = c.cfg.Operator.(ConfigReloader)
 		}
-		outcome, swapErr := strictfs.RenameAndResolve(manifest.CandidateConfigFile, c.activeConfigFile, "", manifest.CandidateConfigDigest)
-		if swapErr != nil && outcome != strictfs.OutcomeNewApplied {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("swap candidate to active config: %w", swapErr))
+		running, pid := false, 0
+		if c.cfg.Operator != nil {
+			running, pid = c.cfg.Operator.IsRunning()
 		}
 
-		if err := c.transitionManifestLocked(&manifest, StateSwapApplied); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
-		}
-		if err := c.transitionManifestLocked(&manifest, StateSwapVerified); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
-		}
+		canHotReload := changeKind == ChangeKindRuleOnly && reloader != nil && running && pid > 0
 
-		if err := c.transitionManifestLocked(&manifest, StateRuntimeIntent); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
-		}
-		restartErr := c.restartControlledLocked(ctx, manifest.TxID, newGen, manifest.CandidateConfigDigest, compileResult.RequiredListeners)
-		if restartErr != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("runtime restart failed: %w", restartErr))
-		}
-		if err := c.transitionManifestLocked(&manifest, StateRuntimeApplied); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
-		}
-		if err := c.transitionManifestLocked(&manifest, StateRuntimeVerified); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
-		}
+		if canHotReload {
+			manifest.ApplyPath = ApplyPathHotReload
+			timing.Path = ApplyPathHotReload
 
-		if err := c.transitionManifestLocked(&manifest, StateBridgesReconciling); err != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, err)
-		}
-		var beforeBridges []BridgeRef
-		if len(manifest.PreviousBridges) > 0 {
-			beforeBridges = manifest.PreviousBridges
-		} else if c.appliedRecord != nil {
-			beforeBridges = c.appliedRecord.AppliedBridges
-		}
-		targetBridges := manifest.TargetBridges
-		if len(targetBridges) == 0 && compileResult != nil {
-			targetBridges = compileResult.TargetBridges
-		}
-		bridgeErr := c.syncBridgesLocked(ctx, &manifest, beforeBridges, targetBridges)
-		if bridgeErr != nil {
-			return c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("bridge sync failed: %w", bridgeErr))
+			if err := c.transitionManifestLocked(&manifest, StateSwapIntent); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			outcome, swapErr := strictfs.RenameAndResolve(manifest.CandidateConfigFile, c.activeConfigFile, "", manifest.CandidateConfigDigest)
+			if swapErr != nil && outcome != strictfs.OutcomeNewApplied {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("swap candidate to active config: %w", swapErr))
+			}
+
+			if err := c.transitionManifestLocked(&manifest, StateSwapApplied); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			if err := c.transitionManifestLocked(&manifest, StateSwapVerified); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+
+			if err := c.transitionManifestLocked(&manifest, StateRuntimeIntent); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+
+			tReload := time.Now()
+			reloadErr := c.reloadControlledLocked(ctx, manifest.TxID, newGen, manifest.CandidateConfigDigest, compileResult.RequiredListeners)
+			timing.ReloadWait = time.Since(tReload)
+			if reloadErr != nil {
+				tRb := time.Now()
+				hotRbErr := c.hotRollbackControlledLocked(ctx, &manifest)
+				timing.Rollback = time.Since(tRb)
+				if hotRbErr != nil {
+					c.counters.RollbackCount++
+					return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("hot reload failed (%v) and hot rollback failed (%v)", reloadErr, hotRbErr))
+				}
+				c.counters.RollbackCount++
+				return nil, fmt.Errorf("runtime reload rejected: %w (hot rollback succeeded)", reloadErr)
+			}
+
+			if err := c.transitionManifestLocked(&manifest, StateRuntimeApplied); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			if err := c.transitionManifestLocked(&manifest, StateRuntimeVerified); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+
+			// Fast path: bridge reconciliation is NOT needed for RuleOnly!
+			c.counters.HotReloadCount++
+		} else {
+			manifest.ApplyPath = ApplyPathFullRestart
+			timing.Path = ApplyPathFullRestart
+
+			if err := c.transitionManifestLocked(&manifest, StateSwapIntent); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			outcome, swapErr := strictfs.RenameAndResolve(manifest.CandidateConfigFile, c.activeConfigFile, "", manifest.CandidateConfigDigest)
+			if swapErr != nil && outcome != strictfs.OutcomeNewApplied {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("swap candidate to active config: %w", swapErr))
+			}
+
+			if err := c.transitionManifestLocked(&manifest, StateSwapApplied); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			if err := c.transitionManifestLocked(&manifest, StateSwapVerified); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+
+			if err := c.transitionManifestLocked(&manifest, StateRuntimeIntent); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			tRestart := time.Now()
+			restartErr := c.restartControlledLocked(ctx, manifest.TxID, newGen, manifest.CandidateConfigDigest, compileResult.RequiredListeners)
+			timing.StartWait = time.Since(tRestart)
+			if restartErr != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("runtime restart failed: %w", restartErr))
+			}
+			if err := c.transitionManifestLocked(&manifest, StateRuntimeApplied); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			if err := c.transitionManifestLocked(&manifest, StateRuntimeVerified); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+
+			if err := c.transitionManifestLocked(&manifest, StateBridgesReconciling); err != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
+			}
+			var beforeBridges []BridgeRef
+			if len(manifest.PreviousBridges) > 0 {
+				beforeBridges = manifest.PreviousBridges
+			} else if c.appliedRecord != nil {
+				beforeBridges = c.appliedRecord.AppliedBridges
+			}
+			targetBridges := manifest.TargetBridges
+			if len(targetBridges) == 0 && compileResult != nil {
+				targetBridges = compileResult.TargetBridges
+			}
+			bridgeErr := c.syncBridgesLocked(ctx, &manifest, beforeBridges, targetBridges)
+			if bridgeErr != nil {
+				return nil, c.handleApplyFailureLocked(ctx, &manifest, fmt.Errorf("bridge sync failed: %w", bridgeErr))
+			}
+			c.counters.FullRestartCount++
 		}
 	}
+	timing.RuntimeApply = time.Since(tRuntime)
 
+	tCommit := time.Now()
 	if err := c.transitionManifestLocked(&manifest, StateCommitIntent); err != nil {
-		return c.handleApplyFailureLocked(ctx, &manifest, err)
+		return nil, c.handleApplyFailureLocked(ctx, &manifest, err)
 	}
 
 	rec := AppliedGenerationRecord{
-		Version:               1,
-		BridgeIdentityVersion: CurrentBridgeIdentityVersion,
-		Generation:            newGen,
-		GenerationID:          newGenID,
-		AppliedAt:             time.Now(),
-		AppliedStoreDigest:    manifest.TargetDesiredStoreDigest,
-		AppliedConfigDigest:   manifest.CandidateConfigDigest,
-		AppliedInputDigest:    manifest.TargetInputDigest,
-		AppliedListeners:      compileResult.RequiredListeners,
-		AppliedBridges:        manifest.TargetBridges,
-		AppliedBridgesDigest:  manifest.TargetBridgesDigest,
-		RuntimeMode:           compileResult.Mode,
-		ProcessReceipt:        c.processReceipt,
+		Version:                   1,
+		BridgeIdentityVersion:     CurrentBridgeIdentityVersion,
+		Generation:                newGen,
+		GenerationID:              newGenID,
+		AppliedAt:                 time.Now(),
+		AppliedStoreDigest:        targetSnapshotStoreDigest,
+		AppliedDesiredStoreDigest: manifest.TargetDesiredStoreDigest,
+		AppliedConfigDigest:       manifest.CandidateConfigDigest,
+		AppliedInputDigest:        manifest.TargetInputDigest,
+		AppliedListeners:          compileResult.RequiredListeners,
+		AppliedBridges:            manifest.TargetBridges,
+		AppliedBridgesDigest:      manifest.TargetBridgesDigest,
+		RuntimeMode:               compileResult.Mode,
+		ApplyPath:                 manifest.ApplyPath,
+		ProcessReceipt:            c.processReceipt,
 	}
 
-	return c.executeFinalCommitLocked(ctx, &manifest, rec)
+	commitErr := c.executeFinalCommitLocked(ctx, &manifest, rec)
+	if commitErr != nil {
+		return nil, commitErr
+	}
+	timing.Commit = time.Since(tCommit)
+	timing.TotalDuration = time.Since(t0)
+	c.lastTiming = &timing
+
+	return &MutationOutcome{
+		TxID:         txid,
+		ApplyPath:    manifest.ApplyPath,
+		Generation:   newGen,
+		Timing:       &timing,
+		ServerTiming: timing.ServerTimingHeader(),
+	}, nil
 }
 
 func (c *ApplyCoordinator) handleApplyFailureLocked(ctx context.Context, m *TransactionManifest, origErr error) error {
@@ -2915,6 +3183,144 @@ func (c *ApplyCoordinator) restartControlledLocked(ctx context.Context, txID str
 		VerifiedAt:             time.Now(),
 	}
 
+	return nil
+}
+
+func (c *ApplyCoordinator) reloadControlledLocked(ctx context.Context, txID string, targetGeneration uint64, expectedDigest string, listeners []ListenerSpec) error {
+	if c.hooks.FailHotReload {
+		return errors.New("failpoint: simulated hot reload failure")
+	}
+
+	actDigest, err := strictfs.ComputeFileDigest(c.activeConfigFile)
+	if err != nil || actDigest != expectedDigest {
+		return fmt.Errorf("active config digest mismatch before reload: got %s, want %s", actDigest, expectedDigest)
+	}
+
+	preRunning, prePID := c.cfg.Operator.IsRunning()
+	if !preRunning || prePID <= 0 {
+		return fmt.Errorf("operator reported not running before reload (pid=%d)", prePID)
+	}
+
+	reloader := c.cfg.ConfigReloader
+	if reloader == nil && c.cfg.Operator != nil {
+		reloader, _ = c.cfg.Operator.(ConfigReloader)
+	}
+	if reloader == nil {
+		return fmt.Errorf("operator does not implement ConfigReloader")
+	}
+
+	reloadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := reloader.ReloadConfig(reloadCtx, c.activeConfigFile, true); err != nil {
+		return fmt.Errorf("controller reload failed: %w", err)
+	}
+
+	postDigest, err := strictfs.ComputeFileDigest(c.activeConfigFile)
+	if err != nil || postDigest != expectedDigest {
+		return fmt.Errorf("active config modified during reload: got %s, want %s", postDigest, expectedDigest)
+	}
+
+	postRunning, postPID := c.cfg.Operator.IsRunning()
+	if !postRunning || postPID != prePID {
+		return fmt.Errorf("process identity changed during reload: was pid %d, now running=%v pid=%d", prePID, postRunning, postPID)
+	}
+
+	binPath := c.cfg.ConfigDir
+	if opBin, ok := c.cfg.Operator.(interface{ Binary() string }); ok {
+		binPath = opBin.Binary()
+	}
+
+	ident, err := c.verifier.CaptureIdentity("", postPID, binPath, c.cfg.ConfigDir, targetGeneration)
+	if err != nil {
+		return fmt.Errorf("capture process identity after reload: %w", err)
+	}
+
+	for _, l := range listeners {
+		netw := l.Network
+		if netw == "" {
+			netw = l.GetNetwork()
+		}
+		if err := c.verifier.VerifySocketOwnership("", l.Address, int(l.Port), netw, postPID); err != nil {
+			return fmt.Errorf("verify required listener %s:%d after reload: %w", l.Address, l.Port, err)
+		}
+	}
+
+	c.processReceipt = &ProcessReceipt{
+		RuntimeProcessIdentity: ident,
+		DaemonEpoch:            c.DaemonEpoch(),
+		AppliedGeneration:      targetGeneration,
+		VerifiedAt:             time.Now(),
+	}
+
+	return nil
+}
+
+func (c *ApplyCoordinator) hotRollbackControlledLocked(ctx context.Context, m *TransactionManifest) error {
+	if c.hooks.FailHotRollback {
+		return errors.New("failpoint: simulated hot rollback failure")
+	}
+
+	reloader := c.cfg.ConfigReloader
+	if reloader == nil && c.cfg.Operator != nil {
+		reloader, _ = c.cfg.Operator.(ConfigReloader)
+	}
+	if reloader == nil {
+		return errors.New("reloader not available for hot rollback")
+	}
+
+	running, pid := c.cfg.Operator.IsRunning()
+	if !running || pid <= 0 {
+		return errors.New("process not running for hot rollback")
+	}
+
+	// 1. Restore previous config
+	if m.LKGGenerationID != "" {
+		_, prevConfigPath, _, err := c.genStore.ReadGenerationBundle(m.LKGGenerationID)
+		if err != nil {
+			return fmt.Errorf("read LKG bundle for hot rollback: %w", err)
+		}
+		data, err := os.ReadFile(prevConfigPath)
+		if err != nil {
+			return fmt.Errorf("read LKG config for hot rollback: %w", err)
+		}
+		if err := strictfs.StrictWriteAtomic(c.activeConfigFile, data, 0600); err != nil {
+			return fmt.Errorf("restore active config for hot rollback: %w", err)
+		}
+	} else {
+		return errors.New("no LKG generation for hot rollback")
+	}
+
+	// 2. Hot reload previous config
+	rbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := reloader.ReloadConfig(rbCtx, c.activeConfigFile, true); err != nil {
+		return fmt.Errorf("hot reload of previous config failed: %w", err)
+	}
+
+	// 3. Verify process PID remained intact
+	postRunning, postPID := c.cfg.Operator.IsRunning()
+	if !postRunning || postPID != pid {
+		return fmt.Errorf("process identity lost during hot rollback (was %d, now running=%v pid=%d)", pid, postRunning, postPID)
+	}
+
+	// 4. Restore store snapshot
+	if m.PreMutationStoreSnapshotFile != "" {
+		if err := c.cfg.StoreTx.RestoreSnapshotFile(m.PreMutationStoreSnapshotFile); err != nil {
+			return fmt.Errorf("restore pre-mutation store snapshot: %w", err)
+		}
+	}
+
+	// 5. Cleanup candidate artifacts
+	if m.CandidateConfigFile != "" {
+		_ = strictfs.StrictUnlink(m.CandidateConfigFile)
+	}
+	if m.CandidatePostMutationStoreSnapshotFile != "" {
+		_ = c.cfg.StoreTx.RemoveSnapshotFile(m.CandidatePostMutationStoreSnapshotFile)
+	}
+
+	m.State = StateIdle
+	_ = c.cleanupTxArtifactsLocked(m)
 	return nil
 }
 
@@ -3790,13 +4196,14 @@ func (c *ApplyCoordinator) persistAndVerifyGenerationLocked(rec AppliedGeneratio
 			return fmt.Errorf("failpoint: advance LKG pointer failed")
 		}
 		ptr := LKGPointer{
-			Version:             1,
-			GenerationID:        rec.GenerationID,
-			GenerationNumber:    rec.Generation,
-			AppliedConfigDigest: rec.AppliedConfigDigest,
-			AppliedStoreDigest:  rec.AppliedStoreDigest,
-			UpdatedEpoch:        c.DaemonEpoch(),
-			UpdatedAt:           time.Now(),
+			Version:                   1,
+			GenerationID:              rec.GenerationID,
+			GenerationNumber:          rec.Generation,
+			AppliedConfigDigest:       rec.AppliedConfigDigest,
+			AppliedStoreDigest:        rec.AppliedStoreDigest,
+			AppliedDesiredStoreDigest: rec.AppliedDesiredStoreDigest,
+			UpdatedEpoch:              c.DaemonEpoch(),
+			UpdatedAt:                 time.Now(),
 		}
 		ptrBytes, err := json.MarshalIndent(ptr, "", "  ")
 		if err != nil {
@@ -3876,13 +4283,14 @@ func (c *ApplyCoordinator) executeStagedCommitLocked(ctx context.Context, manife
 			}
 		}
 		newPtr := LKGPointer{
-			Version:             1,
-			GenerationID:        rec.GenerationID,
-			GenerationNumber:    rec.Generation,
-			AppliedConfigDigest: rec.AppliedConfigDigest,
-			AppliedStoreDigest:  rec.AppliedStoreDigest,
-			UpdatedEpoch:        c.DaemonEpoch(),
-			UpdatedAt:           time.Now(),
+			Version:                   1,
+			GenerationID:              rec.GenerationID,
+			GenerationNumber:          rec.Generation,
+			AppliedConfigDigest:       rec.AppliedConfigDigest,
+			AppliedStoreDigest:        rec.AppliedStoreDigest,
+			AppliedDesiredStoreDigest: rec.AppliedDesiredStoreDigest,
+			UpdatedEpoch:              c.DaemonEpoch(),
+			UpdatedAt:                 time.Now(),
 		}
 		ptrBytes, pErr := json.MarshalIndent(newPtr, "", "  ")
 		if pErr != nil {
@@ -4118,7 +4526,7 @@ func (c *ApplyCoordinator) rollbackToGenerationLocked(ctx context.Context, targe
 		LKGGenerationID:             targetGenID,
 		PreviousLKGGenerationID:     targetGenID,
 		StartedFromRecoveryRequired: startedFromDegraded,
-		TargetDesiredStoreDigest:    gm.AppliedStoreDigest,
+		TargetDesiredStoreDigest:    gm.AppliedDesiredStoreDigest,
 		CandidateConfigDigest:       gm.AppliedConfigDigest,
 		CandidateConfigFile:         "",
 		TargetBridges:               gm.AppliedBridges,
@@ -4303,19 +4711,20 @@ func (c *ApplyCoordinator) resumeRollbackTransactionLocked(ctx context.Context, 
 	// 5. Persist and verify generation (restoring LKG pointer if candidate pointer was promoted before crash)
 	if m.State == StateRollbackBridgesVerified {
 		rec := AppliedGenerationRecord{
-			Version:               1,
-			BridgeIdentityVersion: gm.BridgeIdentityVersion,
-			GenerationID:          gm.GenerationID,
-			Generation:            gm.GenerationNumber,
-			AppliedStoreDigest:    gm.AppliedStoreDigest,
-			AppliedConfigDigest:   gm.AppliedConfigDigest,
-			AppliedInputDigest:    gm.AppliedInputDigest,
-			AppliedBridges:        gm.AppliedBridges,
-			AppliedBridgesDigest:  gm.AppliedBridgesDigest,
-			AppliedListeners:      gm.AppliedListeners,
-			RuntimeMode:           gm.RuntimeMode,
-			ProcessReceipt:        c.processReceipt,
-			AppliedAt:             time.Now(),
+			Version:                   1,
+			BridgeIdentityVersion:     gm.BridgeIdentityVersion,
+			GenerationID:              gm.GenerationID,
+			Generation:                gm.GenerationNumber,
+			AppliedStoreDigest:        gm.AppliedStoreDigest,
+			AppliedDesiredStoreDigest: gm.AppliedDesiredStoreDigest,
+			AppliedConfigDigest:       gm.AppliedConfigDigest,
+			AppliedInputDigest:        gm.AppliedInputDigest,
+			AppliedBridges:            gm.AppliedBridges,
+			AppliedBridgesDigest:      gm.AppliedBridgesDigest,
+			AppliedListeners:          gm.AppliedListeners,
+			RuntimeMode:               gm.RuntimeMode,
+			ProcessReceipt:            c.processReceipt,
+			AppliedAt:                 time.Now(),
 		}
 		restorePointer := false
 		currPtr, pErr := c.genStore.ReadLKGPointer()
@@ -4646,7 +5055,8 @@ func (c *ApplyCoordinator) Reconcile(ctx context.Context, action string, force b
 
 		// Step 2: snapshot store
 		var snapPath string
-		var currentStoreDigest string
+		var currentSnapshotStoreDigest string
+		var currentDesiredStoreDigest string
 		c.crashAt("regenerate_pre_snapshot")
 		if c.cfg.StoreTx != nil {
 			snapPath, _ = c.cfg.StoreTx.SnapshotFilePath(txid)
@@ -4655,9 +5065,13 @@ func (c *ApplyCoordinator) Reconcile(ctx context.Context, action string, force b
 				if snapErr != nil {
 					return fmt.Errorf("snapshot store for regeneration: %w", snapErr)
 				}
-				currentStoreDigest = digest
+				currentSnapshotStoreDigest = digest
 			} else {
-				currentStoreDigest, _ = c.cfg.StoreTx.CurrentDigest()
+				currentSnapshotStoreDigest, _ = c.cfg.StoreTx.CurrentSnapshotDigest()
+			}
+			currentDesiredStoreDigest, err = c.cfg.StoreTx.CurrentDesiredDigest()
+			if err != nil {
+				return fmt.Errorf("digest desired store for regeneration: %w", err)
 			}
 		}
 		c.crashAt("regenerate_post_snapshot")
@@ -4688,7 +5102,7 @@ func (c *ApplyCoordinator) Reconcile(ctx context.Context, action string, force b
 			State:                       StateRecoveryIntent,
 			Sequence:                    1,
 			CandidateGenerationID:       genID,
-			TargetDesiredStoreDigest:    currentStoreDigest,
+			TargetDesiredStoreDigest:    currentDesiredStoreDigest,
 			TargetInputDigest:           compileResult.InputDigest,
 			CandidateConfigDigest:       compileResult.ConfigDigest,
 			CandidateConfigFile:         candidatePath,
@@ -4740,19 +5154,20 @@ func (c *ApplyCoordinator) Reconcile(ctx context.Context, action string, force b
 		}
 
 		rec := AppliedGenerationRecord{
-			Version:               1,
-			BridgeIdentityVersion: CurrentBridgeIdentityVersion,
-			GenerationID:          genID,
-			Generation:            nextGen,
-			AppliedStoreDigest:    currentStoreDigest,
-			AppliedConfigDigest:   compileResult.ConfigDigest,
-			AppliedInputDigest:    compileResult.InputDigest,
-			AppliedBridges:        compileResult.TargetBridges,
-			AppliedBridgesDigest:  BridgesDigest(compileResult.TargetBridges),
-			AppliedListeners:      compileResult.RequiredListeners,
-			RuntimeMode:           compileResult.Mode,
-			ProcessReceipt:        c.processReceipt,
-			AppliedAt:             time.Now(),
+			Version:                   1,
+			BridgeIdentityVersion:     CurrentBridgeIdentityVersion,
+			GenerationID:              genID,
+			Generation:                nextGen,
+			AppliedStoreDigest:        currentSnapshotStoreDigest,
+			AppliedDesiredStoreDigest: currentDesiredStoreDigest,
+			AppliedConfigDigest:       compileResult.ConfigDigest,
+			AppliedInputDigest:        compileResult.InputDigest,
+			AppliedBridges:            compileResult.TargetBridges,
+			AppliedBridgesDigest:      BridgesDigest(compileResult.TargetBridges),
+			AppliedListeners:          compileResult.RequiredListeners,
+			RuntimeMode:               compileResult.Mode,
+			ProcessReceipt:            c.processReceipt,
+			AppliedAt:                 time.Now(),
 		}
 
 		if err := c.genStore.PublishStagedBundle(genID, nextGen, compileResult.ConfigYAML, snapPath, rec, c.DaemonEpoch()); err != nil {

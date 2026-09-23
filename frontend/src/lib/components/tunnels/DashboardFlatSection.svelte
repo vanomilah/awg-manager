@@ -20,6 +20,7 @@
 	import { Awg3TunnelCard } from '$lib/components/awg3';
 	import SubscriptionActiveCard from '$lib/components/subscriptions/SubscriptionActiveCard.svelte';
 	import SubscriptionCard from '$lib/components/subscriptions/SubscriptionCard.svelte';
+	import MihomoNativeResourceCard from '$lib/components/mihomo/MihomoNativeResourceCard.svelte';
 	import { EmptyState } from '$lib/components/layout';
 	import { pluralForm, TUNNEL_WORDS } from '$lib/utils/pluralize';
 	import { GripVertical, Download } from 'lucide-svelte';
@@ -99,6 +100,28 @@
 			renderMode={ctx.effectiveSingboxSubscriptionsRenderMode}
 			ondelete={ctx.requestSubscriptionDelete}
 			ondetail={(tag) => ctx.openSingboxDetail(tag)}
+		/>
+	{:else if item.kind === 'mihomo-proxy'}
+		<MihomoNativeResourceCard
+			kind="proxy"
+			proxy={item.proxy}
+			runtimeProxies={ctx.mihomoRuntimeProxies}
+			runtimeProviders={ctx.mihomoRuntimeProviders}
+			layout={ctx.effectiveSingboxTunnelsEffectiveLayout}
+			renderMode={ctx.effectiveSingboxTunnelsRenderMode}
+			autoDelayCheckNonce={suppressAutoCheck ? 0 : ctx.singboxAutoDelayCheckNonce}
+			autoDelayCheckDelayMs={item.index * 180}
+		/>
+	{:else if item.kind === 'mihomo-subscription'}
+		<MihomoNativeResourceCard
+			kind="subscription"
+			subscription={item.subscription}
+			runtimeProxies={ctx.mihomoRuntimeProxies}
+			runtimeProviders={ctx.mihomoRuntimeProviders}
+			layout={ctx.effectiveSingboxSubscriptionsEffectiveLayout}
+			renderMode={ctx.effectiveSingboxSubscriptionsRenderMode}
+			autoDelayCheckNonce={suppressAutoCheck ? 0 : ctx.singboxAutoDelayCheckNonce}
+			autoDelayCheckDelayMs={item.index * 180}
 		/>
 	{/if}
 {/snippet}

@@ -358,46 +358,50 @@ type PendingInputRecord struct {
 
 // AppliedGenerationRecord tracks the currently verified and active configuration running in the OS.
 type AppliedGenerationRecord struct {
-	Version               int             `json:"version"` // 1
-	BridgeIdentityVersion int             `json:"bridge_identity_version,omitempty"`
-	Generation            uint64          `json:"generation"`
-	GenerationID          string          `json:"generation_id,omitempty"`
-	AppliedAt             time.Time       `json:"applied_at"`
-	AppliedStoreDigest    string          `json:"applied_store_digest"`
-	AppliedConfigDigest   string          `json:"applied_config_digest"`
-	AppliedInputDigest    string          `json:"applied_input_digest"`
-	AppliedListeners      []ListenerSpec  `json:"applied_listeners"`
-	AppliedBridges        []BridgeRef     `json:"applied_bridges"`
-	AppliedBridgesDigest  string          `json:"applied_bridges_digest,omitempty"`
-	RuntimeMode           RuntimeMode     `json:"runtime_mode"`
-	ProcessReceipt        *ProcessReceipt `json:"process_receipt,omitempty"`
+	Version                   int             `json:"version"` // 1
+	BridgeIdentityVersion     int             `json:"bridge_identity_version,omitempty"`
+	Generation                uint64          `json:"generation"`
+	GenerationID              string          `json:"generation_id,omitempty"`
+	AppliedAt                 time.Time       `json:"applied_at"`
+	AppliedStoreDigest        string          `json:"applied_store_digest"` // exact store.snapshot.json bytes
+	AppliedDesiredStoreDigest string          `json:"applied_desired_store_digest,omitempty"`
+	AppliedConfigDigest       string          `json:"applied_config_digest"`
+	AppliedInputDigest        string          `json:"applied_input_digest"`
+	AppliedListeners          []ListenerSpec  `json:"applied_listeners"`
+	AppliedBridges            []BridgeRef     `json:"applied_bridges"`
+	AppliedBridgesDigest      string          `json:"applied_bridges_digest,omitempty"`
+	RuntimeMode               RuntimeMode     `json:"runtime_mode"`
+	ApplyPath                 ApplyPath       `json:"apply_path,omitempty"`
+	ProcessReceipt            *ProcessReceipt `json:"process_receipt,omitempty"`
 }
 
 // GenerationManifest is the metadata preserved in each immutable generation bundle.
 type GenerationManifest struct {
-	Version               int            `json:"version"` // 1
-	BridgeIdentityVersion int            `json:"bridge_identity_version,omitempty"`
-	GenerationID          string         `json:"generation_id"`
-	GenerationNumber      uint64         `json:"generation_number"`
-	ArchivedAt            time.Time      `json:"archived_at"`
-	AppliedStoreDigest    string         `json:"applied_store_digest"`
-	AppliedConfigDigest   string         `json:"applied_config_digest"`
-	AppliedInputDigest    string         `json:"applied_input_digest"`
-	AppliedListeners      []ListenerSpec `json:"applied_listeners"`
-	AppliedBridges        []BridgeRef    `json:"applied_bridges"`
-	AppliedBridgesDigest  string         `json:"applied_bridges_digest,omitempty"`
-	RuntimeMode           RuntimeMode    `json:"runtime_mode"`
+	Version                   int            `json:"version"` // 1
+	BridgeIdentityVersion     int            `json:"bridge_identity_version,omitempty"`
+	GenerationID              string         `json:"generation_id"`
+	GenerationNumber          uint64         `json:"generation_number"`
+	ArchivedAt                time.Time      `json:"archived_at"`
+	AppliedStoreDigest        string         `json:"applied_store_digest"` // exact store.snapshot.json bytes
+	AppliedDesiredStoreDigest string         `json:"applied_desired_store_digest,omitempty"`
+	AppliedConfigDigest       string         `json:"applied_config_digest"`
+	AppliedInputDigest        string         `json:"applied_input_digest"`
+	AppliedListeners          []ListenerSpec `json:"applied_listeners"`
+	AppliedBridges            []BridgeRef    `json:"applied_bridges"`
+	AppliedBridgesDigest      string         `json:"applied_bridges_digest,omitempty"`
+	RuntimeMode               RuntimeMode    `json:"runtime_mode"`
 }
 
 // LKGPointer points to the current verified last-known-good generation bundle.
 type LKGPointer struct {
-	Version             int       `json:"version"` // 1
-	GenerationID        string    `json:"generation_id"`
-	GenerationNumber    uint64    `json:"generation_number"`
-	AppliedConfigDigest string    `json:"applied_config_digest"`
-	AppliedStoreDigest  string    `json:"applied_store_digest"`
-	UpdatedEpoch        string    `json:"updated_epoch"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	Version                   int       `json:"version"` // 1
+	GenerationID              string    `json:"generation_id"`
+	GenerationNumber          uint64    `json:"generation_number"`
+	AppliedConfigDigest       string    `json:"applied_config_digest"`
+	AppliedStoreDigest        string    `json:"applied_store_digest"`
+	AppliedDesiredStoreDigest string    `json:"applied_desired_store_digest,omitempty"`
+	UpdatedEpoch              string    `json:"updated_epoch"`
+	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
 // TransactionManifest records the active compile/apply transaction state on disk.
@@ -417,11 +421,12 @@ type TransactionManifest struct {
 	VerifiedActiveGeneration   uint64 `json:"verified_active_generation"`
 
 	// Digests and Files
-	BaseAppliedStoreDigest   string `json:"base_applied_store_digest,omitempty"`
-	BaseDesiredStoreDigest   string `json:"base_desired_store_digest,omitempty"`
-	TargetDesiredStoreDigest string `json:"target_desired_store_digest,omitempty"`
-	BaseAppliedInputDigest   string `json:"base_applied_input_digest,omitempty"`
-	TargetInputDigest        string `json:"target_input_digest,omitempty"`
+	BaseAppliedStoreDigest        string `json:"base_applied_store_digest,omitempty"`
+	BaseAppliedDesiredStoreDigest string `json:"base_applied_desired_store_digest,omitempty"`
+	BaseDesiredStoreDigest        string `json:"base_desired_store_digest,omitempty"`
+	TargetDesiredStoreDigest      string `json:"target_desired_store_digest,omitempty"`
+	BaseAppliedInputDigest        string `json:"base_applied_input_digest,omitempty"`
+	TargetInputDigest             string `json:"target_input_digest,omitempty"`
 
 	PreMutationStoreSnapshotFile           string `json:"pre_mutation_store_snapshot_file,omitempty"`
 	PreMutationStoreDigest                 string `json:"pre_mutation_store_digest,omitempty"`
@@ -435,6 +440,7 @@ type TransactionManifest struct {
 
 	// Operation Kind
 	OperationKind OperationKind `json:"operation_kind,omitempty"`
+	ApplyPath     ApplyPath     `json:"apply_path,omitempty"`
 
 	// Recovery Archive & Prior State
 	PreviousManifestDigest       string `json:"previous_manifest_digest,omitempty"`
@@ -525,6 +531,11 @@ type MihomoOperator interface {
 	Start() error
 }
 
+// ConfigReloader triggers dynamic reload of active configuration via external controller.
+type ConfigReloader interface {
+	ReloadConfig(ctx context.Context, configPath string, force bool) error
+}
+
 // NativeStoreTx provides the transactional capabilities required by ApplyCoordinator.
 type NativeStoreTx interface {
 	SnapshotFilePath(txid string) (string, error)
@@ -533,6 +544,8 @@ type NativeStoreTx interface {
 	RestoreSnapshotFile(snapshotPath string) error
 	RemoveSnapshotFile(snapshotPath string) error
 	CurrentDigest() (string, error)
+	CurrentDesiredDigest() (string, error)
+	CurrentSnapshotDigest() (string, error)
 	ListBridges() []BridgeRef
 }
 

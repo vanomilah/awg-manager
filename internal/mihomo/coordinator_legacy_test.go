@@ -103,6 +103,14 @@ func (f *fakeStoreTx) CurrentDigest() (string, error) {
 	return f.digest, nil
 }
 
+func (f *fakeStoreTx) CurrentDesiredDigest() (string, error) {
+	return f.CurrentDigest()
+}
+
+func (f *fakeStoreTx) CurrentSnapshotDigest() (string, error) {
+	return f.CurrentDigest()
+}
+
 func (f *fakeStoreTx) ListBridges() []BridgeRef {
 	return f.bridges
 }

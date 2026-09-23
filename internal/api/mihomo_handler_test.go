@@ -446,16 +446,16 @@ func TestMihomoRulesCreateUpdateEndpoints(t *testing.T) {
 		t.Fatalf("POST /api/mihomo/native/rules status = %d: %s", recCreate.Code, recCreate.Body.String())
 	}
 	var createResp struct {
-		Success bool               `json:"success"`
-		Data    mihomonative.Rule  `json:"data"`
+		Success bool                       `json:"success"`
+		Data    NativeRuleMutationResponse `json:"data"`
 	}
 	if err := json.Unmarshal(recCreate.Body.Bytes(), &createResp); err != nil {
 		t.Fatalf("unmarshal create response: %v", err)
 	}
-	if createResp.Data.ID == "" || !createResp.Data.Enabled {
+	if createResp.Data.Item == nil || createResp.Data.Item.ID == "" || !createResp.Data.Item.Enabled {
 		t.Fatalf("expected non-empty ID and Enabled=true, got %#v", createResp.Data)
 	}
-	createdID := createResp.Data.ID
+	createdID := createResp.Data.Item.ID
 
 	// 3. POST /api/mihomo/native/rules with enabled=false -> 200 OK
 	disabledCreateBody, _ := json.Marshal(map[string]interface{}{
@@ -471,16 +471,16 @@ func TestMihomoRulesCreateUpdateEndpoints(t *testing.T) {
 		t.Fatalf("POST /api/mihomo/native/rules (disabled) status = %d: %s", recCreateDisabled.Code, recCreateDisabled.Body.String())
 	}
 	var disabledResp struct {
-		Success bool              `json:"success"`
-		Data    mihomonative.Rule `json:"data"`
+		Success bool                       `json:"success"`
+		Data    NativeRuleMutationResponse `json:"data"`
 	}
 	if err := json.Unmarshal(recCreateDisabled.Body.Bytes(), &disabledResp); err != nil {
 		t.Fatalf("unmarshal disabled create response: %v", err)
 	}
-	if disabledResp.Data.Enabled {
+	if disabledResp.Data.Item == nil || disabledResp.Data.Item.Enabled {
 		t.Fatalf("expected Enabled=false, got true")
 	}
-	disabledID := disabledResp.Data.ID
+	disabledID := disabledResp.Data.Item.ID
 
 	// 4. PUT /api/mihomo/native/rules/nonexistent -> 404 NOT_FOUND
 	updateBody, _ := json.Marshal(map[string]interface{}{
@@ -525,13 +525,13 @@ func TestMihomoRulesCreateUpdateEndpoints(t *testing.T) {
 		t.Fatalf("PUT /api/mihomo/native/rules/{id} status = %d: %s", recPutPreserve.Code, recPutPreserve.Body.String())
 	}
 	var preserveResp struct {
-		Success bool              `json:"success"`
-		Data    mihomonative.Rule `json:"data"`
+		Success bool                       `json:"success"`
+		Data    NativeRuleMutationResponse `json:"data"`
 	}
 	if err := json.Unmarshal(recPutPreserve.Body.Bytes(), &preserveResp); err != nil {
 		t.Fatalf("unmarshal preserve response: %v", err)
 	}
-	if preserveResp.Data.Enabled {
+	if preserveResp.Data.Item == nil || preserveResp.Data.Item.Enabled {
 		t.Fatalf("expected Enabled=false to be preserved, got true")
 	}
 
@@ -549,13 +549,13 @@ func TestMihomoRulesCreateUpdateEndpoints(t *testing.T) {
 		t.Fatalf("PUT /api/mihomo/native/rules/{id} enable status = %d: %s", recPutEnable.Code, recPutEnable.Body.String())
 	}
 	var enableResp struct {
-		Success bool              `json:"success"`
-		Data    mihomonative.Rule `json:"data"`
+		Success bool                       `json:"success"`
+		Data    NativeRuleMutationResponse `json:"data"`
 	}
 	if err := json.Unmarshal(recPutEnable.Body.Bytes(), &enableResp); err != nil {
 		t.Fatalf("unmarshal enable response: %v", err)
 	}
-	if !enableResp.Data.Enabled {
+	if enableResp.Data.Item == nil || !enableResp.Data.Item.Enabled {
 		t.Fatalf("expected Enabled=true after update, got false")
 	}
 }

@@ -31,6 +31,17 @@ func (f *fakeMutationApplier) ApplyNativeMutation(ctx context.Context, mutateFn 
 	return mutateFn()
 }
 
+func (f *fakeMutationApplier) ApplyNativeMutationWithOutcome(ctx context.Context, mutateFn func() error) (*mihomo.MutationOutcome, error) {
+	f.applyCount++
+	err := mutateFn()
+	return &mihomo.MutationOutcome{
+		TxID:         "fake-tx-123",
+		ApplyPath:    mihomo.ApplyPathHotReload,
+		Generation:   1,
+		ServerTiming: "hot_reload;dur=5",
+	}, err
+}
+
 func (f *fakeMutationApplier) ApplyDraftOnly(ctx context.Context, mutateFn func() error) error {
 	f.draftCount++
 	return mutateFn()

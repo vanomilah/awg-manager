@@ -347,9 +347,9 @@ func TestCoordinator_Gate1_S10_Bundle_StagingFsync_Subtests(t *testing.T) {
 	}
 }
 
-// S11: Bundle PreMutationDigestMismatch
+// S11: desired-store edits are candidates, while concurrent edits conflict.
 func TestCoordinator_Gate1_S11_Bundle_PreMutationDigestMismatch(t *testing.T) {
-	t.Run("store_digest_mismatch", func(t *testing.T) {
+	t.Run("edit_since_last_apply_is_valid_candidate", func(t *testing.T) {
 		coord, store, _, _ := setupGate1Coordinator(t)
 
 		// 1. Establish Gen 1
@@ -358,22 +358,45 @@ func TestCoordinator_Gate1_S11_Bundle_PreMutationDigestMismatch(t *testing.T) {
 			t.Fatalf("Gen 1 failed: %v", err)
 		}
 
-		// 2. Corrupt store digest externally (bypass coordinator)
-		store.data = "corrupted-store-external"
-		store.digest = strictfs.ComputeBytesDigest([]byte("corrupted-store-external"))
+		// 2. Edit the desired store before Apply. This is how the UI's
+		// add/delete/reorder endpoints intentionally work.
+		store.data = "edited-desired-store"
+		store.digest = strictfs.ComputeBytesDigest([]byte("edited-desired-store"))
 
-		// 3. Next apply should detect preflight mismatch and refuse to archive
+		// 3. The edit is compiled and committed rather than classified as
+		// corruption merely because it differs from the applied generation.
 		compileGen2 := makeGate1CompileFn("generation: 2", RuntimeEnforced)
 		err := coord.MutateAndApply(context.Background(), nil, compileGen2)
-		if err == nil || !strings.Contains(err.Error(), "store digest mismatch") {
-			t.Fatalf("expected store digest mismatch error, got: %v", err)
+		if err != nil {
+			t.Fatalf("apply edited desired store: %v", err)
 		}
+		if coord.State() != StateIdle {
+			t.Fatalf("expected StateIdle, got: %s", coord.State())
+		}
+		if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+			t.Fatalf("recovery marker must not be created, stat err: %v", err)
+		}
+	})
 
-		if coord.State() != StateRecoveryRequired {
-			t.Fatalf("expected StateRecoveryRequired, got: %s", coord.State())
+	t.Run("concurrent_edit_during_compile_aborts_without_recovery", func(t *testing.T) {
+		coord, store, _, _ := setupGate1Coordinator(t)
+		if err := coord.MutateAndApply(context.Background(), nil, makeGate1CompileFn("generation: 1", RuntimeEnforced)); err != nil {
+			t.Fatalf("Gen 1 failed: %v", err)
 		}
-		if _, err := os.Stat(coord.recoveryMarkerFile); err != nil {
-			t.Fatalf("recovery marker must be created: %v", err)
+		compile := func(ctx context.Context) (*CompileResult, error) {
+			store.data = "concurrent-edit"
+			store.digest = strictfs.ComputeBytesDigest([]byte(store.data))
+			return makeGate1CompileFn("generation: 2", RuntimeEnforced)(ctx)
+		}
+		err := coord.MutateAndApply(context.Background(), nil, compile)
+		if err == nil || !strings.Contains(err.Error(), "desired store changed while compiling candidate") {
+			t.Fatalf("expected transaction conflict, got: %v", err)
+		}
+		if coord.State() != StateIdle {
+			t.Fatalf("expected StateIdle after transaction conflict, got: %s", coord.State())
+		}
+		if _, err := os.Stat(coord.recoveryMarkerFile); !os.IsNotExist(err) {
+			t.Fatalf("recovery marker must not be created, stat err: %v", err)
 		}
 	})
 

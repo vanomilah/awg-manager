@@ -128,6 +128,19 @@ func ErrorWithStatus(w http.ResponseWriter, status int, message, code string) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// ErrorWithData writes an error response with custom HTTP status, message, code, and data.
+func ErrorWithData(w http.ResponseWriter, status int, message, code string, data interface{}) {
+	resp := APIResponse{
+		Error:   true,
+		Message: message,
+		Code:    code,
+		Data:    data,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(resp)
+}
+
 // MustNotNil ensures a slice is not nil (returns empty slice if nil).
 func MustNotNil[T any](slice []T) []T {
 	if slice == nil {

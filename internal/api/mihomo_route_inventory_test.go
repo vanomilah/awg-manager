@@ -32,6 +32,7 @@ var KnownMihomoRouteClassification = map[string]RouteKind{
 	"GET /api/mihomo/native/subscriptions":   KindReadOnly,
 	"GET /api/mihomo/native/subscriptions/{id}": KindReadOnly,
 	"GET /api/mihomo/native/groups":          KindReadOnly,
+	"GET /api/mihomo/native/groups/{id}/references": KindReadOnly,
 	"GET /api/mihomo/native/rules":           KindReadOnly,
 	"GET /api/mihomo/native/rules/unsupported": KindReadOnly,
 	"GET /api/router/mihomo/rules/unsupported": KindReadOnly,

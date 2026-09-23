@@ -393,6 +393,10 @@ func (h *TunnelsHandler) writeAll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if h.buildTunnelsSnapshot != nil {
 		if payload := h.buildTunnelsSnapshot(ctx); payload != nil {
+			if st, ok := payload["_serverTiming"].(string); ok && st != "" {
+				w.Header().Set("Server-Timing", st)
+				delete(payload, "_serverTiming")
+			}
 			response.Success(w, payload)
 			return
 		}

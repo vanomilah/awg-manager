@@ -168,6 +168,12 @@ type DNSRuleSpec struct {
 	Server        string   `json:"server,omitempty"`
 }
 
+type AdaptiveEgressConfig struct {
+	Enabled       bool   `json:"enabled"`
+	Device        string `json:"device"`
+	SelectedGroup string `json:"selectedGroup"`
+}
+
 type NativeResources struct {
 	Proxies             []Proxy
 	ProxyProviders      map[string]map[string]interface{}
@@ -179,6 +185,7 @@ type NativeResources struct {
 	DNSRules            []DNSRuleSpec
 	GroupsAuthoritative bool
 	RulesAuthoritative  bool
+	AdaptiveEgress      *AdaptiveEgressConfig
 }
 
 func FormatMihomoDNSServer(srv DNSServerSpec) string {
@@ -234,6 +241,13 @@ func FormatMihomoDNSServer(srv DNSServerSpec) string {
 // has no TProxy/redir/TUN or public local proxy ports, so sing-box can remain
 // the transparent routing engine without blackholing ProxyN/t2sN consumers.
 func GenerateSidecarConfig(native NativeResources) ([]byte, error) {
+	rules := []string{"MATCH,DIRECT"}
+	if native.AdaptiveEgress != nil && native.AdaptiveEgress.Enabled && native.AdaptiveEgress.SelectedGroup != "" {
+		rules = []string{
+			fmt.Sprintf("IN-TYPE,TUN,%s", native.AdaptiveEgress.SelectedGroup),
+			"MATCH,DIRECT",
+		}
+	}
 	cfg := Config{
 		Mode:        "rule",
 		LogLevel:    "info",
@@ -246,7 +260,23 @@ func GenerateSidecarConfig(native NativeResources) ([]byte, error) {
 		},
 		ProxyProvider: native.ProxyProviders,
 		RuleProvider:  native.RuleProviders,
-		Rules:         []string{"MATCH,DIRECT"},
+		Rules:         rules,
+	}
+	if native.AdaptiveEgress != nil && native.AdaptiveEgress.Enabled {
+		dev := native.AdaptiveEgress.Device
+		if dev == "" {
+			dev = "awgsus0"
+		}
+		cfg.Tun = &Tun{
+			Enable:              true,
+			Stack:               "system",
+			Device:              dev,
+			AutoRoute:           false,
+			AutoRedirect:        false,
+			StrictRoute:         false,
+			AutoDetectInterface: true,
+			DNSHijack:           []string{},
+		}
 	}
 	seen := make(map[string]struct{}, len(native.Proxies))
 	for _, proxy := range native.Proxies {
@@ -566,7 +596,25 @@ func GenerateConfigWithResources(
 
 	cfg.IPv6 = false
 
-	if settings.RoutingMode == "fakeip-tun" || settings.RoutingMode == "policy-tun" {
+	if native.AdaptiveEgress != nil && native.AdaptiveEgress.Enabled {
+		dev := native.AdaptiveEgress.Device
+		if dev == "" {
+			dev = "awgsus0"
+		}
+		cfg.Tun = &Tun{
+			Enable:              true,
+			Stack:               "system",
+			Device:              dev,
+			AutoRoute:           false,
+			AutoRedirect:        false,
+			StrictRoute:         false,
+			AutoDetectInterface: true,
+			DNSHijack:           []string{},
+		}
+		cfg.TProxyPort = 0
+		cfg.RedirPort = 0
+		cfg.DNS.Enhanced = "redir-host"
+	} else if settings.RoutingMode == "fakeip-tun" || settings.RoutingMode == "policy-tun" {
 		cfg.DNS.Enhanced = "fake-ip"
 		cfg.DNS.FakeIPRange = settings.FakeIPPool4 // E.g. "198.18.0.0/15"
 		cfg.TProxyPort = 0
@@ -771,6 +819,11 @@ func GenerateConfigWithResources(
 		cfg.Rules = append(cfg.Rules, "MATCH,"+outbound)
 	} else {
 		cfg.Rules = append(cfg.Rules, "MATCH,DIRECT")
+	}
+
+	if native.AdaptiveEgress != nil && native.AdaptiveEgress.Enabled && native.AdaptiveEgress.SelectedGroup != "" {
+		tunRule := fmt.Sprintf("IN-TYPE,TUN,%s", native.AdaptiveEgress.SelectedGroup)
+		cfg.Rules = append([]string{tunRule}, cfg.Rules...)
 	}
 
 	if err := normalizeCompiledConfig(&cfg); err != nil {

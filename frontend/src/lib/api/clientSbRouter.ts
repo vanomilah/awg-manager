@@ -45,6 +45,17 @@ import type {
 import { sanitizeDnsServerForApi } from '$lib/utils/dnsServerDetour';
 import { SingboxClient } from './clientSingbox';
 
+export interface MihomoRuleMutationResponse {
+	reordered?: boolean;
+	item?: MihomoNativeRule;
+	deleted?: boolean;
+	items?: MihomoNativeRule[];
+	revision?: number;
+	generation?: number;
+	applyPath?: string;
+	transactionId?: string;
+}
+
 export class SbRouterClient extends SingboxClient {
 	// ─────────────────────────────────────────────
 	// #region Sing-box Router (TProxy routing engine)
@@ -662,22 +673,72 @@ export class SbRouterClient extends SingboxClient {
 		await this.request(`/mihomo/native/groups/${encodeURIComponent(id)}${apply ? '' : '?apply=false'}`, { method: 'DELETE' });
 	}
 
+	async mihomoGroupReferences(id: string): Promise<Array<{ kind: string; id: string; name: string }>> {
+		const res = await this.request<{ references: Array<{ kind: string; id: string; name: string }> }>(
+			`/mihomo/native/groups/${encodeURIComponent(id)}/references`,
+		);
+		return res.references ?? [];
+	}
+
+	async mihomoSelectProxy(groupName: string, memberName: string): Promise<void> {
+		await this.request(`/mihomo/clash/proxies/${encodeURIComponent(groupName)}`, {
+			method: 'PUT',
+			body: JSON.stringify({ name: memberName }),
+		});
+	}
+
+	async mihomoProxyDelay(name: string, testUrl = 'https://www.gstatic.com/generate_204', timeout = 5000): Promise<number> {
+		const res = await this.request<{ delay?: number }>(
+			`/mihomo/clash/proxies/${encodeURIComponent(name)}/delay?url=${encodeURIComponent(testUrl)}&timeout=${timeout}`,
+		);
+		return res?.delay ?? 0;
+	}
+
 	async mihomoNativeRules(): Promise<MihomoNativeRule[]> {
-		return (await this.request<MihomoNativeList<MihomoNativeRule>>('/mihomo/native/rules')).items;
+		const res = await this.request<MihomoNativeList<MihomoNativeRule> & { revision?: number }>('/mihomo/native/rules');
+		return res.items;
+	}
+
+	async mihomoNativeRulesWithRevision(): Promise<{ items: MihomoNativeRule[]; revision: number }> {
+		const res = await this.request<MihomoNativeList<MihomoNativeRule> & { revision?: number }>('/mihomo/native/rules');
+		return { items: res.items, revision: res.revision ?? 0 };
 	}
 
 	async mihomoNativeSaveRule(rule: Partial<MihomoNativeRule>, apply = true): Promise<MihomoNativeRule> {
+		const response = await this.mihomoNativeSaveRuleDetailed(rule, apply);
+		if (!response.item) throw new Error('Mihomo rule mutation returned no item');
+		return response.item;
+	}
+
+	async mihomoNativeSaveRuleDetailed(rule: Partial<MihomoNativeRule>, apply = true): Promise<MihomoRuleMutationResponse> {
 		const suffix = apply ? '' : '?apply=false';
 		const path = rule.id ? `/mihomo/native/rules/${encodeURIComponent(rule.id)}${suffix}` : `/mihomo/native/rules${suffix}`;
-		return this.request(path, { method: rule.id ? 'PUT' : 'POST', body: JSON.stringify(rule) });
+		return this.request<MihomoRuleMutationResponse>(path, { method: rule.id ? 'PUT' : 'POST', body: JSON.stringify(rule) });
 	}
 
 	async mihomoNativeDeleteRule(id: string, apply = true): Promise<void> {
-		await this.request(`/mihomo/native/rules/${encodeURIComponent(id)}${apply ? '' : '?apply=false'}`, { method: 'DELETE' });
+		await this.mihomoNativeDeleteRuleDetailed(id, apply);
 	}
 
-	async mihomoNativeReorderRules(ids: string[], apply = true): Promise<void> {
-		await this.request(`/mihomo/native/rules/order${apply ? '' : '?apply=false'}`, { method: 'PUT', body: JSON.stringify({ ids }) });
+	async mihomoNativeDeleteRuleDetailed(id: string, apply = true): Promise<MihomoRuleMutationResponse> {
+		return this.request<MihomoRuleMutationResponse>(`/mihomo/native/rules/${encodeURIComponent(id)}${apply ? '' : '?apply=false'}`, { method: 'DELETE' });
+	}
+
+	async mihomoNativeReorderRules(
+		ids: string[],
+		baseRevision?: number,
+		apply = true,
+		signal?: AbortSignal,
+		operationId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+			? crypto.randomUUID()
+			: `reorder-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+	): Promise<MihomoRuleMutationResponse> {
+		const suffix = apply ? '' : '?apply=false';
+		return this.request<MihomoRuleMutationResponse>(`/mihomo/native/rules/order${suffix}`, {
+			method: 'PUT',
+			body: JSON.stringify({ ids, order: ids, baseRevision, operationId }),
+			signal,
+		});
 	}
 
 	async mihomoNativeUnsupportedRules(): Promise<{ items: MihomoNativeRule[]; revision: string }> {

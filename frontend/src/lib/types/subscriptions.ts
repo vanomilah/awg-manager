@@ -116,7 +116,9 @@ export interface Subscription {
 	headers: SubscriptionHeader[];
 	refreshHours: number;
 	lastFetched: string; // RFC 3339, "" when never fetched
+	lastSuccessfulFetched?: string;
 	lastError?: string;
+	refreshError?: string;
 	selectorTag: string;
 	inboundTag: string;
 	listenPort: number;

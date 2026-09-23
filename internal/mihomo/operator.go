@@ -271,6 +271,52 @@ func (o *Operator) ResetCache() error {
 	return nil
 }
 
+// ReloadConfig reloads Mihomo configuration via controller PUT /configs.
+func (o *Operator) ReloadConfig(ctx context.Context, configPath string, force bool) error {
+	if running, _ := o.IsRunning(); !running {
+		return errors.New("cannot reload configuration: mihomo is not running")
+	}
+
+	payload := map[string]string{
+		"path": configPath,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return o.recordError(err)
+	}
+
+	path := "/configs"
+	if force {
+		path = "/configs?force=true"
+	}
+
+	req, err := o.newControllerRequest(ctx, http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		return o.recordError(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		_, secret, _, _ := o.getControllerConfig()
+		msg := err.Error()
+		if secret != "" && strings.Contains(msg, secret) {
+			msg = strings.ReplaceAll(msg, secret, "[REDACTED]")
+		}
+		return o.recordError(fmt.Errorf("mihomo reload request failed: %s", msg))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return o.recordError(fmt.Errorf("mihomo reload failed with status %s: %s", resp.Status, strings.TrimSpace(string(respBody))))
+	}
+	o.clearError()
+	go o.warmupGroups()
+	return nil
+}
+
 func (o *Operator) Reload() error {
 	if running, _ := o.IsRunning(); !running {
 		return o.Start()
@@ -285,35 +331,9 @@ func (o *Operator) Reload() error {
 		return o.Start()
 	}
 
-	payload := map[string]string{
-		"path": filepath.Join(o.configDir, "config.yaml"),
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return o.recordError(err)
-	}
-
 	reqCtx, reqCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer reqCancel()
-	req, err := o.newControllerRequest(reqCtx, http.MethodPut, "/configs?force=true", bytes.NewReader(body))
-	if err != nil {
-		return o.recordError(err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return o.recordError(fmt.Errorf("mihomo reload request failed: %w", err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return o.recordError(fmt.Errorf("mihomo reload failed with status: %s", resp.Status))
-	}
-	o.clearError()
-	go o.warmupGroups()
-	return nil
+	return o.ReloadConfig(reqCtx, filepath.Join(o.configDir, "config.yaml"), true)
 }
 
 func (o *Operator) IsRunning() (bool, int) {

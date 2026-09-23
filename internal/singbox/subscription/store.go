@@ -330,9 +330,20 @@ func (s *Store) UpdateState(id string, res RefreshResult) error {
 	_, err := s.mutate(id, func(sub *Subscription) error {
 		sub.LastFetched = res.When
 		if res.Err != nil {
-			sub.LastError = MaskURL(res.Err.Error(), sub.URL)
+			masked := MaskURL(res.Err.Error(), sub.URL)
+			sub.RefreshError = masked
+			// A failed refresh must not turn an already materialized, usable
+			// subscription into a fatal error. Keep serving the last-known-good
+			// members and expose the refresh failure separately to the UI.
+			if len(sub.Members) == 0 {
+				sub.LastError = masked
+			} else {
+				sub.LastError = ""
+			}
 		} else {
 			sub.LastError = ""
+			sub.RefreshError = ""
+			sub.LastSuccessfulFetched = res.When
 		}
 		return nil
 	})

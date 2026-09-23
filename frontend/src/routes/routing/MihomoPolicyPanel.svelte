@@ -11,6 +11,14 @@
 	let section = $state<'rules' | 'groups'>('groups');
 	let groups = $state<MihomoNativeGroup[]>([]);
 	let rules = $state<MihomoNativeRule[]>([]);
+	let rulesRevision = $state<number>(0);
+	let confirmedRules = $state<MihomoNativeRule[]>([]);
+	let ruleMutationInFlight = $state(false);
+	let ruleStatusMessage = $state('');
+
+	let reorderInFlight = false;
+	let pendingReorder: string[] | null = null;
+	let reorderDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	let ruleProviders = $state<MihomoNativeRuleProvider[]>([]);
 	let proxies = $state<MihomoNativeProxy[]>([]);
 	let subscriptions = $state<MihomoNativeSubscription[]>([]);
@@ -99,14 +107,21 @@
 	async function load() {
 		loading = true;
 		try {
-			const [g, r, rp, p, s, rt, providers, unsupp] = await Promise.all([
-				api.mihomoNativeGroups(), api.mihomoNativeRules(), api.mihomoNativeRuleProviders(),
-				api.mihomoNativeProxies(), api.mihomoNativeSubscriptions(),
+			const [g, rData, rp, p, s, rt, providers, unsupp] = await Promise.all([
+				api.mihomoNativeGroups(),
+				api.mihomoNativeRulesWithRevision().catch(async () => ({ items: await api.mihomoNativeRules(), revision: 0 })),
+				api.mihomoNativeRuleProviders(),
+				api.mihomoNativeProxies(),
+				api.mihomoNativeSubscriptions(),
 				api.mihomoRuntimeProxies().catch(() => ({ proxies: {} })),
 				api.mihomoRuntimeProviders().catch(() => ({ providers: {} })),
 				api.mihomoNativeUnsupportedRules().catch(() => ({ items: [], revision: '' })),
 			]);
-			groups = g; rules = r; ruleProviders = rp; proxies = p; subscriptions = s;
+			groups = g;
+			rules = rData.items ?? [];
+			rulesRevision = rData.revision ?? 0;
+			confirmedRules = [...rules];
+			ruleProviders = rp; proxies = p; subscriptions = s;
 			runtime = Object.values(rt.proxies ?? {});
 			runtimeProviders = Object.entries(providers.providers ?? {}).map(([name, provider]) => ({ ...provider, name: provider.name || name }));
 			unsupportedRules = unsupp.items ?? [];
@@ -161,21 +176,55 @@
 
 	function resetRule() { editRuleId = ''; ruleType = 'DOMAIN-SUFFIX'; rulePayload = ''; ruleOutbound = groups[0]?.name || subscriptions[0]?.groupName || 'DIRECT'; ruleNoResolve = false; }
 	function editRule(rule: MihomoNativeRule) { editRuleId = rule.id; ruleType = rule.type; rulePayload = rule.payload || ''; ruleOutbound = rule.outbound; ruleNoResolve = rule.noResolve ?? false; ruleForm = true; }
+	function cancelPendingReorder() {
+		if (reorderDebounceTimer) clearTimeout(reorderDebounceTimer);
+		reorderDebounceTimer = null;
+		pendingReorder = null;
+	}
 
 	async function saveRule() {
-		if (saving) return;
+		if (saving || ruleMutationInFlight) return;
 		saving = true;
+		ruleMutationInFlight = true;
+		ruleStatusMessage = editRuleId ? 'Обновление правила…' : 'Создание правила…';
 		try {
-			await api.mihomoNativeSaveRule({ id: editRuleId || undefined, type: ruleType, payload: ruleType === 'MATCH' ? '' : rulePayload, outbound: ruleOutbound, noResolve: ruleNoResolve, enabled: true });
-			ruleForm = false; resetRule(); await load(); notifications.success('Правило Mihomo применено');
+			cancelPendingReorder();
+			const mutation = await api.mihomoNativeSaveRuleDetailed({ id: editRuleId || undefined, type: ruleType, payload: ruleType === 'MATCH' ? '' : rulePayload, outbound: ruleOutbound, noResolve: ruleNoResolve, enabled: true });
+			rules = [...(mutation.items ?? [])];
+			confirmedRules = [...rules];
+			rulesRevision = mutation.revision ?? rulesRevision;
+			ruleForm = false;
+			resetRule();
+			notifications.success('Правило Mihomo применено');
 		} catch (error) {
 			notifications.error(error instanceof Error ? error.message : String(error));
-		} finally { saving = false; }
+		} finally {
+			saving = false;
+			ruleMutationInFlight = false;
+			ruleStatusMessage = '';
+		}
 	}
 
 	async function removeRule(rule: MihomoNativeRule) {
-		try { await api.mihomoNativeDeleteRule(rule.id); await load(); }
-		catch (error) { notifications.error(error instanceof Error ? error.message : String(error)); }
+		if (ruleMutationInFlight) return;
+		const prev = [...rules];
+		rules = rules.filter((r) => r.id !== rule.id);
+		ruleMutationInFlight = true;
+		ruleStatusMessage = 'Удаление правила…';
+		try {
+			cancelPendingReorder();
+			const mutation = await api.mihomoNativeDeleteRuleDetailed(rule.id);
+			rules = [...(mutation.items ?? [])];
+			confirmedRules = [...rules];
+			rulesRevision = mutation.revision ?? rulesRevision;
+			notifications.success('Правило удалено');
+		} catch (error) {
+			rules = prev;
+			notifications.error(error instanceof Error ? error.message : String(error));
+		} finally {
+			ruleMutationInFlight = false;
+			ruleStatusMessage = '';
+		}
 	}
 
 	async function deleteUnsupportedRules() {
@@ -219,11 +268,82 @@
 	}
 	async function removeProvider(provider: MihomoNativeRuleProvider) { try { await api.mihomoNativeDeleteRuleProvider(provider.id); await load(); } catch (error) { notifications.error(error instanceof Error ? error.message : String(error)); } }
 
-	async function moveRule(index: number, delta: number) {
-		const target = index + delta; if (target < 0 || target >= rules.length) return;
-		const next = [...rules]; [next[index], next[target]] = [next[target], next[index]];
-		try { await api.mihomoNativeReorderRules(next.map((rule) => rule.id)); rules = next; }
-		catch (error) { notifications.error(error instanceof Error ? error.message : String(error)); }
+	function queueReorder(ids: string[]) {
+		if (reorderDebounceTimer) {
+			clearTimeout(reorderDebounceTimer);
+		}
+		reorderDebounceTimer = setTimeout(() => {
+			reorderDebounceTimer = null;
+			void flushReorder(ids);
+		}, 300);
+	}
+
+	async function flushReorder(ids: string[]) {
+		if (reorderInFlight) {
+			pendingReorder = ids;
+			return;
+		}
+		reorderInFlight = true;
+		ruleMutationInFlight = true;
+		ruleStatusMessage = 'Применение порядка правил…';
+		try {
+			const res = await api.mihomoNativeReorderRules(ids, rulesRevision);
+			if (res.revision !== undefined) {
+				rulesRevision = res.revision;
+			}
+			if (res.items && res.items.length > 0) {
+				confirmedRules = [...res.items];
+				if (!pendingReorder) {
+					rules = [...res.items];
+				}
+			} else {
+				confirmedRules = [...rules];
+			}
+		} catch (error: any) {
+			const is409 = error?.status === 409 || error?.code === 'MIHOMO_RULES_STALE' || error?.body?.code === 'MIHOMO_RULES_STALE' || String(error?.message).includes('MIHOMO_RULES_STALE') || String(error?.message).includes('rules have been modified');
+			if (is409) {
+				notifications.warning('Список правил изменился, данные обновлены с сервера');
+				const serverData = error?.data || error?.body?.data;
+				if (serverData?.items) {
+					rules = serverData.items;
+					confirmedRules = [...serverData.items];
+					if (serverData.revision !== undefined) {
+						rulesRevision = serverData.revision;
+					}
+				} else {
+					try {
+						const refreshed = await api.mihomoNativeRulesWithRevision();
+						rules = refreshed.items;
+						confirmedRules = [...refreshed.items];
+						rulesRevision = refreshed.revision;
+					} catch {
+						await load();
+					}
+				}
+			} else {
+				rules = [...confirmedRules];
+				notifications.error(error instanceof Error ? error.message : String(error));
+			}
+		} finally {
+			reorderInFlight = false;
+			ruleMutationInFlight = false;
+			ruleStatusMessage = '';
+			if (pendingReorder) {
+				const nextIds = pendingReorder;
+				pendingReorder = null;
+				void flushReorder(nextIds);
+			}
+		}
+	}
+
+	function moveRule(index: number, delta: number) {
+		if (ruleMutationInFlight) return;
+		const target = index + delta;
+		if (target < 0 || target >= rules.length) return;
+		const next = [...rules];
+		[next[index], next[target]] = [next[target], next[index]];
+		rules = next;
+		queueReorder(next.map((rule) => rule.id));
 	}
 
 	onMount(() => { void subscriptionsStore.refetch(); void load(); });
@@ -232,7 +352,13 @@
 <section class="policy-panel">
 	<div class="panel-head">
 		<div><h3>Политики Mihomo</h3><p>Собственные правила, rule-providers и proxy-группы. Изменения проверяются ядром перед переключением трафика.</p></div>
-		<div class="head-actions"><SegmentedControl value={section} options={[{ value: 'groups', label: `Группы (${groups.length + subscriptions.filter((sub) => sub.enabled && sub.groupName).length})` }, { value: 'rules', label: `Правила (${rules.length})` }]} onchange={(value) => section = value as typeof section} ariaLabel="Настройки маршрутизации Mihomo" /><button class="icon" onclick={load} aria-label="Обновить"><span class:spin={loading}><RefreshCw size={15} /></span></button></div>
+		<div class="head-actions">
+			{#if ruleMutationInFlight}
+				<span class="mutation-badge"><span class="spin"><RefreshCw size={12} /></span> {ruleStatusMessage}</span>
+			{/if}
+			<SegmentedControl value={section} options={[{ value: 'groups', label: `Группы (${groups.length + subscriptions.filter((sub) => sub.enabled && sub.groupName).length})` }, { value: 'rules', label: `Правила (${rules.length})` }]} onchange={(value) => section = value as typeof section} ariaLabel="Настройки маршрутизации Mihomo" />
+			<button class="icon" onclick={load} disabled={ruleMutationInFlight} aria-label="Обновить"><span class:spin={loading}><RefreshCw size={15} /></span></button>
+		</div>
 	</div>
 
 	{#if section === 'groups'}
@@ -276,8 +402,8 @@
 		{/if}
 		{#if providerForm}<Card padding="lg"><div class="editor"><div class="form-grid"><label><span>Название набора</span><input bind:value={providerName} placeholder="youtube" /></label><label><span>Источник</span><select bind:value={providerType}><option value="http">HTTP</option><option value="file">Локальный файл</option></select></label><label><span>Формат</span><select bind:value={providerFormat}><option value="yaml">YAML</option><option value="text">Text</option><option value="mrs">MRS</option></select></label></div>{#if providerType === 'http'}<label><span>URL</span><input bind:value={providerURL} placeholder="https://…/rules.mrs" /></label>{:else}<label><span>Путь к файлу</span><input bind:value={providerPath} placeholder="./rules/local.yaml" /></label>{/if}<div class="form-grid"><label><span>Поведение</span><select bind:value={providerBehavior}><option value="classical">Classical</option><option value="domain">Domains</option><option value="ipcidr">IP CIDR</option></select></label><label><span>Интервал, сек.</span><input type="number" min="0" bind:value={providerInterval} /></label></div><div class="editor-actions"><Button variant="ghost" size="sm" onclick={() => providerForm = false}>Отмена</Button><Button variant="primary" size="sm" onclick={saveProvider} loading={saving}>Сохранить provider</Button></div></div></Card>{/if}
 		{#if ruleProviders.length > 0}<div class="provider-chips">{#each ruleProviders as provider (provider.id)}<span><strong>{provider.name}</strong> · {provider.behavior}/{provider.format}<button onclick={() => editProvider(provider)} aria-label="Изменить provider"><Pencil size={12} /></button><button onclick={() => removeProvider(provider)} aria-label="Удалить provider"><Trash2 size={12} /></button></span>{/each}</div>{/if}
-		{#if ruleForm}<Card padding="lg"><div class="editor"><div class="form-grid rule-grid"><label><span>Условие</span><select bind:value={ruleType}>{#each ruleTypes as category}<optgroup label={category.label}>{#each category.items as item}<option value={item}>{item}</option>{/each}</optgroup>{/each}</select></label>{#if ruleType !== 'MATCH'}<label><span>Значение</span>{#if ruleType === 'RULE-SET' && ruleProviders.length > 0}<select bind:value={rulePayload}><option value="">Выберите provider</option>{#each ruleProviders as provider}<option value={provider.name}>{provider.name}</option>{/each}</select>{:else}<input bind:value={rulePayload} placeholder={ruleType === 'AND' || ruleType === 'OR' || ruleType === 'NOT' ? '((DOMAIN,example.com),(NETWORK,UDP))' : 'значение'} />{/if}</label>{/if}<label><span>Выход</span><select bind:value={ruleOutbound}>{#each outputOptions as output}<option value={output.value}>{output.label}</option>{/each}</select></label></div>{#if ['IP-CIDR','IP-CIDR6','IP-SUFFIX','IP-ASN','GEOIP'].includes(ruleType)}<label class="inline-check"><input type="checkbox" bind:checked={ruleNoResolve} /> Не выполнять DNS-resolve</label>{/if}<div class="editor-actions"><Button variant="ghost" size="sm" onclick={() => ruleForm = false}>Отмена</Button><Button variant="primary" size="sm" onclick={saveRule} loading={saving}><Save size={14} />Сохранить и применить</Button></div></div></Card>{/if}
-		<div class="rule-list">{#each rules as rule, index (rule.id)}<article class="rule-row"><span class="order">{index + 1}</span><div class="kind-icon"><Waypoints size={17} /></div><div><strong>{rule.type}{rule.payload ? `, ${rule.payload}` : ''}</strong><span>→ {displayName(rule.outbound)}{rule.noResolve ? ' · no-resolve' : ''}</span></div><div class="reorder"><button onclick={() => moveRule(index, -1)} disabled={index === 0}><ChevronUp size={14} /></button><button onclick={() => moveRule(index, 1)} disabled={index === rules.length - 1}><ChevronDown size={14} /></button></div><button class="icon" onclick={() => editRule(rule)} aria-label="Изменить"><Pencil size={14} /></button><button class="icon danger" onclick={() => removeRule(rule)} aria-label="Удалить"><Trash2 size={14} /></button></article>{/each}{#if !loading && rules.length === 0}<div class="empty">Нативных правил ещё нет. Текущий набор маршрутизации продолжает работать как fallback; новые правила Mihomo будут иметь более высокий приоритет.</div>{/if}</div>
+		{#if ruleForm}<Card padding="lg"><div class="editor"><div class="form-grid rule-grid"><label><span>Условие</span><select bind:value={ruleType}>{#each ruleTypes as category}<optgroup label={category.label}>{#each category.items as item}<option value={item}>{item}</option>{/each}</optgroup>{/each}</select></label>{#if ruleType !== 'MATCH'}<label><span>Значение</span>{#if ruleType === 'RULE-SET' && ruleProviders.length > 0}<select bind:value={rulePayload}><option value="">Выберите provider</option>{#each ruleProviders as provider}<option value={provider.name}>{provider.name}</option>{/each}</select>{:else}<input bind:value={rulePayload} placeholder={ruleType === 'AND' || ruleType === 'OR' || ruleType === 'NOT' ? '((DOMAIN,example.com),(NETWORK,UDP))' : 'значение'} />{/if}</label>{/if}<label><span>Выход</span><select bind:value={ruleOutbound}>{#each outputOptions as output}<option value={output.value}>{output.label}</option>{/each}</select></label></div>{#if ['IP-CIDR','IP-CIDR6','IP-SUFFIX','IP-ASN','GEOIP'].includes(ruleType)}<label class="inline-check"><input type="checkbox" bind:checked={ruleNoResolve} /> Не выполнять DNS-resolve</label>{/if}<div class="editor-actions"><Button variant="ghost" size="sm" onclick={() => ruleForm = false}>Отмена</Button><Button variant="primary" size="sm" onclick={saveRule} loading={saving} disabled={ruleMutationInFlight}><Save size={14} />Сохранить и применить</Button></div></div></Card>{/if}
+		<div class="rule-list">{#each rules as rule, index (rule.id)}<article class="rule-row"><span class="order">{index + 1}</span><div class="kind-icon"><Waypoints size={17} /></div><div><strong>{rule.type}{rule.payload ? `, ${rule.payload}` : ''}</strong><span>→ {displayName(rule.outbound)}{rule.noResolve ? ' · no-resolve' : ''}</span></div><div class="reorder"><button onclick={() => moveRule(index, -1)} disabled={ruleMutationInFlight || index === 0}><ChevronUp size={14} /></button><button onclick={() => moveRule(index, 1)} disabled={ruleMutationInFlight || index === rules.length - 1}><ChevronDown size={14} /></button></div><button class="icon" onclick={() => editRule(rule)} disabled={ruleMutationInFlight} aria-label="Изменить"><Pencil size={14} /></button><button class="icon danger" onclick={() => removeRule(rule)} disabled={ruleMutationInFlight} aria-label="Удалить"><Trash2 size={14} /></button></article>{/each}{#if !loading && rules.length === 0}<div class="empty">Нативных правил ещё нет. Текущий набор маршрутизации продолжает работать как fallback; новые правила Mihomo будут иметь более высокий приоритет.</div>{/if}</div>
 	{/if}
 </section>
 
@@ -320,7 +446,7 @@
 </Modal>
 
 <style>
-	.policy-panel{display:grid;gap:12px;padding-top:4px}.panel-head,.section-tools{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.panel-head h3,.panel-head p{margin:0}.panel-head p,.section-tools span{display:block;margin-top:3px;color:var(--text-muted);font-size:12px}.head-actions,.tool-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.icon{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}.icon:hover{background:var(--bg-tertiary);color:var(--text-primary)}.icon.danger:hover{color:var(--danger)}.editor{display:grid;gap:12px}.form-grid,.advanced-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}.rule-grid{grid-template-columns:1fr 2fr 1fr}.advanced-grid{grid-template-columns:repeat(4,minmax(0,1fr));padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary)}.editor label{display:grid;gap:5px;color:var(--text-secondary);font-size:12px}input,select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-primary);color:var(--text-primary);font:inherit}.field-title{display:block;margin-bottom:6px;color:var(--text-secondary);font-size:12px}.checks{display:flex;flex-wrap:wrap;gap:6px;max-height:190px;overflow:auto}.checks button{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-primary);color:var(--text-secondary);cursor:pointer}.checks button.selected{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}.inline-check{display:flex!important;grid-template-columns:auto 1fr!important;align-items:center}.inline-check input{width:auto}.advanced-toggle{justify-self:start;border:0;background:transparent;color:var(--accent);font-size:12px;cursor:pointer}.editor-actions{display:flex;justify-content:flex-end;gap:7px}.cards,.rule-list{display:grid;gap:8px}.group-row,.rule-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;align-items:center;gap:10px;padding:11px;border:1px solid var(--border);border-radius:9px;background:var(--bg-secondary)}.provider-row{grid-template-columns:auto minmax(0,1fr) auto}.rule-row{grid-template-columns:auto auto minmax(0,1fr) auto auto auto}.group-row>div:nth-child(2),.rule-row>div:nth-child(3){display:grid;min-width:0}.group-row strong,.rule-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.group-row span,.rule-row span{color:var(--text-muted);font-size:11px}.provider-row em{margin-top:3px;color:var(--danger);font-size:11px}.kind-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:var(--accent-soft);color:var(--accent)}.order{width:22px;text-align:center;color:var(--text-muted);font:11px var(--font-mono)}.reorder{display:grid}.reorder button{display:grid;place-items:center;width:24px;height:18px;border:0;background:transparent;color:var(--text-muted);cursor:pointer}.provider-chips{display:flex;flex-wrap:wrap;gap:7px}.provider-chips>span{display:flex;align-items:center;gap:5px;padding:7px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg-secondary);color:var(--text-muted);font-size:11px}.provider-chips button{display:grid;place-items:center;border:0;background:transparent;color:var(--text-muted);cursor:pointer}.empty{padding:24px;text-align:center;border:1px dashed var(--border);border-radius:9px;color:var(--text-muted);font-size:12px}.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:900px){.advanced-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.panel-head,.section-tools{flex-direction:column}.head-actions,.head-actions :global(.segmented-control){width:100%}.form-grid,.rule-grid,.advanced-grid{grid-template-columns:1fr}.group-row{grid-template-columns:auto minmax(0,1fr) auto auto}.group-row :global(.badge){display:none}.provider-row{grid-template-columns:auto 1fr}.rule-row{grid-template-columns:minmax(0,1fr) auto auto}.rule-row>.kind-icon,.rule-row>.order,.rule-row>.reorder{display:none}}
+	.policy-panel{display:grid;gap:12px;padding-top:4px}.panel-head,.section-tools{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.panel-head h3,.panel-head p{margin:0}.panel-head p,.section-tools span{display:block;margin-top:3px;color:var(--text-muted);font-size:12px}.head-actions,.tool-buttons{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.mutation-badge{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--accent);font-weight:500;padding:4px 8px;border-radius:6px;background:var(--accent-soft)}.icon{display:grid;place-items:center;width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:var(--text-muted);cursor:pointer}.icon:hover{background:var(--bg-tertiary);color:var(--text-primary)}.icon.danger:hover{color:var(--danger)}.editor{display:grid;gap:12px}.form-grid,.advanced-grid{display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px}.rule-grid{grid-template-columns:1fr 2fr 1fr}.advanced-grid{grid-template-columns:repeat(4,minmax(0,1fr));padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-primary)}.editor label{display:grid;gap:5px;color:var(--text-secondary);font-size:12px}input,select{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-primary);color:var(--text-primary);font:inherit}.field-title{display:block;margin-bottom:6px;color:var(--text-secondary);font-size:12px}.checks{display:flex;flex-wrap:wrap;gap:6px;max-height:190px;overflow:auto}.checks button{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:7px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg-primary);color:var(--text-secondary);cursor:pointer}.checks button.selected{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}.inline-check{display:flex!important;grid-template-columns:auto 1fr!important;align-items:center}.inline-check input{width:auto}.advanced-toggle{justify-self:start;border:0;background:transparent;color:var(--accent);font-size:12px;cursor:pointer}.editor-actions{display:flex;justify-content:flex-end;gap:7px}.cards,.rule-list{display:grid;gap:8px}.group-row,.rule-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;align-items:center;gap:10px;padding:11px;border:1px solid var(--border);border-radius:9px;background:var(--bg-secondary)}.provider-row{grid-template-columns:auto minmax(0,1fr) auto}.rule-row{grid-template-columns:auto auto minmax(0,1fr) auto auto auto}.group-row>div:nth-child(2),.rule-row>div:nth-child(3){display:grid;min-width:0}.group-row strong,.rule-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.group-row span,.rule-row span{color:var(--text-muted);font-size:11px}.provider-row em{margin-top:3px;color:var(--danger);font-size:11px}.kind-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:8px;background:var(--accent-soft);color:var(--accent)}.order{width:22px;text-align:center;color:var(--text-muted);font:11px var(--font-mono)}.reorder{display:grid}.reorder button{display:grid;place-items:center;width:24px;height:18px;border:0;background:transparent;color:var(--text-muted);cursor:pointer}.provider-chips{display:flex;flex-wrap:wrap;gap:7px}.provider-chips>span{display:flex;align-items:center;gap:5px;padding:7px 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg-secondary);color:var(--text-muted);font-size:11px}.provider-chips button{display:grid;place-items:center;border:0;background:transparent;color:var(--text-muted);cursor:pointer}.empty{padding:24px;text-align:center;border:1px dashed var(--border);border-radius:9px;color:var(--text-muted);font-size:12px}.spin{animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:900px){.advanced-grid{grid-template-columns:1fr 1fr}}@media(max-width:760px){.panel-head,.section-tools{flex-direction:column}.head-actions,.head-actions :global(.segmented-control){width:100%}.form-grid,.rule-grid,.advanced-grid{grid-template-columns:1fr}.group-row{grid-template-columns:auto minmax(0,1fr) auto auto}.group-row :global(.badge){display:none}.provider-row{grid-template-columns:auto 1fr}.rule-row{grid-template-columns:minmax(0,1fr) auto auto}.rule-row>.kind-icon,.rule-row>.order,.rule-row>.reorder{display:none}}
 	.unsupported-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid rgba(245,158,11,0.3);border-radius:8px;background:rgba(245,158,11,0.08)}
 	.unsupported-banner-content{display:flex;align-items:center;gap:10px}
 	.unsupported-banner-content strong{display:block;font-size:13px;color:var(--text-primary)}

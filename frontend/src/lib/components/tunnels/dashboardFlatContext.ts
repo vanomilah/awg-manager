@@ -4,6 +4,7 @@
 import type { TunnelDashboardFlatItem } from '$lib/utils/tunnelDashboardFlat';
 import type { SingboxLayoutMode, TunnelRenderMode } from '$lib/constants/singboxLayout';
 import type { createReorderDrag } from '$lib/components/sb-router/reorderDrag.svelte';
+import type { MihomoRuntimeProvider, MihomoRuntimeProxy } from '$lib/types';
 
 export interface DashboardTagGroupEntry {
 	item: TunnelDashboardFlatItem;
@@ -43,6 +44,8 @@ export interface DashboardFlatContext {
 	readonly deleteLoading: Record<string, boolean>;
 	readonly toggleLoading: Record<string, boolean>;
 	readonly liveActives: Record<string, string>;
+	readonly mihomoRuntimeProxies: Record<string, MihomoRuntimeProxy>;
+	readonly mihomoRuntimeProviders: Record<string, MihomoRuntimeProvider>;
 	readonly flatDrag: ReturnType<typeof createReorderDrag>;
 	readonly flatRowEls: Array<HTMLElement | null>;
 	// --- state с записью из секции ---

@@ -177,18 +177,19 @@ func (s *GenerationStore) PublishStagedBundle(
 		archivedAt = time.Now()
 	}
 	gm := GenerationManifest{
-		Version:               1,
-		BridgeIdentityVersion: bridgeIdentVer,
-		GenerationID:          genID,
-		GenerationNumber:      genNum,
-		ArchivedAt:            archivedAt,
-		AppliedStoreDigest:    appliedRec.AppliedStoreDigest,
-		AppliedConfigDigest:   appliedRec.AppliedConfigDigest,
-		AppliedInputDigest:    appliedRec.AppliedInputDigest,
-		AppliedListeners:      appliedRec.AppliedListeners,
-		AppliedBridges:        appliedRec.AppliedBridges,
-		AppliedBridgesDigest:  appliedBridgesDigest,
-		RuntimeMode:           appliedRec.RuntimeMode,
+		Version:                   1,
+		BridgeIdentityVersion:     bridgeIdentVer,
+		GenerationID:              genID,
+		GenerationNumber:          genNum,
+		ArchivedAt:                archivedAt,
+		AppliedStoreDigest:        appliedRec.AppliedStoreDigest,
+		AppliedDesiredStoreDigest: appliedRec.AppliedDesiredStoreDigest,
+		AppliedConfigDigest:       appliedRec.AppliedConfigDigest,
+		AppliedInputDigest:        appliedRec.AppliedInputDigest,
+		AppliedListeners:          appliedRec.AppliedListeners,
+		AppliedBridges:            appliedRec.AppliedBridges,
+		AppliedBridgesDigest:      appliedBridgesDigest,
+		RuntimeMode:               appliedRec.RuntimeMode,
 	}
 	manifestBytes, err := json.MarshalIndent(gm, "", "  ")
 	if err != nil {
@@ -493,13 +494,14 @@ func (s *GenerationStore) AdvanceLKGPointer(
 	epoch string,
 ) error {
 	ptr := LKGPointer{
-		Version:             1,
-		GenerationID:        genID,
-		GenerationNumber:    genNum,
-		AppliedConfigDigest: appliedRec.AppliedConfigDigest,
-		AppliedStoreDigest:  appliedRec.AppliedStoreDigest,
-		UpdatedEpoch:        epoch,
-		UpdatedAt:           time.Now(),
+		Version:                   1,
+		GenerationID:              genID,
+		GenerationNumber:          genNum,
+		AppliedConfigDigest:       appliedRec.AppliedConfigDigest,
+		AppliedStoreDigest:        appliedRec.AppliedStoreDigest,
+		AppliedDesiredStoreDigest: appliedRec.AppliedDesiredStoreDigest,
+		UpdatedEpoch:              epoch,
+		UpdatedAt:                 time.Now(),
 	}
 	ptrBytes, err := json.MarshalIndent(ptr, "", "  ")
 	if err != nil {

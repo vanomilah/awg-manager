@@ -32,7 +32,8 @@ export type RoutingSubTab =
 	| 'ipRoutes'
 	| 'hrNeo'
 	| 'geoData'
-	| 'singboxRouter';
+	| 'singboxRouter'
+	| 'susanin';
 
 const SECTION_MIN_LEVEL: Record<Section, UsageLevel> = {
 	tunnels: 'basic',
@@ -56,6 +57,7 @@ const ROUTING_SUBTAB_MIN_LEVEL: Record<RoutingSubTab, UsageLevel> = {
 	hrNeo: 'expert',
 	geoData: 'expert',
 	singboxRouter: 'expert',
+	susanin: 'advanced',
 };
 
 const LEVEL_RANK: Record<UsageLevel, number> = { basic: 0, advanced: 1, expert: 2 };
