@@ -113,6 +113,36 @@ build_ipk_one() {
     cp "$AWG_CLI_BIN" "$IPK_ROOT/opt/sbin/awg"
     chmod +x "$IPK_ROOT/opt/sbin/awg"
 
+    local SUSANIN_SRC=""
+    case "$ENTWARE_ARCH" in
+        aarch64-*)
+            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/susanin-agent" ]]; then
+                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/susanin-agent"
+            elif [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64" ]]; then
+                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64"
+            fi
+            ;;
+        mipsel-*)
+            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mipsel" ]]; then
+                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mipsel"
+            fi
+            ;;
+        mips-*)
+            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mips" ]]; then
+                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mips"
+            fi
+            ;;
+    esac
+
+    if [[ -n "$SUSANIN_SRC" && -f "$SUSANIN_SRC" ]]; then
+        mkdir -p "$IPK_ROOT/opt/susanin/bin" "$IPK_ROOT/opt/susanin/tools" "$IPK_ROOT/opt/susanin/etc" "$IPK_ROOT/opt/susanin/var"
+        cp "$SUSANIN_SRC" "$IPK_ROOT/opt/susanin/bin/susanin-agent"
+        chmod 755 "$IPK_ROOT/opt/susanin/bin/susanin-agent"
+        cp "$SUSANIN_SRC" "$IPK_ROOT/opt/bin/susanin-agent"
+        chmod 755 "$IPK_ROOT/opt/bin/susanin-agent"
+        echo "Bundled susanin-agent binary for $ENTWARE_ARCH"
+    fi
+
     # wdtt/freeturn в IPK не кладём: бинари приезжают только с зеркала по пину
     # install.go, с проверкой SHA256. Бандл давал молчаливое расхождение —
     # старый бинарь считался установленным пином и падал на неизвестном флаге.

@@ -15,22 +15,44 @@ type adaptiveTunnelAdapter struct {
 }
 
 func (a *adaptiveTunnelAdapter) ListTunnels() []adaptiverouting.TunnelInfo {
-	if a.app == nil || a.app.tunnelService == nil {
-		return nil
-	}
-	tunnels, err := a.app.tunnelService.List(context.Background())
-	if err != nil {
+	if a.app == nil {
 		return nil
 	}
 	var out []adaptiverouting.TunnelInfo
-	for _, t := range tunnels {
-		out = append(out, adaptiverouting.TunnelInfo{
-			ID:        t.ID,
-			Name:      t.Name,
-			Interface: t.InterfaceName,
-			Active:    t.State == tunnel.StateRunning,
-			Kind:      string(t.Backend),
-		})
+	seenIDs := make(map[string]bool)
+
+	if a.app.catalog != nil {
+		for _, e := range a.app.catalog.ListAll(context.Background()) {
+			seenIDs[e.ID] = true
+			if e.Iface != "" {
+				seenIDs[e.Iface] = true
+			}
+			out = append(out, adaptiverouting.TunnelInfo{
+				ID:        e.ID,
+				Name:      e.Name,
+				Interface: e.Iface,
+				Active:    e.Available && e.Status != "disabled" && e.Status != "stopped",
+				Kind:      e.Type,
+			})
+		}
+	}
+
+	if a.app.tunnelService != nil {
+		if tunnels, err := a.app.tunnelService.List(context.Background()); err == nil {
+			for _, t := range tunnels {
+				if seenIDs[t.ID] || (t.InterfaceName != "" && seenIDs[t.InterfaceName]) {
+					continue
+				}
+				seenIDs[t.ID] = true
+				out = append(out, adaptiverouting.TunnelInfo{
+					ID:        t.ID,
+					Name:      t.Name,
+					Interface: t.InterfaceName,
+					Active:    t.State == tunnel.StateRunning,
+					Kind:      string(t.Backend),
+				})
+			}
+		}
 	}
 	return out
 }

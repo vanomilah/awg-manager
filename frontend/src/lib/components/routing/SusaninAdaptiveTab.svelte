@@ -12,18 +12,20 @@
 	import {
 		Play,
 		Square,
-		RefreshCw,
 		CheckCircle,
 		AlertTriangle,
-		XCircle,
 		Zap,
 		Settings2,
 		Trash2,
 		Check,
-		Sparkles,
 		ChevronDown,
 		ChevronRight,
 		Search,
+		Shield,
+		Network,
+		Layers,
+		Activity,
+		ListFilter,
 	} from 'lucide-svelte';
 	import type {
 		AdaptiveRoutingSettings,
@@ -100,7 +102,7 @@
 	let testResult = $state<{ available: boolean; interface: string; reason?: string } | null>(null);
 
 	let detectorExpanded = $state(false);
-	let expertExpanded = $state(false);
+	let activeListTab = $state<'always' | 'never'>('always');
 	let showLearnedModal = $state(false);
 
 	let alwaysText = $state('');
@@ -127,24 +129,69 @@
 
 	let selectedEgressValue = $state('');
 
+	function normalizeSnapshot(
+		s: AdaptiveRoutingSettings,
+		alwaysLines: string[],
+		neverLines: string[]
+	): string {
+		const cleanAlways = alwaysLines.map((x) => x.trim()).filter(Boolean);
+		const cleanNever = neverLines.map((x) => x.trim()).filter(Boolean);
+		const obj = {
+			enabled: Boolean(s.enabled),
+			routingTableId: s.routingTableId ?? 105,
+			fwmarkMask: s.fwmarkMask || '0x30000000',
+			fwmarkTest: s.fwmarkTest || '0x10000000',
+			fwmarkOk: s.fwmarkOk || '0x20000000',
+			rulePriorityTest: s.rulePriorityTest ?? 96,
+			rulePriorityOk: s.rulePriorityOk ?? 95,
+			source: {
+				type: s.source?.type || 'all_lan',
+				policyId: s.source?.policyId || '',
+			},
+			primaryEgress: {
+				kind: s.primaryEgress?.kind || 'kernel-tunnel',
+				resourceId: s.primaryEgress?.resourceId || '',
+				engine: s.primaryEgress?.engine || 'system',
+			},
+			failurePolicy: s.failurePolicy || 'direct',
+			detection: {
+				fastIntervalSeconds: s.detection?.fastIntervalSeconds ?? 1,
+				softIntervalSeconds: s.detection?.softIntervalSeconds ?? 1,
+				judgeIntervalSeconds: s.detection?.judgeIntervalSeconds ?? 1,
+				healthIntervalSeconds: s.detection?.healthIntervalSeconds ?? 5,
+				tcpSynRetries: s.detection?.tcpSynRetries ?? 2,
+				lateStallBytes: s.detection?.lateStallBytes ?? 1500,
+			},
+			persistence: {
+				okTtlSeconds: s.persistence?.okTtlSeconds ?? 0,
+				maxEntries: s.persistence?.maxEntries ?? 4096,
+				separateTcpUdp: Boolean(s.persistence?.separateTcpUdp),
+			},
+			alwaysFileEnabled: s.alwaysFileEnabled !== false,
+			neverFileEnabled: s.neverFileEnabled !== false,
+			alwaysEntries: cleanAlways,
+			neverEntries: cleanNever,
+		};
+		return JSON.stringify(obj);
+	}
+
 	function useServerSettings(next: AdaptiveRoutingSettings) {
 		settings = structuredClone(next);
 		selectedEgressValue = egressKey(next.primaryEgress);
-		alwaysText = (next.alwaysEntries || []).join('\n');
-		neverText = (next.neverEntries || []).join('\n');
-		initialSettingsJson = JSON.stringify(next);
+		const serverAlways = (next.alwaysEntries || []).map((x) => x.trim()).filter(Boolean);
+		const serverNever = (next.neverEntries || []).map((x) => x.trim()).filter(Boolean);
+		alwaysText = serverAlways.join('\n');
+		neverText = serverNever.join('\n');
+		initialSettingsJson = normalizeSnapshot(next, serverAlways, serverNever);
 		settingsHydrated = true;
 	}
 
-	// Dirty state detection
+	// Accurate Dirty state detection without false positives
 	const isDirty = $derived.by(() => {
 		if (!initialSettingsJson) return false;
-		const currentSnapshot = {
-			...settings,
-			alwaysEntries: alwaysText.split('\n').map((s) => s.trim()).filter(Boolean),
-			neverEntries: neverText.split('\n').map((s) => s.trim()).filter(Boolean),
-		};
-		return JSON.stringify(currentSnapshot) !== initialSettingsJson;
+		const curAlways = alwaysText.split('\n');
+		const curNever = neverText.split('\n');
+		return normalizeSnapshot(settings, curAlways, curNever) !== initialSettingsJson;
 	});
 
 	async function loadAll(initial = false) {
@@ -160,8 +207,6 @@
 			egresses = egressRes.items || [];
 			learned = learnedRes;
 
-			// Polling refreshes runtime state and counters only. It must never
-			// overwrite a user's unsaved form selections.
 			if (!settingsHydrated) {
 				useServerSettings(statusRes.settings);
 			}
@@ -292,6 +337,17 @@
 		const mihomoSubscriptions = egresses.filter((e) => e.ref.kind === 'mihomo-subscription');
 		const singboxOutbounds = egresses.filter((e) => e.ref.kind === 'singbox-outbound');
 
+		if (systemTunnels.length > 0) {
+			for (const t of systemTunnels) {
+				opts.push({
+					value: egressKey(t.ref),
+					label: t.displayName,
+					description: `Туннель · ${t.interface}`,
+					group: 'Туннели системы',
+				});
+			}
+		}
+
 		if (mihomoGroups.length > 0) {
 			for (const g of mihomoGroups) {
 				opts.push({
@@ -299,17 +355,6 @@
 					label: g.displayName,
 					description: 'Прокси-группа Mihomo',
 					group: 'Прокси-группы',
-				});
-			}
-		}
-
-		if (systemTunnels.length > 0) {
-			for (const t of systemTunnels) {
-				opts.push({
-					value: egressKey(t.ref),
-					label: t.displayName,
-					description: `Туннель · ${t.interface}`,
-					group: 'Туннели',
 				});
 			}
 		}
@@ -379,14 +424,14 @@
 	}
 </script>
 
-<div class="susanin-page space-y-4">
+<div class="susanin-page space-y-3.5">
 	<!-- 1. Компактная Status Bar -->
-	<div class="susanin-status bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-3.5 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-sm">
-		<div class="flex items-center gap-3 flex-wrap">
-			<div class="flex items-center gap-2">
-				<span class="w-2.5 h-2.5 rounded-full {status?.status === 'running' ? 'bg-[var(--color-success)] animate-pulse' : status?.status === 'degraded' ? 'bg-[var(--color-warning)]' : 'bg-gray-500'}"></span>
-				<span class="font-semibold text-sm text-[var(--color-text-primary)]">
-					{status?.status === 'running' ? 'Susanin работает' : status?.status === 'degraded' ? 'Susanin деградирован' : 'Susanin остановлен'}
+	<div class="susanin-status-bar bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+		<div class="flex items-center gap-2.5 flex-wrap">
+			<div class="flex items-center gap-2 pr-2 border-r border-[var(--color-border)]">
+				<span class="w-2.5 h-2.5 rounded-full {status?.status === 'running' ? 'bg-[var(--color-success)] animate-pulse' : status?.status === 'degraded' ? 'bg-[var(--color-warning)]' : 'bg-gray-400'}"></span>
+				<span class="font-semibold text-xs uppercase tracking-wider text-[var(--color-text-primary)]">
+					{status?.status === 'running' ? 'Susanin активен' : status?.status === 'degraded' ? 'Susanin деградирован' : 'Susanin остановлен'}
 				</span>
 			</div>
 
@@ -395,20 +440,20 @@
 			</Badge>
 
 			{#if activeEgressItem}
-				<div class="flex items-center gap-1 text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-tertiary)] px-2.5 py-1 rounded-md border border-[var(--color-border)]">
+				<div class="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-tertiary)] px-2.5 py-0.5 rounded-md border border-[var(--color-border)]">
 					<span class="text-[var(--color-text-muted)]">Выход:</span>
-					<span class="font-medium text-[var(--color-text-primary)] truncate max-w-[200px]">{activeEgressItem.displayName}</span>
+					<span class="font-medium text-[var(--color-text-primary)] truncate max-w-[180px]">{activeEgressItem.displayName}</span>
 				</div>
 			{:else}
-				<span class="text-xs text-[var(--color-text-muted)]">Выход не выбран</span>
+				<span class="text-xs text-[var(--color-text-muted)] italic">Выход не выбран</span>
 			{/if}
 
 			<Badge variant={settings.failurePolicy === 'direct' ? 'info' : 'warning'} size="sm">
-				{settings.failurePolicy === 'direct' ? 'Direct Fail-Open' : 'Block (Kill-Switch)'}
+				{settings.failurePolicy === 'direct' ? 'Fail-Open (Direct)' : 'Kill-Switch'}
 			</Badge>
 
 			{#if isDirty}
-				<span class="text-xs text-[var(--color-warning)] flex items-center gap-1 font-medium">
+				<span class="text-xs text-[var(--color-warning)] flex items-center gap-1 font-medium bg-[var(--color-warning-tint)] px-2 py-0.5 rounded-md">
 					<AlertTriangle class="w-3.5 h-3.5" />
 					Есть несохранённые изменения
 				</span>
@@ -423,7 +468,7 @@
 					loading={saving}
 					onclick={handleApply}
 				>
-					<Check class="w-4 h-4 mr-1" />
+					<Check class="w-3.5 h-3.5 mr-1" />
 					Применить
 				</Button>
 			{/if}
@@ -435,7 +480,7 @@
 					disabled={actionBusy}
 					onclick={handleStop}
 				>
-					<Square class="w-4 h-4 mr-1" />
+					<Square class="w-3.5 h-3.5 mr-1 text-[var(--color-error)]" />
 					Остановить
 				</Button>
 			{:else}
@@ -446,64 +491,98 @@
 					title={!settings.primaryEgress.resourceId ? 'Сначала выберите выход' : 'Запустить адаптивную маршрутизацию'}
 					onclick={handleStart}
 				>
-					<Play class="w-4 h-4 mr-1" />
+					<Play class="w-3.5 h-3.5 mr-1" />
 					Запустить
 				</Button>
 			{/if}
 		</div>
 	</div>
 
-	<!-- 2. Основная конфигурация в 3 карточки (Responsive: 1 col on mobile, 2-3 on tablet/desktop) -->
-	<div class="susanin-steps grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
-		<!-- Карточка 1: Источник трафика -->
-		<div class="susanin-step bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between">
-			<div>
-				<div class="flex items-center gap-2 mb-3">
-					<div class="w-7 h-7 rounded-lg bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-accent)] font-semibold text-xs border border-[var(--color-border)]">
-						1
+	<!-- 2. Основная рабочая сетка из 2 сбалансированных карточек -->
+	<div class="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+		<!-- Карточка 1: Выход и источник трафика -->
+		<div class="susanin-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between shadow-xs">
+			<div class="space-y-4">
+				<div class="flex items-center justify-between pb-2.5 border-b border-[var(--color-border)]">
+					<div class="flex items-center gap-2">
+						<Network class="w-4 h-4 text-[var(--color-accent)]" />
+						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Маршрутизация и выход</h3>
 					</div>
-					<div>
-						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Источник трафика</h3>
-						<p class="text-xs text-[var(--color-text-muted)]">Какие устройства маршрутизировать</p>
-					</div>
+					<Badge variant="muted" size="sm">Шаг 1</Badge>
 				</div>
 
-				<div class="space-y-2 mt-2">
-					<label class="flex items-start gap-2.5 p-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] cursor-pointer hover:border-[var(--color-border-hover)] transition-colors">
-						<input
-							type="radio"
-							name="sourceType"
-							value="all_lan"
-							checked={settings.source.type === 'all_lan'}
-							onchange={() => selectSource('all_lan')}
-							class="mt-0.5 text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
-						/>
-						<div>
-							<div class="text-xs font-medium text-[var(--color-text-primary)]">Все устройства домашней сети</div>
-							<div class="text-[11px] text-[var(--color-text-muted)]">Адаптивный обход действует для всего LAN-трафика</div>
-						</div>
+				<!-- Выбор выхода -->
+				<div>
+					<label for="susanin-egress-select" class="block text-xs font-medium text-[var(--color-text-primary)] mb-1">
+						Выход для обхода блокировок
 					</label>
+					<div class="flex items-center gap-2">
+						<div class="flex-1 min-w-0">
+							<Dropdown
+								options={egressOptions}
+								value={selectedEgressValue}
+								placeholder="— Выберите туннель или прокси —"
+								onchange={handleEgressChange}
+							/>
+						</div>
+						<Button
+							variant="secondary"
+							size="sm"
+							disabled={testingEgress || !selectedEgressValue}
+							loading={testingEgress}
+							onclick={handleTestEgress}
+							title="Проверить доступность выхода"
+						>
+							<Activity class="w-3.5 h-3.5 mr-1" />
+							Тест
+						</Button>
+					</div>
 
-					<label class="flex items-start gap-2.5 p-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] cursor-pointer hover:border-[var(--color-border-hover)] transition-colors">
-						<input
-							type="radio"
-							name="sourceType"
-							value="policy"
-							checked={settings.source.type === 'policy'}
-							onchange={() => selectSource('policy')}
-							class="mt-0.5 text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
-						/>
-						<div>
-							<div class="text-xs font-medium text-[var(--color-text-primary)]">Выбранная политика Keenetic</div>
-							<div class="text-[11px] text-[var(--color-text-muted)]">Маршрутизировать только устройства выбранной политики</div>
+					{#if testResult}
+						<div class="mt-2 text-xs flex items-center gap-1.5 p-2 rounded-lg border {testResult.available ? 'bg-[var(--color-success-tint)] border-[var(--color-success)] text-[var(--color-success)]' : 'bg-[var(--color-error-tint)] border-[var(--color-error)] text-[var(--color-error)]'}">
+							{#if testResult.available}
+								<CheckCircle class="w-3.5 h-3.5 shrink-0" />
+								<span>Выход доступен (интерфейс {testResult.interface})</span>
+							{:else}
+								<AlertTriangle class="w-3.5 h-3.5 shrink-0" />
+								<span>Недоступен: {testResult.reason || 'Ошибка проверки'}</span>
+							{/if}
 						</div>
-					</label>
+					{/if}
+				</div>
+
+				<!-- Источник трафика -->
+				<div>
+					<span class="block text-xs font-medium text-[var(--color-text-primary)] mb-1.5">
+						Источник трафика
+					</span>
+					<div class="grid grid-cols-2 gap-2">
+						<button
+							type="button"
+							class="px-3 py-2 text-xs rounded-lg border text-left transition-colors flex flex-col gap-0.5 {settings.source.type === 'all_lan' ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent)] text-[var(--color-accent)] font-medium' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]'}"
+							onclick={() => selectSource('all_lan')}
+						>
+							<span class="font-semibold text-xs">Вся сеть LAN</span>
+							<span class="text-[10px] opacity-80">Все домашние клиенты</span>
+						</button>
+
+						<button
+							type="button"
+							class="px-3 py-2 text-xs rounded-lg border text-left transition-colors flex flex-col gap-0.5 {settings.source.type === 'policy' ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent)] text-[var(--color-accent)] font-medium' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]'}"
+							onclick={() => selectSource('policy')}
+						>
+							<span class="font-semibold text-xs">Политика Keenetic</span>
+							<span class="text-[10px] opacity-80">Выборочные устройства</span>
+						</button>
+					</div>
 
 					{#if settings.source.type === 'policy'}
-						<div class="p-2 bg-[var(--color-bg-primary)] rounded-lg border border-[var(--color-border)] mt-2">
-							<label for="susanin-policy-select" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Политика маршрутизации</label>
+						<div class="mt-2 p-2.5 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border)]">
+							<label for="susanin-pol-select" class="block text-[11px] text-[var(--color-text-muted)] mb-1">
+								Выберите политику Keenetic
+							</label>
 							<select
-								id="susanin-policy-select"
+								id="susanin-pol-select"
 								value={settings.source.policyId || ''}
 								onchange={(e) => {
 									settings = { ...settings, source: { ...settings.source, policyId: e.currentTarget.value } };
@@ -517,368 +596,279 @@
 						</div>
 					{/if}
 				</div>
-			</div>
 
-			<div class="mt-4 pt-3 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)]">
-				Susanin слушает соединения и точечно направляет сбои через выход.
-			</div>
-		</div>
-
-		<!-- Карточка 2: Выход в интернет -->
-		<div class="susanin-step bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between">
-			<div>
-				<div class="flex items-center gap-2 mb-3">
-					<div class="w-7 h-7 rounded-lg bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-accent)] font-semibold text-xs border border-[var(--color-border)]">
-						2
-					</div>
-					<div>
-						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Выход для обхода</h3>
-						<p class="text-xs text-[var(--color-text-muted)]">Куда отправлять заблокированные сайты</p>
-					</div>
-				</div>
-
-				<div class="space-y-3">
-					<Dropdown
-						options={egressOptions}
-						value={selectedEgressValue}
-						onchange={handleEgressChange}
-					/>
-
-					{#if activeEgressItem}
-						<div class="bg-[var(--color-bg-tertiary)] p-2.5 rounded-lg border border-[var(--color-border)] space-y-1.5">
-							<div
-								class="text-sm font-medium text-[var(--color-text-primary)] break-words"
-								title={activeEgressItem.displayName}
-							>
-								{activeEgressItem.displayName}
-							</div>
-							<div class="flex items-center justify-between text-xs">
-								<span class="text-[var(--color-text-muted)]">Интерфейс:</span>
-								<span class="font-mono text-[var(--color-text-primary)] font-medium">{activeEgressItem.interface}</span>
-							</div>
-							<div class="flex items-center justify-between text-xs">
-								<span class="text-[var(--color-text-muted)]">Исполнитель:</span>
-								<Badge variant="muted" size="sm">{activeEgressItem.ref.engine.toUpperCase()}</Badge>
-							</div>
-							<div class="flex items-center justify-between text-xs">
-								<span class="text-[var(--color-text-muted)]">Тип:</span>
-								<span class="text-[var(--color-text-secondary)]">{activeEgressItem.ref.kind}</span>
-							</div>
-						</div>
-					{/if}
-
-					<div class="flex items-center gap-2">
-						<Button
-							variant="secondary"
-							size="sm"
-							loading={testingEgress}
-							disabled={!settings.primaryEgress.resourceId}
-							onclick={handleTestEgress}
+				<!-- Политика при сбое -->
+				<div>
+					<span class="block text-xs font-medium text-[var(--color-text-primary)] mb-1.5">
+						Поведение при сбое выхода
+					</span>
+					<div class="grid grid-cols-2 gap-2">
+						<button
+							type="button"
+							class="px-3 py-2 text-xs rounded-lg border text-left transition-colors flex flex-col gap-0.5 {settings.failurePolicy === 'direct' ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent)] text-[var(--color-accent)] font-medium' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]'}"
+							onclick={() => selectFailurePolicy('direct')}
 						>
-							<Sparkles class="w-3.5 h-3.5 mr-1" />
-							Проверить доступность
-						</Button>
-						{#if testResult}
-							<Badge variant={testResult.available ? 'success' : 'error'} size="sm">
-								{testResult.available ? 'Доступен' : 'Недоступен'}
-							</Badge>
-						{/if}
+							<span class="font-semibold text-xs">Fail-Open (Прямой)</span>
+							<span class="text-[10px] opacity-80">Связь не прерывается</span>
+						</button>
+
+						<button
+							type="button"
+							class="px-3 py-2 text-xs rounded-lg border text-left transition-colors flex flex-col gap-0.5 {settings.failurePolicy === 'block' ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent)] text-[var(--color-accent)] font-medium' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]'}"
+							onclick={() => selectFailurePolicy('block')}
+						>
+							<span class="font-semibold text-xs">Kill-Switch (Блок)</span>
+							<span class="text-[10px] opacity-80">Защита от утечек</span>
+						</button>
 					</div>
 				</div>
-			</div>
-
-			<div class="mt-4 pt-3 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)]">
-				Трафик подается через интерфейс <code class="font-mono">awgsus0</code> без перехвата основного интернета.
 			</div>
 		</div>
 
-		<!-- Карточка 3: Поведение при сбое -->
-		<div class="susanin-step bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between">
-			<div>
-				<div class="flex items-center gap-2 mb-3">
-					<div class="w-7 h-7 rounded-lg bg-[var(--color-bg-tertiary)] flex items-center justify-center text-[var(--color-accent)] font-semibold text-xs border border-[var(--color-border)]">
-						3
+		<!-- Карточка 2: Телеметрия обучения и списки доменов -->
+		<div class="susanin-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between shadow-xs">
+			<div class="space-y-3.5">
+				<!-- Шапка и счетчики -->
+				<div class="flex items-center justify-between pb-2.5 border-b border-[var(--color-border)]">
+					<div class="flex items-center gap-2">
+						<Zap class="w-4 h-4 text-[var(--color-warning)]" />
+						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Обучение и списки</h3>
 					</div>
-					<div>
-						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Поведение при сбое</h3>
-						<p class="text-xs text-[var(--color-text-muted)]">Что делать, если выход недоступен</p>
+					<div class="flex items-center gap-1.5">
+						<button
+							class="text-xs text-[var(--color-accent)] hover:underline flex items-center gap-1"
+							onclick={() => (showLearnedModal = true)}
+						>
+							База IP
+						</button>
+						<span class="text-[var(--color-border)]">·</span>
+						<button
+							class="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-error)]"
+							title="Очистить кэш обучения"
+							onclick={async () => {
+								try {
+									await api.clearAdaptiveRoutingCache();
+									notifications.success('Кэш обучения очищен');
+									void loadAll(false);
+								} catch (e) {
+									notifications.error(`Ошибка очистки: ${(e as Error).message}`);
+								}
+							}}
+						>
+							Сброс кэша
+						</button>
 					</div>
 				</div>
 
-				<div class="space-y-2 mt-2">
-					<label class="flex items-start gap-2.5 p-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] cursor-pointer hover:border-[var(--color-border-hover)] transition-colors">
-						<input
-							type="radio"
-							name="failurePolicy"
-							value="direct"
-							checked={settings.failurePolicy === 'direct'}
-							onchange={() => selectFailurePolicy('direct')}
-							class="mt-0.5 text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
-						/>
-						<div>
-							<div class="text-xs font-medium text-[var(--color-text-primary)]">Direct Fail-Open (Рекомендуется)</div>
-							<div class="text-[11px] text-[var(--color-text-muted)]">При падении прокси весь трафик возвращается напрямую в интернет, связь не рвется</div>
+				<!-- Компактная полоса статистики -->
+				<div class="grid grid-cols-4 gap-2 text-center">
+					<div class="p-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
+						<div class="text-[10px] uppercase text-[var(--color-text-muted)] font-medium">TCP ОК</div>
+						<div class="text-base font-bold text-[var(--color-success)] font-mono">
+							{status?.learnedTcpCount ?? 0}
 						</div>
-					</label>
-
-					<label class="flex items-start gap-2.5 p-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] cursor-pointer hover:border-[var(--color-border-hover)] transition-colors">
-						<input
-							type="radio"
-							name="failurePolicy"
-							value="block"
-							checked={settings.failurePolicy === 'block'}
-							onchange={() => selectFailurePolicy('block')}
-							class="mt-0.5 text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
-						/>
-						<div>
-							<div class="text-xs font-medium text-[var(--color-text-primary)]">Блокировать (Kill-Switch)</div>
-							<div class="text-[11px] text-[var(--color-text-muted)]">Запрещать доступ в сеть при недоступности выхода (для строгой анонимности)</div>
+					</div>
+					<div class="p-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
+						<div class="text-[10px] uppercase text-[var(--color-text-muted)] font-medium">UDP ОК</div>
+						<div class="text-base font-bold text-[var(--color-success)] font-mono">
+							{status?.learnedUdpCount ?? 0}
 						</div>
-					</label>
+					</div>
+					<div class="p-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
+						<div class="text-[10px] uppercase text-[var(--color-text-muted)] font-medium">В тесте</div>
+						<div class="text-base font-bold text-[var(--color-warning)] font-mono">
+							{(status?.testingTcpCount ?? 0) + (status?.testingUdpCount ?? 0)}
+						</div>
+					</div>
+					<div class="p-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
+						<div class="text-[10px] uppercase text-[var(--color-text-muted)] font-medium">Прямо</div>
+						<div class="text-base font-bold text-[var(--color-text-secondary)] font-mono">
+							{status?.neverCount ?? 0}
+						</div>
+					</div>
 				</div>
-			</div>
 
-			<div class="mt-4 pt-3 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)]">
-				Политика Fail-Open защищает от потери связи для банков, Госуслуг и мессенджеров.
+				<!-- Вкладки Always / Never списков -->
+				<div class="pt-1">
+					<div class="flex items-center gap-2 mb-2">
+						<button
+							type="button"
+							class="text-xs px-2.5 py-1 rounded-md transition-colors {activeListTab === 'always' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-medium border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+							onclick={() => (activeListTab = 'always')}
+						>
+							Всегда через VPN (Always)
+							<span class="ml-1 text-[10px] px-1 py-0.2 rounded bg-[var(--color-accent-tint)] text-[var(--color-accent)]">
+								{alwaysText.split('\n').filter((x) => x.trim()).length}
+							</span>
+						</button>
+
+						<button
+							type="button"
+							class="text-xs px-2.5 py-1 rounded-md transition-colors {activeListTab === 'never' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-medium border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+							onclick={() => (activeListTab = 'never')}
+						>
+							Всегда напрямую (Never)
+							<span class="ml-1 text-[10px] px-1 py-0.2 rounded bg-gray-500/20 text-[var(--color-text-secondary)]">
+								{neverText.split('\n').filter((x) => x.trim()).length}
+							</span>
+						</button>
+					</div>
+
+					{#if activeListTab === 'always'}
+						<textarea
+							bind:value={alwaysText}
+							rows={6}
+							placeholder="Домены и IP, по одному на строку:&#10;instagram.com&#10;*.rutracker.org&#10;149.154.160.0/20"
+							class="w-full p-2.5 text-xs font-mono bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)] resize-y"
+						></textarea>
+						<p class="text-[11px] text-[var(--color-text-muted)] mt-1">
+							Направления, которые всегда принудительно направляются в туннель (включая Telegram).
+						</p>
+					{:else}
+						<textarea
+							bind:value={neverText}
+							rows={6}
+							placeholder="Домены и IP, по одному на строку:&#10;gosuslugi.ru&#10;sberbank.ru&#10;192.168.0.0/16"
+							class="w-full p-2.5 text-xs font-mono bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)] resize-y"
+						></textarea>
+						<p class="text-[11px] text-[var(--color-text-muted)] mt-1">
+							Ресурсы банков, госуслуг и локальные сети, которые никогда не направляются в VPN.
+						</p>
+					{/if}
+				</div>
 			</div>
 		</div>
 	</div>
 
-	<!-- 3. Секция статистики обучения и пресет детектора -->
-	<div class="susanin-learning bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 shadow-sm">
-		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
-			<div>
-				<h3 class="font-semibold text-sm text-[var(--color-text-primary)] flex items-center gap-2">
-					<Zap class="w-4 h-4 text-[var(--color-warning)]" />
-					Статистика адаптивного обучения
-				</h3>
-				<p class="text-xs text-[var(--color-text-muted)]">
-					Направления, которые Susanin распознал и запомнил для обхода
-				</p>
-			</div>
-
+	<!-- 3. Сворачиваемая тонкая настройка детектора -->
+	<div class="bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] overflow-hidden shadow-xs">
+		<button
+			type="button"
+			class="w-full px-4 py-2.5 flex items-center justify-between hover:bg-[var(--color-bg-tertiary)] transition-colors text-left"
+			onclick={() => (detectorExpanded = !detectorExpanded)}
+		>
 			<div class="flex items-center gap-2">
-				<Button
-					variant="secondary"
-					size="sm"
-					onclick={() => (showLearnedModal = true)}
-				>
-					<Search class="w-3.5 h-3.5 mr-1" />
-					Посмотреть адреса
-				</Button>
-				<Button
-					variant="secondary"
-					size="sm"
-					onclick={() => (detectorExpanded = !detectorExpanded)}
-				>
-					<Settings2 class="w-3.5 h-3.5 mr-1" />
-					{detectorExpanded ? 'Скрыть детектор' : 'Настроить детектор'}
-				</Button>
+				<Settings2 class="w-4 h-4 text-[var(--color-text-muted)]" />
+				<span class="font-medium text-xs text-[var(--color-text-primary)]">Параметры детектора блокировок</span>
+				<Badge variant="muted" size="sm">Экспертные настройки</Badge>
 			</div>
-		</div>
-
-		<!-- Метрики обучения -->
-		<div class="learning-grid grid grid-cols-2 sm:grid-cols-4 gap-3">
-			<div class="bg-[var(--color-bg-tertiary)] p-3 rounded-lg border border-[var(--color-border)]">
-				<div class="text-xs text-[var(--color-text-muted)]">Изучено TCP (ОК)</div>
-				<div class="text-xl font-bold font-mono text-[var(--color-success)] mt-0.5">
-					{status?.learnedTcpCount ?? 0}
-				</div>
-				<div class="text-[10px] text-[var(--color-text-muted)] mt-1">Через прокси-выход</div>
+			<div class="flex items-center gap-2">
+				<span class="text-xs text-[var(--color-text-muted)]">
+					{detectorExpanded ? 'Свернуть' : 'Настроить'}
+				</span>
+				<ChevronDown class="w-3.5 h-3.5 text-[var(--color-text-muted)] transition-transform {detectorExpanded ? 'rotate-180' : ''}" />
 			</div>
+		</button>
 
-			<div class="bg-[var(--color-bg-tertiary)] p-3 rounded-lg border border-[var(--color-border)]">
-				<div class="text-xs text-[var(--color-text-muted)]">Изучено UDP (ОК)</div>
-				<div class="text-xl font-bold font-mono text-[var(--color-info,#7dcfff)] mt-0.5">
-					{status?.learnedUdpCount ?? 0}
-				</div>
-				<div class="text-[10px] text-[var(--color-text-muted)] mt-1">QUIC / Голосовые звонки</div>
-			</div>
-
-			<div class="bg-[var(--color-bg-tertiary)] p-3 rounded-lg border border-[var(--color-border)]">
-				<div class="text-xs text-[var(--color-text-muted)]">На проверке (Testing)</div>
-				<div class="text-xl font-bold font-mono text-[var(--color-warning)] mt-0.5">
-					{(status?.testingTcpCount ?? 0) + (status?.testingUdpCount ?? 0)}
-				</div>
-				<div class="text-[10px] text-[var(--color-text-muted)] mt-1">Тестовая проба</div>
-			</div>
-
-			<div class="bg-[var(--color-bg-tertiary)] p-3 rounded-lg border border-[var(--color-border)]">
-				<div class="text-xs text-[var(--color-text-muted)]">Списки исключений</div>
-				<div class="text-xl font-bold font-mono text-[var(--color-text-primary)] mt-0.5">
-					{(settings.alwaysEntries || []).length} / {(settings.neverEntries || []).length}
-				</div>
-				<div class="text-[10px] text-[var(--color-text-muted)] mt-1">Всегда / Напрямую</div>
-			</div>
-		</div>
-
-		<!-- Раскрывающийся блок детектора -->
 		{#if detectorExpanded}
-			<div class="mt-4 pt-4 border-t border-[var(--color-border)] space-y-3">
-				<div class="flex items-center justify-between flex-wrap gap-2">
-					<div class="text-xs font-semibold text-[var(--color-text-primary)]">
-						Параметры детектора сбоев соединений
-					</div>
-					<div class="flex items-center gap-1.5">
-						<span class="text-xs text-[var(--color-text-muted)] mr-1">Готовые пресеты:</span>
-						<button
-							class="px-2 py-0.5 text-xs rounded border border-[var(--color-border)] hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] transition-colors"
-							onclick={() => applyDetectorPreset('balanced')}
-						>
-							Сбалансированный
-						</button>
-						<button
-							class="px-2 py-0.5 text-xs rounded border border-[var(--color-border)] hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] transition-colors"
-							onclick={() => applyDetectorPreset('aggressive')}
-						>
-							Агрессивный
-						</button>
-						<button
-							class="px-2 py-0.5 text-xs rounded border border-[var(--color-border)] hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-secondary)] transition-colors"
-							onclick={() => applyDetectorPreset('soft')}
-						>
-							Мягкий
-						</button>
-					</div>
+			<div class="p-4 pt-2 border-t border-[var(--color-border)] space-y-3.5 bg-[var(--color-bg-primary)]">
+				<!-- Пресеты -->
+				<div class="flex items-center gap-2 flex-wrap">
+					<span class="text-xs text-[var(--color-text-muted)] mr-1">Быстрые пресеты:</span>
+					<button
+						type="button"
+						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+						onclick={() => applyDetectorPreset('balanced')}
+					>
+						Сбалансированный (1с / 2 ретрая)
+					</button>
+					<button
+						type="button"
+						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+						onclick={() => applyDetectorPreset('aggressive')}
+					>
+						Агрессивный (1с / 1 ретрай)
+					</button>
+					<button
+						type="button"
+						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+						onclick={() => applyDetectorPreset('soft')}
+					>
+						Мягкий (2с / 3 ретрая)
+					</button>
 				</div>
 
-				<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+				<!-- Сетка параметров -->
+				<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
 					<div>
-						<label for="susanin-tcp-syn-retries" class="block text-xs text-[var(--color-text-muted)] mb-1">Повторов SYN до переключения</label>
+						<label for="susanin-fast-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Fast интервал</label>
 						<input
-							id="susanin-tcp-syn-retries"
+							id="susanin-fast-interval"
 							type="number"
-							bind:value={settings.detection.tcpSynRetries}
-							min={1}
-							max={5}
-							class="w-full p-2 text-xs bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)]"
+							min="1"
+							max="10"
+							bind:value={settings.detection.fastIntervalSeconds}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
 						/>
 					</div>
+
 					<div>
-						<label for="susanin-health-interval" class="block text-xs text-[var(--color-text-muted)] mb-1">Интервал проверки здоровья (с)</label>
+						<label for="susanin-soft-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Soft интервал</label>
+						<input
+							id="susanin-soft-interval"
+							type="number"
+							min="1"
+							max="10"
+							bind:value={settings.detection.softIntervalSeconds}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
+						/>
+					</div>
+
+					<div>
+						<label for="susanin-judge-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Judge интервал</label>
+						<input
+							id="susanin-judge-interval"
+							type="number"
+							min="1"
+							max="10"
+							bind:value={settings.detection.judgeIntervalSeconds}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
+						/>
+					</div>
+
+					<div>
+						<label for="susanin-health-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Health интервал</label>
 						<input
 							id="susanin-health-interval"
 							type="number"
+							min="2"
+							max="30"
 							bind:value={settings.detection.healthIntervalSeconds}
-							min={1}
-							max={60}
-							class="w-full p-2 text-xs bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)]"
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
 						/>
 					</div>
+
 					<div>
-						<label for="susanin-late-stall-bytes" class="block text-xs text-[var(--color-text-muted)] mb-1">Порог подвисания (байт)</label>
+						<label for="susanin-syn-retries" class="block text-[11px] text-[var(--color-text-muted)] mb-1">SYN ретраев</label>
 						<input
-							id="susanin-late-stall-bytes"
+							id="susanin-syn-retries"
 							type="number"
-							bind:value={settings.detection.lateStallBytes}
-							min={500}
-							max={10000}
-							class="w-full p-2 text-xs bg-[var(--color-bg-primary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)]"
+							min="1"
+							max="5"
+							bind:value={settings.detection.tcpSynRetries}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
+						/>
+					</div>
+
+					<div>
+						<label for="susanin-max-entries" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Макс. записей</label>
+						<input
+							id="susanin-max-entries"
+							type="number"
+							min="512"
+							max="65536"
+							step="512"
+							bind:value={settings.persistence.maxEntries}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
 						/>
 					</div>
 				</div>
-			</div>
-		{/if}
-	</div>
-
-	<!-- 4. Раскрывающийся раздел «Экспертные настройки (Accordion)» -->
-	<div class="bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] overflow-hidden shadow-sm">
-		<button
-			type="button"
-			class="w-full p-4 flex items-center justify-between text-left hover:bg-[var(--color-bg-tertiary)] transition-colors"
-			onclick={() => (expertExpanded = !expertExpanded)}
-		>
-			<div class="flex items-center gap-2">
-				{#if expertExpanded}
-					<ChevronDown class="w-4 h-4 text-[var(--color-text-muted)]" />
-				{:else}
-					<ChevronRight class="w-4 h-4 text-[var(--color-text-muted)]" />
-				{/if}
-				<span class="font-semibold text-sm text-[var(--color-text-primary)]">
-					Расширенные сетевые параметры (Expert)
-				</span>
-				<Badge variant="muted" size="sm">Списки и TTL кэша</Badge>
-			</div>
-			<span class="text-xs text-[var(--color-text-muted)]">
-				{expertExpanded ? 'Свернуть' : 'Развернуть'}
-			</span>
-		</button>
-
-		{#if expertExpanded}
-			<div class="p-4 pt-1 border-t border-[var(--color-border)] space-y-4">
-				<!-- Списки Always / Never -->
-				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-					<div>
-						<label for="susanin-always-text" class="block text-xs font-semibold text-[var(--color-text-primary)] mb-1">
-							Всегда через прокси-выход (Always)
-						</label>
-						<p class="text-[11px] text-[var(--color-text-muted)] mb-1.5">
-							Домены и IP, по одному на строку (направляются через выход безусловно)
-						</p>
-						<textarea
-							id="susanin-always-text"
-							bind:value={alwaysText}
-							rows={4}
-							placeholder="example.com&#10;api.service.io&#10;198.51.100.0/24"
-							class="w-full p-2.5 text-xs font-mono bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)]"
-						></textarea>
-					</div>
-
-					<div>
-						<label for="susanin-never-text" class="block text-xs font-semibold text-[var(--color-text-primary)] mb-1">
-							Всегда напрямую в интернет (Never)
-						</label>
-						<p class="text-[11px] text-[var(--color-text-muted)] mb-1.5">
-							Домены и IP банков, госсервисов, локальных сетей (никогда не пойдут через прокси)
-						</p>
-						<textarea
-							id="susanin-never-text"
-							bind:value={neverText}
-							rows={4}
-							placeholder="gosuslugi.ru&#10;sberbank.ru&#10;192.168.0.0/16"
-							class="w-full p-2.5 text-xs font-mono bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)]"
-						></textarea>
-					</div>
-				</div>
-
 			</div>
 		{/if}
 	</div>
 </div>
 
-<style>
-	.susanin-page { display: flex; width: 100%; flex-direction: column; gap: 18px; }
-	.susanin-status {
-		display: flex; align-items: center; justify-content: space-between; gap: 16px;
-		padding: 16px 18px; border: 1px solid var(--color-border); border-radius: 12px;
-		background: var(--color-bg-secondary); box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
-	}
-	.susanin-steps { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 1.35fr) minmax(0, 1fr); gap: 18px; align-items: stretch; }
-	.susanin-step {
-		display: flex; min-width: 0; min-height: 300px; flex-direction: column; justify-content: space-between;
-		padding: 20px; border: 1px solid var(--color-border); border-radius: 12px;
-		background: var(--color-bg-secondary);
-	}
-	.susanin-step :global(label) { padding: 12px; }
-	.susanin-learning {
-		padding: 20px; border: 1px solid var(--color-border); border-radius: 12px;
-		background: var(--color-bg-secondary); box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
-	}
-	.learning-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-	.learning-grid > div { min-height: 92px; padding: 14px; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-bg-tertiary); }
-	@media (max-width: 1050px) {
-		.susanin-steps { grid-template-columns: 1fr 1fr; }
-		.susanin-step:last-child { grid-column: 1 / -1; min-height: 0; }
-	}
-	@media (max-width: 720px) {
-		.susanin-status { align-items: stretch; flex-direction: column; }
-		.susanin-steps, .learning-grid { grid-template-columns: 1fr; }
-		.susanin-step, .susanin-step:last-child { grid-column: auto; min-height: 0; padding: 16px; }
-		.susanin-learning { padding: 16px; }
-	}
-</style>
-
-<!-- Модальное окно просмотра изученных адресов -->
+<!-- Модальное окно базы изученных адресов -->
 {#if showLearnedModal}
 	<Modal
 		open={showLearnedModal}
@@ -888,7 +878,7 @@
 		<div class="p-4 space-y-4 max-h-[80vh] overflow-y-auto">
 			<div class="flex items-center justify-between">
 				<p class="text-xs text-[var(--color-text-muted)]">
-					Список хостов, которые направляются через выбранный прокси-выход
+					Список подтверждённых адресов, направляемых через выбранный выход
 				</p>
 				<Button
 					variant="danger"
@@ -914,7 +904,7 @@
 						<span>Изученные адреса (ОК)</span>
 						<Badge variant="success" size="sm">{(learned?.always || []).length} записей</Badge>
 					</div>
-					<div class="space-y-1 max-h-48 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
+					<div class="space-y-1 max-h-56 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
 						{#each learned?.always || [] as entry}
 							<div class="p-1 rounded bg-[var(--color-bg-tertiary)] truncate">
 								{entry}
@@ -932,7 +922,7 @@
 						<span>Прямой доступ (Never)</span>
 						<Badge variant="muted" size="sm">{(learned?.never || []).length} записей</Badge>
 					</div>
-					<div class="space-y-1 max-h-48 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
+					<div class="space-y-1 max-h-56 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
 						{#each learned?.never || [] as entry}
 							<div class="p-1 rounded bg-[var(--color-bg-tertiary)] truncate">
 								{entry}
@@ -954,3 +944,7 @@
 		</div>
 	</Modal>
 {/if}
+
+<style>
+	.susanin-page { width: 100%; }
+</style>

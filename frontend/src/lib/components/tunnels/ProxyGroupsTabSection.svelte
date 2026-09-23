@@ -146,27 +146,27 @@
 	}
 </script>
 
-<div class="proxy-groups-page space-y-4">
+<div class="proxy-groups-page space-y-3">
 	<!-- Toolbar -->
-	<div class="groups-toolbar flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-[var(--color-bg-secondary)] p-3 rounded-xl border border-[var(--color-border)]">
-		<div class="groups-search-row flex items-center gap-2 flex-1">
-			<div class="groups-search relative flex-1 max-w-sm">
-				<Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
+	<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-[var(--color-bg-secondary)] px-3.5 py-2.5 rounded-xl border border-[var(--color-border)]">
+		<div class="flex items-center gap-2.5 flex-1 min-w-0">
+			<div class="relative flex-1 max-w-sm">
+				<Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
 				<input
 					type="text"
 					bind:value={searchQuery}
-					placeholder="Поиск по имени или узлам..."
-					class="w-full pl-9 pr-3 py-1.5 text-sm bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)]"
+					placeholder="Поиск групп или узлов..."
+					class="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)]"
 				/>
 			</div>
-			<div class="text-xs text-[var(--color-text-muted)] whitespace-nowrap">
-				Всего групп: <span class="font-medium text-[var(--color-text-primary)]">{groups.length}</span>
-			</div>
+			<span class="text-xs text-[var(--color-text-muted)] whitespace-nowrap hidden sm:inline">
+				Групп: <strong class="text-[var(--color-text-primary)]">{groups.length}</strong>
+			</span>
 		</div>
 
-		<div class="flex items-center gap-2">
-			<Button variant="primary" onclick={openCreate}>
-				<Plus class="w-4 h-4 mr-1.5" />
+		<div class="flex items-center gap-2 shrink-0">
+			<Button variant="primary" size="sm" onclick={openCreate}>
+				<Plus class="w-3.5 h-3.5 mr-1" />
 				Создать группу
 			</Button>
 		</div>
@@ -185,29 +185,29 @@
 				description="Создайте первую группу для объединения прокси, подписок и туннелей с автоматическим выбором или балансировкой."
 			>
 				{#snippet action()}
-					<Button variant="primary" onclick={openCreate}>
-						<Plus class="w-4 h-4 mr-1.5" />
+					<Button variant="primary" size="sm" onclick={openCreate}>
+						<Plus class="w-3.5 h-3.5 mr-1" />
 						Создать группу
 					</Button>
 				{/snippet}
 			</EmptyState>
 		{/if}
 	{:else}
-		<div class="groups-grid grid grid-cols-1 lg:grid-cols-2 gap-4">
+		<div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
 			{#each filteredGroups as group (group.id || group.name)}
 				{@const rt = runtimeProxies[group.name]}
 				{@const activeNow = rt?.now || (group.proxies?.[0] ?? '')}
 				{@const isSusaninTarget = susaninEgressId === group.id || susaninEgressId === group.name}
-				<div class="group-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between hover:border-[var(--color-border-hover)] transition-colors shadow-sm">
-					<div>
-						<!-- Header Row -->
-						<div class="group-card-header flex items-start justify-between gap-2 mb-2">
-							<div class="flex items-center gap-2 flex-wrap">
-								<Layers class="w-5 h-5 text-[var(--color-accent)] shrink-0" />
-								<h3 class="font-semibold text-base text-[var(--color-text-primary)] leading-tight">
+				<div class="group-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-3.5 flex flex-col justify-between hover:border-[var(--color-border-hover)] transition-all shadow-xs">
+					<div class="space-y-2.5">
+						<!-- Compact Header Row -->
+						<div class="flex items-start justify-between gap-2">
+							<div class="flex items-center gap-1.5 flex-wrap min-w-0">
+								<span class="w-2 h-2 rounded-full shrink-0 {group.enabled !== false ? 'bg-[var(--color-success)]' : 'bg-gray-400'}" title={group.enabled !== false ? 'Включена' : 'Отключена'}></span>
+								<Layers class="w-4 h-4 text-[var(--color-accent)] shrink-0" />
+								<h3 class="font-semibold text-sm text-[var(--color-text-primary)] leading-tight truncate">
 									{group.name}
 								</h3>
-								<Badge variant="muted" size="sm">Mihomo</Badge>
 								<Badge variant={typeBadgeVariant(group.type)} size="sm">
 									{groupTypeLabel(group.type)}
 								</Badge>
@@ -219,94 +219,85 @@
 								{/if}
 							</div>
 
+							<!-- Action Buttons -->
 							<div class="flex items-center gap-1 shrink-0">
 								<button
-									class="p-1.5 rounded-md hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
-									title="Проверить задержку"
+									class="p-1.5 rounded-lg hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors cursor-pointer"
+									title="Проверить задержку группы"
 									disabled={testingDelay[group.name]}
 									onclick={() => testGroupDelay(group.name)}
 								>
-									<Activity class="w-4 h-4 {testingDelay[group.name] ? 'animate-spin' : ''}" />
+									<Activity class="w-3.5 h-3.5 {testingDelay[group.name] ? 'animate-spin text-[var(--color-accent)]' : ''}" />
 								</button>
 								<button
-									class="p-1.5 rounded-md hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors"
+									class="p-1.5 rounded-lg hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors cursor-pointer"
 									title="Редактировать группу"
 									onclick={() => openEdit(group)}
 								>
-									<Pencil class="w-4 h-4" />
+									<Pencil class="w-3.5 h-3.5" />
 								</button>
 								<button
-									class="p-1.5 rounded-md hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-error)] transition-colors"
+									class="p-1.5 rounded-lg hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-error)] transition-colors cursor-pointer"
 									title="Удалить группу"
 									onclick={() => (deletingId = group.id)}
 								>
-									<Trash2 class="w-4 h-4" />
+									<Trash2 class="w-3.5 h-3.5" />
 								</button>
 							</div>
 						</div>
 
-						<!-- Status & Latency -->
-						<div class="group-summary flex items-center gap-3 text-xs text-[var(--color-text-muted)] mb-3">
-							<div class="flex items-center gap-1.5">
-								<span class="w-2 h-2 rounded-full {group.enabled !== false ? 'bg-[var(--color-success)]' : 'bg-gray-500'}"></span>
-								<span>{group.enabled !== false ? 'Активна' : 'Отключена'}</span>
-							</div>
-							{#if delays[group.name]}
-								<div class="text-[var(--color-success)] font-mono font-medium">
-									{delays[group.name]} мс
-								</div>
-							{/if}
-							<div>
-								Узлов: <span class="font-medium text-[var(--color-text-primary)]">{(group.proxies || []).length}</span>
-								{#if (group.use || []).length > 0}
-									+ <span class="font-medium text-[var(--color-text-primary)]">{(group.use || []).length}</span> подписок
-								{/if}
-							</div>
-						</div>
-
-						<!-- Active Member Row -->
-						<div class="active-node bg-[var(--color-bg-tertiary)] p-2.5 rounded-lg border border-[var(--color-border)] mb-3">
-							<div class="text-[11px] font-medium text-[var(--color-text-muted)] mb-1 flex items-center justify-between">
-								<span>АКТИВНЫЙ УЗЕЛ СЕЙЧАС</span>
-								{#if group.type === 'select'}
-									<span class="text-[var(--color-accent)] text-[10px]">Кликните узел для переключения</span>
-								{/if}
-							</div>
-							<div class="flex items-center gap-2">
-								<Zap class="w-4 h-4 text-[var(--color-warning)] shrink-0" />
-								<span class="font-mono text-sm text-[var(--color-text-primary)] font-medium truncate">
+						<!-- Compact Active Node Bar -->
+						<div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] text-xs">
+							<div class="flex items-center gap-1.5 min-w-0">
+								<Zap class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+								<span class="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-muted)] shrink-0">Активен:</span>
+								<span class="font-mono text-xs text-[var(--color-text-primary)] font-medium truncate" title={activeNow}>
 									{memberLabel(activeNow) || 'Не определён'}
 								</span>
 							</div>
+
+							<div class="flex items-center gap-2 shrink-0">
+								{#if delays[group.name]}
+									<span class="text-[11px] font-mono font-medium text-[var(--color-success)] bg-[var(--color-success)]/10 px-1.5 py-0.5 rounded">
+										{delays[group.name]} мс
+									</span>
+								{/if}
+								{#if group.type === 'select'}
+									<span class="text-[10px] text-[var(--color-accent)] hidden sm:inline">кликните узел для выбора</span>
+								{/if}
+							</div>
 						</div>
 
-						<!-- Members Chips -->
+						<!-- Member Chips -->
 						{#if (group.proxies || []).length > 0}
-							<div class="space-y-1.5">
-								<div class="text-[11px] font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
-									Состав группы
+							<div class="space-y-1">
+								<div class="flex items-center justify-between text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-muted)]">
+									<span>Узлы ({group.proxies?.length || 0})</span>
+									{#if (group.use || []).length > 0}
+										<span>+ {group.use.length} подписок</span>
+									{/if}
 								</div>
-								<div class="member-list flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-0.5">
+								<div class="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto py-0.5">
 									{#each group.proxies || [] as member}
 										{@const isSelected = activeNow === member}
 										{#if group.type === 'select'}
 											<button
-												class="px-2 py-0.5 text-xs rounded-md border transition-colors flex items-center gap-1 {isSelected ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent)] text-[var(--color-accent)] font-medium' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)]'}"
+												class="px-2 py-1 text-xs rounded-md border transition-all flex items-center gap-1 cursor-pointer {isSelected ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent)] text-[var(--color-accent)] font-medium shadow-xs' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]'}"
 												disabled={switchingMember[group.name]}
 												onclick={() => selectMember(group.name, member)}
-												title="Сделать активным"
+												title="Сделать узел активным"
 											>
 												{#if isSelected}
-													<Check class="w-3 h-3 text-[var(--color-accent)]" />
+													<Check class="w-3 h-3 text-[var(--color-accent)] shrink-0" />
 												{/if}
-												<span class="truncate max-w-[220px]" title={member}>{memberLabel(member)}</span>
+												<span class="truncate max-w-[200px]" title={member}>{memberLabel(member)}</span>
 											</button>
 										{:else}
-											<span class="px-2 py-0.5 text-xs rounded-md border bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)] flex items-center gap-1">
+											<span class="px-2 py-0.5 text-xs rounded-md border flex items-center gap-1 {isSelected ? 'bg-[var(--color-bg-tertiary)] border-[var(--color-success)] text-[var(--color-success)] font-medium' : 'bg-[var(--color-bg-tertiary)] border-[var(--color-border)] text-[var(--color-text-secondary)]'}">
 												{#if isSelected}
-													<Check class="w-3 h-3 text-[var(--color-success)]" />
+													<Check class="w-3 h-3 text-[var(--color-success)] shrink-0" />
 												{/if}
-												<span class="truncate max-w-[220px]" title={member}>{memberLabel(member)}</span>
+												<span class="truncate max-w-[200px]" title={member}>{memberLabel(member)}</span>
 											</span>
 										{/if}
 									{/each}
@@ -316,16 +307,18 @@
 					</div>
 
 					<!-- Card Footer info -->
-					{#if group.url || group.interval}
-						<div class="mt-3 pt-2.5 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)] flex items-center justify-between">
-							{#if group.interval}
-								<span>Интервал: {group.interval} с</span>
-							{/if}
-							{#if group.tolerance}
-								<span>Допуск: {group.tolerance} мс</span>
-							{/if}
+					{#if group.interval || group.tolerance || group.lazy}
+						<div class="mt-2.5 pt-2 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)] flex items-center justify-between">
+							<div class="flex items-center gap-2">
+								{#if group.interval}
+									<span>Интервал: <strong class="text-[var(--color-text-primary)]">{group.interval} с</strong></span>
+								{/if}
+								{#if group.tolerance}
+									<span>Допуск: <strong class="text-[var(--color-text-primary)]">{group.tolerance} мс</strong></span>
+								{/if}
+							</div>
 							{#if group.lazy}
-								<span>Lazy check</span>
+								<span class="text-[10px] font-mono bg-[var(--color-bg-tertiary)] px-1.5 py-0.5 rounded border border-[var(--color-border)]">lazy check</span>
 							{/if}
 						</div>
 					{/if}
@@ -334,37 +327,6 @@
 		</div>
 	{/if}
 </div>
-
-<style>
-	.proxy-groups-page { display: flex; flex-direction: column; gap: 18px; width: 100%; }
-	.groups-toolbar {
-		display: flex; align-items: center; justify-content: space-between; gap: 16px;
-		padding: 16px; border: 1px solid var(--color-border); border-radius: 12px;
-		background: var(--color-bg-secondary);
-	}
-	.groups-search-row { display: flex; align-items: center; gap: 12px; min-width: 0; }
-	.groups-search { position: relative; width: min(420px, 100%); }
-	.groups-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
-	.group-card {
-		display: flex; min-width: 0; min-height: 250px; flex-direction: column; justify-content: space-between;
-		padding: 18px; border: 1px solid var(--color-border); border-radius: 12px;
-		background: var(--color-bg-secondary); box-shadow: 0 1px 2px rgb(15 23 42 / 5%);
-	}
-	.group-card:hover { border-color: var(--color-border-hover); }
-	.group-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
-	.group-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 14px; }
-	.active-node {
-		margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--color-border);
-		border-radius: 9px; background: var(--color-bg-tertiary);
-	}
-	.member-list { display: flex; flex-wrap: wrap; gap: 7px; max-height: 132px; overflow-y: auto; padding: 2px; }
-	@media (max-width: 980px) { .groups-grid { grid-template-columns: 1fr; } }
-	@media (max-width: 640px) {
-		.groups-toolbar, .groups-search-row { align-items: stretch; flex-direction: column; }
-		.groups-search { width: 100%; max-width: none; }
-		.group-card { min-height: 0; padding: 14px; }
-	}
-</style>
 
 <!-- Edit / Create Modal -->
 <MihomoGroupEditModal

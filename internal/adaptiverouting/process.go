@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,6 +110,18 @@ func (p *ProcessManager) GenerateConfigFile(
 	var sb strings.Builder
 	sb.WriteString("# Managed by AWG Manager - DO NOT EDIT MANUALLY\n")
 	sb.WriteString(fmt.Sprintf("egress_interface=%s\n", egressDev))
+	if egressDev == "awgsus0" {
+		sb.WriteString("egress_address=198.18.0.1\n")
+	} else if iface, err := net.InterfaceByName(egressDev); err == nil {
+		if addrs, err := iface.Addrs(); err == nil {
+			for _, addr := range addrs {
+				if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+					sb.WriteString(fmt.Sprintf("egress_address=%s\n", ipNet.IP.String()))
+					break
+				}
+			}
+		}
+	}
 	sb.WriteString(fmt.Sprintf("lan_interfaces=%s\n", strings.Join(lanInterfaces, ",")))
 	sb.WriteString(fmt.Sprintf("lan_subnets=%s\n", strings.Join(lanSubnets, ",")))
 	sb.WriteString(fmt.Sprintf("routing_table=%d\n", table))
@@ -254,7 +267,12 @@ func (p *ProcessManager) Start(ctx context.Context, binPath string) error {
 
 	cmd := exec.Command(p.binaryPath, "run")
 	cmd.Dir = p.configDir
-	cmd.Env = append(os.Environ(), "SUSANIN_CONF="+p.ConfigPath())
+	logPath := filepath.Join(ManagedSusaninVarDir, "agent.log")
+	if logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
+	cmd.Env = append(os.Environ(), "SUSANIN_CONF="+p.ConfigPath(), "SUSANIN_LOG="+logPath)
 	// Detach process group
 	childproc.SetProcessGroup(cmd)
 
