@@ -234,6 +234,7 @@ func (a *app) startBootSequence() {
 			// вполне могла упасть fail-closed. Эндпоинты связанных туннелей
 			// чинит ресурс linked_endpoint роли, отдельный проход не нужен.
 			a.proxyRuntimeNudge("cold-boot", proxyrt.EventBoot)
+			a.restoreAdaptiveRouting()
 
 			// Wait for background migrations to finish (non-critical but
 			// we track them so they don't leak on shutdown).
@@ -269,6 +270,7 @@ func (a *app) startBootSequence() {
 			a.orch.LoadState(context.Background())
 			a.orch.HandleEvent(context.Background(), orchestrator.Event{Type: orchestrator.EventBoot})
 			a.proxyRuntimeNudge("post-restore", proxyrt.EventBoot)
+			a.restoreAdaptiveRouting()
 			return
 		}
 
@@ -280,8 +282,54 @@ func (a *app) startBootSequence() {
 		// Как на cold-boot: посев мог не состояться, если RCI ещё не отвечал
 		// сразу после opkg upgrade.
 		a.proxyRuntimeNudge("daemon-restart", proxyrt.EventBoot)
+		a.restoreAdaptiveRouting()
 	}
 
+}
+
+func (a *app) restoreAdaptiveRouting() {
+	if a.adaptiveRoutingSvc == nil || a.adaptiveRoutingStore == nil {
+		return
+	}
+	// Purge any stray daemon surviving from a previous crashed run or package upgrade
+	_ = a.adaptiveRoutingSvc.CleanupStaleOrphans(context.Background())
+
+	a.startAdaptiveRoutingWatchdog()
+	applied := a.adaptiveRoutingStore.GetApplied()
+	if applied == nil || !applied.Settings.Enabled {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(a.shutdownCtx, 30*time.Second)
+		defer cancel()
+		if _, err := a.adaptiveRoutingSvc.Apply(ctx, applied.Settings); err != nil {
+			a.bootLog.Warn("startup", "adaptive-routing", fmt.Sprintf("restore adaptive routing failed: %v", err))
+		} else {
+			a.bootLog.Info("startup", "adaptive-routing", "Adaptive routing (Susanin) restored successfully")
+		}
+	}()
+}
+
+func (a *app) startAdaptiveRoutingWatchdog() {
+	if a.adaptiveRoutingSvc == nil || a.shutdownCtx == nil {
+		return
+	}
+	a.adaptiveWatchdogOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-a.shutdownCtx.Done():
+					return
+				case <-ticker.C:
+					ctx, cancel := context.WithTimeout(a.shutdownCtx, 4*time.Second)
+					_, _ = a.adaptiveRoutingSvc.Reconcile(ctx)
+					cancel()
+				}
+			}
+		}()
+	})
 }
 
 // serve installs signal handlers and runs the HTTP server until shutdown.

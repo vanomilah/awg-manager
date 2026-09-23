@@ -192,6 +192,7 @@ func (a *app) setupServer() {
 			HydraService:        a.hydraService,
 			SingboxHandler:      a.singboxHandler,
 			MihomoHandler:       a.mihomoHandler,
+			AdaptiveRoutingHandler: a.adaptiveRoutingHandler,
 			XrayHandler:         api.NewXrayHandler(a.xrayServerService),
 			SingboxOrch:         a.sbOrch,
 			ClashProxy:          a.clashProxy,
@@ -409,6 +410,12 @@ func (a *app) setupRouter() {
 		return a.mihomoBridgeRuntime.deactivate(context.Background())
 	}
 	a.dynamicEngine = dynEngine
+	mihomoExec := a.adaptiveRoutingMihomoExec
+	if mihomoExec != nil {
+		mihomoExec.SetReloadFunc(func(ctx context.Context) error {
+			return dynEngine.Reload()
+		})
+	}
 	routerSvc := router.NewService(router.Deps{
 		AppLog:                 a.loggingService,
 		Settings:               a.settingsStore,
@@ -427,6 +434,7 @@ func (a *app) setupRouter() {
 		WANInterfaces:          &routerWANInterfaceAdapter{store: a.ndmsQueries.Interfaces},
 		BindableInterfaces:     bindableAdapter,
 		IngressResolver:        &routerIngressResolverAdapter{store: a.ndmsQueries.Interfaces},
+		AdaptiveEgressProvider: mihomoExec,
 		PresetCatalog:          a.presetCatalog,
 		GeoData:                a.geoDataStore,
 		GeoTagCounts:           a.geoDataStore,
@@ -505,6 +513,15 @@ func (a *app) setupRouter() {
 		dynEngine.SetCoordinator(coordinator)
 		dynEngine.SetNativeStore(a.mihomoNativeStore)
 		dynEngine.SetCompileFunc(routerSvc.CompileMihomoConfig)
+		dynEngine.OnMihomoPostApply = func() {
+			if a.adaptiveRoutingSvc != nil {
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = a.adaptiveRoutingSvc.ReconcileDatapath(ctx)
+				}()
+			}
+		}
 	}
 	if a.mihomoHandler != nil {
 		a.mihomoHandler.SetRouterService(routerSvc)

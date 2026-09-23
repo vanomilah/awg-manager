@@ -15,6 +15,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 	"github.com/hoaxisr/awg-manager/internal/presets"
@@ -301,13 +302,16 @@ type MihomoNativeProxySource interface {
 	ListBridges() []mihomonative.BridgeRef
 }
 
-var _ MihomoNativeProxySource = (*mihomonative.Store)(nil)
+type AdaptiveEgressProvider interface {
+	AdaptiveConfig() *mihomo.AdaptiveEgressConfig
+}
 
 type Deps struct {
 	AppLog   logging.AppLogger
 	Settings *storage.SettingsStore
 	// PresetCatalog is the unified preset catalog. Required for ListPresets and ApplyPreset.
 	PresetCatalog *presets.Catalog
+	AdaptiveEgressProvider AdaptiveEgressProvider
 	Engine        proxyengine.Engine
 	Singbox       SingboxController
 	Policies      AccessPolicyProvider

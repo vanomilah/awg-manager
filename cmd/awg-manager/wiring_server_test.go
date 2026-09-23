@@ -88,6 +88,9 @@ type testMutationApplier struct{}
 func (testMutationApplier) IsDegraded() bool                                    { return false }
 func (testMutationApplier) CheckMutationAllowed() error                         { return nil }
 func (testMutationApplier) ApplyNativeMutation(context.Context, func() error) error { return nil }
+func (testMutationApplier) ApplyNativeMutationWithOutcome(context.Context, func() error) (*mihomo.MutationOutcome, error) {
+	return &mihomo.MutationOutcome{ApplyPath: mihomo.ApplyPathHotReload}, nil
+}
 func (testMutationApplier) ApplyDraftOnly(context.Context, func() error) error     { return nil }
 func (testMutationApplier) ApplyPendingDraft(context.Context) error             { return nil }
 func (testMutationApplier) Reconcile(context.Context, string, bool) error       { return nil }

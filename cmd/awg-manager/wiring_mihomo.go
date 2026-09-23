@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
@@ -145,6 +146,9 @@ func (a *app) syncNDMSProxyExports(ctx context.Context) error {
 			if err := a.dynamicEngine.syncMihomoRuntimeWithinTransition(); err != nil {
 				return err
 			}
+			if a.adaptiveRoutingSvc != nil {
+				_ = a.adaptiveRoutingSvc.ReconcileDatapath(ctx)
+			}
 			return nil
 		}); err != nil {
 			return failMihomoProxySync(err, a.mihomoBridgeDeactivate)
@@ -175,6 +179,12 @@ func failMihomoProxySync(original error, deactivate func(context.Context) error)
 func (a *app) mihomoSidecarNeeded() bool {
 	if a.settingsStore == nil || a.mihomoNativeStore == nil {
 		return false
+	}
+	if a.adaptiveRoutingStore != nil {
+		applied := a.adaptiveRoutingStore.GetApplied()
+		if applied != nil && applied.Settings.Enabled && applied.Egress.Ref.Engine == adaptiverouting.EngineMihomo {
+			return true
+		}
 	}
 	hasNativeResources := len(a.mihomoNativeStore.ConfigBridgeListeners()) > 0
 	if !hasNativeResources {

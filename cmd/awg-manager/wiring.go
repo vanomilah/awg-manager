@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"sync"
 
 	"github.com/hoaxisr/awg-manager/internal/accesspolicy"
+	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/auth"
 	"github.com/hoaxisr/awg-manager/internal/awg3endpoint"
@@ -82,8 +84,9 @@ type app struct {
 	uptime   float64
 	bootDone int32 // 0 = booting, 1 = done (atomic; /api/system/info)
 
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
+	shutdownCtx          context.Context
+	shutdownCancel       context.CancelFunc
+	adaptiveWatchdogOnce sync.Once
 
 	// storage / settings / logging
 	settingsStore *storage.SettingsStore
@@ -192,6 +195,12 @@ type app struct {
 	mihomoBridgeRuntime *mihomoBridgeRuntime
 	dynamicEngine       *DynamicEngine
 	xrayHandler         *api.XrayHandler
+
+	// adaptive routing (susanin)
+	adaptiveRoutingStore      *adaptiverouting.Store
+	adaptiveRoutingSvc        *adaptiverouting.Service
+	adaptiveRoutingHandler    *api.AdaptiveRoutingHandler
+	adaptiveRoutingMihomoExec *adaptiverouting.MihomoExecutor
 
 	// прокси-рантайм
 	//

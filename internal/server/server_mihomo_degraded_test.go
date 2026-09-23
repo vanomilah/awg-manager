@@ -41,6 +41,14 @@ func (m *degradedMockMutationApplier) ApplyNativeMutation(_ context.Context, fn 
 	return fn()
 }
 
+func (m *degradedMockMutationApplier) ApplyNativeMutationWithOutcome(_ context.Context, fn func() error) (*mihomo.MutationOutcome, error) {
+	if err := m.CheckMutationAllowed(); err != nil {
+		return nil, err
+	}
+	m.calls.Add(1)
+	return &mihomo.MutationOutcome{ApplyPath: mihomo.ApplyPathHotReload}, fn()
+}
+
 func (m *degradedMockMutationApplier) ApplyDraftOnly(_ context.Context, fn func() error) error {
 	if err := m.CheckMutationAllowed(); err != nil {
 		return err

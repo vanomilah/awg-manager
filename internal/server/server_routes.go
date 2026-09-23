@@ -1175,6 +1175,7 @@ func (s *Server) wireCrossHandlers(mux *http.ServeMux, h *routeHandlers) {
 				s.ndmsQueries.Interfaces.InvalidateAll()
 			}
 		}
+		tsb.InvalidateCaches()
 		s.bus.PublishInvalidated(events.ResourceTunnels, "ndms-hook")
 	}
 	h.hookHandler.SetTunnelRefresher(invalidateTunnelsOnHook)
@@ -1256,6 +1257,9 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 	}
 	if s.mihomoHandler != nil {
 		s.mihomoHandler.RegisterRoutes(mux, h.guarded)
+	}
+	if s.adaptiveRoutingHandler != nil {
+		s.adaptiveRoutingHandler.RegisterRoutes(mux, h.guarded)
 	}
 	if s.xrayHandler != nil {
 		s.xrayHandler.RegisterRoutes(mux, h.guarded)

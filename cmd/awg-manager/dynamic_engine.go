@@ -35,6 +35,7 @@ type DynamicEngine struct {
 	OnMihomoReady       func() error
 	OnMihomoUnavailable func() error
 	OnMihomoShutdown    func(context.Context) error
+	OnMihomoPostApply   func()
 	OnReady             func()
 
 	onReadyOnce        sync.Once
@@ -148,25 +149,34 @@ func (d *DynamicEngine) Startup(ctx context.Context) StartupResult {
 }
 
 func (d *DynamicEngine) ApplyNativeMutation(ctx context.Context, mutateFn func() error) error {
+	_, err := d.ApplyNativeMutationWithOutcome(ctx, mutateFn)
+	return err
+}
+
+func (d *DynamicEngine) ApplyNativeMutationWithOutcome(ctx context.Context, mutateFn func() error) (*mihomo.MutationOutcome, error) {
 	if d.coordinator == nil {
 		if mutateFn != nil {
-			return mutateFn()
+			if err := mutateFn(); err != nil {
+				return nil, err
+			}
 		}
-		return nil
+		return &mihomo.MutationOutcome{
+			ApplyPath: mihomo.ApplyPathDraftOnly,
+		}, nil
 	}
-	err := d.coordinator.MutateAndApply(ctx, mutateFn, func(c context.Context) (*mihomo.CompileResult, error) {
+	outcome, err := d.coordinator.ApplyMutationWithOutcome(ctx, mutateFn, func(c context.Context) (*mihomo.CompileResult, error) {
 		if d.compileFn != nil {
 			return d.compileFn(c)
 		}
 		return nil, errors.New("compile function not configured")
 	})
 	if err != nil {
-		return err
+		return outcome, err
 	}
 	if readyErr := d.markMihomoReady(); readyErr != nil {
-		return d.failMihomo(readyErr)
+		return outcome, d.failMihomo(readyErr)
 	}
-	return nil
+	return outcome, nil
 }
 
 func (d *DynamicEngine) ApplyDraftOnly(ctx context.Context, mutateFn func() error) error {
@@ -354,6 +364,9 @@ func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
 		d.currentMihomoMode = mode
 		if err := d.markMihomoReady(); err != nil {
 			return d.failMihomo(err)
+		}
+		if d.OnMihomoPostApply != nil {
+			d.OnMihomoPostApply()
 		}
 		return nil
 	}

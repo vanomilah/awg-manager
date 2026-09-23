@@ -218,8 +218,13 @@ func (s *ServiceImpl) AssembleCompileInput(ctx context.Context) (*MihomoCompileI
 		}
 	}
 
+	if s.deps.AdaptiveEgressProvider != nil {
+		resources.AdaptiveEgress = s.deps.AdaptiveEgressProvider.AdaptiveConfig()
+	}
+
 	isPrimary := sr.Enabled && sr.RoutingEngine == "mihomo"
 	hasNativeListeners := len(resources.Listeners) > 0
+	hasAdaptiveEgress := resources.AdaptiveEgress != nil && resources.AdaptiveEgress.Enabled
 
 	var sidecar bool
 	var rMode mihomo.RuntimeMode
@@ -227,7 +232,7 @@ func (s *ServiceImpl) AssembleCompileInput(ctx context.Context) (*MihomoCompileI
 	if isPrimary {
 		sidecar = false
 		rMode = mihomo.RuntimeEnforced
-	} else if hasNativeListeners {
+	} else if hasNativeListeners || hasAdaptiveEgress {
 		sidecar = true
 		rMode = mihomo.RuntimePermissive
 	} else {

@@ -71,6 +71,7 @@ func main() {
 	a.setupEventWiring()
 	a.setupSingbox()
 	a.setupMihomo()
+	a.setupAdaptiveRouting()
 	a.setupServer()
 	a.setupDeviceProxy()
 	a.setupRouter()

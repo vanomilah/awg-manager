@@ -116,6 +116,7 @@ type Server struct {
 	exposureGuardStop          context.CancelFunc
 	singboxHandler             *api.SingboxHandler
 	mihomoHandler              *api.MihomoHandler
+	adaptiveRoutingHandler     *api.AdaptiveRoutingHandler
 	xrayHandler                *api.XrayHandler
 	aiAssistantHandler         *api.AIAssistantHandler
 	trafficHandler             *systraffic.Handler
@@ -225,6 +226,7 @@ type Deps struct {
 	HydraService         *hydraroute.Service
 	SingboxHandler       *api.SingboxHandler
 	MihomoHandler        *api.MihomoHandler
+	AdaptiveRoutingHandler *api.AdaptiveRoutingHandler
 	XrayHandler          *api.XrayHandler
 	AIAssistantHandler   *api.AIAssistantHandler
 	TrafficHandler       *systraffic.Handler
@@ -293,6 +295,7 @@ func New(cfg Config, deps Deps) *Server {
 		bus:                    deps.Bus,
 		singboxHandler:         deps.SingboxHandler,
 		mihomoHandler:          deps.MihomoHandler,
+		adaptiveRoutingHandler: deps.AdaptiveRoutingHandler,
 		xrayHandler:            deps.XrayHandler,
 		aiAssistantHandler:     deps.AIAssistantHandler,
 		trafficHandler:         deps.TrafficHandler,
