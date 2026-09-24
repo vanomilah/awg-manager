@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -671,6 +673,125 @@ func (s *Service) Forget(ctx context.Context, ip string, proto string) error {
 	}
 	return nil
 }
+
+func (s *Service) GetLearnedEntries(ctx context.Context) (map[string][]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.datapath != nil {
+		return s.datapath.GetLearnedEntries(ctx)
+	}
+	return make(map[string][]string), nil
+}
+
+func (s *Service) GetRecentLogs(ctx context.Context, limit int) ([]LogEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+
+	logPath := filepath.Join(ManagedSusaninVarDir, "agent.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []LogEvent{}, nil
+		}
+		return nil, err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var nonEmpty []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" {
+			nonEmpty = append(nonEmpty, l)
+		}
+	}
+
+	start := 0
+	if len(nonEmpty) > limit {
+		start = len(nonEmpty) - limit
+	}
+	recent := nonEmpty[start:]
+
+	events := make([]LogEvent, 0, len(recent))
+	for i := len(recent) - 1; i >= 0; i-- {
+		events = append(events, parseSusaninLogLine(recent[i]))
+	}
+
+	return events, nil
+}
+
+func parseSusaninLogLine(line string) LogEvent {
+	parts := strings.SplitN(line, " ", 3)
+	ts := ""
+	lvl := "INFO"
+	rest := line
+	if len(parts) >= 2 {
+		ts = parts[0]
+		lvl = strings.TrimSuffix(parts[1], ":")
+		if len(parts) >= 3 {
+			rest = parts[2]
+		}
+	}
+
+	action := lvl
+	target := ""
+	msg := rest
+
+	if strings.Contains(rest, "AUTO-SUSANIN:") {
+		subParts := strings.SplitN(rest, "AUTO-SUSANIN:", 2)
+		sub := strings.TrimSpace(subParts[1])
+		tokens := strings.Fields(sub)
+		if len(tokens) > 0 {
+			target = tokens[len(tokens)-1]
+		}
+		switch {
+		case strings.Contains(sub, "CONFIRMED"):
+			action = "CONFIRMED"
+			msg = "Блокировка подтверждена → переведён в VPN"
+		case strings.Contains(sub, "TCP-STALL"):
+			action = "STALL"
+			msg = "Зависание прямого потока (начата проверка)"
+		case strings.Contains(sub, "LATE-STALL"):
+			action = "LATE-STALL"
+			msg = "Обрыв потока во время передачи данных"
+		case strings.Contains(sub, "TCP-CLOSE"):
+			action = "RESET"
+			msg = "Сброс сессии цензором (TCP RST)"
+		case strings.Contains(sub, "TCP-SYN"):
+			action = "SYN-TIMEOUT"
+			msg = "Таймаут подключения (блокировка SYN)"
+		case strings.Contains(sub, "QUIC"):
+			action = "QUIC"
+			msg = "Блокировка UDP / QUIC протокола"
+		case strings.Contains(sub, "COOLDOWN"):
+			action = "COOLDOWN"
+			msg = "Охлаждение ресурса после проверок"
+		default:
+			action = "DISCOVER"
+			msg = sub
+		}
+	} else if strings.Contains(rest, "re-provisioning") {
+		action = "DATAPATH"
+		msg = "Обновление правил маршрутизации ядра"
+	} else if strings.Contains(rest, "vpn_always") {
+		action = "PINNED"
+		msg = "Синхронизация фиксированных подсетей"
+	}
+
+	return LogEvent{
+		Timestamp: ts,
+		Level:     lvl,
+		Action:    action,
+		Target:    target,
+		Message:   msg,
+		Raw:       line,
+	}
+}
+
 
 func (s *Service) resolveExecutorLocked(engine EgressEngine) Executor {
 	switch engine {

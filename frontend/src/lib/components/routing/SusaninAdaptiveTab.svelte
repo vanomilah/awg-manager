@@ -26,6 +26,7 @@
 		Layers,
 		Activity,
 		ListFilter,
+		RefreshCw,
 	} from 'lucide-svelte';
 	import type {
 		AdaptiveRoutingSettings,
@@ -33,6 +34,7 @@
 		ResolvedEgress,
 		EgressRef,
 		LearnedDataResponse,
+		SusaninLogEvent,
 	} from '$lib/types/adaptiveRouting';
 	import type { AccessPolicy, PolicyGlobalInterface, RoutingTunnel } from '$lib/types/routing';
 
@@ -104,11 +106,68 @@
 	let detectorExpanded = $state(false);
 	let activeListTab = $state<'always' | 'never'>('always');
 	let showLearnedModal = $state(false);
+	let modalTab = $state<'ok' | 'test' | 'radar' | 'always' | 'never'>('ok');
+	let ipSearchQuery = $state('');
+	let logEvents = $state<SusaninLogEvent[]>([]);
+	let radarPollTimer: ReturnType<typeof setInterval> | null = null;
 
 	let alwaysText = $state('');
 	let neverText = $state('');
 
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+	const okEntries = $derived.by(() => {
+		if (!learned) return [];
+		const list: Array<{ ip: string; proto: string }> = [];
+		if (learned.okTcp && learned.okTcp.length > 0) {
+			for (const ip of learned.okTcp) {
+				list.push({ ip, proto: 'tcp' });
+			}
+		}
+		if (learned.okUdp && learned.okUdp.length > 0) {
+			for (const ip of learned.okUdp) {
+				list.push({ ip, proto: 'udp' });
+			}
+		}
+		return list;
+	});
+
+	const filteredOkEntries = $derived.by(() => {
+		const q = ipSearchQuery.trim().toLowerCase();
+		if (!q) return okEntries;
+		return okEntries.filter((item) => item.ip.toLowerCase().includes(q));
+	});
+
+	const testEntries = $derived.by(() => {
+		if (!learned) return [];
+		const list: Array<{ ip: string; proto: string }> = [];
+		if (learned.testTcp && learned.testTcp.length > 0) {
+			for (const ip of learned.testTcp) {
+				list.push({ ip, proto: 'tcp' });
+			}
+		}
+		if (learned.testUdp && learned.testUdp.length > 0) {
+			for (const ip of learned.testUdp) {
+				list.push({ ip, proto: 'udp' });
+			}
+		}
+		return list;
+	});
+
+	const filteredTestEntries = $derived.by(() => {
+		const q = ipSearchQuery.trim().toLowerCase();
+		if (!q) return testEntries;
+		return testEntries.filter((item) => item.ip.toLowerCase().includes(q));
+	});
+
+	async function loadLogs() {
+		try {
+			const res = await api.getAdaptiveRoutingLogs(50);
+			logEvents = res.events || [];
+		} catch {
+			// ignore silently
+		}
+	}
 
 	function egressKey(ref: EgressRef): string {
 		if (!ref || !ref.resourceId) return '';
@@ -197,15 +256,19 @@
 	async function loadAll(initial = false) {
 		if (initial) loading = true;
 		try {
-			const [statusRes, egressRes, learnedRes] = await Promise.all([
+			const [statusRes, egressRes, learnedRes, logsRes] = await Promise.all([
 				api.getAdaptiveRoutingStatus(),
 				api.getAdaptiveRoutingEgresses(),
 				api.getAdaptiveRoutingLearned().catch(() => null),
+				api.getAdaptiveRoutingLogs(25).catch(() => ({ events: [] })),
 			]);
 
 			status = statusRes.state;
 			egresses = egressRes.items || [];
 			learned = learnedRes;
+			if (logsRes && logsRes.events) {
+				logEvents = logsRes.events;
+			}
 
 			if (!settingsHydrated) {
 				useServerSettings(statusRes.settings);
@@ -228,6 +291,7 @@
 
 	onDestroy(() => {
 		if (pollTimer) clearInterval(pollTimer);
+		if (radarPollTimer) clearInterval(radarPollTimer);
 	});
 
 	function handleEgressChange(newVal: string) {
@@ -636,10 +700,25 @@
 					</div>
 					<div class="flex items-center gap-1.5">
 						<button
-							class="text-xs text-[var(--color-accent)] hover:underline flex items-center gap-1"
-							onclick={() => (showLearnedModal = true)}
+							class="text-xs text-[var(--color-accent)] hover:underline flex items-center gap-1 font-medium"
+							onclick={() => { modalTab = 'ok'; showLearnedModal = true; }}
 						>
-							База IP
+							База IP ({status?.learnedTcpCount ?? 0})
+						</button>
+						<span class="text-[var(--color-border)]">·</span>
+						<button
+							class="text-xs text-amber-500 hover:underline flex items-center gap-1 font-medium"
+							onclick={() => {
+								modalTab = 'radar';
+								showLearnedModal = true;
+								void loadLogs();
+								if (!radarPollTimer) {
+									radarPollTimer = setInterval(() => { void loadLogs(); }, 2000);
+								}
+							}}
+						>
+							<Activity class="w-3.5 h-3.5 inline animate-pulse" />
+							Живой радар
 						</button>
 						<span class="text-[var(--color-border)]">·</span>
 						<button
@@ -686,6 +765,52 @@
 							{status?.neverCount ?? 0}
 						</div>
 					</div>
+				</div>
+
+				<!-- Компактная мини-лента активности детектора в реальном времени -->
+				<div class="p-2.5 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] flex flex-col gap-1.5 my-2">
+					<div class="flex items-center justify-between text-[11px]">
+						<div class="flex items-center gap-1.5 text-amber-500 font-semibold">
+							<span class="relative flex h-2 w-2">
+								<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+								<span class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+							</span>
+							<span>Анализ соединений в реальном времени</span>
+						</div>
+						<button
+							type="button"
+							class="text-[var(--color-accent)] hover:underline flex items-center gap-0.5"
+							onclick={() => {
+								modalTab = 'radar';
+								showLearnedModal = true;
+								void loadLogs();
+								if (!radarPollTimer) {
+									radarPollTimer = setInterval(() => { void loadLogs(); }, 2000);
+								}
+							}}
+						>
+							Радар подробно →
+						</button>
+					</div>
+					{#if logEvents.length > 0}
+						<div class="space-y-1">
+							{#each logEvents.slice(0, 3) as ev}
+								<div class="flex items-center justify-between text-[11px] font-mono text-[var(--color-text-secondary)] truncate">
+									<div class="flex items-center gap-1.5 truncate">
+										<span class="text-[9px] px-1 py-0.2 rounded uppercase font-bold {ev.action === 'CONFIRMED' ? 'bg-emerald-500/20 text-emerald-400' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'}">
+											{ev.action}
+										</span>
+										<span class="text-[var(--color-text-primary)] font-semibold truncate">{ev.target || ev.message}</span>
+									</div>
+									<span class="text-[10px] text-[var(--color-text-muted)] ml-2 shrink-0">{ev.timestamp}</span>
+								</div>
+							{/each}
+						</div>
+					{:else}
+						<div class="text-[11px] text-[var(--color-text-muted)] italic">
+							Ожидание сетевой активности детектора...
+						</div>
+					{/if}
 				</div>
 
 				<!-- Вкладки Always / Never списков -->
@@ -869,75 +994,275 @@
 </div>
 
 <!-- Модальное окно базы изученных адресов -->
+<!-- Модальное окно базы изученных адресов и живого радара -->
 {#if showLearnedModal}
 	<Modal
 		open={showLearnedModal}
-		title="Изученные направления Susanin"
-		onclose={() => (showLearnedModal = false)}
+		title="База маршрутов и Живой радар Susanin"
+		onclose={() => {
+			showLearnedModal = false;
+			if (radarPollTimer) {
+				clearInterval(radarPollTimer);
+				radarPollTimer = null;
+			}
+		}}
 	>
 		<div class="p-4 space-y-4 max-h-[80vh] overflow-y-auto">
-			<div class="flex items-center justify-between">
+			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[var(--color-border)]">
 				<p class="text-xs text-[var(--color-text-muted)]">
-					Список подтверждённых адресов, направляемых через выбранный выход
+					Оперативная база ядра Linux (ipset) и живой поток исследования блокировок
 				</p>
-				<Button
-					variant="danger"
-					size="sm"
-					onclick={async () => {
-						try {
-							await api.clearAdaptiveRoutingCache();
-							notifications.success('Кэш обучения очищен');
+				<div class="flex items-center gap-2">
+					<Button
+						variant="secondary"
+						size="sm"
+						onclick={() => {
 							void loadAll(false);
-						} catch (e) {
-							notifications.error(`Ошибка очистки: ${(e as Error).message}`);
+							void loadLogs();
+						}}
+					>
+						<RefreshCw class="w-3.5 h-3.5 mr-1" />
+						Обновить
+					</Button>
+					<Button
+						variant="danger"
+						size="sm"
+						onclick={async () => {
+							try {
+								await api.clearAdaptiveRoutingCache();
+								notifications.success('Кэш обучения очищен');
+								void loadAll(false);
+							} catch (e) {
+								notifications.error(`Ошибка очистки: ${(e as Error).message}`);
+							}
+						}}
+					>
+						<Trash2 class="w-3.5 h-3.5 mr-1" />
+						Очистить кэш
+					</Button>
+				</div>
+			</div>
+
+			<!-- Tab navigation -->
+			<div class="flex items-center gap-1.5 flex-wrap border-b border-[var(--color-border)] pb-2">
+				<button
+					type="button"
+					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'ok' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+					onclick={() => (modalTab = 'ok')}
+				>
+					<span>Изученные адреса (ОК)</span>
+					<Badge variant="success" size="sm">{okEntries.length}</Badge>
+				</button>
+
+				<button
+					type="button"
+					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'radar' ? 'bg-amber-500/10 text-amber-500 font-semibold border border-amber-500/30' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+					onclick={() => {
+						modalTab = 'radar';
+						void loadLogs();
+						if (!radarPollTimer) {
+							radarPollTimer = setInterval(() => { void loadLogs(); }, 2000);
 						}
 					}}
 				>
-					<Trash2 class="w-3.5 h-3.5 mr-1" />
-					Очистить кэш
-				</Button>
+					<Activity class="w-3.5 h-3.5 {modalTab === 'radar' ? 'animate-pulse' : ''}" />
+					<span>Живой радар (Реал-тайм)</span>
+					<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
+				</button>
+
+				<button
+					type="button"
+					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'test' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+					onclick={() => (modalTab = 'test')}
+				>
+					<span>В процессе теста</span>
+					<Badge variant="warning" size="sm">{testEntries.length}</Badge>
+				</button>
+
+				<button
+					type="button"
+					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'always' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+					onclick={() => (modalTab = 'always')}
+				>
+					<span>Всегда в VPN</span>
+					<Badge variant="muted" size="sm">{(learned?.always || []).length}</Badge>
+				</button>
+
+				<button
+					type="button"
+					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'never' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+					onclick={() => (modalTab = 'never')}
+				>
+					<span>Напрямую</span>
+					<Badge variant="muted" size="sm">{(learned?.never || []).length}</Badge>
+				</button>
 			</div>
 
-			<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+			<!-- Search bar for lists -->
+			{#if modalTab === 'ok' || modalTab === 'test'}
+				<div class="relative">
+					<Search class="w-4 h-4 text-[var(--color-text-muted)] absolute left-2.5 top-1/2 -translate-y-1/2" />
+					<input
+						type="text"
+						bind:value={ipSearchQuery}
+						placeholder="Фильтр по IP адресу (например, 157.240)..."
+						class="w-full pl-8 pr-3 py-1.5 text-xs bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-md text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)]"
+					/>
+				</div>
+			{/if}
+
+			<!-- Tab 1: Изученные адреса (ОК) -->
+			{#if modalTab === 'ok'}
 				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
-						<span>Изученные адреса (ОК)</span>
-						<Badge variant="success" size="sm">{(learned?.always || []).length} записей</Badge>
+					<div class="text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
+						<span>Адреса, подтверждённые Сусаниным и направляемые в туннель:</span>
+						<span>{filteredOkEntries.length} из {okEntries.length}</span>
 					</div>
-					<div class="space-y-1 max-h-56 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
-						{#each learned?.always || [] as entry}
-							<div class="p-1 rounded bg-[var(--color-bg-tertiary)] truncate">
-								{entry}
+					<div class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+						{#each filteredOkEntries as item}
+							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex items-center justify-between hover:bg-[var(--color-bg-primary)] transition-colors border border-transparent hover:border-[var(--color-border)] text-xs">
+								<div class="flex items-center gap-2 font-mono">
+									<span class="w-2 h-2 rounded-full bg-[var(--color-success)]"></span>
+									<span class="text-[var(--color-text-primary)] font-semibold">{item.ip}</span>
+									<span class="text-[10px] uppercase px-1 py-0.5 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] font-sans">{item.proto}</span>
+								</div>
+								<button
+									type="button"
+									class="text-[var(--color-text-muted)] hover:text-[var(--color-error)] text-xs px-2 py-0.5 rounded hover:bg-[var(--color-error-tint)] transition-colors"
+									title="Забыть этот адрес и вернуть на прямой доступ"
+									onclick={async () => {
+										try {
+											await api.forgetAdaptiveRoute(item.ip, item.proto);
+											notifications.success(`Адрес ${item.ip} удалён из базы`);
+											void loadAll(false);
+										} catch (e) {
+											notifications.error(`Ошибка: ${(e as Error).message}`);
+										}
+									}}
+								>
+									Забыть
+								</button>
 							</div>
 						{:else}
-							<div class="text-[var(--color-text-muted)] italic text-center py-4">
-								Список пока пуст
+							<div class="text-[var(--color-text-muted)] italic text-center py-8">
+								{okEntries.length === 0 ? 'Сусанин пока не зафиксировал блокировок. База наполняется автоматически при появлении сетевых сбоев.' : 'Ничего не найдено по вашему фильтру.'}
 							</div>
 						{/each}
 					</div>
 				</div>
+			{/if}
 
+			<!-- Tab 2: Живой радар -->
+			{#if modalTab === 'radar'}
+				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
+						<span class="flex items-center gap-1.5 text-[var(--color-text-primary)] font-medium">
+							<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+							Лента анализа соединений в реальном времени:
+						</span>
+						<span class="text-[11px] font-mono text-[var(--color-text-secondary)]">автообновление каждые 2с</span>
+					</div>
+					<div class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+						{#each logEvents as ev}
+							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs border-l-2 {ev.action === 'CONFIRMED' ? 'border-l-[var(--color-success)]' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'border-l-amber-500' : ev.action === 'RESET' ? 'border-l-[var(--color-error)]' : 'border-l-[var(--color-accent)]'}">
+								<div class="flex items-center gap-2">
+									<span class="text-[11px] font-mono text-[var(--color-text-muted)]">{ev.timestamp}</span>
+									<span class="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase font-mono {ev.action === 'CONFIRMED' ? 'bg-emerald-500/20 text-emerald-400' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'bg-amber-500/20 text-amber-400' : ev.action === 'RESET' ? 'bg-red-500/20 text-red-400' : 'bg-blue-500/20 text-blue-400'}">
+										{ev.action}
+									</span>
+									{#if ev.target}
+										<span class="font-mono font-semibold text-[var(--color-text-primary)]">{ev.target}</span>
+									{/if}
+								</div>
+								<div class="text-[11px] text-[var(--color-text-secondary)]">
+									{ev.message}
+								</div>
+							</div>
+						{:else}
+							<div class="text-[var(--color-text-muted)] italic text-center py-8">
+								Журнал событий пока пуст. События появляются в реальном времени при открытии заблокированных видео или сайтов.
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Tab 3: В процессе теста -->
+			{#if modalTab === 'test'}
+				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
+						<span>Адреса, проходящие проверку на блокировку прямо сейчас:</span>
+						<span>{filteredTestEntries.length} из {testEntries.length}</span>
+					</div>
+					<div class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+						{#each filteredTestEntries as item}
+							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex items-center justify-between text-xs font-mono">
+								<div class="flex items-center gap-2">
+									<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+									<span class="text-[var(--color-text-primary)] font-semibold">{item.ip}</span>
+									<span class="text-[10px] uppercase px-1 py-0.5 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] font-sans">{item.proto}</span>
+								</div>
+								<span class="text-[11px] text-amber-500 font-sans">Тестируется...</span>
+							</div>
+						{:else}
+							<div class="text-[var(--color-text-muted)] italic text-center py-8">
+								Сейчас нет адресов на стадии тестирования.
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Tab 4: Always -->
+			{#if modalTab === 'always'}
+				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
+						<span>Фиксированные подсети и домены (Always)</span>
+						<Badge variant="accent" size="sm">{(learned?.always || []).length} записей</Badge>
+					</div>
+					<div class="space-y-1 max-h-80 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
+						{#each learned?.always || [] as entry}
+							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] truncate">
+								{entry}
+							</div>
+						{:else}
+							<div class="text-[var(--color-text-muted)] italic text-center py-4">
+								Список пуст
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Tab 5: Never -->
+			{#if modalTab === 'never'}
 				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
 					<div class="font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
 						<span>Прямой доступ (Never)</span>
 						<Badge variant="muted" size="sm">{(learned?.never || []).length} записей</Badge>
 					</div>
-					<div class="space-y-1 max-h-56 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
+					<div class="space-y-1 max-h-80 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
 						{#each learned?.never || [] as entry}
-							<div class="p-1 rounded bg-[var(--color-bg-tertiary)] truncate">
+							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] truncate">
 								{entry}
 							</div>
 						{:else}
 							<div class="text-[var(--color-text-muted)] italic text-center py-4">
-								Список пока пуст
+								Список пуст
 							</div>
 						{/each}
 					</div>
 				</div>
-			</div>
+			{/if}
 
 			<div class="flex justify-end pt-2">
-				<Button variant="secondary" onclick={() => (showLearnedModal = false)}>
+				<Button variant="secondary" onclick={() => {
+					showLearnedModal = false;
+					if (radarPollTimer) {
+						clearInterval(radarPollTimer);
+						radarPollTimer = null;
+					}
+				}}>
 					Закрыть
 				</Button>
 			</div>

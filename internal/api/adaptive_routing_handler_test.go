@@ -178,4 +178,14 @@ func TestAdaptiveRoutingHandler_LearnedAndForget(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST clear cache status = %d", rec.Code)
 	}
+
+	// GET /api/adaptive-routing/logs
+	req = httptest.NewRequest(http.MethodGet, "/api/adaptive-routing/logs?limit=10", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET logs status = %d", rec.Code)
+	}
 }
+

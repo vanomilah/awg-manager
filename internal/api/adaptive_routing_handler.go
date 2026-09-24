@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
 	"github.com/hoaxisr/awg-manager/internal/response"
@@ -27,6 +28,7 @@ func (h *AdaptiveRoutingHandler) RegisterRoutes(mux *http.ServeMux, guarded func
 	mux.HandleFunc("POST /api/adaptive-routing/stop", guarded(h.handleStop))
 	mux.HandleFunc("POST /api/adaptive-routing/test-egress", guarded(h.handleTestEgress))
 	mux.HandleFunc("GET /api/adaptive-routing/learned", guarded(h.handleLearned))
+	mux.HandleFunc("GET /api/adaptive-routing/logs", guarded(h.handleLogs))
 	mux.HandleFunc("POST /api/adaptive-routing/forget", guarded(h.handleForget))
 	mux.HandleFunc("POST /api/adaptive-routing/cache/clear", guarded(h.handleClearCache))
 }
@@ -162,15 +164,64 @@ func (h *AdaptiveRoutingHandler) handleLearned(w http.ResponseWriter, r *http.Re
 	state := h.svc.GetStore().GetState()
 	settings := h.svc.GetStore().GetSettings()
 
+	learnedSets, _ := h.svc.GetLearnedEntries(r.Context())
+	if learnedSets == nil {
+		learnedSets = make(map[string][]string)
+	}
+
+	okTcp := learnedSets[adaptiverouting.SetOkTcp]
+	if okTcp == nil {
+		okTcp = []string{}
+	}
+	okUdp := learnedSets[adaptiverouting.SetOkUdp]
+	if okUdp == nil {
+		okUdp = []string{}
+	}
+	testTcp := learnedSets[adaptiverouting.SetTestTcp]
+	if testTcp == nil {
+		testTcp = []string{}
+	}
+	testUdp := learnedSets[adaptiverouting.SetTestUdp]
+	if testUdp == nil {
+		testUdp = []string{}
+	}
+	never := learnedSets[adaptiverouting.SetNever]
+	if len(never) == 0 {
+		never = settings.NeverEntries
+	}
+
 	response.Success(w, map[string]interface{}{
 		"testTcpCount": state.TestingTCPCount,
 		"testUdpCount": state.TestingUDPCount,
 		"okTcpCount":   state.LearnedTCPCount,
 		"okUdpCount":   state.LearnedUDPCount,
 		"always":       settings.AlwaysEntries,
-		"never":        settings.NeverEntries,
+		"never":        never,
+		"okTcp":        okTcp,
+		"okUdp":        okUdp,
+		"testTcp":      testTcp,
+		"testUdp":      testUdp,
 	})
 }
+
+func (h *AdaptiveRoutingHandler) handleLogs(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	events, err := h.svc.GetRecentLogs(r.Context(), limit)
+	if err != nil {
+		response.InternalError(w, err.Error())
+		return
+	}
+	response.Success(w, map[string]interface{}{
+		"events": events,
+	})
+}
+
 
 func (h *AdaptiveRoutingHandler) handleForget(w http.ResponseWriter, r *http.Request) {
 	var body struct {

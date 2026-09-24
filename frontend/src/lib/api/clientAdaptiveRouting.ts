@@ -6,6 +6,7 @@ import type {
 	LearnedDataResponse,
 	OperationalState,
 	PreviewResponse,
+	SusaninLogEvent,
 } from '$lib/types/adaptiveRouting';
 import { Awg3Client } from './clientAwg3';
 
@@ -93,6 +94,10 @@ export class AdaptiveRoutingClient extends Awg3Client {
 		return this.request<{ cleared: boolean }>('/adaptive-routing/cache/clear', {
 			method: 'POST',
 		});
+	}
+
+	async getAdaptiveRoutingLogs(limit = 50): Promise<{ events: SusaninLogEvent[] }> {
+		return this.request<{ events: SusaninLogEvent[] }>(`/adaptive-routing/logs?limit=${limit}`);
 	}
 
 	// #endregion

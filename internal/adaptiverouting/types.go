@@ -155,3 +155,12 @@ func DefaultSettings() Settings {
 		NeverEntries:      []string{},
 	}
 }
+
+type LogEvent struct {
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Action    string `json:"action"`
+	Target    string `json:"target"`
+	Message   string `json:"message"`
+	Raw       string `json:"raw"`
+}

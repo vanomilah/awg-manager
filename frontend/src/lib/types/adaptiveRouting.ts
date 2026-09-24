@@ -107,6 +107,15 @@ export interface PreviewResponse {
 	egress: ResolvedEgress;
 }
 
+export interface SusaninLogEvent {
+	timestamp: string;
+	level: string;
+	action: string;
+	target: string;
+	message: string;
+	raw: string;
+}
+
 export interface LearnedDataResponse {
 	testTcpCount: number;
 	testUdpCount: number;
@@ -114,4 +123,9 @@ export interface LearnedDataResponse {
 	okUdpCount: number;
 	always: string[];
 	never: string[];
+	okTcp?: string[];
+	okUdp?: string[];
+	testTcp?: string[];
+	testUdp?: string[];
 }
+

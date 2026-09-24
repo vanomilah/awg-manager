@@ -641,6 +641,39 @@ func (d *DatapathController) GetStats(ctx context.Context) (DatapathStats, error
 	return stats, nil
 }
 
+// GetLearnedEntries returns the active members of learned and configured ipsets.
+func (d *DatapathController) GetLearnedEntries(ctx context.Context) (map[string][]string, error) {
+	result := make(map[string][]string)
+	sets := []string{SetOkTcp, SetOkUdp, SetTestTcp, SetTestUdp, SetOkNet, SetNever}
+
+	for _, name := range sets {
+		result[name] = []string{}
+		res, err := d.runner(ctx, d.ipsetBin, "list", name)
+		if err != nil || res == nil || res.ExitCode != 0 {
+			continue
+		}
+
+		members := false
+		var entries []string
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "Members:" {
+				members = true
+				continue
+			}
+			if members && line != "" {
+				parts := strings.Fields(line)
+				if len(parts) > 0 {
+					entries = append(entries, parts[0])
+				}
+			}
+		}
+		result[name] = entries
+	}
+
+	return result, nil
+}
+
 func (d *DatapathController) drainRulesLocked(ctx context.Context, table, priOk, priTest int) {
 	for i := 0; i < 5; i++ {
 		res, err := d.runner(ctx, d.ipBin, "rule", "del", "pref", strconv.Itoa(priOk))
