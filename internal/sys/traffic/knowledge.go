@@ -496,6 +496,12 @@ func init() {
 		{"40.64.0.0/10", "Microsoft / Azure", "Сервисы Microsoft Office 365, Teams и Azure", "Microsoft Corporation", "США", "US", "cloud", "windows"},
 		{"31.13.64.0/18", "Meta / WhatsApp", "Серверы обмена сообщениями и звонков WhatsApp", "Meta Platforms, Inc.", "США", "US", "communication", "chat"},
 		{"157.240.0.0/16", "Meta / Instagram", "Серверы фото и видеоленты Instagram", "Meta Platforms, Inc.", "США", "US", "social", "chat"},
+		{"57.144.0.0/16", "Meta Platforms", "Инфраструктура серверов Meta Platforms", "Meta Platforms, Inc.", "США", "US", "social", "chat"},
+		{"173.194.0.0/16", "YouTube / Google", "Серверы кэширования и видеопотоков YouTube (Google Video)", "Google LLC", "США", "US", "media", "youtube"},
+		{"108.177.0.0/17", "Google Video", "Серверы доставки видеоконтента Google", "Google LLC", "США", "US", "media", "youtube"},
+		{"185.76.0.0/16", "Fastly / Discord", "Сеть доставки медиа и контента Discord", "Fastly, Inc.", "США", "US", "communication", "chat"},
+		{"194.221.250.0/24", "Akamai CDN", "Распределенная сеть доставки контента Akamai", "Akamai Technologies", "Европа", "EU", "cloud", "cloud"},
+		{"96.211.229.0/24", "Akamai CDN", "Распределенная сеть доставки контента Akamai", "Akamai Technologies", "США", "US", "cloud", "cloud"},
 	}
 
 	for _, item := range rawCIDRs {

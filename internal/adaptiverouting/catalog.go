@@ -38,6 +38,10 @@ func (c *Catalog) ListEgresses(ctx context.Context) ([]ResolvedEgress, error) {
 	// 1. Kernel Tunnels
 	if c.tunnelProvider != nil {
 		for _, t := range c.tunnelProvider.ListTunnels() {
+			if strings.HasPrefix(t.Name, "awg-manager:") || strings.HasPrefix(t.ID, "awg-manager:") ||
+				strings.HasPrefix(t.Interface, "Proxy") || strings.HasPrefix(t.ID, "wan:") {
+				continue
+			}
 			available := t.Active && t.Interface != ""
 			reason := ""
 			if !available {
