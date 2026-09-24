@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen } from '@testing-library/svelte';
 import SusaninAdaptiveTab from './SusaninAdaptiveTab.svelte';
-import { api } from '$lib/api/client';
 
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -25,11 +24,7 @@ vi.mock('$lib/api/client', () => ({
 					tcpSynRetries: 2,
 					lateStallBytes: 1500,
 				},
-				persistence: {
-					okTtlSeconds: 0,
-					maxEntries: 4096,
-					separateTcpUdp: true,
-				},
+				persistence: { okTtlSeconds: 0, maxEntries: 4096, separateTcpUdp: true },
 				alwaysFileEnabled: true,
 				neverFileEnabled: true,
 				alwaysEntries: ['custom-always.com'],
@@ -49,15 +44,13 @@ vi.mock('$lib/api/client', () => ({
 			},
 		}),
 		getAdaptiveRoutingEgresses: vi.fn().mockResolvedValue({
-			items: [
-				{
-					ref: { kind: 'mihomo-group', resourceId: 'grp-1', engine: 'mihomo' },
-					displayName: 'Быстрый прокси',
-					interface: 'awgsus0',
-					capabilities: { tcp: true, udp: true, icmp: false, ipv4: true, ipv6: false },
-					available: true,
-				},
-			],
+			items: [{
+				ref: { kind: 'mihomo-group', resourceId: 'grp-1', engine: 'mihomo' },
+				displayName: 'Быстрый прокси',
+				interface: 'awgsus0',
+				capabilities: { tcp: true, udp: true, icmp: false, ipv4: true, ipv6: false },
+				available: true,
+			}],
 		}),
 		getAdaptiveRoutingLearned: vi.fn().mockResolvedValue({
 			always: ['custom-always.com'],
@@ -71,54 +64,44 @@ vi.mock('$lib/api/client', () => ({
 			settings: { enabled: true },
 			state: { status: 'running', routingOwner: 'susanin' },
 		}),
-		startAdaptiveRouting: vi.fn().mockResolvedValue({
-			state: { status: 'running', routingOwner: 'susanin' },
-		}),
-		stopAdaptiveRouting: vi.fn().mockResolvedValue({
-			state: { status: 'stopped', routingOwner: 'none' },
-		}),
+		startAdaptiveRouting: vi.fn().mockResolvedValue({ state: { status: 'running', routingOwner: 'susanin' } }),
+		stopAdaptiveRouting: vi.fn().mockResolvedValue({ state: { status: 'stopped', routingOwner: 'none' } }),
 		clearAdaptiveRoutingCache: vi.fn().mockResolvedValue({ cleared: true }),
-		testAdaptiveRoutingEgress: vi.fn().mockResolvedValue({
-			available: true,
-			interface: 'awgsus0',
-		}),
+		testAdaptiveRoutingEgress: vi.fn().mockResolvedValue({ available: true, interface: 'awgsus0' }),
 	},
 }));
 
 describe('SusaninAdaptiveTab', () => {
 	it('renders status bar with running state and routing owner badge', async () => {
 		render(SusaninAdaptiveTab);
-
-		expect(await screen.findByText('Susanin работает')).toBeDefined();
+		expect(await screen.findByText('Susanin активен')).toBeDefined();
 		expect(screen.getByText('Владелец сети: Susanin')).toBeDefined();
-		expect(screen.getByText('Direct Fail-Open')).toBeDefined();
+		expect(screen.getByText('Fail-Open (Direct)')).toBeDefined();
 	});
 
-	it('renders 3 main configuration cards', async () => {
+	it('renders the routing and learning workspaces', async () => {
 		render(SusaninAdaptiveTab);
-
-		expect(await screen.findByText('Источник трафика')).toBeDefined();
-		expect(screen.getByText('Выход для обхода')).toBeDefined();
-		expect(screen.getByText('Поведение при сбое')).toBeDefined();
+		expect(await screen.findByText('Маршрутизация и выход')).toBeDefined();
+		expect(screen.getByText('Обучение и списки')).toBeDefined();
+		expect(screen.getByText('Выход для обхода блокировок')).toBeDefined();
+		expect(screen.getByText('Источник трафика')).toBeDefined();
+		expect(screen.getByText('Поведение при сбое выхода')).toBeDefined();
 	});
 
-	it('displays learning statistics tiles', async () => {
+	it('displays learning statistics returned by the backend', async () => {
 		render(SusaninAdaptiveTab);
-
+		expect(await screen.findByText('TCP ОК')).toBeDefined();
+		expect(screen.getByText('UDP ОК')).toBeDefined();
+		expect(screen.getByText('В тесте')).toBeDefined();
 		expect(await screen.findByText('14')).toBeDefined();
-		expect(screen.getByText('Изучено TCP (ОК)')).toBeDefined();
-		expect(screen.getByText('Изучено UDP (ОК)')).toBeDefined();
-		expect(screen.getByText('На проверке (Testing)')).toBeDefined();
-		expect(screen.getByText('5')).toBeDefined();
+		expect(await screen.findByText('5')).toBeDefined();
 	});
 
 	it('keeps low-level routing marks out of the user interface', async () => {
-		render(SusaninAdaptiveTab);
-
-		const expertBtn = await screen.findByText('Расширенные сетевые параметры (Expert)');
-		await fireEvent.click(expertBtn);
-
-		expect(screen.queryByText('Сетевая таблица ядра и Fwmark')).toBeNull();
-		expect(screen.getByText('Всегда через прокси-выход (Always)')).toBeDefined();
+		const { container } = render(SusaninAdaptiveTab);
+		await screen.findByText('Маршрутизация и выход');
+		expect(container.textContent).not.toContain('Fwmark');
+		expect(container.textContent).not.toContain('0x30000000');
+		expect(screen.getByText('Всегда через VPN (Always)')).toBeDefined();
 	});
 });

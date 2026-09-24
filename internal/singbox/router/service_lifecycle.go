@@ -503,6 +503,12 @@ func (s *ServiceImpl) checkActiveEngineReadiness(ctx context.Context, tunMode bo
 			iface = i
 		}
 	}
+	if isMihomo && iface == "" {
+		if tunReadyProbe("awgsus0") {
+			iface = "awgsus0"
+			tunMode = true
+		}
+	}
 	return CheckEngineReadiness(ctx, engine, engineName, mode, tunMode, iface, isMihomo)
 }
 

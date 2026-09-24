@@ -51,17 +51,14 @@ func CheckEngineReadiness(ctx context.Context, engine proxyengine.Engine, engine
 		res.MissingCriteria = append(res.MissingCriteria, "process not running")
 	}
 
-	if tunMode || usesTunInbound(mode) {
-		carrierUp := false
-		if iface != "" {
-			carrierUp = tunReadyProbe(iface)
+	if tunMode || usesTunInbound(mode) || iface != "" {
+		target := iface
+		if target == "" {
+			target = "unspecified"
 		}
+		carrierUp := tunReadyProbe(target)
 		res.Details["tun_carrier"] = carrierUp
 		if !carrierUp {
-			target := iface
-			if target == "" {
-				target = "unspecified"
-			}
 			res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("tun carrier=0 (%s)", target))
 		}
 	} else {
@@ -69,18 +66,34 @@ func CheckEngineReadiness(ctx context.Context, engine proxyengine.Engine, engine
 		listening := singboxListeningProbe()
 		res.Details["inbound_sockets"] = listening
 		if !listening {
-			tcpOK := checkTCPRedirect()
-			udpOK := checkUDPTProxy()
-			res.Details["tcp_redirect"] = tcpOK
-			res.Details["udp_tproxy"] = udpOK
-			if !tcpOK {
-				res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("tcp redirect:%d not listening", RedirectPort))
-			}
-			if !udpOK {
-				res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("udp tproxy:%d not bound", TPROXYPort))
-			}
-			if tcpOK && udpOK {
-				res.MissingCriteria = append(res.MissingCriteria, "inbound sockets not ready")
+			if isMihomo {
+				tcp, _ := os.ReadFile("/proc/net/tcp")
+				tcp6, _ := os.ReadFile("/proc/net/tcp6")
+				ctrlOK := localPortInState(string(tcp), 9090, tcpStateListen) ||
+					localPortInState(string(tcp6), 9090, tcpStateListen)
+				mixedOK := localPortInState(string(tcp), 1099, tcpStateListen) ||
+					localPortInState(string(tcp6), 1099, tcpStateListen)
+				res.Details["controller"] = ctrlOK
+				res.Details["mixed_port"] = mixedOK
+				if ctrlOK || mixedOK {
+					res.Details["mihomo_listeners"] = true
+				} else {
+					res.MissingCriteria = append(res.MissingCriteria, "mihomo controller/mixed-port not ready")
+				}
+			} else {
+				tcpOK := checkTCPRedirect()
+				udpOK := checkUDPTProxy()
+				res.Details["tcp_redirect"] = tcpOK
+				res.Details["udp_tproxy"] = udpOK
+				if !tcpOK {
+					res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("tcp redirect:%d not listening", RedirectPort))
+				}
+				if !udpOK {
+					res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("udp tproxy:%d not bound", TPROXYPort))
+				}
+				if tcpOK && udpOK {
+					res.MissingCriteria = append(res.MissingCriteria, "inbound sockets not ready")
+				}
 			}
 		} else {
 			res.Details["tcp_redirect"] = true

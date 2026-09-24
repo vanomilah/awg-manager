@@ -214,15 +214,30 @@ static const char *tool_iptables(void)
 
 int backend_ready(const susanin_config *c)
 {
-    char *argv[6];
+    char *argv[8];
+    int attempt;
     (void)c;
     argv[0] = (char *)tool_iptables();
-    argv[1] = "-t";
-    argv[2] = "mangle";
-    argv[3] = "-S";
-    argv[4] = "SUSANIN";
-    argv[5] = NULL;
-    return run_argv(argv) == 0;
+    argv[1] = "-w";
+    argv[2] = "2";
+    argv[3] = "-t";
+    argv[4] = "mangle";
+    argv[5] = "-S";
+    argv[6] = "SUSANIN";
+    argv[7] = NULL;
+    /* Keenetic/NDM periodically rebuilds its firewall and briefly holds the
+     * global xtables lock.  A single failed `iptables -S` during that window
+     * does not mean that the Susanin chain disappeared.  Treating it as a
+     * missing dataplane causes an unnecessary full reprovision and can break
+     * active media sessions.  Retry the read-only probe for a short bounded
+     * interval; a genuinely absent chain still fails all attempts. */
+    for (attempt = 0; attempt < 4; attempt++) {
+        if (run_argv(argv) == 0)
+            return 1;
+        if (attempt < 3)
+            usleep(100000);
+    }
+    return 0;
 }
 
 /* Check the environment the data plane needs: external tools and the egress

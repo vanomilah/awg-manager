@@ -353,11 +353,34 @@ func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		var mutateFn func() error
-		if d.HasUnallocatedBridges() && d.OnMihomoPrepare != nil {
+		hasBridges := d.HasUnallocatedBridges()
+		if hasBridges && d.OnMihomoPrepare != nil {
 			mutateFn = func() error {
 				return d.OnMihomoPrepare()
 			}
 		}
+
+		// Optimization: if process is already running, no unallocated bridges exist,
+		// and the compiled configuration is unchanged, skip MutateAndApply to avoid
+		// unnecessary process restarts (which kill active streaming sessions).
+		if !start && !hasBridges && d.mihomoEngine != nil {
+			if running, pid := d.mihomoEngine.IsRunning(); running && pid > 0 {
+				if res, err := d.compileFn(ctx); err == nil && res != nil {
+					rec := d.coordinator.AppliedRecord()
+					if rec != nil && rec.AppliedConfigDigest == res.ConfigDigest && rec.RuntimeMode == res.Mode {
+						d.currentMihomoMode = mode
+						if err := d.markMihomoReady(); err != nil {
+							return d.failMihomo(err)
+						}
+						if d.OnMihomoPostApply != nil {
+							d.OnMihomoPostApply()
+						}
+						return nil
+					}
+				}
+			}
+		}
+
 		if err := d.coordinator.MutateAndApply(ctx, mutateFn, d.compileFn); err != nil {
 			return d.failMihomo(fmt.Errorf("mihomo coordinator apply: %w", err))
 		}

@@ -146,9 +146,9 @@
 	}
 </script>
 
-<div class="proxy-groups-page space-y-3">
+<div class="proxy-groups-page">
 	<!-- Toolbar -->
-	<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-[var(--color-bg-secondary)] px-3.5 py-2.5 rounded-xl border border-[var(--color-border)]">
+	<div class="groups-toolbar flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)]">
 		<div class="flex items-center gap-2.5 flex-1 min-w-0">
 			<div class="relative flex-1 max-w-sm">
 				<Search class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-muted)]" />
@@ -193,15 +193,15 @@
 			</EmptyState>
 		{/if}
 	{:else}
-		<div class="grid grid-cols-1 lg:grid-cols-2 gap-3">
+		<div class="groups-grid grid grid-cols-1 lg:grid-cols-2 gap-3">
 			{#each filteredGroups as group (group.id || group.name)}
 				{@const rt = runtimeProxies[group.name]}
 				{@const activeNow = rt?.now || (group.proxies?.[0] ?? '')}
 				{@const isSusaninTarget = susaninEgressId === group.id || susaninEgressId === group.name}
-				<div class="group-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-3.5 flex flex-col justify-between hover:border-[var(--color-border-hover)] transition-all shadow-xs">
-					<div class="space-y-2.5">
+				<div class="group-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] flex flex-col justify-between hover:border-[var(--color-border-hover)] transition-all shadow-xs">
+					<div class="group-card-body">
 						<!-- Compact Header Row -->
-						<div class="flex items-start justify-between gap-2">
+						<div class="group-card-header flex items-start justify-between gap-2">
 							<div class="flex items-center gap-1.5 flex-wrap min-w-0">
 								<span class="w-2 h-2 rounded-full shrink-0 {group.enabled !== false ? 'bg-[var(--color-success)]' : 'bg-gray-400'}" title={group.enabled !== false ? 'Включена' : 'Отключена'}></span>
 								<Layers class="w-4 h-4 text-[var(--color-accent)] shrink-0" />
@@ -220,7 +220,7 @@
 							</div>
 
 							<!-- Action Buttons -->
-							<div class="flex items-center gap-1 shrink-0">
+							<div class="group-card-actions flex items-center gap-1 shrink-0">
 								<button
 									class="p-1.5 rounded-lg hover:bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] transition-colors cursor-pointer"
 									title="Проверить задержку группы"
@@ -247,7 +247,7 @@
 						</div>
 
 						<!-- Compact Active Node Bar -->
-						<div class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] text-xs">
+						<div class="group-active-node flex items-center justify-between gap-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] text-xs">
 							<div class="flex items-center gap-1.5 min-w-0">
 								<Zap class="w-3.5 h-3.5 text-amber-500 shrink-0" />
 								<span class="text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-muted)] shrink-0">Активен:</span>
@@ -270,14 +270,14 @@
 
 						<!-- Member Chips -->
 						{#if (group.proxies || []).length > 0}
-							<div class="space-y-1">
+							<div class="group-members">
 								<div class="flex items-center justify-between text-[10px] uppercase tracking-wider font-semibold text-[var(--color-text-muted)]">
 									<span>Узлы ({group.proxies?.length || 0})</span>
 									{#if (group.use || []).length > 0}
 										<span>+ {group.use.length} подписок</span>
 									{/if}
 								</div>
-								<div class="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto py-0.5">
+								<div class="group-member-list flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
 									{#each group.proxies || [] as member}
 										{@const isSelected = activeNow === member}
 										{#if group.type === 'select'}
@@ -308,7 +308,7 @@
 
 					<!-- Card Footer info -->
 					{#if group.interval || group.tolerance || group.lazy}
-						<div class="mt-2.5 pt-2 border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)] flex items-center justify-between">
+					<div class="group-card-footer border-t border-[var(--color-border)] text-[11px] text-[var(--color-text-muted)] flex items-center justify-between">
 							<div class="flex items-center gap-2">
 								{#if group.interval}
 									<span>Интервал: <strong class="text-[var(--color-text-primary)]">{group.interval} с</strong></span>
@@ -371,3 +371,30 @@
 		</div>
 	</Modal>
 {/if}
+
+<style>
+	.proxy-groups-page {
+		width: 100%;
+		max-width: 1120px;
+		margin: 0 auto;
+	}
+
+	.proxy-groups-page > * + * { margin-top: 1rem; }
+	.groups-toolbar { padding: 0.85rem 1rem; }
+	.groups-grid { align-items: stretch; }
+	.group-card { padding: 1rem; min-height: 210px; }
+	.group-card-body > * + * { margin-top: 0.8rem; }
+	.group-card-header { padding-bottom: 0.15rem; }
+	.group-card-actions button { padding: 0.4rem; }
+	.group-active-node { padding: 0.55rem 0.7rem; }
+	.group-members > * + * { margin-top: 0.35rem; }
+	.group-member-list { padding: 0.15rem 0; }
+	.group-member-list button,
+	.group-member-list > span { padding: 0.3rem 0.55rem; }
+	.group-card-footer { margin-top: 0.85rem; padding-top: 0.65rem; }
+
+	@media (max-width: 720px) {
+		.groups-toolbar, .group-card { padding: 0.8rem; }
+		.group-card { min-height: 0; }
+	}
+</style>

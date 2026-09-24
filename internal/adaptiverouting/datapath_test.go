@@ -302,7 +302,7 @@ func TestDatapath_FailClosed_InstallsBlackholeAndRestoresRoute(t *testing.T) {
 
 func TestDatapath_GetStats(t *testing.T) {
 	mockRunner := func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
-		if len(args) >= 3 && args[0] == "list" && args[2] == "-terse" {
+		if len(args) == 2 && args[0] == "list" {
 			setName := args[1]
 			switch setName {
 			case SetOkTcp:
@@ -327,5 +327,26 @@ func TestDatapath_GetStats(t *testing.T) {
 	}
 	if stats.OkUdpCount != 7 {
 		t.Errorf("expected OkUdpCount 7, got %d", stats.OkUdpCount)
+	}
+}
+
+func TestDatapath_GetStats_KeeneticListingWithoutEntryCount(t *testing.T) {
+	runner := func(_ context.Context, _ string, args ...string) (*sysexec.Result, error) {
+		if len(args) >= 2 && args[0] == "list" {
+			if args[1] == SetOkTcp {
+				return &sysexec.Result{ExitCode: 0, Stdout: "Name: susanin_ok_tcp\nType: hash:ip\nRevision: 4\nHeader: family inet hashsize 1024 maxelem 65536 timeout 0\nSize in memory: 480\nReferences: 4\nMembers:\n57.144.223.33 timeout 0\n157.240.205.1 timeout 0\n"}, nil
+			}
+			return &sysexec.Result{ExitCode: 0, Stdout: "Name: empty\nType: hash:ip\nMembers:\n"}, nil
+		}
+		return &sysexec.Result{ExitCode: 0}, nil
+	}
+
+	dp := NewDatapathController(runner)
+	stats, err := dp.GetStats(context.Background())
+	if err != nil {
+		t.Fatalf("GetStats failed: %v", err)
+	}
+	if stats.OkTcpCount != 2 {
+		t.Fatalf("OkTcpCount = %d, want 2", stats.OkTcpCount)
 	}
 }

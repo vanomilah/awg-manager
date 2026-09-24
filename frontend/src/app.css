@@ -330,10 +330,14 @@ html[data-layout-compact='true'] .page-container {
 }
 
 /* ─── Reset ─── */
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Keep the reset in the base layer. Unlayered declarations override Tailwind
+   utilities and previously stripped p-*, m-* and space-* from new pages. */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 /* height: auto обязателен: overflow-x:hidden на body делает его скролл-контейнером

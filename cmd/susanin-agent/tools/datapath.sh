@@ -54,7 +54,7 @@ NEVERSET=susanin_never
 say() { echo "[susanin] $*"; }
 
 # Run iptables -t mangle with delete-first (idempotent). "$@" = full -A spec.
-mangle() { "$IPT" -t mangle -D "$@" >/dev/null 2>&1 || true; "$IPT" -t mangle -A "$@"; }
+mangle() { "$IPT" -w 2 -t mangle -D "$@" >/dev/null 2>&1 || true; "$IPT" -w 2 -t mangle -A "$@"; }
 # ip rule: delete-first then add.
 iprule() { "$IPCMD" rule del "$@" >/dev/null 2>&1 || true; "$IPCMD" rule add "$@"; }
 
@@ -68,8 +68,8 @@ backup() {
     mkdir -p "$PREFIX/susanin/var"
     bk="$PREFIX/susanin/var/datapath-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$bk"
-    "$IPT" -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
-    "$IPT" -t nat -S > "$bk/nat.txt" 2>/dev/null || true
+    "$IPT" -w 2 -t mangle -S > "$bk/mangle.txt" 2>/dev/null || true
+    "$IPT" -w 2 -t nat -S > "$bk/nat.txt" 2>/dev/null || true
     "$IPCMD" rule show > "$bk/ip-rule.txt" 2>/dev/null || true
     "$IPCMD" route show table all > "$bk/ip-route.txt" 2>/dev/null || true
     say "backup: $bk"
@@ -99,7 +99,7 @@ ensure_sets() {
 }
 
 ensure_chain() {
-    "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1 || "$IPT" -t mangle -N "$CHAIN"
+    "$IPT" -w 2 -t mangle -S "$CHAIN" >/dev/null 2>&1 || "$IPT" -w 2 -t mangle -N "$CHAIN"
 }
 
 rule_priv() {
@@ -131,6 +131,12 @@ rule_mark() {
                 -j CONNMARK --set-xmark "$MARK_TEST/$MASK"
         done
         mangle "$CHAIN" -i "$i" -j CONNMARK --restore-mark --nfmask "$MASK" --ctmask "$MASK"
+        mangle "$CHAIN" -i "$i" -m set --match-set susanin_ok_net dst \
+            -j MARK --set-xmark "$MARK_OK/$MASK"
+        mangle "$CHAIN" -i "$i" -p tcp -m set --match-set susanin_ok_tcp dst \
+            -j MARK --set-xmark "$MARK_OK/$MASK"
+        mangle "$CHAIN" -i "$i" -p udp -m set --match-set susanin_ok_udp dst \
+            -j MARK --set-xmark "$MARK_OK/$MASK"
         mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_OK/$MASK" \
             -j MARK --set-xmark "$MARK_OK/$MASK"
         mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_TEST/$MASK" \
@@ -139,8 +145,8 @@ rule_mark() {
 }
 
 ensure_jump() {
-    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
-    "$IPT" -t mangle -A PREROUTING -j "$CHAIN"
+    "$IPT" -w 2 -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
+    "$IPT" -w 2 -t mangle -A PREROUTING -j "$CHAIN"
 }
 
 ensure_table() {
@@ -163,9 +169,9 @@ command_up() {
 }
 
 command_down() {
-    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
-    if "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
-        "$IPT" -t mangle -F "$CHAIN"; "$IPT" -t mangle -X "$CHAIN" || true
+    "$IPT" -w 2 -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
+    if "$IPT" -w 2 -t mangle -S "$CHAIN" >/dev/null 2>&1; then
+        "$IPT" -w 2 -t mangle -F "$CHAIN"; "$IPT" -w 2 -t mangle -X "$CHAIN" || true
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
@@ -177,7 +183,7 @@ command_down() {
 }
 
 command_status() {
-    if "$IPT" -t mangle -S PREROUTING >/dev/null 2>&1 && "$IPT" -t mangle -S PREROUTING | grep -q "$CHAIN"; then
+    if "$IPT" -w 2 -t mangle -S PREROUTING >/dev/null 2>&1 && "$IPT" -w 2 -t mangle -S PREROUTING | grep -q "$CHAIN"; then
         echo "jump: present"
     else
         echo "jump: MISSING"

@@ -424,9 +424,9 @@
 	}
 </script>
 
-<div class="susanin-page space-y-3.5">
+<div class="susanin-page">
 	<!-- 1. Компактная Status Bar -->
-	<div class="susanin-status-bar bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] px-4 py-2.5 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+	<div class="susanin-status-bar bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
 		<div class="flex items-center gap-2.5 flex-wrap">
 			<div class="flex items-center gap-2 pr-2 border-r border-[var(--color-border)]">
 				<span class="w-2.5 h-2.5 rounded-full {status?.status === 'running' ? 'bg-[var(--color-success)] animate-pulse' : status?.status === 'degraded' ? 'bg-[var(--color-warning)]' : 'bg-gray-400'}"></span>
@@ -499,11 +499,11 @@
 	</div>
 
 	<!-- 2. Основная рабочая сетка из 2 сбалансированных карточек -->
-	<div class="grid grid-cols-1 lg:grid-cols-2 gap-3.5">
+	<div class="susanin-workspace grid grid-cols-1 lg:grid-cols-2 gap-3.5">
 		<!-- Карточка 1: Выход и источник трафика -->
-		<div class="susanin-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between shadow-xs">
-			<div class="space-y-4">
-				<div class="flex items-center justify-between pb-2.5 border-b border-[var(--color-border)]">
+		<div class="susanin-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] flex flex-col justify-between shadow-xs">
+			<div class="susanin-card-body">
+				<div class="susanin-card-header flex items-center justify-between border-b border-[var(--color-border)]">
 					<div class="flex items-center gap-2">
 						<Network class="w-4 h-4 text-[var(--color-accent)]" />
 						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Маршрутизация и выход</h3>
@@ -512,7 +512,7 @@
 				</div>
 
 				<!-- Выбор выхода -->
-				<div>
+				<div class="susanin-form-section">
 					<label for="susanin-egress-select" class="block text-xs font-medium text-[var(--color-text-primary)] mb-1">
 						Выход для обхода блокировок
 					</label>
@@ -552,7 +552,7 @@
 				</div>
 
 				<!-- Источник трафика -->
-				<div>
+				<div class="susanin-form-section">
 					<span class="block text-xs font-medium text-[var(--color-text-primary)] mb-1.5">
 						Источник трафика
 					</span>
@@ -598,7 +598,7 @@
 				</div>
 
 				<!-- Политика при сбое -->
-				<div>
+				<div class="susanin-form-section">
 					<span class="block text-xs font-medium text-[var(--color-text-primary)] mb-1.5">
 						Поведение при сбое выхода
 					</span>
@@ -626,10 +626,10 @@
 		</div>
 
 		<!-- Карточка 2: Телеметрия обучения и списки доменов -->
-		<div class="susanin-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] p-4 flex flex-col justify-between shadow-xs">
-			<div class="space-y-3.5">
+		<div class="susanin-card bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] flex flex-col justify-between shadow-xs">
+			<div class="susanin-card-body">
 				<!-- Шапка и счетчики -->
-				<div class="flex items-center justify-between pb-2.5 border-b border-[var(--color-border)]">
+				<div class="susanin-card-header flex items-center justify-between border-b border-[var(--color-border)]">
 					<div class="flex items-center gap-2">
 						<Zap class="w-4 h-4 text-[var(--color-warning)]" />
 						<h3 class="font-semibold text-sm text-[var(--color-text-primary)]">Обучение и списки</h3>
@@ -661,7 +661,7 @@
 				</div>
 
 				<!-- Компактная полоса статистики -->
-				<div class="grid grid-cols-4 gap-2 text-center">
+				<div class="susanin-stats-grid grid grid-cols-4 gap-2 text-center">
 					<div class="p-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)]">
 						<div class="text-[10px] uppercase text-[var(--color-text-muted)] font-medium">TCP ОК</div>
 						<div class="text-base font-bold text-[var(--color-success)] font-mono">
@@ -689,7 +689,7 @@
 				</div>
 
 				<!-- Вкладки Always / Never списков -->
-				<div class="pt-1">
+				<div class="susanin-lists">
 					<div class="flex items-center gap-2 mb-2">
 						<button
 							type="button"
@@ -741,7 +741,7 @@
 	</div>
 
 	<!-- 3. Сворачиваемая тонкая настройка детектора -->
-	<div class="bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] overflow-hidden shadow-xs">
+	<div class="susanin-detector bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] overflow-hidden shadow-xs">
 		<button
 			type="button"
 			class="w-full px-4 py-2.5 flex items-center justify-between hover:bg-[var(--color-bg-tertiary)] transition-colors text-left"
@@ -946,5 +946,27 @@
 {/if}
 
 <style>
-	.susanin-page { width: 100%; }
+	.susanin-page {
+		width: 100%;
+		max-width: 1120px;
+		margin: 0 auto;
+	}
+
+	.susanin-page > * + * { margin-top: 1rem; }
+
+	.susanin-status-bar { padding: 0.85rem 1rem; }
+
+	.susanin-card { padding: 1.1rem; min-height: 100%; }
+	.susanin-card-body > * + * { margin-top: 1.15rem; }
+	.susanin-card-header { padding-bottom: 0.7rem; }
+	.susanin-form-section > * + * { margin-top: 0.45rem; }
+	.susanin-stats-grid { margin-top: 0.25rem; }
+	.susanin-lists { padding-top: 0.25rem; }
+	.susanin-detector > button { padding: 0.75rem 1rem; }
+
+	@media (max-width: 720px) {
+		.susanin-status-bar,
+		.susanin-card { padding: 0.85rem; }
+		.susanin-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	}
 </style>

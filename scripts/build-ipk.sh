@@ -116,9 +116,7 @@ build_ipk_one() {
     local SUSANIN_SRC=""
     case "$ENTWARE_ARCH" in
         aarch64-*)
-            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/susanin-agent" ]]; then
-                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/susanin-agent"
-            elif [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64" ]]; then
+            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64" ]]; then
                 SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64"
             fi
             ;;
@@ -135,6 +133,22 @@ build_ipk_one() {
     esac
 
     if [[ -n "$SUSANIN_SRC" && -f "$SUSANIN_SRC" ]]; then
+        local SUSANIN_FILE
+        SUSANIN_FILE=$(file -b "$SUSANIN_SRC")
+        case "$ENTWARE_ARCH" in
+            aarch64-*) [[ "$SUSANIN_FILE" == *"ARM aarch64"* ]] || {
+                echo "ERROR: susanin-agent has wrong architecture for $ENTWARE_ARCH: $SUSANIN_FILE" >&2
+                exit 1
+            } ;;
+            mipsel-*) [[ "$SUSANIN_FILE" == *"MIPS"* && "$SUSANIN_FILE" == *"LSB"* ]] || {
+                echo "ERROR: susanin-agent has wrong architecture for $ENTWARE_ARCH: $SUSANIN_FILE" >&2
+                exit 1
+            } ;;
+            mips-*) [[ "$SUSANIN_FILE" == *"MIPS"* && "$SUSANIN_FILE" == *"MSB"* ]] || {
+                echo "ERROR: susanin-agent has wrong architecture for $ENTWARE_ARCH: $SUSANIN_FILE" >&2
+                exit 1
+            } ;;
+        esac
         mkdir -p "$IPK_ROOT/opt/susanin/bin" "$IPK_ROOT/opt/susanin/tools" "$IPK_ROOT/opt/susanin/etc" "$IPK_ROOT/opt/susanin/var"
         cp "$SUSANIN_SRC" "$IPK_ROOT/opt/susanin/bin/susanin-agent"
         chmod 755 "$IPK_ROOT/opt/susanin/bin/susanin-agent"

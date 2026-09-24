@@ -600,8 +600,15 @@ func (d *DatapathController) GetStats(ctx context.Context) (DatapathStats, error
 	}
 
 	for name, target := range sets {
-		res, err := d.runner(ctx, d.ipsetBin, "list", name, "-terse")
+		// Keenetic's ipset build omits "Number of entries" in terse output.
+		// Use the regular listing: it is supported by both the Entware build on
+		// the router and upstream ipset, and is the only portable source for the
+		// counters shown in the Susanin UI.
+		res, err := d.runner(ctx, d.ipsetBin, "list", name)
 		if err == nil && res != nil {
+			members := false
+			memberCount := 0
+			countFound := false
 			for _, line := range strings.Split(res.Stdout, "\n") {
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "Number of entries:") {
@@ -609,10 +616,24 @@ func (d *DatapathController) GetStats(ctx context.Context) (DatapathStats, error
 					if len(parts) == 2 {
 						if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil {
 							*target = n
+							countFound = true
 						}
 					}
-					break
+					continue
 				}
+				// Several Keenetic ipset builds omit "Number of entries" even
+				// from the regular listing.  In that format every non-empty line
+				// following the Members: header is one set member.
+				if line == "Members:" {
+					members = true
+					continue
+				}
+				if members && line != "" {
+					memberCount++
+				}
+			}
+			if !countFound {
+				*target = memberCount
 			}
 		}
 	}
