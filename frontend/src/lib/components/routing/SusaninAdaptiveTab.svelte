@@ -707,7 +707,7 @@
 						</button>
 						<span class="text-[var(--color-border)]">·</span>
 						<button
-							class="text-xs text-amber-500 hover:underline flex items-center gap-1 font-medium"
+							class="text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:underline flex items-center gap-1"
 							onclick={() => {
 								modalTab = 'radar';
 								showLearnedModal = true;
@@ -717,8 +717,8 @@
 								}
 							}}
 						>
-							<Activity class="w-3.5 h-3.5 inline animate-pulse" />
-							Живой радар
+							<Activity class="w-3.5 h-3.5 inline text-[var(--color-text-muted)]" />
+							Радар активности
 						</button>
 						<span class="text-[var(--color-border)]">·</span>
 						<button
@@ -770,11 +770,8 @@
 				<!-- Компактная мини-лента активности детектора в реальном времени -->
 				<div class="p-2.5 rounded-lg bg-[var(--color-bg-primary)] border border-[var(--color-border)] flex flex-col gap-1.5 my-2">
 					<div class="flex items-center justify-between text-[11px]">
-						<div class="flex items-center gap-1.5 text-amber-500 font-semibold">
-							<span class="relative flex h-2 w-2">
-								<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-								<span class="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-							</span>
+						<div class="flex items-center gap-1.5 text-[var(--color-text-secondary)] font-medium">
+							<span class="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] opacity-80"></span>
 							<span>Анализ соединений в реальном времени</span>
 						</div>
 						<button
@@ -797,7 +794,7 @@
 							{#each logEvents.slice(0, 3) as ev}
 								<div class="flex items-center justify-between text-[11px] font-mono text-[var(--color-text-secondary)] truncate">
 									<div class="flex items-center gap-1.5 truncate">
-										<span class="text-[9px] px-1 py-0.2 rounded uppercase font-bold {ev.action === 'CONFIRMED' ? 'bg-emerald-500/20 text-emerald-400' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'bg-amber-500/20 text-amber-400' : 'bg-blue-500/20 text-blue-400'}">
+										<span class="text-[9px] px-1.5 py-0.2 rounded font-mono font-medium border border-[var(--color-border)] bg-[var(--color-bg-secondary)] {ev.action === 'CONFIRMED' ? 'text-[var(--color-success)]' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'text-[var(--color-warning)]' : ev.action === 'RESET' ? 'text-[var(--color-error)]' : 'text-[var(--color-text-secondary)]'}">
 											{ev.action}
 										</span>
 										<span class="text-[var(--color-text-primary)] font-semibold truncate">{ev.target || ev.message}</span>
@@ -993,12 +990,13 @@
 	</div>
 </div>
 
-<!-- Модальное окно базы изученных адресов -->
-<!-- Модальное окно базы изученных адресов и живого радара -->
+<!-- Модальное окно базы изученных адресов и радара -->
 {#if showLearnedModal}
 	<Modal
 		open={showLearnedModal}
-		title="База маршрутов и Живой радар Susanin"
+		title="База маршрутов и радар Susanin"
+		size="wide"
+		allowMaximize={true}
 		onclose={() => {
 			showLearnedModal = false;
 			if (radarPollTimer) {
@@ -1007,10 +1005,10 @@
 			}
 		}}
 	>
-		<div class="p-4 space-y-4 max-h-[80vh] overflow-y-auto">
+		<div class="space-y-4">
 			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[var(--color-border)]">
 				<p class="text-xs text-[var(--color-text-muted)]">
-					Оперативная база ядра Linux (ipset) и живой поток исследования блокировок
+					Оперативная база ядра Linux (ipset) и поток исследования блокировок
 				</p>
 				<div class="flex items-center gap-2">
 					<Button
@@ -1056,7 +1054,7 @@
 
 				<button
 					type="button"
-					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'radar' ? 'bg-amber-500/10 text-amber-500 font-semibold border border-amber-500/30' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+					class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'radar' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
 					onclick={() => {
 						modalTab = 'radar';
 						void loadLogs();
@@ -1065,9 +1063,9 @@
 						}
 					}}
 				>
-					<Activity class="w-3.5 h-3.5 {modalTab === 'radar' ? 'animate-pulse' : ''}" />
-					<span>Живой радар (Реал-тайм)</span>
-					<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
+					<Activity class="w-3.5 h-3.5 text-[var(--color-text-muted)]" />
+					<span>Радар активности</span>
+					<span class="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] opacity-75"></span>
 				</button>
 
 				<button
@@ -1115,20 +1113,20 @@
 			{#if modalTab === 'ok'}
 				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
 					<div class="text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
-						<span>Адреса, подтверждённые Сусаниным и направляемые в туннель:</span>
+						<span>Адреса, подтверждённые Susanin и направляемые в туннель:</span>
 						<span>{filteredOkEntries.length} из {okEntries.length}</span>
 					</div>
-					<div class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[58vh] overflow-y-auto pr-1">
 						{#each filteredOkEntries as item}
-							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex items-center justify-between hover:bg-[var(--color-bg-primary)] transition-colors border border-transparent hover:border-[var(--color-border)] text-xs">
-								<div class="flex items-center gap-2 font-mono">
-									<span class="w-2 h-2 rounded-full bg-[var(--color-success)]"></span>
-									<span class="text-[var(--color-text-primary)] font-semibold">{item.ip}</span>
-									<span class="text-[10px] uppercase px-1 py-0.5 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] font-sans">{item.proto}</span>
+							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex items-center justify-between hover:bg-[var(--color-bg-primary)] transition-colors border border-[var(--color-border)] text-xs">
+								<div class="flex items-center gap-2 font-mono min-w-0">
+									<span class="w-2 h-2 rounded-full bg-[var(--color-success)] shrink-0"></span>
+									<span class="text-[var(--color-text-primary)] font-medium truncate">{item.ip}</span>
+									<span class="text-[9px] uppercase px-1 py-0.2 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] font-mono border border-[var(--color-border)] shrink-0">{item.proto}</span>
 								</div>
 								<button
 									type="button"
-									class="text-[var(--color-text-muted)] hover:text-[var(--color-error)] text-xs px-2 py-0.5 rounded hover:bg-[var(--color-error-tint)] transition-colors"
+									class="text-[var(--color-text-muted)] hover:text-[var(--color-error)] text-[11px] px-1.5 py-0.5 rounded hover:bg-[var(--color-error-tint)] transition-colors shrink-0 ml-1"
 									title="Забыть этот адрес и вернуть на прямой доступ"
 									onclick={async () => {
 										try {
@@ -1144,7 +1142,7 @@
 								</button>
 							</div>
 						{:else}
-							<div class="text-[var(--color-text-muted)] italic text-center py-8">
+							<div class="col-span-full text-[var(--color-text-muted)] italic text-center py-8">
 								{okEntries.length === 0 ? 'Сусанин пока не зафиксировал блокировок. База наполняется автоматически при появлении сетевых сбоев.' : 'Ничего не найдено по вашему фильтру.'}
 							</div>
 						{/each}
@@ -1152,26 +1150,26 @@
 				</div>
 			{/if}
 
-			<!-- Tab 2: Живой радар -->
+			<!-- Tab 2: Радар активности -->
 			{#if modalTab === 'radar'}
 				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
+					<div class="text-xs text-[var(--color-text-muted)] mb-2.5 flex items-center justify-between">
 						<span class="flex items-center gap-1.5 text-[var(--color-text-primary)] font-medium">
-							<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+							<span class="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] opacity-80"></span>
 							Лента анализа соединений в реальном времени:
 						</span>
 						<span class="text-[11px] font-mono text-[var(--color-text-secondary)]">автообновление каждые 2с</span>
 					</div>
-					<div class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+					<div class="space-y-1.5 max-h-[58vh] overflow-y-auto pr-1">
 						{#each logEvents as ev}
-							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs border-l-2 {ev.action === 'CONFIRMED' ? 'border-l-[var(--color-success)]' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'border-l-amber-500' : ev.action === 'RESET' ? 'border-l-[var(--color-error)]' : 'border-l-[var(--color-accent)]'}">
-								<div class="flex items-center gap-2">
+							<div class="p-2 rounded-md bg-[var(--color-bg-tertiary)] flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-xs border border-[var(--color-border)]">
+								<div class="flex items-center gap-2 flex-wrap">
 									<span class="text-[11px] font-mono text-[var(--color-text-muted)]">{ev.timestamp}</span>
-									<span class="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase font-mono {ev.action === 'CONFIRMED' ? 'bg-emerald-500/20 text-emerald-400' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'bg-amber-500/20 text-amber-400' : ev.action === 'RESET' ? 'bg-red-500/20 text-red-400' : 'bg-blue-500/20 text-blue-400'}">
+									<span class="text-[9px] font-medium px-1.5 py-0.5 rounded font-mono border border-[var(--color-border)] bg-[var(--color-bg-secondary)] {ev.action === 'CONFIRMED' ? 'text-[var(--color-success)]' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'text-[var(--color-warning)]' : ev.action === 'RESET' ? 'text-[var(--color-error)]' : ev.action === 'QUIC' ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-secondary)]'}">
 										{ev.action}
 									</span>
 									{#if ev.target}
-										<span class="font-mono font-semibold text-[var(--color-text-primary)]">{ev.target}</span>
+										<span class="font-mono font-medium text-[var(--color-text-primary)]">{ev.target}</span>
 									{/if}
 								</div>
 								<div class="text-[11px] text-[var(--color-text-secondary)]">
@@ -1194,18 +1192,18 @@
 						<span>Адреса, проходящие проверку на блокировку прямо сейчас:</span>
 						<span>{filteredTestEntries.length} из {testEntries.length}</span>
 					</div>
-					<div class="space-y-1.5 max-h-80 overflow-y-auto pr-1">
+					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[58vh] overflow-y-auto pr-1">
 						{#each filteredTestEntries as item}
-							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex items-center justify-between text-xs font-mono">
-								<div class="flex items-center gap-2">
-									<span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-									<span class="text-[var(--color-text-primary)] font-semibold">{item.ip}</span>
-									<span class="text-[10px] uppercase px-1 py-0.5 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] font-sans">{item.proto}</span>
+							<div class="p-2 rounded bg-[var(--color-bg-tertiary)] flex items-center justify-between text-xs font-mono border border-[var(--color-border)]">
+								<div class="flex items-center gap-2 min-w-0">
+									<span class="w-1.5 h-1.5 rounded-full bg-[var(--color-warning)] shrink-0"></span>
+									<span class="text-[var(--color-text-primary)] font-medium truncate">{item.ip}</span>
+									<span class="text-[9px] uppercase px-1 py-0.2 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] font-mono border border-[var(--color-border)] shrink-0">{item.proto}</span>
 								</div>
-								<span class="text-[11px] text-amber-500 font-sans">Тестируется...</span>
+								<span class="text-[11px] text-[var(--color-warning)] font-sans shrink-0 ml-1">Тест</span>
 							</div>
 						{:else}
-							<div class="text-[var(--color-text-muted)] italic text-center py-8">
+							<div class="col-span-full text-[var(--color-text-muted)] italic text-center py-8">
 								Сейчас нет адресов на стадии тестирования.
 							</div>
 						{/each}
@@ -1220,13 +1218,13 @@
 						<span>Фиксированные подсети и домены (Always)</span>
 						<Badge variant="accent" size="sm">{(learned?.always || []).length} записей</Badge>
 					</div>
-					<div class="space-y-1 max-h-80 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
+					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[58vh] overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)] pr-1">
 						{#each learned?.always || [] as entry}
-							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] truncate">
+							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] truncate">
 								{entry}
 							</div>
 						{:else}
-							<div class="text-[var(--color-text-muted)] italic text-center py-4">
+							<div class="col-span-full text-[var(--color-text-muted)] italic text-center py-4">
 								Список пуст
 							</div>
 						{/each}
@@ -1241,13 +1239,13 @@
 						<span>Прямой доступ (Never)</span>
 						<Badge variant="muted" size="sm">{(learned?.never || []).length} записей</Badge>
 					</div>
-					<div class="space-y-1 max-h-80 overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)]">
+					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[58vh] overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)] pr-1">
 						{#each learned?.never || [] as entry}
-							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] truncate">
+							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] truncate">
 								{entry}
 							</div>
 						{:else}
-							<div class="text-[var(--color-text-muted)] italic text-center py-4">
+							<div class="col-span-full text-[var(--color-text-muted)] italic text-center py-4">
 								Список пуст
 							</div>
 						{/each}

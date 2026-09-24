@@ -2,10 +2,9 @@ import paramiko
 
 client = paramiko.SSHClient()
 client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-client.connect("192.168.90.1", 22, "root", "Qaz74251106")
-
-stdin, stdout, stderr = client.exec_command("netstat -lntp 2>/dev/null | grep -E ':(8443|2398|8085|8086|1099|2222)[[:space:]]'")
-print("PORTS:\n" + stdout.read().decode())
-stdin, stdout, stderr = client.exec_command("/opt/bin/curl -sS http://127.0.0.1:2222/api/servers/tgwebproxy/status")
-print("TGWEBPROXY STATUS:\n" + stdout.read().decode())
+client.connect('192.168.90.1', 22, 'root', 'Qaz74251106', timeout=10)
+stdin, stdout, stderr = client.exec_command("netstat -lntup | grep -E ':(2222|1099|9090|8443|51271|51272|1053) '")
+print(stdout.read().decode())
+stdin, stdout, stderr = client.exec_command("ndmc -c 'show interface Wireguard2'")
+print(stdout.read().decode())
 client.close()

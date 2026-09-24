@@ -33,6 +33,8 @@
          * Set this to pin a minimum so such content can't be clipped to a strip.
          */
         bodyMinHeight?: string;
+        /** Allow user to maximize modal to full screen */
+        allowMaximize?: boolean;
     }
 
     let {
@@ -46,7 +48,10 @@
         closeOnBackdrop = true,
         hasUnsavedChanges,
         bodyMinHeight,
+        allowMaximize = false,
     }: Props = $props();
+
+    let isMaximized = $state(false);
 
     const sizeClasses = {
         sm: 'max-w-sm',
@@ -147,19 +152,38 @@
     >
         <div
             class="modal-card {sizeClasses[size]}"
+            class:modal-card-maximized={isMaximized}
             role="document"
         >
             <header class="modal-header">
                 <h3 id="modal-title">{title}</h3>
-                <button
-                    class="modal-close"
-                    onclick={attemptClose}
-                    aria-label="Close modal"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
-                    </svg>
-                </button>
+                <div class="modal-header-actions">
+                    {#if allowMaximize}
+                        <button
+                            type="button"
+                            class="modal-close"
+                            onclick={() => (isMaximized = !isMaximized)}
+                            aria-label={isMaximized ? "Restore modal" : "Maximize modal"}
+                            title={isMaximized ? "Свернуть в окно" : "Развернуть во весь экран"}
+                        >
+                            {#if isMaximized}
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/></svg>
+                            {:else}
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></svg>
+                            {/if}
+                        </button>
+                    {/if}
+                    <button
+                        type="button"
+                        class="modal-close"
+                        onclick={attemptClose}
+                        aria-label="Close modal"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                        </svg>
+                    </button>
+                </div>
             </header>
 
             <section
@@ -232,7 +256,20 @@
     .max-w-md { max-width: min(32rem, calc(100vw - 2rem)); }
     .max-w-lg { max-width: min(40rem, calc(100vw - 2rem)); }
     .max-w-xl { max-width: min(48rem, calc(100vw - 2rem)); }
-    .max-w-wide { max-width: min(960px, calc(100vw - 2rem)); }
+    .max-w-wide { max-width: min(1180px, calc(100vw - 2rem)); }
+
+    .modal-card-maximized {
+        max-width: calc(100vw - 2rem) !important;
+        width: calc(100vw - 2rem) !important;
+        height: calc(100dvh - 2rem) !important;
+        max-height: calc(100dvh - 2rem) !important;
+    }
+
+    .modal-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
 
     .modal-body-fill {
         overflow: hidden;

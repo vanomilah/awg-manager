@@ -751,25 +751,25 @@ func parseSusaninLogLine(line string) LogEvent {
 		switch {
 		case strings.Contains(sub, "CONFIRMED"):
 			action = "CONFIRMED"
-			msg = "Блокировка подтверждена → переведён в VPN"
+			msg = "Маршрут переведён в VPN (подтверждено)"
 		case strings.Contains(sub, "TCP-STALL"):
 			action = "STALL"
-			msg = "Зависание прямого потока (начата проверка)"
+			msg = "Зависание прямого TCP потока → тест туннеля"
 		case strings.Contains(sub, "LATE-STALL"):
 			action = "LATE-STALL"
-			msg = "Обрыв потока во время передачи данных"
+			msg = "Обрыв потока во время передачи → тест туннеля"
 		case strings.Contains(sub, "TCP-CLOSE"):
 			action = "RESET"
-			msg = "Сброс сессии цензором (TCP RST)"
+			msg = "Сброс сессии (TCP RST от цензора) → переключение"
 		case strings.Contains(sub, "TCP-SYN"):
 			action = "SYN-TIMEOUT"
-			msg = "Таймаут подключения (блокировка SYN)"
+			msg = "Таймаут подключения (блокировка SYN) → тест туннеля"
 		case strings.Contains(sub, "QUIC"):
 			action = "QUIC"
-			msg = "Блокировка UDP / QUIC протокола"
+			msg = "Детекция сброса UDP/QUIC (HTTP/3) → тест туннеля"
 		case strings.Contains(sub, "COOLDOWN"):
 			action = "COOLDOWN"
-			msg = "Охлаждение ресурса после проверок"
+			msg = "Охлаждение ресурса после серии проверок"
 		default:
 			action = "DISCOVER"
 			msg = sub
