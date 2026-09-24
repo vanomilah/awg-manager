@@ -157,6 +157,21 @@ ensure_table() {
     say "table/ip-rule ready (table=$TABLE dev=$EGRESS)"
 }
 
+RST_CHAIN=SUSANIN-RST
+
+ensure_rst() {
+    "$IPT" -w 2 -t filter -S "$RST_CHAIN" >/dev/null 2>&1 || "$IPT" -w 2 -t filter -N "$RST_CHAIN"
+    "$IPT" -w 2 -t filter -F "$RST_CHAIN"
+    "$IPT" -w 2 -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_test_tcp dst -j REJECT --reject-with tcp-reset
+    "$IPT" -w 2 -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_ok_tcp dst -j REJECT --reject-with tcp-reset
+    "$IPT" -w 2 -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_ok_net dst -j REJECT --reject-with tcp-reset
+    for i in $LAN; do
+        "$IPT" -w 2 -t filter -D FORWARD -i "$i" -j "$RST_CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w 2 -t filter -I FORWARD 1 -i "$i" -j "$RST_CHAIN"
+    done
+    say "zombie socket RST killer ready"
+}
+
 command_up() {
     backup
     ensure_sets
@@ -165,6 +180,7 @@ command_up() {
     rule_mark
     ensure_jump
     ensure_table
+    ensure_rst
     say "data plane UP (table=$TABLE dev=$EGRESS)"
 }
 
@@ -172,6 +188,12 @@ command_down() {
     "$IPT" -w 2 -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
     if "$IPT" -w 2 -t mangle -S "$CHAIN" >/dev/null 2>&1; then
         "$IPT" -w 2 -t mangle -F "$CHAIN"; "$IPT" -w 2 -t mangle -X "$CHAIN" || true
+    fi
+    for i in $LAN; do
+        "$IPT" -w 2 -t filter -D FORWARD -i "$i" -j "$RST_CHAIN" >/dev/null 2>&1 || true
+    done
+    if "$IPT" -w 2 -t filter -S "$RST_CHAIN" >/dev/null 2>&1; then
+        "$IPT" -w 2 -t filter -F "$RST_CHAIN"; "$IPT" -w 2 -t filter -X "$RST_CHAIN" || true
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true

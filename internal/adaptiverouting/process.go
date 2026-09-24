@@ -142,9 +142,23 @@ func (p *ProcessManager) GenerateConfigFile(
 	sb.WriteString("ok_evict_misses=3\n")
 	sb.WriteString("test_ttl=1m\n")
 	sb.WriteString("cooldown_ttl=5m\n")
+	sb.WriteString("watch_ttl=2\n")
+	sb.WriteString("watch_retry_below=1\n")
+	sb.WriteString("promo_per_min=120\n")
+	lateBytes := settings.Detection.LateStallBytes
+	if lateBytes <= 0 {
+		lateBytes = 16384
+	}
+	sb.WriteString(fmt.Sprintf("late_stall_bytes=%d\n", lateBytes))
 	sb.WriteString("health_probe=1.1.1.1,8.8.8.8\n")
 	sb.WriteString(fmt.Sprintf("vpn_always_file=%s\n", p.AlwaysPath()))
 	sb.WriteString(fmt.Sprintf("vpn_never_file=%s\n", p.NeverPath()))
+	if settings.DNS.Enabled && len(settings.DNS.Servers) > 0 {
+		primaryDNS := strings.TrimSpace(settings.DNS.Servers[0])
+		if primaryDNS != "" {
+			sb.WriteString(fmt.Sprintf("vpn_always_dns=%s\n", primaryDNS))
+		}
+	}
 	sb.WriteString("log_level=info\n")
 	sb.WriteString("disk_mode=soft\n")
 	sb.WriteString("soft_state_interval=12h\n")

@@ -96,13 +96,14 @@ void config_set_defaults(susanin_config *c)
     c->ok_refresh_below = 3 * 3600;
     c->ok_max_entries = 4096;
     c->ok_evict_misses = 3;
-    c->promo_per_min = 30;
+    c->promo_per_min = 120;
     c->test_ttl = 60;
     c->cooldown_ttl = 5 * 60;
     c->cooldown_ok_ttl = 30;
-    c->watch_ttl = 8;
-    c->watch_retry_below = 4;
+    c->watch_ttl = 2;
+    c->watch_retry_below = 1;
     c->health_miss_debounce = 4;
+    c->late_stall_bytes = 16384;
     snprintf(c->health_probe, sizeof(c->health_probe), "%s", "1.1.1.1,8.8.8.8");
     snprintf(c->health_probe_src, sizeof(c->health_probe_src), "%s", "10.8.1.1");
     snprintf(c->vpn_always_file, sizeof(c->vpn_always_file), "%s",
@@ -213,6 +214,8 @@ int config_load(const char *path, susanin_config *c)
             c->watch_retry_below = parse_interval(val);
         else if (!strcmp(key, "health_miss_debounce"))
             c->health_miss_debounce = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "late_stall_bytes"))
+            c->late_stall_bytes = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "health_probe"))
             set_str(c->health_probe, sizeof(c->health_probe), val);
         else if (!strcmp(key, "health_probe_src"))
@@ -277,6 +280,7 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "watch_ttl=%ds\n", c->watch_ttl);
     fprintf(fp, "watch_retry_below=%ds\n", c->watch_retry_below);
     fprintf(fp, "health_miss_debounce=%d\n", c->health_miss_debounce);
+    fprintf(fp, "late_stall_bytes=%d\n", c->late_stall_bytes);
     fprintf(fp, "health_probe=%s\n", c->health_probe);
     fprintf(fp, "health_probe_src=%s\n", c->health_probe_src);
     fprintf(fp, "vpn_always_file=%s\n", c->vpn_always_file);

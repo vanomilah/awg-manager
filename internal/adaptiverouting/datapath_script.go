@@ -36,6 +36,20 @@ if [ -f "$CONF" ]; then
 fi
 
 EGRESS=${EGRESS:-${SUSANIN_EGRESS:-awgsus0}}
+case "$EGRESS" in
+    Wireguard*)
+        idx="${EGRESS#Wireguard}"
+        if [ -e "/sys/class/net/nwg$idx" ] || ip link show "nwg$idx" >/dev/null 2>&1; then
+            EGRESS="nwg$idx"
+        fi
+        ;;
+    OpkgTun*)
+        lower=$(printf '%s' "$EGRESS" | tr '[:upper:]' '[:lower:]')
+        if [ -e "/sys/class/net/$lower" ] || ip link show "$lower" >/dev/null 2>&1; then
+            EGRESS="$lower"
+        fi
+        ;;
+esac
 TABLE=${TABLE:-${SUSANIN_TABLE:-105}}
 MARK_OK=${MARK_OK:-${SUSANIN_MARK_OK:-0x20000000}}
 MARK_TEST=${MARK_TEST:-${SUSANIN_MARK_TEST:-0x10000000}}
@@ -184,6 +198,21 @@ ensure_table() {
     say "table/ip-rule ready (table=$TABLE dev=$EGRESS mask=$MASK)"
 }
 
+RST_CHAIN=SUSANIN-RST
+
+ensure_rst() {
+    "$IPT" -w -t filter -S "$RST_CHAIN" >/dev/null 2>&1 || "$IPT" -w -t filter -N "$RST_CHAIN"
+    "$IPT" -w -t filter -F "$RST_CHAIN"
+    "$IPT" -w -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_test_tcp dst -j REJECT --reject-with tcp-reset
+    "$IPT" -w -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_ok_tcp dst -j REJECT --reject-with tcp-reset
+    "$IPT" -w -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_ok_net dst -j REJECT --reject-with tcp-reset
+    for i in $LAN; do
+        "$IPT" -w -t filter -D FORWARD -i "$i" -j "$RST_CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t filter -I FORWARD 1 -i "$i" -j "$RST_CHAIN"
+    done
+    say "zombie socket RST killer ready"
+}
+
 command_up() {
     backup
     ensure_sets
@@ -192,6 +221,7 @@ command_up() {
     rule_mark
     ensure_jump
     ensure_table
+    ensure_rst
     say "data plane UP (table=$TABLE dev=$EGRESS)"
 }
 
@@ -206,6 +236,12 @@ command_down() {
     fi
     if "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
         "$IPT" -t mangle -F "$CHAIN"; "$IPT" -t mangle -X "$CHAIN" || true
+    fi
+    for i in $LAN; do
+        "$IPT" -w -t filter -D FORWARD -i "$i" -j "$RST_CHAIN" >/dev/null 2>&1 || true
+    done
+    if "$IPT" -w -t filter -S "$RST_CHAIN" >/dev/null 2>&1; then
+        "$IPT" -w -t filter -F "$RST_CHAIN"; "$IPT" -w -t filter -X "$RST_CHAIN" || true
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true

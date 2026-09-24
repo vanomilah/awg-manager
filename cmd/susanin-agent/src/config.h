@@ -37,6 +37,7 @@ typedef struct {
     int watch_ttl;
     int watch_retry_below;
     int health_miss_debounce;
+    int late_stall_bytes;   /* порог байт для быстрого STALL-443 (default 16384) */
     char health_probe[CFG_PATH_MAX];
     char health_probe_src[64];
     char vpn_always_file[CFG_PATH_MAX];

@@ -256,7 +256,7 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                      f->rp <= 2 && f->rb < 256)
                 promote_test(ctx, f, now, "FAST", "TCP-CLOSE");
         } else if (f->l4proto == 17) {
-            if (f->dport == 443 && f->op >= 3 && f->rp == 0)
+            if (f->dport == 443 && f->op >= 3 && f->rp <= 1)
                 promote_test(ctx, f, now, "FAST", "QUIC");
         }
     }
@@ -276,19 +276,26 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (is_private_dst(f->dst, NULL)) continue;
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
-            if (f->op >= 5 && f->ob >= 1000 && f->rp <= 2 && f->rb < 256) {
+            if (f->op >= 4 && f->ob >= 500 && f->rp <= 2 && f->rb < 1024) {
                 if (candidate_ok(ctx, f, now))
                     promote_test(ctx, f, now, "SOFT", "TCP-STALL");
                 continue;
             }
-            /* Быстрый late-stall для HTTPS: ответы есть, но объём мизерный —
-             * типичный троттлинг. Не ждём окна наблюдения (watch). */
-            if (f->dport == 443 && f->op >= 8 && f->rp > 0 && f->rb < 256) {
-                if (candidate_ok(ctx, f, now))
-                    promote_test(ctx, f, now, "SOFT", "TCP-STALL-443");
-                continue;
+            /* Быстрый late-stall для HTTPS: ответы есть, но объём меньше late_stall_bytes
+             * (типичный троттлинг видео/медиапотока после TLS handshake).
+             * Не ждём окна наблюдения (watch) если rate_delta подтверждает заморозку. */
+            unsigned long late_thresh = (cfg->late_stall_bytes > 0)
+                                            ? (unsigned long)cfg->late_stall_bytes
+                                            : 16384UL;
+            if (f->dport == 443 && f->op >= 4 && f->rp > 0 && f->rb < late_thresh) {
+                int oa, rs;
+                if (rate_delta(f, now, &oa, &rs) && oa && rs) {
+                    if (candidate_ok(ctx, f, now))
+                        promote_test(ctx, f, now, "SOFT", "TCP-STALL-443");
+                    continue;
+                }
             }
-            if (f->op >= 8 && f->rp > 0) {
+            if (f->op >= 4 && f->rp > 0) {
                 int oa, rs;
                 if (rate_delta(f, now, &oa, &rs) && oa && rs) {
                     /* suspicious: watch -> maybe late-stall */
@@ -309,11 +316,11 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         } else if (f->l4proto == 17) {
             if (!f->has_reply) {
                 if (f->dport != 443 && f->dport != 53 && f->dport != 67 &&
-                    f->dport != 68 && f->dport != 123 && f->op >= 12 && f->rp == 0) {
+                    f->dport != 68 && f->dport != 123 && f->op >= 6 && f->rp == 0) {
                     if (candidate_ok(ctx, f, now))
                         promote_test(ctx, f, now, "SOFT", "UDP");
                 }
-            } else if (f->dport == 443 && f->op >= 8) {
+            } else if (f->dport == 443 && f->op >= 4) {
                 int oa, rs;
                 if (rate_delta(f, now, &oa, &rs) && oa && rs) {
                     if (!state_has(st_watch(ctx->st, 1), f->dst, now)) {
