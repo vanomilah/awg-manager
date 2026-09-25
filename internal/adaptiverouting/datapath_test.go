@@ -51,8 +51,8 @@ func TestDatapath_EnsureSets(t *testing.T) {
 		}
 	}
 
-	if len(addCalls) != len(DefaultTelegramCIDRs) {
-		t.Errorf("expected %d calls to ipset add for DefaultTelegramCIDRs, got %d", len(DefaultTelegramCIDRs), len(addCalls))
+	if len(addCalls) != 0 {
+		t.Errorf("expected 0 calls to ipset add in EnsureSets, got %d", len(addCalls))
 	}
 }
 

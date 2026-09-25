@@ -72,7 +72,7 @@ NEVERSET=susanin_never
 
 say() { echo "[susanin] $*"; }
 
-mangle() { "$IPT" -t mangle -D "$@" >/dev/null 2>&1 || true; "$IPT" -t mangle -A "$@"; }
+mangle() { "$IPT" -w -t mangle -D "$@" >/dev/null 2>&1 || true; "$IPT" -w -t mangle -A "$@"; }
 iprule() { "$IPCMD" rule del "$@" >/dev/null 2>&1 || true; "$IPCMD" rule add "$@"; }
 
 set_exists() { "$IPSET" list "$1" >/dev/null 2>&1; }
@@ -121,7 +121,7 @@ ensure_sets() {
 }
 
 ensure_chain() {
-    "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1 || "$IPT" -t mangle -N "$CHAIN"
+    "$IPT" -w -t mangle -S "$CHAIN" >/dev/null 2>&1 || "$IPT" -w -t mangle -N "$CHAIN"
 }
 
 rule_priv() {
@@ -140,19 +140,28 @@ rule_mark() {
     for i in $LAN; do
         mangle "$CHAIN" -i "$i" -m set --match-set susanin_never dst -j RETURN
         for p in tcp udp; do
-            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark "0x0/$MASK" \
+            mangle "$CHAIN" -i "$i" -p "$p" \
                 -m set --match-set susanin_ok_${p} dst \
-                -j CONNMARK --set-xmark "$MARK_OK/$MASK"
-            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark "0x0/$MASK" \
-                -m set --match-set susanin_ok_net dst \
-                -j CONNMARK --set-xmark "$MARK_OK/$MASK"
-            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark "0x0/$MASK" \
+                -j MARK --set-xmark "$MARK_OK/$MASK"
+            mangle "$CHAIN" -i "$i" -p "$p" \
+                -m set --match-set susanin_ok_${p} dst \
+                -j CONNMARK --save-mark --nfmask "$MASK" --ctmask "$MASK"
+
+            mangle "$CHAIN" -i "$i" -p "$p" \
                 -m set --match-set susanin_test_${p} dst \
-                -j CONNMARK --set-xmark "$MARK_TEST/$MASK"
+                -j MARK --set-xmark "$MARK_TEST/$MASK"
+            mangle "$CHAIN" -i "$i" -p "$p" \
+                -m set --match-set susanin_test_${p} dst \
+                -j CONNMARK --save-mark --nfmask "$MASK" --ctmask "$MASK"
         done
+
+        mangle "$CHAIN" -i "$i" \
+            -m set --match-set susanin_ok_net dst \
+            -j MARK --set-xmark "$MARK_OK/$MASK"
+        mangle "$CHAIN" -i "$i" \
+            -m set --match-set susanin_ok_net dst \
+            -j CONNMARK --save-mark --nfmask "$MASK" --ctmask "$MASK"
+
         mangle "$CHAIN" -i "$i" -j CONNMARK --restore-mark --nfmask "$MASK" --ctmask "$MASK"
         mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_OK/$MASK" \
             -j MARK --set-xmark "$MARK_OK/$MASK"
@@ -162,16 +171,16 @@ rule_mark() {
 }
 
 ensure_jump() {
-    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
+    "$IPT" -w -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
     for i in $LAN; do
-        "$IPT" -t mangle -D PREROUTING -i "$i" -j "$CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t mangle -D PREROUTING -i "$i" -j "$CHAIN" >/dev/null 2>&1 || true
     done
     if [ -n "$POLICY_MARK" ]; then
-        "$IPT" -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK" -j "$CHAIN" >/dev/null 2>&1 || true
-        "$IPT" -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN" >/dev/null 2>&1 || true
-        "$IPT" -t mangle -A PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN"
+        "$IPT" -w -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK" -j "$CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t mangle -A PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN"
     else
-        "$IPT" -t mangle -A PREROUTING -j "$CHAIN"
+        "$IPT" -w -t mangle -A PREROUTING -j "$CHAIN"
     fi
 }
 
@@ -194,23 +203,12 @@ ensure_table() {
         "$IPT" -w -t mangle -I FORWARD 1 -o "$EGRESS" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     "$IPT" -w -t nat -C POSTROUTING -o "$EGRESS" -j MASQUERADE >/dev/null 2>&1 || \
         "$IPT" -w -t nat -I POSTROUTING 1 -o "$EGRESS" -j MASQUERADE
+    # Reject direct QUIC (UDP 443) so browsers/apps immediately fall back to TCP HTTPS
+    # without suffering 10-15s TSPU throttling on direct UDP streams.
+    "$IPT" -w -D FORWARD -p udp --dport 443 -m mark --mark "0x0/$MASK" -j REJECT --reject-with icmp-port-unreachable >/dev/null 2>&1 || true
+    "$IPT" -w -I FORWARD 1 -p udp --dport 443 -m mark --mark "0x0/$MASK" -j REJECT --reject-with icmp-port-unreachable
 
     say "table/ip-rule ready (table=$TABLE dev=$EGRESS mask=$MASK)"
-}
-
-RST_CHAIN=SUSANIN-RST
-
-ensure_rst() {
-    "$IPT" -w -t filter -S "$RST_CHAIN" >/dev/null 2>&1 || "$IPT" -w -t filter -N "$RST_CHAIN"
-    "$IPT" -w -t filter -F "$RST_CHAIN"
-    "$IPT" -w -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_test_tcp dst -j REJECT --reject-with tcp-reset
-    "$IPT" -w -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_ok_tcp dst -j REJECT --reject-with tcp-reset
-    "$IPT" -w -t filter -A "$RST_CHAIN" -p tcp -m conntrack --ctstate INVALID -m set --match-set susanin_ok_net dst -j REJECT --reject-with tcp-reset
-    for i in $LAN; do
-        "$IPT" -w -t filter -D FORWARD -i "$i" -j "$RST_CHAIN" >/dev/null 2>&1 || true
-        "$IPT" -w -t filter -I FORWARD 1 -i "$i" -j "$RST_CHAIN"
-    done
-    say "zombie socket RST killer ready"
 }
 
 command_up() {
@@ -221,27 +219,20 @@ command_up() {
     rule_mark
     ensure_jump
     ensure_table
-    ensure_rst
     say "data plane UP (table=$TABLE dev=$EGRESS)"
 }
 
 command_down() {
-    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
+    "$IPT" -w -t mangle -D PREROUTING -j "$CHAIN" >/dev/null 2>&1 || true
     for i in $LAN; do
-        "$IPT" -t mangle -D PREROUTING -i "$i" -j "$CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t mangle -D PREROUTING -i "$i" -j "$CHAIN" >/dev/null 2>&1 || true
     done
     if [ -n "$POLICY_MARK" ]; then
-        "$IPT" -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK" -j "$CHAIN" >/dev/null 2>&1 || true
-        "$IPT" -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK" -j "$CHAIN" >/dev/null 2>&1 || true
+        "$IPT" -w -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN" >/dev/null 2>&1 || true
     fi
-    if "$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1; then
-        "$IPT" -t mangle -F "$CHAIN"; "$IPT" -t mangle -X "$CHAIN" || true
-    fi
-    for i in $LAN; do
-        "$IPT" -w -t filter -D FORWARD -i "$i" -j "$RST_CHAIN" >/dev/null 2>&1 || true
-    done
-    if "$IPT" -w -t filter -S "$RST_CHAIN" >/dev/null 2>&1; then
-        "$IPT" -w -t filter -F "$RST_CHAIN"; "$IPT" -w -t filter -X "$RST_CHAIN" || true
+    if "$IPT" -w -t mangle -S "$CHAIN" >/dev/null 2>&1; then
+        "$IPT" -w -t mangle -F "$CHAIN"; "$IPT" -w -t mangle -X "$CHAIN" || true
     fi
     for s in $SETS; do set_exists "$s" && "$IPSET" destroy "$s" || true; done
     set_exists "$NETSET" && "$IPSET" destroy "$NETSET" || true
@@ -257,6 +248,7 @@ command_down() {
     "$IPT" -w -D INPUT -i "$EGRESS" -j ACCEPT >/dev/null 2>&1 || true
     "$IPT" -w -t mangle -D FORWARD -o "$EGRESS" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 || true
     "$IPT" -w -t nat -D POSTROUTING -o "$EGRESS" -j MASQUERADE >/dev/null 2>&1 || true
+    "$IPT" -w -D FORWARD -p udp --dport 443 -m mark --mark "0x0/$MASK" -j REJECT --reject-with icmp-port-unreachable >/dev/null 2>&1 || true
 
     CT=$(find_bin conntrack)
     if [ -n "$CT" ]; then
@@ -268,7 +260,7 @@ command_down() {
 }
 
 command_status() {
-    if "$IPT" -t mangle -S PREROUTING >/dev/null 2>&1 && "$IPT" -t mangle -S PREROUTING | grep -q "$CHAIN"; then
+    if "$IPT" -w -t mangle -S PREROUTING >/dev/null 2>&1 && "$IPT" -w -t mangle -S PREROUTING | grep -q "$CHAIN"; then
         echo "jump: present"
     else
         echo "jump: MISSING"

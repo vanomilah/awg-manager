@@ -77,7 +77,6 @@ static int from_lan(const susanin_config *cfg, const char *src)
 static void resync_sets(const susanin_config *cfg, susanin_state *st)
 {
     int udp, phase;
-    backend_ipset_flush(cfg);
     for (udp = 0; udp < 2; udp++) {
         for (phase = 0; phase < 2; phase++) {
             const state_set *set = phase ? st_ok(st, udp) : st_test(st, udp);

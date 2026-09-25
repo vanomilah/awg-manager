@@ -668,6 +668,9 @@ func (r *mihomoBridgeRuntime) resolveWithdrawIdentity(ref mihomo.BridgeRef) (can
 	if ref.LegacyOwner != "" && !containsString(legacyOwners, ref.LegacyOwner) {
 		legacyOwners = append(legacyOwners, ref.LegacyOwner)
 	}
+	if !containsString(legacyOwners, singbox.AllowAdoptEmptyDescription) {
+		legacyOwners = append(legacyOwners, singbox.AllowAdoptEmptyDescription)
+	}
 	return canonicalOwner, legacyOwners, nil
 }
 

@@ -42,6 +42,7 @@ var DefaultTelegramCIDRs = []string{
 	"149.154.172.0/22",
 }
 
+
 type BinarySpec struct {
 	Version string
 	URL     string
@@ -281,18 +282,6 @@ func extractArchive(r io.Reader, baseDir, targetBinPath string) error {
 					lines = strings.Split(string(existing), "\n")
 				} else {
 					lines = strings.Split(string(data), "\n")
-				}
-				// Append default Telegram CIDRs if not present
-				hasTg := false
-				for _, l := range lines {
-					if strings.Contains(l, "149.154.160.0") {
-						hasTg = true
-						break
-					}
-				}
-				if !hasTg {
-					lines = append(lines, "", "# Telegram Messenger (Pre-seeded for instant access)")
-					lines = append(lines, DefaultTelegramCIDRs...)
 				}
 				_ = os.WriteFile(alwaysPath, []byte(strings.Join(lines, "\n")), 0644)
 			}

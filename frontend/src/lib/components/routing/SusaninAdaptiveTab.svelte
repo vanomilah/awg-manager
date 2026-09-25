@@ -84,6 +84,12 @@
 				maxEntries: 4096,
 				separateTcpUdp: true,
 			},
+			dns: {
+				enabled: false,
+				servers: ['1.1.1.1', '8.8.8.8'],
+				routeViaTunnel: true,
+				interceptPort53: true,
+			},
 			alwaysFileEnabled: true,
 			neverFileEnabled: true,
 			alwaysEntries: [],
@@ -113,12 +119,87 @@
 	let ipSearchQuery = $state('');
 	let logEvents = $state<SusaninLogEvent[]>([]);
 	let radarPollTimer: ReturnType<typeof setInterval> | null = null;
+	let radarFilter = $state<'all' | 'confirmed' | 'stall' | 'cooldown'>('all');
+
+	const dnsPresets = [
+		{ id: 'cloudflare', name: 'Cloudflare (1.1.1.1, 1.0.0.1)', servers: ['1.1.1.1', '1.0.0.1'] },
+		{ id: 'google', name: 'Google DNS (8.8.8.8, 8.8.4.4)', servers: ['8.8.8.8', '8.8.4.4'] },
+		{ id: 'adguard', name: 'AdGuard DNS (94.140.14.14, 94.140.15.15)', servers: ['94.140.14.14', '94.140.15.15'] },
+		{ id: 'quad9', name: 'Quad9 DNS (9.9.9.9, 149.112.112.112)', servers: ['9.9.9.9', '149.112.112.112'] },
+		{ id: 'yandex', name: 'Яндекс DNS (77.88.8.8, 77.88.8.1)', servers: ['77.88.8.8', '77.88.8.1'] },
+		{ id: 'geohide', name: 'GeoHide SmartDNS (193.233.112.67, 193.233.112.68)', servers: ['193.233.112.67', '193.233.112.68'] },
+		{ id: 'custom', name: 'Пользовательский ввод', servers: [] },
+	];
+	let selectedDnsPreset = $state('cloudflare');
+	let customDnsText = $state('1.1.1.1, 8.8.8.8');
+
+	function getEgressFlag(name: string): string {
+		const lower = name.toLowerCase();
+		if (lower.includes('us') || lower.includes('usa') || lower.includes('united states') || lower.includes('dallas') || lower.includes('miami') || lower.includes('new york')) return '🇺🇸';
+		if (lower.includes('fi') || lower.includes('finland') || lower.includes('helsinki')) return '🇫🇮';
+		if (lower.includes('de') || lower.includes('germany') || lower.includes('frankfurt') || lower.includes('falkenstein')) return '🇩🇪';
+		if (lower.includes('nl') || lower.includes('netherlands') || lower.includes('amsterdam')) return '🇳🇱';
+		if (lower.includes('ru') || lower.includes('russia') || lower.includes('moscow') || lower.includes('dacha')) return '🇷🇺';
+		if (lower.includes('fr') || lower.includes('france') || lower.includes('paris')) return '🇫🇷';
+		if (lower.includes('gb') || lower.includes('uk') || lower.includes('london')) return '🇬🇧';
+		if (lower.includes('se') || lower.includes('sweden') || lower.includes('stockholm')) return '🇸🇪';
+		if (lower.includes('sg') || lower.includes('singapore')) return '🇸🇬';
+		if (lower.includes('jp') || lower.includes('japan') || lower.includes('tokyo')) return '🇯🇵';
+		if (lower.includes('freeturn') || lower.includes('wg') || lower.includes('awg')) return '🛡️';
+		return '🌐';
+	}
+
+	function getFlagFromCountry(country?: string): string {
+		if (!country) return '';
+		const c = country.toLowerCase();
+		if (c.includes('сша') || c.includes('us')) return '🇺🇸';
+		if (c.includes('россия') || c.includes('ru')) return '🇷🇺';
+		if (c.includes('нидерланд') || c.includes('nl')) return '🇳🇱';
+		if (c.includes('германи') || c.includes('de')) return '🇩🇪';
+		if (c.includes('финлянд') || c.includes('fi')) return '🇫🇮';
+		if (c.includes('франци') || c.includes('fr')) return '🇫🇷';
+		if (c.includes('сингапур') || c.includes('sg')) return '🇸🇬';
+		if (c.includes('великобритан') || c.includes('gb') || c.includes('uk')) return '🇬🇧';
+		if (c.includes('япони') || c.includes('jp')) return '🇯🇵';
+		if (c.includes('швеци') || c.includes('se')) return '🇸🇪';
+		if (c.includes('израиль') || c.includes('il')) return '🇮🇱';
+		if (c.includes('европ') || c.includes('eu')) return '🇪🇺';
+		return '🌐';
+	}
+
+	const filteredLogEvents = $derived.by(() => {
+		if (radarFilter === 'confirmed') return logEvents.filter((e) => e.action === 'CONFIRMED');
+		if (radarFilter === 'stall') return logEvents.filter((e) => e.action === 'STALL' || e.action === 'LATE-STALL' || e.action === 'QUIC' || e.action === 'RESET' || e.action === 'SYN-TIMEOUT');
+		if (radarFilter === 'cooldown') return logEvents.filter((e) => e.action === 'COOLDOWN');
+		return logEvents;
+	});
+
+	function applyDnsPreset(presetId: string) {
+		selectedDnsPreset = presetId;
+		const p = dnsPresets.find((x) => x.id === presetId);
+		if (p && p.servers.length > 0) {
+			if (!settings.dns) {
+				settings.dns = { enabled: true, servers: [...p.servers], routeViaTunnel: true, interceptPort53: true };
+			} else {
+				settings.dns.servers = [...p.servers];
+			}
+			customDnsText = p.servers.join(', ');
+		}
+	}
+
+	function handleCustomDnsChange(val: string) {
+		customDnsText = val;
+		const parts = val.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+		if (settings.dns) {
+			settings.dns.servers = parts;
+		}
+	}
 
 	let alwaysText = $state('');
 	let neverText = $state('');
 
 	let showEgressModal = $state(false);
-	let egressFilterTab = $state<'all' | 'proxy' | 'group' | 'tunnel' | 'subscription'>('all');
+	let egressFilterTab = $state<'all' | 'proxy' | 'group' | 'tunnel' | 'subscription' | 'singbox'>('all');
 	let egressSearchQuery = $state('');
 
 	const selectedEgress = $derived.by(() => {
@@ -131,19 +212,23 @@
 		if (selectedEgress.ref.kind === 'mihomo-proxy') return `Прокси-узел Mihomo · ${selectedEgress.interface}`;
 		if (selectedEgress.ref.kind === 'mihomo-group') return `Прокси-группа Mihomo · ${selectedEgress.interface}`;
 		if (selectedEgress.ref.kind === 'mihomo-subscription') return `Подписка Mihomo · ${selectedEgress.interface}`;
+		if (selectedEgress.ref.kind === 'singbox-subscription') return `Подписка Sing-box · ${selectedEgress.interface}`;
+		if (selectedEgress.ref.kind === 'singbox-outbound') return `Узел Sing-box · ${selectedEgress.interface}`;
 		return `Туннель ядра · ${selectedEgress.interface}`;
 	});
 
 	const filteredEgresses = $derived.by(() => {
 		let list = egresses;
 		if (egressFilterTab === 'proxy') {
-			list = list.filter((e) => e.ref.kind === 'mihomo-proxy');
+			list = list.filter((e) => e.ref.kind === 'mihomo-proxy' || e.ref.kind === 'singbox-outbound');
 		} else if (egressFilterTab === 'group') {
 			list = list.filter((e) => e.ref.kind === 'mihomo-group');
 		} else if (egressFilterTab === 'tunnel') {
 			list = list.filter((e) => e.ref.kind === 'kernel-tunnel');
 		} else if (egressFilterTab === 'subscription') {
-			list = list.filter((e) => e.ref.kind === 'mihomo-subscription');
+			list = list.filter((e) => e.ref.kind === 'mihomo-subscription' || e.ref.kind === 'singbox-subscription');
+		} else if (egressFilterTab === 'singbox') {
+			list = list.filter((e) => e.ref.engine === 'sing-box' || e.ref.kind === 'singbox-subscription' || e.ref.kind === 'singbox-outbound');
 		}
 		const q = egressSearchQuery.trim().toLowerCase();
 		if (q) {
@@ -151,10 +236,24 @@
 				(e) =>
 					e.displayName.toLowerCase().includes(q) ||
 					e.interface.toLowerCase().includes(q) ||
-					e.ref.kind.toLowerCase().includes(q)
+					e.ref.kind.toLowerCase().includes(q) ||
+					e.ref.engine.toLowerCase().includes(q)
 			);
 		}
-		return list;
+		const catOrder: Record<string, number> = {
+			'kernel-tunnel': 1,
+			'mihomo-proxy': 2,
+			'mihomo-group': 3,
+			'mihomo-subscription': 4,
+			'singbox-subscription': 5,
+			'singbox-outbound': 6,
+		};
+		return [...list].sort((a, b) => {
+			const oA = catOrder[a.ref.kind] ?? 99;
+			const oB = catOrder[b.ref.kind] ?? 99;
+			if (oA !== oB) return oA - oB;
+			return a.displayName.localeCompare(b.displayName, undefined, { numeric: true, sensitivity: 'base' });
+		});
 	});
 
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -269,6 +368,12 @@
 				maxEntries: s.persistence?.maxEntries ?? 4096,
 				separateTcpUdp: Boolean(s.persistence?.separateTcpUdp),
 			},
+			dns: {
+				enabled: Boolean(s.dns?.enabled),
+				servers: (s.dns?.servers || ['1.1.1.1', '8.8.8.8']).map((x) => x.trim()).filter(Boolean),
+				routeViaTunnel: s.dns?.routeViaTunnel !== false,
+				interceptPort53: s.dns?.interceptPort53 !== false,
+			},
 			alwaysFileEnabled: s.alwaysFileEnabled !== false,
 			neverFileEnabled: s.neverFileEnabled !== false,
 			alwaysEntries: cleanAlways,
@@ -279,6 +384,15 @@
 
 	function useServerSettings(next: AdaptiveRoutingSettings) {
 		settings = structuredClone(next);
+		if (!settings.dns) {
+			settings.dns = {
+				enabled: false,
+				servers: ['1.1.1.1', '8.8.8.8'],
+				routeViaTunnel: true,
+				interceptPort53: true,
+			};
+		}
+		customDnsText = (settings.dns.servers || []).join(', ');
 		selectedEgressValue = egressKey(next.primaryEgress);
 		const serverAlways = (next.alwaysEntries || []).map((x) => x.trim()).filter(Boolean);
 		const serverNever = (next.neverEntries || []).map((x) => x.trim()).filter(Boolean);
@@ -299,15 +413,18 @@
 	async function loadAll(initial = false) {
 		if (initial) loading = true;
 		try {
+			const fetchLogs = !radarPollTimer;
 			const [statusRes, egressRes, learnedRes, logsRes] = await Promise.all([
 				api.getAdaptiveRoutingStatus(),
 				api.getAdaptiveRoutingEgresses(),
 				api.getAdaptiveRoutingLearned().catch(() => null),
-				api.getAdaptiveRoutingLogs(25).catch(() => ({ events: [] })),
+				fetchLogs ? api.getAdaptiveRoutingLogs(50).catch(() => ({ events: [] })) : Promise.resolve(null),
 			]);
 
 			status = statusRes.state;
-			egresses = egressRes.items || [];
+			if (!showEgressModal || egresses.length === 0) {
+				egresses = egressRes.items || [];
+			}
 			learned = learnedRes;
 			if (logsRes && logsRes.events) {
 				logEvents = logsRes.events;
@@ -504,70 +621,185 @@
 		egresses.find((e) => egressKey(e.ref) === selectedEgressValue)
 	);
 
-	function applyDetectorPreset(preset: 'balanced' | 'aggressive' | 'soft') {
-		if (preset === 'balanced') {
-			settings.detection.fastIntervalSeconds = 1;
-			settings.detection.softIntervalSeconds = 1;
-			settings.detection.judgeIntervalSeconds = 1;
-			settings.detection.healthIntervalSeconds = 5;
-			settings.detection.tcpSynRetries = 2;
-			settings.detection.lateStallBytes = 1500;
-		} else if (preset === 'aggressive') {
+	function applyDetectorPreset(preset: 'aggressive' | 'balanced' | 'soft') {
+		if (preset === 'aggressive') {
 			settings.detection.fastIntervalSeconds = 1;
 			settings.detection.softIntervalSeconds = 1;
 			settings.detection.judgeIntervalSeconds = 1;
 			settings.detection.healthIntervalSeconds = 3;
 			settings.detection.tcpSynRetries = 1;
-			settings.detection.lateStallBytes = 1000;
-		} else if (preset === 'soft') {
+			settings.detection.lateStallBytes = 800;
+		} else if (preset === 'balanced') {
 			settings.detection.fastIntervalSeconds = 2;
 			settings.detection.softIntervalSeconds = 2;
 			settings.detection.judgeIntervalSeconds = 2;
+			settings.detection.healthIntervalSeconds = 5;
+			settings.detection.tcpSynRetries = 2;
+			settings.detection.lateStallBytes = 1400;
+		} else if (preset === 'soft') {
+			settings.detection.fastIntervalSeconds = 3;
+			settings.detection.softIntervalSeconds = 3;
+			settings.detection.judgeIntervalSeconds = 3;
 			settings.detection.healthIntervalSeconds = 8;
 			settings.detection.tcpSynRetries = 3;
 			settings.detection.lateStallBytes = 2500;
 		}
-		notifications.info(`Применён пресет детектора: ${preset === 'balanced' ? 'Сбалансированный' : preset === 'aggressive' ? 'Агрессивный' : 'Мягкий'}`);
+		const name = preset === 'aggressive' ? 'Агрессивный (1с / 1 ретрай)' : preset === 'balanced' ? 'Сбалансированный (2с / 2 ретрая)' : 'Мягкий (3с / 3 ретрая)';
+		notifications.info(`Применён пресет детектора: ${name}`);
+	}
+
+	function addGeoblockedDomains() {
+		const geoblockedList = [
+			'openai.com',
+			'*.openai.com',
+			'chatgpt.com',
+			'*.chatgpt.com',
+			'oaistatic.com',
+			'*.oaistatic.com',
+			'oaiusercontent.com',
+			'*.oaiusercontent.com',
+			'anthropic.com',
+			'*.anthropic.com',
+			'claude.ai',
+			'*.claude.ai',
+			'cursor.com',
+			'*.cursor.com',
+			'cursor.sh',
+			'*.cursor.sh',
+			'cursor-cdn.com',
+			'*.cursor-cdn.com',
+			'deepl.com',
+			'*.deepl.com',
+			'midjourney.com',
+			'*.midjourney.com',
+			'perplexity.ai',
+			'*.perplexity.ai',
+			'intel.com',
+			'*.intel.com',
+			'amd.com',
+			'*.amd.com',
+			'docker.com',
+			'*.docker.com',
+			'docker.io',
+			'*.docker.io',
+			'atlassian.com',
+			'*.atlassian.com',
+			'atlassian.net',
+			'*.atlassian.net',
+			'autodesk.com',
+			'*.autodesk.com',
+			'canva.com',
+			'*.canva.com',
+			'canva-apps.com',
+			'*.canva-apps.com',
+			'notion.so',
+			'*.notion.so',
+			'notion.site',
+			'*.notion.site',
+			'spotify.com',
+			'*.spotify.com',
+			'spotifycdn.com',
+			'*.spotifycdn.com',
+			'figma.com',
+			'*.figma.com',
+			'adobe.io',
+			'*.adobe.io',
+		];
+
+		const existing = new Set(
+			alwaysText
+				.split('\n')
+				.map((s) => s.trim().toLowerCase())
+				.filter(Boolean)
+		);
+		const toAdd = geoblockedList.filter((d) => !existing.has(d.toLowerCase()));
+		if (toAdd.length === 0) {
+			notifications.info('Все основные домены геоблокировок уже есть в списке');
+			return;
+		}
+		const sep = alwaysText.trim() ? '\n' : '';
+		alwaysText = alwaysText.trim() + sep + toAdd.join('\n');
+		notifications.success(`Добавлено ${toAdd.length} доменов для обхода геоблокировок`);
 	}
 </script>
 
 <div class="susanin-page">
-	<!-- 1. Компактная Status Bar -->
-	<div class="susanin-status-bar bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
-		<div class="flex items-center gap-2.5 flex-wrap">
-			<div class="flex items-center gap-2 pr-2 border-r border-[var(--color-border)]">
-				<span class="w-2.5 h-2.5 rounded-full {status?.status === 'running' ? 'bg-[var(--color-success)] animate-pulse' : status?.status === 'degraded' ? 'bg-[var(--color-warning)]' : 'bg-gray-400'}"></span>
-				<span class="font-semibold text-xs uppercase tracking-wider text-[var(--color-text-primary)]">
+	<!-- 1. Компактная Status Bar (Screen 3 Redesign) -->
+	<div class="susanin-status-bar bg-[var(--color-bg-secondary)] rounded-xl border border-[var(--color-border)] flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 shadow-xs">
+		<div class="flex items-center gap-2.5 flex-wrap min-w-0">
+			<!-- Pulsing LED & Status -->
+			<div class="flex items-center gap-2 pr-3 border-r border-[var(--color-border)]">
+				<span class="relative flex h-2.5 w-2.5">
+					{#if status?.status === 'running'}
+						<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[var(--color-success)] opacity-75"></span>
+						<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[var(--color-success)]"></span>
+					{:else if status?.status === 'degraded'}
+						<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[var(--color-warning)]"></span>
+					{:else}
+						<span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-gray-400"></span>
+					{/if}
+				</span>
+				<span class="font-bold text-xs uppercase tracking-wider text-[var(--color-text-primary)]">
 					{status?.status === 'running' ? 'Susanin активен' : status?.status === 'degraded' ? 'Susanin деградирован' : 'Susanin остановлен'}
 				</span>
 			</div>
 
-			<Badge variant={status?.routingOwner === 'susanin' ? 'success' : 'muted'} size="sm">
-				Владелец сети: {status?.routingOwner === 'susanin' ? 'Susanin' : status?.routingOwner || 'Нет'}
-			</Badge>
+			<!-- Routing Owner Pill -->
+			<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border {status?.routingOwner === 'susanin' ? 'bg-[var(--color-success-tint)] text-[var(--color-success)] border-[var(--color-success-border)]' : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] border-[var(--color-border)]'}">
+				<span>Владелец:</span>
+				<span class="font-semibold text-[var(--color-text-primary)]">{status?.routingOwner === 'susanin' ? 'Susanin' : status?.routingOwner || 'Нет'}</span>
+			</div>
 
+			<!-- Active Egress Pill -->
 			{#if activeEgressItem}
-				<div class="flex items-center gap-1.5 text-xs text-[var(--color-text-secondary)] bg-[var(--color-bg-tertiary)] px-2.5 py-0.5 rounded-md border border-[var(--color-border)]">
+				<button
+					type="button"
+					onclick={() => (showEgressModal = true)}
+					class="flex items-center gap-1.5 text-xs bg-[var(--color-bg-tertiary)] hover:bg-[var(--color-bg-hover)] px-2.5 py-1 rounded-md border border-[var(--color-border)] transition-colors cursor-pointer group"
+					title="Нажмите, чтобы сменить выход"
+				>
 					<span class="text-[var(--color-text-muted)]">Выход:</span>
-					<span class="font-medium text-[var(--color-text-primary)] truncate max-w-[180px]">{activeEgressItem.displayName}</span>
-				</div>
+					<span class="font-semibold text-[var(--color-text-primary)] truncate max-w-[200px] flex items-center gap-1">
+						<span>{getEgressFlag(activeEgressItem.displayName || activeEgressItem.interface)}</span>
+						<span>{activeEgressItem.displayName}</span>
+					</span>
+					<span class="text-[10px] font-mono text-[var(--color-text-muted)] ml-0.5">({activeEgressItem.interface})</span>
+				</button>
 			{:else}
-				<span class="text-xs text-[var(--color-text-muted)] italic">Выход не выбран</span>
+				<button
+					type="button"
+					onclick={() => (showEgressModal = true)}
+					class="text-xs text-[var(--color-warning)] hover:underline flex items-center gap-1 cursor-pointer bg-[var(--color-warning-tint)] px-2.5 py-1 rounded-md border border-[var(--color-warning)]/30"
+				>
+					<AlertTriangle class="w-3.5 h-3.5" />
+					<span>Выбрать выход</span>
+				</button>
 			{/if}
 
-			<Badge variant={settings.failurePolicy === 'direct' ? 'info' : 'warning'} size="sm">
+			<!-- Policy Mode Pill -->
+			<span class="px-2 py-0.5 rounded text-[11px] font-medium border {settings.failurePolicy === 'direct' ? 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20' : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'}">
 				{settings.failurePolicy === 'direct' ? 'Fail-Open (Direct)' : 'Kill-Switch'}
-			</Badge>
+			</span>
+
+			<!-- Live Stats Chips -->
+			{#if status?.status === 'running'}
+				<div class="hidden sm:flex items-center gap-1 text-[11px] text-[var(--color-text-muted)] bg-[var(--color-bg-tertiary)] px-2 py-0.5 rounded border border-[var(--color-border)]">
+					<Database class="w-3 h-3 text-[var(--color-accent)]" />
+					<span class="font-mono font-semibold text-[var(--color-text-primary)]">{status?.learnedTcpCount ?? 0}</span>
+					<span>IP в VPN</span>
+				</div>
+			{/if}
 
 			{#if isDirty}
-				<span class="text-xs text-[var(--color-warning)] flex items-center gap-1 font-medium bg-[var(--color-warning-tint)] px-2 py-0.5 rounded-md">
+				<span class="text-xs text-[var(--color-warning)] flex items-center gap-1 font-medium bg-[var(--color-warning-tint)] px-2.5 py-1 rounded-md border border-[var(--color-warning)]/30">
 					<AlertTriangle class="w-3.5 h-3.5" />
 					Есть несохранённые изменения
 				</span>
 			{/if}
 		</div>
 
-		<div class="flex items-center gap-2 shrink-0 self-end md:self-auto">
+		<!-- Action Buttons: Right-aligned -->
+		<div class="flex items-center gap-2 shrink-0 ml-auto">
 			{#if isDirty}
 				<Button
 					variant="primary"
@@ -759,6 +991,109 @@
 						</button>
 					</div>
 				</div>
+
+				<!-- Настройки DNS для Susanin (Generic / Engine-Agnostic) -->
+				<div class="susanin-form-section pt-1 border-t border-[var(--color-border)]/50">
+					<div class="flex items-center justify-between mb-1.5">
+						<div class="flex items-center gap-1.5">
+							<Globe class="w-3.5 h-3.5 text-[var(--color-accent)]" />
+							<span class="text-xs font-semibold text-[var(--color-text-primary)]">
+								DNS для клиентов Susanin
+							</span>
+						</div>
+						<label class="relative inline-flex items-center cursor-pointer">
+							<input
+								type="checkbox"
+								checked={Boolean(settings.dns?.enabled)}
+								onchange={(e) => {
+									if (!settings.dns) {
+										settings.dns = { enabled: false, servers: ['1.1.1.1', '8.8.8.8'], routeViaTunnel: true, interceptPort53: true };
+									}
+									settings = { ...settings, dns: { ...settings.dns, enabled: e.currentTarget.checked } };
+								}}
+								class="sr-only peer"
+							/>
+							<div class="w-8 h-4.5 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-[var(--color-accent)]"></div>
+						</label>
+					</div>
+
+					{#if settings.dns?.enabled}
+						<div class="p-3 bg-[var(--color-bg-tertiary)] rounded-lg border border-[var(--color-border)] space-y-2.5 transition-all">
+							<!-- Preset selector -->
+							<div>
+								<label for="susanin-dns-preset" class="block text-[11px] text-[var(--color-text-muted)] mb-1">
+									Предустановка или провайдер DNS
+								</label>
+								<select
+									id="susanin-dns-preset"
+									value={selectedDnsPreset}
+									onchange={(e) => applyDnsPreset(e.currentTarget.value)}
+									class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+								>
+									{#each dnsPresets as preset}
+										<option value={preset.id}>{preset.name}</option>
+									{/each}
+								</select>
+							</div>
+
+							<!-- Custom DNS servers input -->
+							<div>
+								<label for="susanin-dns-servers" class="block text-[11px] text-[var(--color-text-muted)] mb-1">
+									Серверы DNS (через запятую или пробел)
+								</label>
+								<input
+									id="susanin-dns-servers"
+									type="text"
+									value={customDnsText}
+									oninput={(e) => handleCustomDnsChange(e.currentTarget.value)}
+									placeholder="1.1.1.1, 8.8.8.8"
+									class="w-full px-2.5 py-1.5 text-xs font-mono bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+								/>
+							</div>
+
+							<!-- Toggles: Route via tunnel and Intercept port 53 -->
+							<div class="space-y-2 pt-1 border-t border-[var(--color-border)]/40 text-xs">
+								<label class="flex items-start gap-2 cursor-pointer">
+									<input
+										type="checkbox"
+										checked={settings.dns.routeViaTunnel !== false}
+										onchange={(e) => {
+											if (settings.dns) {
+												settings = { ...settings, dns: { ...settings.dns, routeViaTunnel: e.currentTarget.checked } };
+											}
+										}}
+										class="mt-0.5 rounded border-[var(--color-border)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
+									/>
+									<div>
+										<span class="font-medium text-[var(--color-text-primary)]">Маршрутизировать DNS через туннель вывода</span>
+										<p class="text-[10px] text-[var(--color-text-muted)]">Запросы на порт 53 отправляются в таблицу 105 через выбранный туннель/прокси, обходя цензуру DNS провайдером</p>
+									</div>
+								</label>
+
+								<label class="flex items-start gap-2 cursor-pointer">
+									<input
+										type="checkbox"
+										checked={settings.dns.interceptPort53 !== false}
+										onchange={(e) => {
+											if (settings.dns) {
+												settings = { ...settings, dns: { ...settings.dns, interceptPort53: e.currentTarget.checked } };
+											}
+										}}
+										class="mt-0.5 rounded border-[var(--color-border)] text-[var(--color-accent)] focus:ring-[var(--color-accent)]"
+									/>
+									<div>
+										<span class="font-medium text-[var(--color-text-primary)]">Перехватывать DNS-запросы устройств (порт 53)</span>
+										<p class="text-[10px] text-[var(--color-text-muted)]">DNAT перенаправляет все DNS-запросы клиентов на указанный DNS, предотвращая утечки (DNS leak protection)</p>
+									</div>
+								</label>
+							</div>
+						</div>
+					{:else}
+						<div class="text-[11px] text-[var(--color-text-muted)] italic">
+							Используется системный DNS роутера по умолчанию (независимо от движков Mihomo / sing-box)
+						</div>
+					{/if}
+				</div>
 			</div>
 		</div>
 
@@ -923,9 +1258,20 @@
 							placeholder="Домены и IP, по одному на строку:&#10;instagram.com&#10;*.rutracker.org&#10;149.154.160.0/20"
 							class="w-full p-2.5 text-xs font-mono bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] rounded-lg text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus:outline-none focus:border-[var(--color-accent)] resize-y"
 						></textarea>
-						<p class="text-[11px] text-[var(--color-text-muted)] mt-1">
-							Направления, которые всегда принудительно направляются в туннель (включая Telegram).
-						</p>
+						<div class="flex items-center justify-between gap-2 mt-1.5 flex-wrap">
+							<p class="text-[11px] text-[var(--color-text-muted)]">
+								Направления, которые всегда принудительно направляются в туннель.
+							</p>
+							<button
+								type="button"
+								class="text-[11px] text-[var(--color-accent)] hover:underline flex items-center gap-1 shrink-0 font-medium cursor-pointer"
+								onclick={addGeoblockedDomains}
+								title="Добавить популярные зарубежные сервисы с геоблокировкой РФ (ChatGPT, Claude, Intel, Canva, Notion и др.)"
+							>
+								<Globe class="w-3.5 h-3.5 text-sky-500" />
+								<span>+ Список геоблокировок (AI, Intel, Canva...)</span>
+							</button>
+						</div>
 					{:else}
 						<textarea
 							bind:value={neverText}
@@ -970,13 +1316,6 @@
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
-						onclick={() => applyDetectorPreset('balanced')}
-					>
-						Сбалансированный (1с / 2 ретрая)
-					</button>
-					<button
-						type="button"
-						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
 						onclick={() => applyDetectorPreset('aggressive')}
 					>
 						Агрессивный (1с / 1 ретрай)
@@ -984,16 +1323,23 @@
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+						onclick={() => applyDetectorPreset('balanced')}
+					>
+						Сбалансированный (2с / 2 ретрая)
+					</button>
+					<button
+						type="button"
+						class="text-xs px-2.5 py-1 rounded-md border border-[var(--color-border)] bg-[var(--color-bg-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
 						onclick={() => applyDetectorPreset('soft')}
 					>
-						Мягкий (2с / 3 ретрая)
+						Мягкий (3с / 3 ретрая)
 					</button>
 				</div>
 
 				<!-- Сетка параметров -->
-				<div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-3">
+				<div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-4 gap-3">
 					<div>
-						<label for="susanin-fast-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Fast интервал</label>
+						<label for="susanin-fast-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Fast интервал (с)</label>
 						<input
 							id="susanin-fast-interval"
 							type="number"
@@ -1005,7 +1351,7 @@
 					</div>
 
 					<div>
-						<label for="susanin-soft-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Soft интервал</label>
+						<label for="susanin-soft-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Soft интервал (с)</label>
 						<input
 							id="susanin-soft-interval"
 							type="number"
@@ -1017,7 +1363,7 @@
 					</div>
 
 					<div>
-						<label for="susanin-judge-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Judge интервал</label>
+						<label for="susanin-judge-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Judge интервал (с)</label>
 						<input
 							id="susanin-judge-interval"
 							type="number"
@@ -1029,7 +1375,7 @@
 					</div>
 
 					<div>
-						<label for="susanin-health-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Health интервал</label>
+						<label for="susanin-health-interval" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Health интервал (с)</label>
 						<input
 							id="susanin-health-interval"
 							type="number"
@@ -1050,6 +1396,36 @@
 							bind:value={settings.detection.tcpSynRetries}
 							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
 						/>
+					</div>
+
+					<div>
+						<label for="susanin-late-stall" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Late stall (байт)</label>
+						<input
+							id="susanin-late-stall"
+							type="number"
+							min="500"
+							max="10000"
+							step="100"
+							bind:value={settings.detection.lateStallBytes}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)]"
+						/>
+					</div>
+
+					<div>
+						<label for="susanin-ok-ttl" class="block text-[11px] text-[var(--color-text-muted)] mb-1">Время жизни IP (TTL)</label>
+						<select
+							id="susanin-ok-ttl"
+							bind:value={settings.persistence.okTtlSeconds}
+							class="w-full p-1.5 text-xs bg-[var(--color-bg-secondary)] border border-[var(--color-border)] rounded text-[var(--color-text-primary)] focus:outline-none focus:border-[var(--color-accent)]"
+						>
+							<option value={0}>Бессрочно (до сбоя)</option>
+							<option value={3600}>1 час</option>
+							<option value={43200}>12 часов</option>
+							<option value={86400}>24 часа (1 день)</option>
+							<option value={259200}>3 дня</option>
+							<option value={604800}>7 дней</option>
+							<option value={2592000}>30 дней</option>
+						</select>
 					</div>
 
 					<div>
@@ -1077,6 +1453,8 @@
 		title="База маршрутов и радар Susanin"
 		size="wide"
 		allowMaximize={true}
+		resizable={true}
+		bodyLayout="fill"
 		onclose={() => {
 			showLearnedModal = false;
 			if (radarPollTimer) {
@@ -1085,14 +1463,17 @@
 			}
 		}}
 	>
-		<div class="space-y-3.5">
+		<div class="flex flex-col flex-1 min-h-0 h-full p-4 gap-3.5">
 			<!-- Tab navigation & actions toolbar -->
-			<div class="flex items-center justify-between gap-2 flex-wrap border-b border-[var(--color-border)] pb-2.5">
+			<div class="shrink-0 flex items-center justify-between gap-2 flex-wrap border-b border-[var(--color-border)] pb-2.5">
 				<div class="flex items-center gap-1.5 flex-wrap">
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'ok' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
-						onclick={() => (modalTab = 'ok')}
+						onclick={() => {
+							modalTab = 'ok';
+							if (radarPollTimer) { clearInterval(radarPollTimer); radarPollTimer = null; }
+						}}
 					>
 						<span>Изученные адреса</span>
 						<Badge variant="success" size="sm">{okEntries.length}</Badge>
@@ -1117,7 +1498,10 @@
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'test' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
-						onclick={() => (modalTab = 'test')}
+						onclick={() => {
+							modalTab = 'test';
+							if (radarPollTimer) { clearInterval(radarPollTimer); radarPollTimer = null; }
+						}}
 					>
 						<span>В процессе теста</span>
 						<Badge variant="warning" size="sm">{testEntries.length}</Badge>
@@ -1126,7 +1510,10 @@
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'always' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
-						onclick={() => (modalTab = 'always')}
+						onclick={() => {
+							modalTab = 'always';
+							if (radarPollTimer) { clearInterval(radarPollTimer); radarPollTimer = null; }
+						}}
 					>
 						<span>Всегда в VPN</span>
 						<Badge variant="muted" size="sm">{(learned?.always || []).length}</Badge>
@@ -1135,7 +1522,10 @@
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md transition-colors flex items-center gap-1.5 {modalTab === 'never' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
-						onclick={() => (modalTab = 'never')}
+						onclick={() => {
+							modalTab = 'never';
+							if (radarPollTimer) { clearInterval(radarPollTimer); radarPollTimer = null; }
+						}}
 					>
 						<span>Напрямую</span>
 						<Badge variant="muted" size="sm">{(learned?.never || []).length}</Badge>
@@ -1175,7 +1565,7 @@
 
 			<!-- Search bar for lists -->
 			{#if modalTab === 'ok' || modalTab === 'test'}
-				<div class="relative">
+				<div class="shrink-0 relative">
 					<Search class="w-4 h-4 text-[var(--color-text-muted)] absolute left-2.5 top-1/2 -translate-y-1/2" />
 					<input
 						type="text"
@@ -1188,12 +1578,12 @@
 
 			<!-- Tab 1: Изученные адреса (ОК) -->
 			{#if modalTab === 'ok'}
-				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="text-xs text-[var(--color-text-muted)] mb-2.5 flex items-center justify-between">
+				<div class="flex-1 min-h-0 flex flex-col bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="shrink-0 text-xs text-[var(--color-text-muted)] mb-2.5 flex items-center justify-between">
 						<span>Адреса, подтверждённые Susanin и направляемые в туннель:</span>
 						<span>{filteredOkEntries.length} из {okEntries.length}</span>
 					</div>
-					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 max-h-[58vh] overflow-y-auto pr-1">
+					<div class="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5 overflow-y-auto content-start pr-1">
 						{#each filteredOkEntries as item}
 							{@const info = lookupIpKnowledge(item.ip)}
 							<div class="p-2.5 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] hover:border-[var(--color-accent)] flex flex-col justify-between gap-1.5 transition-all shadow-2xs">
@@ -1248,53 +1638,152 @@
 
 			<!-- Tab 2: Радар активности -->
 			{#if modalTab === 'radar'}
-				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="text-xs text-[var(--color-text-muted)] mb-2.5 flex items-center justify-between">
-						<span class="flex items-center gap-1.5 text-[var(--color-text-primary)] font-medium">
-							<span class="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] opacity-80"></span>
-							Лента анализа соединений в реальном времени:
-						</span>
-						<span class="text-[11px] font-mono text-[var(--color-text-secondary)]">автообновление каждые 2с · {logEvents.length} событий</span>
+				<div class="flex-1 min-h-0 flex flex-col gap-3">
+					<!-- Сводные метрики радара -->
+					<div class="shrink-0 grid grid-cols-2 sm:grid-cols-5 gap-2">
+						<div class="p-2.5 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] flex flex-col">
+							<span class="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Всего событий</span>
+							<span class="text-lg font-bold font-mono text-[var(--color-text-primary)] mt-0.5">{logEvents.length}</span>
+						</div>
+						<div class="p-2.5 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] flex flex-col">
+							<span class="text-[10px] text-[var(--color-success)] uppercase tracking-wider">В туннель</span>
+							<span class="text-lg font-bold font-mono text-[var(--color-success)] mt-0.5">{logEvents.filter((e) => e.action === 'CONFIRMED').length}</span>
+						</div>
+						<div class="p-2.5 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] flex flex-col">
+							<span class="text-[10px] text-[var(--color-warning)] uppercase tracking-wider">Задержки DPI</span>
+							<span class="text-lg font-bold font-mono text-[var(--color-warning)] mt-0.5">{logEvents.filter((e) => e.action === 'STALL' || e.action === 'LATE-STALL').length}</span>
+						</div>
+						<div class="p-2.5 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] flex flex-col">
+							<span class="text-[10px] text-[var(--color-error)] uppercase tracking-wider">Сбросы RST</span>
+							<span class="text-lg font-bold font-mono text-[var(--color-error)] mt-0.5">{logEvents.filter((e) => e.action === 'RESET').length}</span>
+						</div>
+						<div class="p-2.5 rounded-lg bg-[var(--color-bg-secondary)] border border-[var(--color-border)] flex flex-col">
+							<span class="text-[10px] text-[var(--color-accent)] uppercase tracking-wider">QUIC / UDP</span>
+							<span class="text-lg font-bold font-mono text-[var(--color-accent)] mt-0.5">{logEvents.filter((e) => e.action === 'QUIC').length}</span>
+						</div>
 					</div>
-					<div class="space-y-1.5 max-h-[58vh] overflow-y-auto pr-1">
-						{#each logEvents as ev}
-							{@const targetKnowledge = ev.target ? lookupIpKnowledge(ev.target) : null}
-							<div class="p-2 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] hover:border-[var(--color-border-hover)] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs transition-colors">
-								<div class="flex items-center gap-2 min-w-0 flex-wrap">
-									<span class="text-[11px] font-mono text-[var(--color-text-muted)] shrink-0">{ev.timestamp}</span>
-									<span class="text-[9px] font-medium px-1.5 py-0.5 rounded font-mono border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shrink-0 {ev.action === 'CONFIRMED' ? 'text-[var(--color-success)]' : ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'text-[var(--color-warning)]' : ev.action === 'RESET' ? 'text-[var(--color-error)]' : ev.action === 'QUIC' ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-secondary)]'}">
-										{ev.action}
-									</span>
-									{#if ev.target}
-										<span class="font-mono font-medium text-[var(--color-text-primary)] shrink-0">{ev.target}</span>
-										{#if targetKnowledge}
-											<span class="text-[10px] px-1.5 py-0.2 rounded bg-[var(--color-accent-tint)] text-[var(--color-accent)] border border-[var(--color-accent-border)] font-medium shrink-0 truncate max-w-[180px]">
-												{targetKnowledge.title}
+
+					<div class="flex-1 min-h-0 flex flex-col bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+						<!-- Тулбар фильтрации радара -->
+						<div class="shrink-0 flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2.5 border-b border-[var(--color-border)]/50">
+							<div class="flex items-center gap-1.5 flex-wrap">
+								<button
+									type="button"
+									class="text-xs px-2.5 py-1 rounded-md transition-colors {radarFilter === 'all' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+									onclick={() => (radarFilter = 'all')}
+								>
+									Все ({logEvents.length})
+								</button>
+								<button
+									type="button"
+									class="text-xs px-2.5 py-1 rounded-md transition-colors {radarFilter === 'confirmed' ? 'bg-[var(--color-success)]/15 text-[var(--color-success)] font-semibold border border-[var(--color-success)]/30' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+									onclick={() => (radarFilter = 'confirmed')}
+								>
+									В туннеле ({logEvents.filter((e) => e.action === 'CONFIRMED').length})
+								</button>
+								<button
+									type="button"
+									class="text-xs px-2.5 py-1 rounded-md transition-colors {radarFilter === 'stall' ? 'bg-[var(--color-warning)]/15 text-[var(--color-warning)] font-semibold border border-[var(--color-warning)]/30' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+									onclick={() => (radarFilter = 'stall')}
+								>
+									Сбои и задержки ({logEvents.filter((e) => e.action === 'STALL' || e.action === 'LATE-STALL' || e.action === 'RESET' || e.action === 'QUIC').length})
+								</button>
+								<button
+									type="button"
+									class="text-xs px-2.5 py-1 rounded-md transition-colors {radarFilter === 'cooldown' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+									onclick={() => (radarFilter = 'cooldown')}
+								>
+									Охлаждение ({logEvents.filter((e) => e.action === 'COOLDOWN').length})
+								</button>
+							</div>
+
+							<div class="flex items-center gap-2 text-[11px] font-mono text-[var(--color-text-secondary)]">
+								<span class="w-2 h-2 rounded-full bg-[var(--color-accent)] animate-pulse"></span>
+								<span>2с интервал · {filteredLogEvents.length} в выборке</span>
+							</div>
+						</div>
+
+						<!-- Лента событий -->
+						<div class="flex-1 min-h-0 space-y-1.5 overflow-y-auto pr-1">
+							{#each filteredLogEvents as ev}
+								{@const targetKnowledge = ev.target ? lookupIpKnowledge(ev.target) : null}
+								{@const title = ev.resourceTitle || targetKnowledge?.title || (ev.target ? 'Внешний узел' : '')}
+								{@const country = ev.resourceCountry || targetKnowledge?.country || ''}
+								{@const cc = ev.resourceCc || targetKnowledge?.countryCode || ''}
+								{@const icon = ev.resourceIcon || (cc ? getFlagFromCountry(cc) : '🌐')}
+								<div class="p-2.5 rounded-lg bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] hover:border-[var(--color-border-hover)] flex flex-col md:flex-row md:items-center justify-between gap-2.5 text-xs transition-colors">
+									<!-- Слева: время, тип действия, IP, ресурс -->
+									<div class="flex items-center gap-2 flex-wrap min-w-0">
+										<span class="text-[11px] font-mono text-[var(--color-text-muted)] shrink-0">{ev.timestamp}</span>
+
+										<span class="text-[10px] font-semibold px-2 py-0.5 rounded font-mono border shrink-0 flex items-center gap-1.5 {
+											ev.action === 'CONFIRMED' ? 'bg-[var(--color-success)]/10 text-[var(--color-success)] border-[var(--color-success)]/30' :
+											ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'bg-[var(--color-warning)]/10 text-[var(--color-warning)] border-[var(--color-warning)]/30' :
+											ev.action === 'RESET' ? 'bg-[var(--color-error)]/10 text-[var(--color-error)] border-[var(--color-error)]/30' :
+											ev.action === 'QUIC' ? 'bg-[var(--color-accent)]/10 text-[var(--color-accent)] border-[var(--color-accent)]/30' :
+											'bg-[var(--color-bg-secondary)] text-[var(--color-text-secondary)] border-[var(--color-border)]'
+										}">
+											<span class="w-1.5 h-1.5 rounded-full {
+												ev.action === 'CONFIRMED' ? 'bg-[var(--color-success)]' :
+												ev.action === 'STALL' || ev.action === 'LATE-STALL' ? 'bg-[var(--color-warning)]' :
+												ev.action === 'RESET' ? 'bg-[var(--color-error)]' :
+												ev.action === 'QUIC' ? 'bg-[var(--color-accent)]' :
+												'bg-[var(--color-text-muted)]'
+											}"></span>
+											{ev.action}
+										</span>
+
+										{#if ev.target}
+											<span class="font-mono font-medium text-[var(--color-text-primary)] shrink-0 px-1.5 py-0.5 bg-[var(--color-bg-secondary)] rounded border border-[var(--color-border)]/60 text-[11px]">
+												{ev.target}
 											</span>
 										{/if}
-									{/if}
+
+										{#if title}
+											<div class="flex items-center gap-1.5 px-2 py-0.5 rounded bg-[var(--color-accent-tint)]/25 text-[var(--color-accent)] border border-[var(--color-accent-border)] font-medium shrink-0 shadow-2xs">
+												<span class="text-xs">{icon}</span>
+												<span class="text-[11px] font-semibold truncate max-w-[200px]">{title}</span>
+												{#if country}
+													<span class="text-[10px] text-[var(--color-text-muted)] opacity-80 shrink-0">· {country}</span>
+												{/if}
+											</div>
+										{/if}
+									</div>
+
+									<!-- Справа: пояснение и направление -->
+									<div class="flex items-center gap-2 shrink-0 md:max-w-[45%] text-[11px] justify-between md:justify-end">
+										<span class="text-[var(--color-text-secondary)] truncate" title={ev.message}>{ev.message}</span>
+										{#if ev.action === 'CONFIRMED'}
+											<span class="shrink-0 text-[10px] px-2 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] border border-[var(--color-success)]/30 font-medium">
+												→ Туннель
+											</span>
+										{:else if ev.action === 'COOLDOWN'}
+											<span class="shrink-0 text-[10px] px-2 py-0.5 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] border border-[var(--color-border)]">
+												→ Прямой
+											</span>
+										{/if}
+									</div>
 								</div>
-								<div class="text-[11px] text-[var(--color-text-secondary)] truncate">
-									{ev.message}
+							{:else}
+								<div class="text-[var(--color-text-muted)] italic text-center py-8">
+									{radarFilter === 'all'
+										? 'Журнал событий пока пуст. События появляются в реальном времени при открытии заблокированных видео или сайтов.'
+										: 'Нет событий, соответствующих выбранному фильтру.'}
 								</div>
-							</div>
-						{:else}
-							<div class="text-[var(--color-text-muted)] italic text-center py-8">
-								Журнал событий пока пуст. События появляются в реальном времени при открытии заблокированных видео или сайтов.
-							</div>
-						{/each}
+							{/each}
+						</div>
 					</div>
 				</div>
 			{/if}
 
 			<!-- Tab 3: В процессе теста -->
 			{#if modalTab === 'test'}
-				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
+				<div class="flex-1 min-h-0 flex flex-col bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="shrink-0 text-xs text-[var(--color-text-muted)] mb-2 flex items-center justify-between">
 						<span>Адреса, проходящие проверку на блокировку прямо сейчас:</span>
 						<span>{filteredTestEntries.length} из {testEntries.length}</span>
 					</div>
-					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2.5 max-h-[58vh] overflow-y-auto pr-1">
+					<div class="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5 overflow-y-auto content-start pr-1">
 						{#each filteredTestEntries as item}
 							{@const info = lookupIpKnowledge(item.ip)}
 							<div class="p-2.5 rounded-lg bg-[var(--color-bg-tertiary)] flex flex-col justify-between gap-1.5 text-xs font-mono border border-[var(--color-border)] shadow-2xs">
@@ -1325,12 +1814,12 @@
 
 			<!-- Tab 4: Always -->
 			{#if modalTab === 'always'}
-				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
+				<div class="flex-1 min-h-0 flex flex-col bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="shrink-0 font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
 						<span>Фиксированные подсети и домены (Always)</span>
 						<Badge variant="accent" size="sm">{(learned?.always || []).length} записей</Badge>
 					</div>
-					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[58vh] overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)] pr-1">
+					<div class="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 overflow-y-auto content-start text-xs font-mono text-[var(--color-text-secondary)] pr-1">
 						{#each learned?.always || [] as entry}
 							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] truncate">
 								{entry}
@@ -1346,12 +1835,12 @@
 
 			<!-- Tab 5: Never -->
 			{#if modalTab === 'never'}
-				<div class="bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
-					<div class="font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
+				<div class="flex-1 min-h-0 flex flex-col bg-[var(--color-bg-secondary)] p-3 rounded-lg border border-[var(--color-border)]">
+					<div class="shrink-0 font-semibold text-xs text-[var(--color-text-primary)] mb-2 flex items-center justify-between">
 						<span>Прямой доступ (Never)</span>
 						<Badge variant="muted" size="sm">{(learned?.never || []).length} записей</Badge>
 					</div>
-					<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-[58vh] overflow-y-auto text-xs font-mono text-[var(--color-text-secondary)] pr-1">
+					<div class="flex-1 min-h-0 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 overflow-y-auto content-start text-xs font-mono text-[var(--color-text-secondary)] pr-1">
 						{#each learned?.never || [] as entry}
 							<div class="p-1.5 rounded bg-[var(--color-bg-tertiary)] border border-[var(--color-border)] truncate">
 								{entry}
@@ -1365,7 +1854,7 @@
 				</div>
 			{/if}
 
-			<div class="flex justify-end pt-2 border-t border-[var(--color-border)]">
+			<div class="shrink-0 flex justify-end pt-2 border-t border-[var(--color-border)]">
 				<Button variant="secondary" onclick={() => {
 					showLearnedModal = false;
 					if (radarPollTimer) {
@@ -1387,11 +1876,13 @@
 		title="Выбор выхода для обхода блокировок"
 		size="wide"
 		allowMaximize={true}
+		resizable={true}
+		bodyLayout="fill"
 		onclose={() => (showEgressModal = false)}
 	>
-		<div class="space-y-3.5">
+		<div class="flex flex-col flex-1 min-h-0 h-full p-4 gap-3.5">
 			<!-- Toolbar: категории и поиск -->
-			<div class="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pb-2.5 border-b border-[var(--color-border)]">
+			<div class="shrink-0 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 pb-2.5 border-b border-[var(--color-border)]">
 				<div class="flex items-center gap-1.5 flex-wrap">
 					<button
 						type="button"
@@ -1405,29 +1896,36 @@
 						class="text-xs px-2.5 py-1 rounded-md transition-colors {egressFilterTab === 'proxy' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
 						onclick={() => (egressFilterTab = 'proxy')}
 					>
-						Прокси ({egresses.filter(e => e.ref.kind === 'mihomo-proxy').length})
+						Прокси ({egresses.filter((e) => e.ref.kind === 'mihomo-proxy' || e.ref.kind === 'singbox-outbound').length})
 					</button>
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md transition-colors {egressFilterTab === 'group' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
 						onclick={() => (egressFilterTab = 'group')}
 					>
-						Группы ({egresses.filter(e => e.ref.kind === 'mihomo-group').length})
+						Группы ({egresses.filter((e) => e.ref.kind === 'mihomo-group').length})
 					</button>
 					<button
 						type="button"
 						class="text-xs px-2.5 py-1 rounded-md transition-colors {egressFilterTab === 'tunnel' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
 						onclick={() => (egressFilterTab = 'tunnel')}
 					>
-						Туннели ({egresses.filter(e => e.ref.kind === 'kernel-tunnel').length})
+						Туннели ({egresses.filter((e) => e.ref.kind === 'kernel-tunnel').length})
 					</button>
-					{#if egresses.some(e => e.ref.kind === 'mihomo-subscription')}
+					<button
+						type="button"
+						class="text-xs px-2.5 py-1 rounded-md transition-colors {egressFilterTab === 'subscription' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+						onclick={() => (egressFilterTab = 'subscription')}
+					>
+						Подписки ({egresses.filter((e) => e.ref.kind === 'mihomo-subscription' || e.ref.kind === 'singbox-subscription').length})
+					</button>
+					{#if egresses.some((e) => e.ref.engine === 'sing-box' || e.ref.kind === 'singbox-subscription' || e.ref.kind === 'singbox-outbound')}
 						<button
 							type="button"
-							class="text-xs px-2.5 py-1 rounded-md transition-colors {egressFilterTab === 'subscription' ? 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-primary)] font-semibold border border-[var(--color-border)]' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
-							onclick={() => (egressFilterTab = 'subscription')}
+							class="text-xs px-2.5 py-1 rounded-md transition-colors {egressFilterTab === 'singbox' ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold border border-amber-500/30' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]'}"
+							onclick={() => (egressFilterTab = 'singbox')}
 						>
-							Подписки ({egresses.filter(e => e.ref.kind === 'mihomo-subscription').length})
+							Sing-box ({egresses.filter((e) => e.ref.engine === 'sing-box' || e.ref.kind === 'singbox-subscription' || e.ref.kind === 'singbox-outbound').length})
 						</button>
 					{/if}
 				</div>
@@ -1443,64 +1941,82 @@
 				</div>
 			</div>
 
-			<!-- Карточки выходов -->
-			<div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 max-h-[58vh] overflow-y-auto pr-1">
-				{#each filteredEgresses as eg}
+			<!-- Карточки выходов: адаптивная сетка на всю высоту без пустого пространства -->
+			<div class="flex-1 min-h-0 overflow-y-auto pr-1 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-3 content-start">
+				{#each filteredEgresses as eg (egressKey(eg.ref))}
 					{@const key = egressKey(eg.ref)}
 					{@const isSelected = selectedEgressValue === key}
 					<button
 						type="button"
-						class="p-3.5 rounded-xl border text-left transition-all flex flex-col justify-between gap-3 cursor-pointer {isSelected ? 'border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]/20 bg-[var(--color-accent-tint)]/15 shadow-sm' : 'border-[var(--color-border)] bg-[var(--color-bg-primary)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-secondary)]'}"
+						class="p-3.5 rounded-xl border text-left transition-all flex flex-col justify-between gap-3 cursor-pointer group {isSelected ? 'border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]/20 bg-[var(--color-accent-tint)]/15 shadow-sm' : 'border-[var(--color-border)] bg-[var(--color-bg-primary)] hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-secondary)]'}"
 						onclick={() => {
 							handleEgressChange(key);
 							showEgressModal = false;
 						}}
 					>
-						<div class="flex items-start justify-between gap-2">
-							<div class="flex items-center gap-2.5 min-w-0">
-								<div class="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border {isSelected ? 'bg-[var(--color-accent)] text-white border-[var(--color-accent)]' : 'bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] border-[var(--color-border)]'}">
-									{#if eg.ref.kind === 'mihomo-group'}
-										<Layers class="w-4 h-4" />
-									{:else if eg.ref.kind === 'kernel-tunnel'}
-										<Shield class="w-4 h-4" />
-									{:else if eg.ref.kind === 'mihomo-subscription'}
-										<Globe class="w-4 h-4" />
+						<div class="flex items-start justify-between gap-2.5">
+							<div class="flex items-center gap-3 min-w-0">
+								<div class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border text-xl shadow-2xs {isSelected ? 'bg-[var(--color-accent-tint)] border-[var(--color-accent-border)]' : 'bg-[var(--color-bg-secondary)] border-[var(--color-border)] group-hover:border-[var(--color-border-hover)]'}">
+									{#if eg.ref.engine === 'sing-box'}
+										<span class="text-xs font-bold font-mono text-amber-500">SB</span>
 									{:else}
-										<Zap class="w-4 h-4" />
+										{getEgressFlag(eg.displayName || eg.interface)}
 									{/if}
 								</div>
 								<div class="min-w-0">
-									<div class="text-xs font-semibold text-[var(--color-text-primary)] truncate" title={eg.displayName}>
+									<div class="text-sm font-semibold text-[var(--color-text-primary)] truncate" title={eg.displayName}>
 										{eg.displayName}
 									</div>
-									<div class="text-[10px] text-[var(--color-text-muted)] truncate">
-										{#if eg.ref.kind === 'mihomo-proxy'}
-											Прокси-узел · {eg.interface}
-										{:else if eg.ref.kind === 'mihomo-group'}
-											Прокси-группа · {eg.interface}
-										{:else if eg.ref.kind === 'mihomo-subscription'}
-											Подписка · {eg.interface}
-										{:else}
-											Туннель · {eg.interface}
-										{/if}
+									<div class="text-[11px] text-[var(--color-text-muted)] flex items-center gap-1.5 truncate mt-0.5">
+										<span class="font-mono text-[var(--color-text-secondary)]">{eg.interface}</span>
+										<span>·</span>
+										<span>
+											{#if eg.ref.kind === 'mihomo-proxy'}
+												Mihomo Proxy
+											{:else if eg.ref.kind === 'mihomo-group'}
+												Proxy Group
+											{:else if eg.ref.kind === 'mihomo-subscription'}
+												Подписка Mihomo
+											{:else if eg.ref.kind === 'singbox-subscription'}
+												Подписка Sing-box
+											{:else if eg.ref.kind === 'singbox-outbound'}
+												Узел Sing-box
+											{:else}
+												Kernel Tunnel
+											{/if}
+										</span>
 									</div>
 								</div>
 							</div>
 
 							{#if isSelected}
-								<span class="w-5 h-5 rounded-full bg-[var(--color-accent)] text-white flex items-center justify-center shrink-0 shadow-xs">
-									<Check class="w-3.5 h-3.5" />
+								<span class="w-6 h-6 rounded-full bg-[var(--color-accent)] text-white flex items-center justify-center shrink-0 shadow-xs">
+									<Check class="w-4 h-4" />
 								</span>
+							{:else}
+								<span class="w-6 h-6 rounded-full border border-[var(--color-border)] group-hover:border-[var(--color-accent)] shrink-0 transition-colors"></span>
 							{/if}
 						</div>
 
-						<div class="flex items-center justify-between gap-2 pt-2 border-t border-[var(--color-border)]/40 text-[11px]">
-							<span class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-[var(--color-text-secondary)]">
-								{eg.ref.engine}
-							</span>
-							<div class="flex items-center gap-1.5">
-								<span class="w-2 h-2 rounded-full {eg.available ? 'bg-[var(--color-success)]' : 'bg-[var(--color-warning)]'}"></span>
-								<span class="text-[10px] text-[var(--color-text-muted)]">
+						<div class="flex items-center justify-between gap-2 pt-2.5 border-t border-[var(--color-border)]/40 text-[11px]">
+							<div class="flex items-center gap-1.5 flex-wrap">
+								<span class="text-[10px] font-mono px-1.5 py-0.2 rounded border {eg.ref.engine === 'sing-box' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20' : eg.ref.engine === 'mihomo' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20' : 'bg-[var(--color-bg-secondary)] border-[var(--color-border)] text-[var(--color-text-secondary)]'}">
+									{eg.ref.engine}
+								</span>
+								{#if eg.capabilities?.tcp}
+									<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)] border border-[var(--color-accent)]/20">TCP</span>
+								{/if}
+								{#if eg.capabilities?.udp}
+									<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-[var(--color-success)]/10 text-[var(--color-success)] border border-[var(--color-success)]/20">UDP</span>
+								{/if}
+								{#if eg.capabilities?.ipv4}
+									<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-[var(--color-bg-secondary)] text-[var(--color-text-muted)] border border-[var(--color-border)]">IPv4</span>
+								{/if}
+							</div>
+
+							<div class="flex items-center gap-1.5 shrink-0">
+								<span class="w-2 h-2 rounded-full {eg.available ? 'bg-[var(--color-success)] shadow-[0_0_6px_var(--color-success)]' : 'bg-[var(--color-warning)]'}"></span>
+								<span class="text-[10px] font-medium {eg.available ? 'text-[var(--color-success)]' : 'text-[var(--color-text-muted)]'}">
 									{eg.available ? 'Доступен' : 'Отключен'}
 								</span>
 							</div>
@@ -1513,7 +2029,7 @@
 				{/each}
 			</div>
 
-			<div class="flex justify-end pt-2 border-t border-[var(--color-border)]">
+			<div class="shrink-0 flex justify-end pt-2 border-t border-[var(--color-border)]">
 				<Button variant="secondary" onclick={() => (showEgressModal = false)}>
 					Закрыть
 				</Button>

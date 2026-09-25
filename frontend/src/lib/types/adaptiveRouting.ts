@@ -5,6 +5,7 @@ export type EgressKind =
 	| 'mihomo-proxy'
 	| 'mihomo-subscription'
 	| 'mihomo-group'
+	| 'singbox-subscription'
 	| 'singbox-outbound';
 
 export type EgressEngine = 'system' | 'mihomo' | 'sing-box';
@@ -57,6 +58,13 @@ export interface PersistenceConfig {
 	separateTcpUdp: boolean;
 }
 
+export interface AdaptiveDnsSettings {
+	enabled: boolean;
+	servers: string[];
+	routeViaTunnel: boolean;
+	interceptPort53: boolean;
+}
+
 export interface AdaptiveRoutingSettings {
 	enabled: boolean;
 	routingTableId: number;
@@ -71,6 +79,7 @@ export interface AdaptiveRoutingSettings {
 	failurePolicy: 'direct' | 'block';
 	detection: DetectionSettings;
 	persistence: PersistenceConfig;
+	dns?: AdaptiveDnsSettings;
 	alwaysFileEnabled: boolean;
 	neverFileEnabled: boolean;
 	alwaysEntries?: string[];
@@ -114,6 +123,11 @@ export interface SusaninLogEvent {
 	target: string;
 	message: string;
 	raw: string;
+	resourceTitle?: string;
+	resourceOrg?: string;
+	resourceCountry?: string;
+	resourceCc?: string;
+	resourceIcon?: string;
 }
 
 export interface LearnedDataResponse {
@@ -125,7 +139,20 @@ export interface LearnedDataResponse {
 	never: string[];
 	okTcp?: string[];
 	okUdp?: string[];
+	okNet?: string[];
 	testTcp?: string[];
 	testUdp?: string[];
+	knowledge?: Record<
+		string,
+		{
+			title: string;
+			description?: string;
+			org?: string;
+			country?: string;
+			cc?: string;
+			category?: string;
+			icon?: string;
+		}
+	>;
 }
 

@@ -209,15 +209,7 @@ www.openai.com
 160.79.104.0/24
 8.47.69.0/24
 
-# --- XNXX, Xvideos & Video Streaming CDNs ---
-xnxx.com
-xnxx-cdn.com
-xvideos.com
-xvideos-cdn.com
-*.xnxx.com
-*.xnxx-cdn.com
-*.xvideos.com
-*.xvideos-cdn.com
+
 138.199.0.0/16
 194.221.248.0/21
 185.76.8.0/22

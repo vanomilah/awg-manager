@@ -16,6 +16,7 @@ import (
 
 const (
 	ChainSusanin      = "SUSANIN"
+	ChainSusaninDNS   = "SUSANIN-DNS"
 	DefaultTableID    = 105
 	DefaultFwmarkMask = "0x30000000"
 	DefaultFwmarkTest = "0x10000000"
@@ -128,11 +129,6 @@ func (d *DatapathController) EnsureSets(ctx context.Context) error {
 		}
 	}
 
-	// Pre-seed Telegram CIDRs into SetOkNet for immediate connectivity
-	for _, cidr := range DefaultTelegramCIDRs {
-		_, _ = d.runner(ctx, d.ipsetBin, "add", SetOkNet, cidr, "-exist")
-	}
-
 	return nil
 }
 
@@ -166,6 +162,55 @@ func (d *DatapathController) EnsureChain(
 	res, err := d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-F", ChainSusanin)
 	if err != nil {
 		return fmt.Errorf("flush %s: %w", ChainSusanin, sysexec.FormatError(res, err))
+	}
+
+	// 2.1 Configure DNS rules in ChainSusanin if DNS is enabled
+	if settings.DNS.Enabled && len(settings.DNS.Servers) > 0 {
+		if settings.DNS.RouteViaTunnel {
+			if settings.DNS.InterceptPort53 {
+				// Intercepted DNS queries (e.g. sent by LAN clients to router IP 192.168.x.1:53 before DNAT)
+				// must be marked for tunnel routing so the subsequent routing decision directs them to table 105.
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "--dport", "53", "-j", "MARK", "--set-xmark", fmt.Sprintf("%s/%s", markOk, mask))
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "--dport", "53", "-j", "CONNMARK", "--save-mark", "--mask", mask)
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "--dport", "53", "-j", "ACCEPT")
+
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "--dport", "53", "-j", "MARK", "--set-xmark", fmt.Sprintf("%s/%s", markOk, mask))
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "--dport", "53", "-j", "CONNMARK", "--save-mark", "--mask", mask)
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "--dport", "53", "-j", "ACCEPT")
+			}
+			for _, s := range settings.DNS.Servers {
+				s = strings.TrimSpace(s)
+				if s == "" {
+					continue
+				}
+				// Also mark direct traffic to upstream server to route through table 105
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "-d", s, "--dport", "53", "-j", "MARK", "--set-xmark", fmt.Sprintf("%s/%s", markOk, mask))
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "-d", s, "--dport", "53", "-j", "CONNMARK", "--save-mark", "--mask", mask)
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "-d", s, "--dport", "53", "-j", "ACCEPT")
+
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "-d", s, "--dport", "53", "-j", "MARK", "--set-xmark", fmt.Sprintf("%s/%s", markOk, mask))
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "-d", s, "--dport", "53", "-j", "CONNMARK", "--save-mark", "--mask", mask)
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "-d", s, "--dport", "53", "-j", "ACCEPT")
+
+				// Router-local DNS queries (e.g. susanin-agent vpn_always resolver) to upstream DNS
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", "OUTPUT", "-p", "udp", "-d", s, "--dport", "53", "-m", "comment", "--comment", "SUSANIN-DNS-OUT", "-j", "MARK", "--set-xmark", fmt.Sprintf("%s/%s", markOk, mask))
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", "OUTPUT", "-p", "tcp", "-d", s, "--dport", "53", "-m", "comment", "--comment", "SUSANIN-DNS-OUT", "-j", "MARK", "--set-xmark", fmt.Sprintf("%s/%s", markOk, mask))
+			}
+		} else {
+			for _, s := range settings.DNS.Servers {
+				s = strings.TrimSpace(s)
+				if s == "" {
+					continue
+				}
+				// Explicitly RETURN DNS traffic to upstream server so it goes DIRECT via WAN
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "-d", s, "--dport", "53", "-j", "RETURN")
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "-d", s, "--dport", "53", "-j", "RETURN")
+			}
+			if settings.DNS.InterceptPort53 {
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "udp", "--dport", "53", "-j", "RETURN")
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-A", ChainSusanin, "-p", "tcp", "--dport", "53", "-j", "RETURN")
+			}
+		}
 	}
 
 	// 3. Populate bypass rules
@@ -268,7 +313,6 @@ func (d *DatapathController) EnsureChain(
 		if r, err := d.runner(ctx, d.iptablesBin, args...); err != nil {
 			return fmt.Errorf("add PREROUTING policy jump for %s (%s): %w", settings.Source.PolicyID, policyMarkWithMask, sysexec.FormatError(r, err))
 		}
-		return nil
 	case "interfaces":
 		sourceInterfaces = settings.Source.Interfaces
 		if len(sourceInterfaces) == 0 {
@@ -283,14 +327,43 @@ func (d *DatapathController) EnsureChain(
 		return fmt.Errorf("unsupported traffic source type %q", settings.Source.Type)
 	}
 
-	for _, iface := range sourceInterfaces {
-		if iface == "" {
-			continue
+	if settings.Source.Type != "policy" {
+		for _, iface := range sourceInterfaces {
+			if iface == "" {
+				continue
+			}
+			// iptables -t mangle -A PREROUTING -i <iface> -j AWGM-SUSANIN
+			args := []string{"-w", "-t", "mangle", "-A", "PREROUTING", "-i", iface, "-j", ChainSusanin}
+			if r, err := d.runner(ctx, d.iptablesBin, args...); err != nil {
+				return fmt.Errorf("add PREROUTING jump for %s: %w", iface, sysexec.FormatError(r, err))
+			}
 		}
-		// iptables -t mangle -A PREROUTING -i <iface> -j AWGM-SUSANIN
-		args := []string{"-w", "-t", "mangle", "-A", "PREROUTING", "-i", iface, "-j", ChainSusanin}
-		if r, err := d.runner(ctx, d.iptablesBin, args...); err != nil {
-			return fmt.Errorf("add PREROUTING jump for %s: %w", iface, sysexec.FormatError(r, err))
+	}
+
+	// 7. Manage DNS Interception (DNAT port 53) in nat table
+	d.cleanDnsNatLocked(ctx, lanInterfaces)
+	if settings.DNS.Enabled && settings.DNS.InterceptPort53 && len(settings.DNS.Servers) > 0 {
+		primaryDNS := strings.TrimSpace(settings.DNS.Servers[0])
+		if primaryDNS != "" {
+			_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-N", ChainSusaninDNS)
+			_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-F", ChainSusaninDNS)
+			_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-A", ChainSusaninDNS, "-p", "udp", "--dport", "53", "-j", "DNAT", "--to-destination", fmt.Sprintf("%s:53", primaryDNS))
+			_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-A", ChainSusaninDNS, "-p", "tcp", "--dport", "53", "-j", "DNAT", "--to-destination", fmt.Sprintf("%s:53", primaryDNS))
+
+			if settings.Source.Type == "policy" {
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-I", "PREROUTING", "1", "-m", "mark", "--mark", policyMarkWithMask, "-p", "udp", "--dport", "53", "-j", ChainSusaninDNS)
+				_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-I", "PREROUTING", "2", "-m", "mark", "--mark", policyMarkWithMask, "-p", "tcp", "--dport", "53", "-j", ChainSusaninDNS)
+			} else {
+				idx := 1
+				for _, iface := range sourceInterfaces {
+					if iface != "" {
+						_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-I", "PREROUTING", strconv.Itoa(idx), "-i", iface, "-p", "udp", "--dport", "53", "-j", ChainSusaninDNS)
+						idx++
+						_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-I", "PREROUTING", strconv.Itoa(idx), "-i", iface, "-p", "tcp", "--dport", "53", "-j", ChainSusaninDNS)
+						idx++
+					}
+				}
+			}
 		}
 	}
 
@@ -346,21 +419,22 @@ func (d *DatapathController) EnsureRules(ctx context.Context, settings Settings,
 
 	// 4. Configure default route in table: ip route replace default dev <egressDev> table 105
 	if egressDev != "" {
-		res, err = d.runner(ctx, d.ipBin, "route", "replace", "default", "dev", egressDev, "table", strconv.Itoa(table))
+		realDev := resolveKernelDev(egressDev)
+		res, err = d.runner(ctx, d.ipBin, "route", "replace", "default", "dev", realDev, "table", strconv.Itoa(table))
 		if err != nil {
-			return fmt.Errorf("replace default route dev %s table %d: %w", egressDev, table, sysexec.FormatError(res, err))
+			return fmt.Errorf("replace default route dev %s table %d: %w", realDev, table, sysexec.FormatError(res, err))
 		}
 
 		// 5. Ensure FORWARD, INPUT, TCPMSS, and MASQUERADE for egressDev
-		d.cleanEgressFirewallLocked(ctx, egressDev)
-		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-I", "FORWARD", "1", "-i", egressDev, "-j", "ACCEPT")
-		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-I", "FORWARD", "1", "-o", egressDev, "-j", "ACCEPT")
-		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-I", "INPUT", "1", "-i", egressDev, "-j", "ACCEPT")
-		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-I", "FORWARD", "1", "-o", egressDev,
+		d.cleanEgressFirewallLocked(ctx, realDev)
+		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-I", "FORWARD", "1", "-i", realDev, "-j", "ACCEPT")
+		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-I", "FORWARD", "1", "-o", realDev, "-j", "ACCEPT")
+		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-I", "INPUT", "1", "-i", realDev, "-j", "ACCEPT")
+		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-I", "FORWARD", "1", "-o", realDev,
 			"-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu")
-		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-I", "POSTROUTING", "1", "-o", egressDev, "-j", "MASQUERADE")
+		_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-I", "POSTROUTING", "1", "-o", realDev, "-j", "MASQUERADE")
 
-		d.ensureNetfilterHook(egressDev)
+		d.ensureNetfilterHook(realDev)
 	}
 
 	d.failOpenActive = false
@@ -536,7 +610,7 @@ func (d *DatapathController) Teardown(ctx context.Context, settings Settings, la
 
 // FlushSets flushes the test and ok ipsets.
 func (d *DatapathController) FlushSets(ctx context.Context) error {
-	for _, setName := range []string{SetOkTcp, SetOkUdp, SetTestTcp, SetTestUdp} {
+	for _, setName := range []string{SetOkTcp, SetOkUdp, SetTestTcp, SetTestUdp, SetOkNet} {
 		res, err := d.runner(ctx, d.ipsetBin, "flush", setName)
 		if err != nil && !strings.Contains(err.Error(), "does not exist") {
 			return fmt.Errorf("flush ipset %s: %w", setName, sysexec.FormatError(res, err))
@@ -710,6 +784,20 @@ func (d *DatapathController) removeJumpsLocked(ctx context.Context, lanInterface
 		}
 	}
 
+	// Clean any Susanin OUTPUT rules in mangle
+	if res, err := d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-S", "OUTPUT"); err == nil && res != nil {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "SUSANIN-DNS-OUT") && strings.HasPrefix(line, "-A OUTPUT") {
+				fields := strings.Fields(line)
+				if len(fields) > 2 {
+					delArgs := append([]string{"-w", "-t", "mangle", "-D", "OUTPUT"}, fields[2:]...)
+					_, _ = d.runner(ctx, d.iptablesBin, delArgs...)
+				}
+			}
+		}
+	}
+
 	if len(lanInterfaces) == 0 {
 		lanInterfaces = []string{"br0", "br1"}
 	}
@@ -721,6 +809,25 @@ func (d *DatapathController) removeJumpsLocked(ctx context.Context, lanInterface
 			}
 		}
 	}
+
+	d.cleanDnsNatLocked(ctx, lanInterfaces)
+}
+
+func (d *DatapathController) cleanDnsNatLocked(ctx context.Context, lanInterfaces []string) {
+	if res, err := d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-S", "PREROUTING"); err == nil && res != nil {
+		for _, line := range strings.Split(res.Stdout, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "-j "+ChainSusaninDNS) && strings.HasPrefix(line, "-A PREROUTING") {
+				fields := strings.Fields(line)
+				if len(fields) > 2 {
+					delArgs := append([]string{"-w", "-t", "nat", "-D", "PREROUTING"}, fields[2:]...)
+					_, _ = d.runner(ctx, d.iptablesBin, delArgs...)
+				}
+			}
+		}
+	}
+	_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-F", ChainSusaninDNS)
+	_, _ = d.runner(ctx, d.iptablesBin, "-w", "-t", "nat", "-X", ChainSusaninDNS)
 }
 
 // ReconcileDatapath verifies that ChainSusanin jump and route 105 are in place and restores them if missing.
@@ -779,10 +886,24 @@ func (d *DatapathController) ReconcileDatapath(
 	return nil
 }
 
+func resolveKernelDev(dev string) string {
+	if dev == "" {
+		return ""
+	}
+	if strings.HasPrefix(dev, "Wireguard") {
+		return "nwg" + strings.TrimPrefix(dev, "Wireguard")
+	}
+	if strings.HasPrefix(dev, "OpkgTun") {
+		return strings.ToLower(dev)
+	}
+	return dev
+}
+
 func (d *DatapathController) cleanEgressFirewallLocked(ctx context.Context, iface string) {
 	if iface == "" {
 		return
 	}
+	iface = resolveKernelDev(iface)
 	for i := 0; i < 5; i++ {
 		res, err := d.runner(ctx, d.iptablesBin, "-w", "-D", "FORWARD", "-i", iface, "-j", "ACCEPT")
 		if err != nil || (res != nil && res.ExitCode != 0) {

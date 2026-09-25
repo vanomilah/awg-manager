@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -60,6 +61,7 @@ func NewTrafficAggregator(clashAddr func() string, pub TrafficPublisher, feeder 
 // Run blocks until ctx is canceled. Reconnects to Clash /connections on
 // disconnect with a small backoff.
 func (t *TrafficAggregator) Run(ctx context.Context) {
+	go t.runMemoryLoop(ctx)
 	for {
 		if ctx.Err() != nil {
 			return
@@ -70,6 +72,59 @@ func (t *TrafficAggregator) Run(ctx context.Context) {
 			return
 		case <-time.After(3 * time.Second):
 			// reconnect
+		}
+	}
+}
+
+func (t *TrafficAggregator) runMemoryLoop(ctx context.Context) {
+	client := &http.Client{Timeout: 0}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		t.streamMemory(ctx, client)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+			// reconnect
+		}
+	}
+}
+
+func (t *TrafficAggregator) streamMemory(ctx context.Context, client *http.Client) {
+	if t.clashAddr == nil {
+		return
+	}
+	addr := t.clashAddr()
+	if addr == "" || addr == "unused" {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/memory", nil)
+	if err != nil {
+		return
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var mem struct {
+			InUse int64 `json:"inuse"`
+		}
+		if err := dec.Decode(&mem); err != nil {
+			return
+		}
+		if mem.InUse > 0 {
+			t.mu.Lock()
+			t.memory = mem.InUse
+			t.mu.Unlock()
 		}
 	}
 }
@@ -182,7 +237,9 @@ func (t *TrafficAggregator) ingest(msg []byte) {
 	}
 	t.mu.Lock()
 	t.tags = sums
-	t.memory = m.Memory
+	if m.Memory > 0 {
+		t.memory = m.Memory
+	}
 	t.downloadTotal = m.DownloadTotal
 	t.uploadTotal = m.UploadTotal
 	t.mu.Unlock()

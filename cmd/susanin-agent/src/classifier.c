@@ -225,6 +225,7 @@ static void promote_test(classifier_ctx *ctx, const ct_flow *f, time_t now,
     backend_ipset_add(cfg, udp, 0, f->dst, cfg->test_ttl);
     slogf(SL_INFO, "AUTO-SUSANIN: %s %s %s:%u", stage, reason, f->dst, f->dport);
     backend_ct_delete(f);
+    backend_ct_flush_ip(f->dst);
 }
 
 static int candidate_ok(const classifier_ctx *ctx, const ct_flow *f, time_t now)
@@ -256,7 +257,7 @@ void clr_fast(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
                      f->rp <= 2 && f->rb < 256)
                 promote_test(ctx, f, now, "FAST", "TCP-CLOSE");
         } else if (f->l4proto == 17) {
-            if (f->dport == 443 && f->op >= 3 && f->rp <= 1)
+            if (f->dport == 443 && f->op >= 2 && f->rp == 0)
                 promote_test(ctx, f, now, "FAST", "QUIC");
         }
     }
@@ -266,6 +267,7 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
 {
     const susanin_config *cfg = ctx->cfg;
     int i;
+    unsigned long late_bytes = (cfg->late_stall_bytes > 0) ? (unsigned long)cfg->late_stall_bytes : 65536UL;
     rc_begin();
     for (i = 0; i < n; i++) {
         const ct_flow *f = &flows[i];
@@ -276,26 +278,21 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         if (is_private_dst(f->dst, NULL)) continue;
 
         if (f->l4proto == 6 && strcmp(f->tcp_state, "ESTABLISHED") == 0) {
-            if (f->op >= 4 && f->ob >= 500 && f->rp <= 2 && f->rb < 1024) {
+            /* Early TLS ClientHello / HTTP stall: client has retransmitted (op>=4, ob>=400)
+             * but server never returned data beyond initial ACK (rp<=2, rb<256).
+             * Triggers in ~1s on 1st retransmission instead of waiting 10-15s. */
+            if (f->op >= 4 && f->ob >= 400 && f->rp <= 2 && f->rb < 256) {
                 if (candidate_ok(ctx, f, now))
                     promote_test(ctx, f, now, "SOFT", "TCP-STALL");
                 continue;
             }
-            /* Быстрый late-stall для HTTPS: ответы есть, но объём меньше late_stall_bytes
-             * (типичный троттлинг видео/медиапотока после TLS handshake).
-             * Не ждём окна наблюдения (watch) если rate_delta подтверждает заморозку. */
-            unsigned long late_thresh = (cfg->late_stall_bytes > 0)
-                                            ? (unsigned long)cfg->late_stall_bytes
-                                            : 16384UL;
-            if (f->dport == 443 && f->op >= 4 && f->rp > 0 && f->rb < late_thresh) {
-                int oa, rs;
-                if (rate_delta(f, now, &oa, &rs) && oa && rs) {
-                    if (candidate_ok(ctx, f, now))
-                        promote_test(ctx, f, now, "SOFT", "TCP-STALL-443");
-                    continue;
-                }
+            /* HTTPS/HTTP stall where server replied with initial TLS packets but stalled before late_bytes */
+            if ((f->dport == 443 || f->dport == 80) && f->op >= 5 && f->rp > 0 && f->rb < late_bytes) {
+                if (candidate_ok(ctx, f, now))
+                    promote_test(ctx, f, now, "SOFT", "TCP-STALL-443");
+                continue;
             }
-            if (f->op >= 4 && f->rp > 0) {
+            if (f->op >= 5 && f->rp > 0) {
                 int oa, rs;
                 if (rate_delta(f, now, &oa, &rs) && oa && rs) {
                     /* suspicious: watch -> maybe late-stall */
@@ -316,7 +313,7 @@ void clr_soft(classifier_ctx *ctx, const ct_flow *flows, int n, time_t now)
         } else if (f->l4proto == 17) {
             if (!f->has_reply) {
                 if (f->dport != 443 && f->dport != 53 && f->dport != 67 &&
-                    f->dport != 68 && f->dport != 123 && f->op >= 6 && f->rp == 0) {
+                    f->dport != 68 && f->dport != 123 && f->op >= 5 && f->rp == 0) {
                     if (candidate_ok(ctx, f, now))
                         promote_test(ctx, f, now, "SOFT", "UDP");
                 }

@@ -485,11 +485,18 @@ func (pm *ProxyManager) removeProxyLocked(ctx context.Context, index int) error 
 	return remove(ctx, name)
 }
 
+// AllowAdoptEmptyDescription is an ownership token accepted by EnsureProxyIfOwned
+// that permits claiming an existing NDMS proxy interface whose description is empty.
+const AllowAdoptEmptyDescription = "__AWGM_ADOPT_EMPTY__"
+
 func proxyOwnerMatches(description, owner string, legacyOwners []string) bool {
 	if description == owner {
 		return true
 	}
 	for _, legacy := range legacyOwners {
+		if legacy == AllowAdoptEmptyDescription && description == "" {
+			return true
+		}
 		if legacy != "" && description == legacy {
 			return true
 		}

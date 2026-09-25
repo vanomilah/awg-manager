@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hoaxisr/awg-manager/internal/sys/traffic"
 )
 
 type RouterSlotController interface {
@@ -782,7 +785,7 @@ func parseSusaninLogLine(line string) LogEvent {
 		msg = "Синхронизация фиксированных подсетей"
 	}
 
-	return LogEvent{
+	ev := LogEvent{
 		Timestamp: ts,
 		Level:     lvl,
 		Action:    action,
@@ -790,6 +793,22 @@ func parseSusaninLogLine(line string) LogEvent {
 		Message:   msg,
 		Raw:       line,
 	}
+
+	if target != "" {
+		host := target
+		if h, _, err := net.SplitHostPort(target); err == nil {
+			host = h
+		}
+		if info := traffic.FindDomainKnowledge("", host); info != nil {
+			ev.ResourceTitle = info.Title
+			ev.ResourceOrg = info.Org
+			ev.ResourceCountry = info.Country
+			ev.ResourceCC = info.CountryCode
+			ev.ResourceIcon = info.Icon
+		}
+	}
+
+	return ev
 }
 
 

@@ -157,6 +157,22 @@ build_ipk_one() {
         echo "Bundled susanin-agent binary for $ENTWARE_ARCH"
     fi
 
+    if [[ -f "$PROJECT_ROOT/scripts/awgm-susanin-sync.py" ]]; then
+        cp "$PROJECT_ROOT/scripts/awgm-susanin-sync.py" "$IPK_ROOT/opt/bin/awgm-susanin-sync.py"
+        chmod 755 "$IPK_ROOT/opt/bin/awgm-susanin-sync.py"
+        echo "Bundled awgm-susanin-sync.py"
+    fi
+    if [[ -f "$PROJECT_ROOT/scripts/S98susanin-sync" ]]; then
+        cp "$PROJECT_ROOT/scripts/S98susanin-sync" "$IPK_ROOT/opt/etc/init.d/S98susanin-sync"
+        chmod 755 "$IPK_ROOT/opt/etc/init.d/S98susanin-sync"
+        echo "Bundled S98susanin-sync"
+    fi
+    if [[ -f "$PROJECT_ROOT/scripts/S97mihomo" ]]; then
+        cp "$PROJECT_ROOT/scripts/S97mihomo" "$IPK_ROOT/opt/etc/init.d/S97mihomo"
+        chmod 755 "$IPK_ROOT/opt/etc/init.d/S97mihomo"
+        echo "Bundled S97mihomo"
+    fi
+
     # wdtt/freeturn в IPK не кладём: бинари приезжают только с зеркала по пину
     # install.go, с проверкой SHA256. Бандл давал молчаливое расхождение —
     # старый бинарь считался установленным пином и падал на неизвестном флаге.

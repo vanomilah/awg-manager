@@ -3502,9 +3502,14 @@ func (c *ApplyCoordinator) syncBridgesLocked(ctx context.Context, m *Transaction
 					return fmt.Errorf("%w: foreign retained bridge %s: owned by %q (expected %q)", ErrForeignBridgeOwnership, targetRef.KernelInterface, obs.OwnerUUID, targetRef.OwnerUUID)
 				}
 				if obs.OwnerUUID == "" && obs.LegacyOwner == "" {
-					c.setState(StateRecoveryRequired)
-					_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("unmanaged retained bridge detected on %s", targetRef.KernelInterface))
-					return fmt.Errorf("%w: unmanaged retained bridge detected on %s", ErrForeignBridgeOwnership, targetRef.KernelInterface)
+					if m.OperationKind == OperationRegenerate {
+						c.log("warn", "coordinator.reconcile", fmt.Sprintf("unlabelled bridge in own slot %s during regeneration: self-healing ownership to %s", targetRef.KernelInterface, targetRef.OwnerUUID))
+						toCreate = append(toCreate, targetRef)
+					} else {
+						c.setState(StateRecoveryRequired)
+						_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("unmanaged retained bridge detected on %s", targetRef.KernelInterface))
+						return fmt.Errorf("%w: unmanaged retained bridge detected on %s", ErrForeignBridgeOwnership, targetRef.KernelInterface)
+					}
 				}
 				if obs.LegacyOwner != "" {
 					// Legacy owner present: queue create to migrate to canonical owner

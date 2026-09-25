@@ -38,10 +38,11 @@ func NewSystemExecutor() *SystemExecutor {
 func (s *SystemExecutor) Prepare(ctx context.Context, egress ResolvedEgress) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if egress.Interface == "" {
+	dev := resolveKernelDev(egress.Interface)
+	if dev == "" {
 		return fmt.Errorf("system tunnel %s has no kernel interface", egress.DisplayName)
 	}
-	s.iface = egress.Interface
+	s.iface = dev
 	return nil
 }
 
@@ -233,8 +234,10 @@ func (s *SingboxExecutor) Commit(ctx context.Context) error {
 				"type":           "tun",
 				"tag":            "awgm-susanin-in",
 				"interface_name": TunInterfaceName,
+				"inet4_address":  "172.19.0.1/30",
 				"auto_route":     false,
 				"strict_route":   false,
+				"stack":          "mixed",
 			},
 		},
 		"route": map[string]any{
@@ -260,7 +263,23 @@ func (s *SingboxExecutor) Commit(ctx context.Context) error {
 	}
 
 	s.committed = true
-	return nil
+
+	// Wait up to 5 seconds for awgsus0 interface to be created by sing-box
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := net.InterfaceByName(TunInterfaceName); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("интерфейс %s не был поднят sing-box в течение 5 секунд", TunInterfaceName)
 }
 
 func (s *SingboxExecutor) Rollback(ctx context.Context) error {

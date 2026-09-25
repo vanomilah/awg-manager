@@ -653,14 +653,29 @@ func TestGenerateConfig_AdaptiveEgress(t *testing.T) {
 	if cfg.Tun.AutoRoute {
 		t.Errorf("expected Tun.AutoRoute false")
 	}
-	if cfg.TProxyPort != 0 || cfg.RedirPort != 0 {
-		t.Errorf("expected TProxyPort=0 and RedirPort=0, got %d, %d", cfg.TProxyPort, cfg.RedirPort)
+	if cfg.TProxyPort != 51271 || cfg.RedirPort != 51272 {
+		t.Errorf("expected TProxyPort=51271 and RedirPort=51272 in tproxy mode, got %d, %d", cfg.TProxyPort, cfg.RedirPort)
 	}
 	if cfg.MixedPort != 1099 {
 		t.Errorf("expected MixedPort 1099 preserved, got %d", cfg.MixedPort)
 	}
 	if len(cfg.Rules) == 0 || cfg.Rules[0] != "IN-TYPE,TUN,TargetGroup" {
 		t.Fatalf("expected first rule IN-TYPE,TUN,TargetGroup, got: %v", cfg.Rules)
+	}
+
+	// Verify that in policy-tun mode, ports are zeroed out
+	settingsPolicyTun := settings
+	settingsPolicyTun.RoutingMode = "policy-tun"
+	rawTun, err := GenerateConfigWithResources(settingsPolicyTun, "", nil, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources (policy-tun) failed: %v", err)
+	}
+	var cfgTun Config
+	if err := yaml.Unmarshal(rawTun, &cfgTun); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+	if cfgTun.TProxyPort != 0 || cfgTun.RedirPort != 0 {
+		t.Errorf("expected TProxyPort=0 and RedirPort=0 in policy-tun mode, got %d, %d", cfgTun.TProxyPort, cfgTun.RedirPort)
 	}
 }
 
@@ -693,3 +708,81 @@ func TestGenerateSidecarConfig_AdaptiveEgress(t *testing.T) {
 		t.Fatalf("unexpected sidecar rules: %v", cfg.Rules)
 	}
 }
+
+func TestGenerateConfig_SusaninOption(t *testing.T) {
+	settings := storage.SingboxRouterSettings{
+		MihomoMixedPort: 1099,
+		SusaninEnabled:  true,
+		SusaninOutbound: "BackdoorProxy",
+	}
+	native := NativeResources{
+		ProxyGroups: []ProxyGroup{
+			{Name: "BackdoorProxy", Type: "fallback", Proxies: []string{"DIRECT"}},
+		},
+	}
+
+	raw, err := GenerateConfigWithResources(settings, "", nil, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources failed: %v", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+
+	// 1. Verify susanin rule-provider
+	rp, exists := cfg.RuleProvider["susanin"]
+	if !exists {
+		t.Fatalf("expected rule-provider susanin to be present in cfg.RuleProvider")
+	}
+	if rp["type"] != "file" || rp["behavior"] != "classical" || rp["format"] != "yaml" {
+		t.Errorf("unexpected susanin rule-provider spec: %#v", rp)
+	}
+	if rp["path"] != "./rules/susanin.yaml" {
+		t.Errorf("expected path ./rules/susanin.yaml, got %v", rp["path"])
+	}
+
+	// 2. Verify susanin rule in rules list
+	foundRule := false
+	for _, r := range cfg.Rules {
+		if r == "RULE-SET,susanin,BackdoorProxy" {
+			foundRule = true
+			break
+		}
+	}
+	if !foundRule {
+		t.Fatalf("expected rule RULE-SET,susanin,BackdoorProxy in cfg.Rules, got: %v", cfg.Rules)
+	}
+
+	// 3. Verify no separate awgsus0 Tun device created
+	if cfg.Tun != nil && cfg.Tun.Enable {
+		t.Errorf("expected no Tun device for susanin option, got %#v", cfg.Tun)
+	}
+
+	// 4. Verify standard ports preserved
+	if cfg.TProxyPort != 51271 || cfg.RedirPort != 51272 || cfg.MixedPort != 1099 {
+		t.Errorf("expected 51271/51272/1099 ports, got %d/%d/%d", cfg.TProxyPort, cfg.RedirPort, cfg.MixedPort)
+	}
+
+	// 5. Test when SusaninEnabled is false
+	settingsOff := settings
+	settingsOff.SusaninEnabled = false
+	rawOff, err := GenerateConfigWithResources(settingsOff, "", nil, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources (off) failed: %v", err)
+	}
+	var cfgOff Config
+	if err := yaml.Unmarshal(rawOff, &cfgOff); err != nil {
+		t.Fatalf("unmarshal off yaml: %v", err)
+	}
+	if _, exists := cfgOff.RuleProvider["susanin"]; exists {
+		t.Errorf("expected no susanin rule provider when disabled")
+	}
+	for _, r := range cfgOff.Rules {
+		if strings.Contains(r, "susanin") {
+			t.Errorf("found unexpected susanin rule when disabled: %s", r)
+		}
+	}
+}
+

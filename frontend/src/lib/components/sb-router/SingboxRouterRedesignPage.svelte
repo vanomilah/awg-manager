@@ -65,6 +65,17 @@
   let mihomoInitialized = $state(false);
   let mihomoDegraded = $state(false);
 
+  async function fetchRuntimeProviders(): Promise<Record<string, MihomoRuntimeProvider>> {
+    const [proxyRes, ruleRes] = await Promise.all([
+      api.mihomoRuntimeProviders().catch(() => null),
+      api.mihomoRuntimeRuleProviders().catch(() => null),
+    ]);
+    return {
+      ...(proxyRes?.providers || {}),
+      ...(ruleRes?.providers || {}),
+    };
+  }
+
   async function loadMihomoData() {
     mihomoLoading = true;
     try {
@@ -75,7 +86,7 @@
         api.mihomoNativeProxies(),
         api.mihomoNativeSubscriptions(),
         api.mihomoRuntimeProxies().then(res => Object.values(res.proxies || {})).catch(() => []),
-        api.mihomoRuntimeProviders().then(res => res.providers || {}).catch(() => ({})),
+        fetchRuntimeProviders(),
         api.mihomoStatus().catch(() => null),
       ]);
       mihomoRules = r;
@@ -109,7 +120,7 @@
     try {
       const [runtime, rProviders] = await Promise.all([
         api.mihomoRuntimeProxies().then(res => Object.values(res.proxies || {})).catch(() => []),
-        api.mihomoRuntimeProviders().then(res => res.providers || {}).catch(() => ({})),
+        fetchRuntimeProviders(),
       ]);
       if (runtime && runtime.length > 0) {
         mihomoRuntime = runtime;

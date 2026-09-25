@@ -1271,22 +1271,18 @@ func TestBuildRestoreInput_IngressScope(t *testing.T) {
 	if !strings.Contains(got, jump) {
 		t.Fatalf("missing jump rule in:\n%s", got)
 	}
-	ingressDNSRule := fmt.Sprintf("-A %s -i nwg3 -p udp --dport 53 -j TPROXY --on-port %d --on-ip 127.0.0.1 --tproxy-mark 0x%x", ChainName, TPROXYPort, Fwmark)
 	lanDNSReturn := fmt.Sprintf("-A %s -d 10.0.0.0/8 -p udp --dport 53 -j RETURN", ChainName)
-	if !strings.Contains(got, ingressDNSRule) {
-		t.Fatalf("missing ingress DNS TPROXY rule in:\n%s", got)
+	if !strings.Contains(got, lanDNSReturn) {
+		t.Fatalf("missing LAN DNS return rule in:\n%s", got)
 	}
-	if strings.Index(got, ingressDNSRule) > strings.Index(got, lanDNSReturn) {
-		t.Fatalf("ingress DNS TPROXY rule must precede LAN DNS return rule")
+	ingressDNSRule := fmt.Sprintf("-A %s -i nwg3 -p udp --dport 53 -j TPROXY", ChainName)
+	if strings.Contains(got, ingressDNSRule) {
+		t.Fatalf("ingress DNS TPROXY rule must not be present: breaks local DNS for VPN clients:\n%s", got)
 	}
 
-	ingressTCPDNSRule := fmt.Sprintf("-A %s -i nwg3 -p tcp --dport 53 -j REDIRECT --to-ports %d", RedirectChain, RedirectPort)
-	natBypassReturn := fmt.Sprintf("-A %s -d 10.0.0.0/8 -j RETURN", RedirectChain)
-	if !strings.Contains(got, ingressTCPDNSRule) {
-		t.Fatalf("missing ingress TCP DNS REDIRECT rule in:\n%s", got)
-	}
-	if strings.Index(got, ingressTCPDNSRule) > strings.Index(got, natBypassReturn) {
-		t.Fatalf("ingress TCP DNS REDIRECT rule must precede nat bypass return rule")
+	ingressTCPDNSRule := fmt.Sprintf("-A %s -i nwg3 -p tcp --dport 53 -j REDIRECT", RedirectChain)
+	if strings.Contains(got, ingressTCPDNSRule) {
+		t.Fatalf("ingress TCP DNS REDIRECT rule must not be present:\n%s", got)
 	}
 }
 

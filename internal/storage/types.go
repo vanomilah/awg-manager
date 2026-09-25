@@ -304,6 +304,13 @@ type SingboxRouterSettings struct {
 	KeeneticCloudOutbound string `json:"keeneticCloudOutbound,omitempty"`
 	// DynamicCloudCIDRs: automatically discovered Keenetic Cloud and KeenDNS relay IP CIDRs.
 	DynamicCloudCIDRs []string `json:"dynamicCloudCIDRs,omitempty"`
+	// SusaninEnabled: when true, enables adaptive detection radar (Susanin).
+	// Blocked IPs detected by the Susanin engine are dynamically accumulated in
+	// the 'susanin' rule-provider / rule-set.
+	SusaninEnabled bool `json:"susaninEnabled,omitempty"`
+	// SusaninOutbound specifies the target proxy group or outbound tag
+	// where Susanin-accumulated IPs are routed (e.g. "Задний ход", "proxy", "vpn").
+	SusaninOutbound string `json:"susaninOutbound,omitempty"`
 }
 
 // ProxyGroup is an abstracted proxy group. Generates outbounds in sing-box or

@@ -809,6 +809,19 @@ export class SbRouterClient extends SingboxClient {
 		if (!response.ok) throw new Error(`Mihomo provider healthcheck: ${response.status}`);
 	}
 
+	async mihomoRuntimeRuleProviders(): Promise<MihomoRuntimeProviders> {
+		const response = await fetch(`${this.baseUrl}/mihomo/clash/providers/rules`, { credentials: 'same-origin' });
+		if (!response.ok) throw new Error(`Mihomo rule providers: ${response.status}`);
+		return response.json();
+	}
+
+	async mihomoRuntimeRefreshRuleProvider(name: string): Promise<void> {
+		const response = await fetch(`${this.baseUrl}/mihomo/clash/providers/rules/${encodeURIComponent(name)}`, {
+			method: 'PUT', credentials: 'same-origin',
+		});
+		if (!response.ok) throw new Error(`Mihomo rule provider refresh: ${response.status}`);
+	}
+
 	// #endregion
 
 

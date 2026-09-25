@@ -642,15 +642,6 @@ func buildMangleRestoreInput(spec RestoreInputSpec) string {
 		return b.String()
 	}
 
-	// Ingress interfaces (e.g. opkgtun17/opkgtun19 for WDTT clients or remote tunnels)
-	// MUST have their DNS intercepted by the proxy engine directly, even when targeting
-	// local gateway IPs (10.x.x.x / 172.x.x.x / 192.168.x.x), so that domains are resolved
-	// by the proxy resolver and mapped for rule matching.
-	for _, iface := range spec.IngressInterfaces {
-		fmt.Fprintf(&b, "-A %s -i %s -p udp --dport 53 -j TPROXY --on-port %d --on-ip 127.0.0.1 --tproxy-mark 0x%x\n",
-			ChainName, iface, TPROXYPort, Fwmark)
-	}
-
 	// Router local & LAN DNS must not be hijacked by TPROXY (breaks Keenetic
 	// MWS repeaters, local service discovery, and loops back into proxy engine).
 	for _, cidr := range []string{"127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"} {
@@ -746,12 +737,6 @@ func buildNatRestoreInput(spec RestoreInputSpec) string {
 		emitKeeneticCloudOutputRules(&b, spec)
 		b.WriteString("COMMIT\n")
 		return b.String()
-	}
-
-	// Ingress interfaces TCP DNS intercept (ahead of private subnet bypasses):
-	for _, iface := range spec.IngressInterfaces {
-		fmt.Fprintf(&b, "-A %s -i %s -p tcp --dport 53 -j REDIRECT --to-ports %d\n",
-			RedirectChain, iface, RedirectPort)
 	}
 
 	emitBypassReturns(&b, RedirectChain, spec.WANIPs)

@@ -230,3 +230,32 @@ func TestReferenceChecker(t *testing.T) {
 		t.Fatal("expected g-other to NOT be in use")
 	}
 }
+
+func TestStore_ExternalFileReload(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := store.GetSettings()
+	if len(st.AlwaysEntries) != 0 {
+		t.Fatalf("expected empty always entries, got %v", st.AlwaysEntries)
+	}
+
+	// External write to susanin.json
+	time.Sleep(10 * time.Millisecond) // ensure mtime advances
+	externalJSON := []byte(`{
+		"enabled": true,
+		"alwaysEntries": ["external.domain.com", "sub.domain.org"]
+	}`)
+	if err := os.WriteFile(filepath.Join(dir, "susanin.json"), externalJSON, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := store.GetSettings()
+	if len(updated.AlwaysEntries) != 2 || updated.AlwaysEntries[0] != "external.domain.com" {
+		t.Fatalf("expected reloaded always entries, got %v", updated.AlwaysEntries)
+	}
+}
+

@@ -19,6 +19,8 @@ describe('Mihomo API client surface', () => {
 			'mihomoNativeRuleProviders',
 			'mihomoRuntimeProxies',
 			'mihomoRuntimeProviders',
+			'mihomoRuntimeRuleProviders',
+			'mihomoRuntimeRefreshRuleProvider',
 		] as const) {
 			expect(typeof api[method], method).toBe('function');
 		}

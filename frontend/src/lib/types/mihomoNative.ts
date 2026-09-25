@@ -78,6 +78,9 @@ export interface MihomoRuntimeProvider {
 	vehicleType?: string;
 	updatedAt?: string;
 	proxies?: MihomoRuntimeProxy[];
+	ruleCount?: number;
+	behavior?: string;
+	format?: string;
 }
 
 export interface MihomoRuntimeProviders {

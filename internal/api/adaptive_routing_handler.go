@@ -7,6 +7,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
 	"github.com/hoaxisr/awg-manager/internal/response"
+	"github.com/hoaxisr/awg-manager/internal/sys/traffic"
 )
 
 type AdaptiveRoutingHandler struct {
@@ -185,9 +186,29 @@ func (h *AdaptiveRoutingHandler) handleLearned(w http.ResponseWriter, r *http.Re
 	if testUdp == nil {
 		testUdp = []string{}
 	}
+	okNet := learnedSets[adaptiverouting.SetOkNet]
+	if okNet == nil {
+		okNet = []string{}
+	}
 	never := learnedSets[adaptiverouting.SetNever]
 	if len(never) == 0 {
 		never = settings.NeverEntries
+	}
+
+	knowledgeMap := make(map[string]map[string]string)
+	allLearned := append(append(append([]string{}, okTcp...), okUdp...), okNet...)
+	for _, ip := range allLearned {
+		if info := traffic.FindDomainKnowledge("", ip); info != nil {
+			knowledgeMap[ip] = map[string]string{
+				"title":       info.Title,
+				"description": info.Description,
+				"org":         info.Org,
+				"country":     info.Country,
+				"cc":          info.CountryCode,
+				"category":    info.Category,
+				"icon":        info.Icon,
+			}
+		}
 	}
 
 	response.Success(w, map[string]interface{}{
@@ -199,8 +220,10 @@ func (h *AdaptiveRoutingHandler) handleLearned(w http.ResponseWriter, r *http.Re
 		"never":        never,
 		"okTcp":        okTcp,
 		"okUdp":        okUdp,
+		"okNet":        okNet,
 		"testTcp":      testTcp,
 		"testUdp":      testUdp,
+		"knowledge":    knowledgeMap,
 	})
 }
 

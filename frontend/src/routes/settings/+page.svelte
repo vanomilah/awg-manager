@@ -864,7 +864,7 @@ $effect(() => {
 					{xrayUninstalling}
 					oninstallXray={installXray}
 					onuninstallXray={uninstallXray}
-					showXray={true}
+					showXray={false}
 				/>
 				</div>
 			</aside>

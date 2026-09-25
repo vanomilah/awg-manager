@@ -276,6 +276,8 @@ func GenerateSidecarConfig(native NativeResources) ([]byte, error) {
 			StrictRoute:         false,
 			AutoDetectInterface: true,
 			DNSHijack:           []string{},
+			Inet4Address:        []string{"172.19.0.1/30"},
+			MTU:                 1500,
 		}
 	}
 	seen := make(map[string]struct{}, len(native.Proxies))
@@ -577,6 +579,25 @@ func GenerateConfigWithResources(
 	cfg.ProxyProvider = native.ProxyProviders
 	cfg.RuleProvider = native.RuleProviders
 
+	if settings.SusaninEnabled {
+		if cfg.RuleProvider == nil {
+			cfg.RuleProvider = make(map[string]map[string]interface{})
+		} else {
+			clone := make(map[string]map[string]interface{}, len(cfg.RuleProvider)+1)
+			for k, v := range cfg.RuleProvider {
+				clone[k] = v
+			}
+			cfg.RuleProvider = clone
+		}
+		cfg.RuleProvider["susanin"] = map[string]interface{}{
+			"type":     "file",
+			"behavior": "classical",
+			"format":   "yaml",
+			"path":     "./rules/susanin.yaml",
+			"interval": 86400,
+		}
+	}
+
 	if settings.SnifferEnabled {
 		overrideProto := true
 		cfg.Sniffer = &Sniffer{
@@ -610,9 +631,13 @@ func GenerateConfigWithResources(
 			StrictRoute:         false,
 			AutoDetectInterface: true,
 			DNSHijack:           []string{},
+			Inet4Address:        []string{"172.19.0.1/30"},
+			MTU:                 1500,
 		}
-		cfg.TProxyPort = 0
-		cfg.RedirPort = 0
+		if settings.RoutingMode == "fakeip-tun" || settings.RoutingMode == "policy-tun" {
+			cfg.TProxyPort = 0
+			cfg.RedirPort = 0
+		}
 		cfg.DNS.Enhanced = "redir-host"
 	} else if settings.RoutingMode == "fakeip-tun" || settings.RoutingMode == "policy-tun" {
 		cfg.DNS.Enhanced = "fake-ip"
@@ -821,6 +846,25 @@ func GenerateConfigWithResources(
 		cfg.Rules = append(cfg.Rules, "MATCH,DIRECT")
 	}
 
+	if settings.SusaninEnabled {
+		targetOutbound := strings.TrimSpace(settings.SusaninOutbound)
+		if targetOutbound == "" {
+			if len(cfg.ProxyGroups) > 0 {
+				targetOutbound = cfg.ProxyGroups[0].Name
+			} else if finalOutbound != "" {
+				targetOutbound = finalOutbound
+			} else {
+				targetOutbound = "DIRECT"
+			}
+		}
+		if strings.EqualFold(targetOutbound, "direct") {
+			targetOutbound = "DIRECT"
+		} else if strings.EqualFold(targetOutbound, "block") {
+			targetOutbound = "REJECT"
+		}
+		susaninRule := fmt.Sprintf("RULE-SET,susanin,%s", targetOutbound)
+		cfg.Rules = append([]string{susaninRule}, cfg.Rules...)
+	}
 	if native.AdaptiveEgress != nil && native.AdaptiveEgress.Enabled && native.AdaptiveEgress.SelectedGroup != "" {
 		tunRule := fmt.Sprintf("IN-TYPE,TUN,%s", native.AdaptiveEgress.SelectedGroup)
 		cfg.Rules = append([]string{tunRule}, cfg.Rules...)

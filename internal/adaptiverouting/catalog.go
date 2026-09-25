@@ -3,6 +3,7 @@ package adaptiverouting
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/mihomonative"
@@ -20,15 +21,43 @@ type TunnelInfo struct {
 	Kind      string // "awg" | "native" | "wdtt" | "freeturn"
 }
 
-type Catalog struct {
-	nativeStore    *mihomonative.Store
-	tunnelProvider TunnelProvider
+type SingboxProvider interface {
+	ListSubscriptions() []SingboxSubscriptionInfo
+	ListOutbounds() []SingboxOutboundInfo
 }
 
-func NewCatalog(nativeStore *mihomonative.Store, tunnelProvider TunnelProvider) *Catalog {
+type SingboxSubscriptionInfo struct {
+	ID          string
+	Label       string
+	Tag         string
+	Enabled     bool
+	MemberCount int
+	Mode        string
+}
+
+type SingboxOutboundInfo struct {
+	Tag       string
+	Type      string
+	Interface string
+	Enabled   bool
+	Label     string
+}
+
+type Catalog struct {
+	nativeStore     *mihomonative.Store
+	tunnelProvider  TunnelProvider
+	singboxProvider SingboxProvider
+}
+
+func NewCatalog(nativeStore *mihomonative.Store, tunnelProvider TunnelProvider, sbProviders ...SingboxProvider) *Catalog {
+	var sb SingboxProvider
+	if len(sbProviders) > 0 {
+		sb = sbProviders[0]
+	}
 	return &Catalog{
-		nativeStore:    nativeStore,
-		tunnelProvider: tunnelProvider,
+		nativeStore:     nativeStore,
+		tunnelProvider:  tunnelProvider,
+		singboxProvider: sb,
 	}
 }
 
@@ -42,7 +71,8 @@ func (c *Catalog) ListEgresses(ctx context.Context) ([]ResolvedEgress, error) {
 				strings.HasPrefix(t.Interface, "Proxy") || strings.HasPrefix(t.ID, "wan:") {
 				continue
 			}
-			available := t.Active && t.Interface != ""
+			iface := resolveKernelDev(t.Interface)
+			available := t.Active && iface != ""
 			reason := ""
 			if !available {
 				reason = "Туннель выключен или интерфейс не поднят"
@@ -54,7 +84,7 @@ func (c *Catalog) ListEgresses(ctx context.Context) ([]ResolvedEgress, error) {
 					Engine:     EngineSystem,
 				},
 				DisplayName: t.Name,
-				Interface:   t.Interface,
+				Interface:   iface,
 				Capabilities: Capabilities{
 					TCP:  true,
 					UDP:  true,
@@ -148,6 +178,106 @@ func (c *Catalog) ListEgresses(ctx context.Context) ([]ResolvedEgress, error) {
 		}
 	}
 
+	// 3. Sing-box Resources
+	if c.singboxProvider != nil {
+		// Subscriptions
+		for _, s := range c.singboxProvider.ListSubscriptions() {
+			available := s.Enabled && s.MemberCount > 0
+			reason := ""
+			if !available {
+				if !s.Enabled {
+					reason = "Подписка sing-box отключена"
+				} else {
+					reason = "В подписке sing-box нет активных узлов"
+				}
+			}
+			tag := s.Tag
+			if tag == "" {
+				tag = s.ID
+			}
+			results = append(results, ResolvedEgress{
+				Ref: EgressRef{
+					Kind:       EgressKindSingboxSubscription,
+					ResourceID: tag,
+					Engine:     EngineSingbox,
+				},
+				DisplayName: s.Label,
+				Interface:   "awgsus0",
+				Capabilities: Capabilities{
+					TCP:  true,
+					UDP:  true,
+					IPv4: true,
+				},
+				Available:         available,
+				UnavailableReason: reason,
+			})
+		}
+
+		// Outbounds
+		for _, o := range c.singboxProvider.ListOutbounds() {
+			name := o.Label
+			if name == "" {
+				name = o.Tag
+			}
+			results = append(results, ResolvedEgress{
+				Ref: EgressRef{
+					Kind:       EgressKindSingboxOutbound,
+					ResourceID: o.Tag,
+					Engine:     EngineSingbox,
+				},
+				DisplayName: name,
+				Interface:   "awgsus0",
+				Capabilities: Capabilities{
+					TCP:  true,
+					UDP:  true,
+					IPv4: true,
+				},
+				Available:         o.Enabled,
+				UnavailableReason: "",
+			})
+		}
+	}
+
+	// Deterministic sorting so UI never jumps between polls:
+	// 1. Kind rank: kernel-tunnel -> mihomo-proxy -> mihomo-group -> mihomo-subscription -> singbox-subscription -> singbox-outbound
+	// 2. DisplayName natural comparison
+	// 3. Interface and ResourceID as tiebreaker
+	kindRank := func(kind EgressKind) int {
+		switch kind {
+		case EgressKindKernelTunnel:
+			return 1
+		case EgressKindMihomoProxy:
+			return 2
+		case EgressKindMihomoGroup:
+			return 3
+		case EgressKindMihomoSubscription:
+			return 4
+		case EgressKindSingboxSubscription:
+			return 5
+		case EgressKindSingboxOutbound:
+			return 6
+		default:
+			return 99
+		}
+	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		rI := kindRank(results[i].Ref.Kind)
+		rJ := kindRank(results[j].Ref.Kind)
+		if rI != rJ {
+			return rI < rJ
+		}
+		nameI := strings.ToLower(results[i].DisplayName)
+		nameJ := strings.ToLower(results[j].DisplayName)
+		if nameI != nameJ {
+			return nameI < nameJ
+		}
+		if results[i].Interface != results[j].Interface {
+			return results[i].Interface < results[j].Interface
+		}
+		return results[i].Ref.ResourceID < results[j].Ref.ResourceID
+	})
+
 	return results, nil
 }
 
@@ -158,7 +288,9 @@ func (c *Catalog) Resolve(ctx context.Context, ref EgressRef) (ResolvedEgress, e
 	}
 
 	for _, eg := range all {
-		if eg.Ref.Kind == ref.Kind && eg.Ref.Engine == ref.Engine {
+		kindMatch := ref.Kind == "" || eg.Ref.Kind == ref.Kind
+		engineMatch := ref.Engine == "" || eg.Ref.Engine == ref.Engine
+		if kindMatch && engineMatch {
 			if eg.Ref.ResourceID == ref.ResourceID || strings.EqualFold(eg.DisplayName, ref.ResourceID) {
 				return eg, nil
 			}

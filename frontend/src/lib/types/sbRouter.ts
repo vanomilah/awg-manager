@@ -93,6 +93,8 @@ export interface SingboxRouterSettings {
 	proxyGroups?: ProxyGroup[];
 	mihomoTrafficMode?: 'rule' | 'global' | 'direct';
 	mihomoGlobalTarget?: string;
+	susaninEnabled?: boolean;
+	susaninOutbound?: string;
 }
 
 export interface ProxyGroup {

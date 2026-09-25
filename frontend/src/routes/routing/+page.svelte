@@ -20,7 +20,7 @@
     import { PageContainer, PageHeader } from '$lib/components/layout';
     import { Search } from 'lucide-svelte';
     import { Tabs, Button, Modal } from '$lib/components/ui';
-    import { RoutingSearch, SusaninAdaptiveTab } from '$lib/components/routing';
+    import { RoutingSearch } from '$lib/components/routing';
     import DnsRoutesTab from './DnsRoutesTab.svelte';
     import IpRoutesTab from './IpRoutesTab.svelte';
     import AccessPoliciesTab from './AccessPoliciesTab.svelte';
@@ -46,6 +46,9 @@
             sp.set('mode', 'expert');
             sp.delete('sub');
             goto(`?${sp.toString()}`, { replaceState: true });
+        } else if (sp.get('tab') === 'susanin') {
+            sp.set('tab', 'singbox');
+            goto(`?${sp.toString()}`, { replaceState: true });
         }
         unsubRouting = subscribeRouting();
         // Prime sing-box router status so the tab badge count is correct
@@ -62,7 +65,7 @@
         unsubRouting?.();
     });
 
-    let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip' | 'mihomo' | 'susanin'>('singbox');
+    let activeTab = $state<'hrneo' | 'geodata' | 'dns' | 'ip' | 'policy' | 'clientvpn' | 'singbox' | 'fakeip' | 'mihomo'>('singbox');
 
     const singboxInitializedStore = singboxRouterStore.initialized;
     const singboxSettings = singboxRouterStore.settings;
@@ -318,8 +321,6 @@
                 : null,
             // HR Neo is a separate routing engine — divider before it.
             hydrarouteInstalled ? { id: 'hrneo', label: 'HR Neo', badge: hrRuleCount, separatorBefore: true } : null,
-            // Susanin Adaptive Routing engine
-            { id: 'susanin', label: 'Susanin · Адаптивный', separatorBefore: true },
             (hydrarouteInstalled || singboxInstalled)
                 ? { id: 'geodata', label: 'Гео-данные', badge: geoFileCount, separatorBefore: true }
                 : null,
@@ -468,12 +469,6 @@
         <SingboxRouterRedesignPage />
     {:else if activeTab === 'fakeip'}
         <FakeIPTab />
-    {:else if activeTab === 'susanin'}
-        <SusaninAdaptiveTab
-            policies={accessPolicies}
-            {policyInterfaces}
-            tunnels={routingTunnels}
-        />
     {/if}
     <ModeSwitchHost />
     </div>

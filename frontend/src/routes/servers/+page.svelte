@@ -18,11 +18,10 @@
 		ManagedServerBackupToolbar,
 		ManagedServerDriftBanner,
 		ServersPageSkeleton,
-		XrayServerCard,
 		TelegramWebProxyCard,
 		type RailItem,
 	} from '$lib/components/servers';
-	import type { XrayStatus, TgWebProxyStatus } from '$lib/types';
+	import type { TgWebProxyStatus } from '$lib/types';
 	import { dedupBy } from '$lib/utils/dedupBy';
 	import { createIngressMutationLock } from '$lib/utils/ingressMutation';
 	import { countActiveManagedPeers, countActiveSystemPeers } from '$lib/utils/serverPeerActivity';
@@ -39,16 +38,7 @@
 	let unsub: (() => void) | undefined;
 	let pollTimer: any;
 
-	let xrayStatus = $state<XrayStatus | null>(null);
 	let tgStatus = $state<TgWebProxyStatus | null>(null);
-
-	async function loadXrayStatus() {
-		try {
-			xrayStatus = await api.getXrayServerStatus();
-		} catch {
-			xrayStatus = null;
-		}
-	}
 
 	async function loadTgStatus() {
 		try {
@@ -62,10 +52,8 @@
 		unsub = servers.subscribe(() => {});
 		loadIngressRefs();
 		loadLANSegmentOptions();
-		loadXrayStatus();
 		loadTgStatus();
 		pollTimer = setInterval(() => {
-			loadXrayStatus();
 			loadTgStatus();
 		}, 6000);
 	});
@@ -200,20 +188,6 @@
 				kind: 'system',
 			});
 		}
-
-		// Xray Server (VLESS · CDN)
-		const xrayClients = xrayStatus?.clients ?? [];
-		const activeClients = xrayClients.filter(c => c.enabled).length;
-		items.push({
-			id: '__xray_server__',
-			name: 'Xray VLESS',
-			iface: 'CDN Bridge',
-			listenPort: xrayStatus?.port || 9008,
-			status: xrayStatus?.running ? 'running' : 'stopped',
-			peerCount: xrayClients.length,
-			peerActive: activeClients,
-			kind: 'xray',
-		});
 
 		// Telegram WEB Proxy
 		items.push({
@@ -378,8 +352,6 @@
 					onToggleIngress={handleToggleSystemIngress}
 					{activeEngine}
 				/>
-				{:else if activeItem?.kind === 'xray'}
-					<XrayServerCard />
 				{:else if activeItem?.kind === 'tgwebproxy'}
 					<TelegramWebProxyCard />
 				{/if}

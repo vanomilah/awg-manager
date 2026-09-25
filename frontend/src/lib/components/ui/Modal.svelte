@@ -35,6 +35,8 @@
         bodyMinHeight?: string;
         /** Allow user to maximize modal to full screen */
         allowMaximize?: boolean;
+        /** Allow user to freely resize modal with mouse drag like a Windows window */
+        resizable?: boolean;
     }
 
     let {
@@ -49,9 +51,76 @@
         hasUnsavedChanges,
         bodyMinHeight,
         allowMaximize = false,
+        resizable = false,
     }: Props = $props();
 
     let isMaximized = $state(false);
+    let cardEl = $state<HTMLElement | null>(null);
+    let customWidth = $state<number | null>(null);
+    let customHeight = $state<number | null>(null);
+    let isResizing = $state(false);
+
+    const canResize = $derived(resizable || allowMaximize);
+
+    function startResize(e: PointerEvent, dir: 'se' | 'e' | 's') {
+        if (!cardEl) return;
+        e.preventDefault();
+        e.stopPropagation();
+
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const rect = cardEl.getBoundingClientRect();
+        const startW = rect.width;
+        const startH = rect.height;
+
+        if (isMaximized) {
+            isMaximized = false;
+        }
+        isResizing = true;
+
+        const target = e.currentTarget as HTMLElement | null;
+        if (target && typeof target.setPointerCapture === 'function') {
+            try {
+                target.setPointerCapture(e.pointerId);
+            } catch {
+                // Ignore capture failure
+            }
+        }
+
+        function onPointerMove(ev: PointerEvent) {
+            const dx = ev.clientX - startX;
+            const dy = ev.clientY - startY;
+
+            if (dir === 'se' || dir === 'e') {
+                const minW = 380;
+                const maxW = Math.max(minW, window.innerWidth - 24);
+                customWidth = Math.max(minW, Math.min(maxW, Math.round(startW + dx)));
+            }
+            if (dir === 'se' || dir === 's') {
+                const minH = 260;
+                const maxH = Math.max(minH, window.innerHeight - 24);
+                customHeight = Math.max(minH, Math.min(maxH, Math.round(startH + dy)));
+            }
+        }
+
+        function onPointerUp(ev: PointerEvent) {
+            isResizing = false;
+            if (target && typeof target.releasePointerCapture === 'function') {
+                try {
+                    target.releasePointerCapture(ev.pointerId);
+                } catch {
+                    // Ignore
+                }
+            }
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerUp);
+        }
+
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp);
+    }
 
     const sizeClasses = {
         sm: 'max-w-sm',
@@ -151,11 +220,19 @@
         onkeydown={handleBackdropKeydown}
     >
         <div
+            bind:this={cardEl}
             class="modal-card {sizeClasses[size]}"
             class:modal-card-maximized={isMaximized}
+            class:is-resizing={isResizing}
             role="document"
+            style="{!isMaximized && customWidth ? `width: ${customWidth}px; max-width: ${customWidth}px;` : ''} {!isMaximized && customHeight ? `height: ${customHeight}px; max-height: ${customHeight}px;` : ''}"
         >
-            <header class="modal-header">
+            <header
+                class="modal-header"
+                ondblclick={() => {
+                    if (allowMaximize) isMaximized = !isMaximized;
+                }}
+            >
                 <h3 id="modal-title">{title}</h3>
                 <div class="modal-header-actions">
                     {#if allowMaximize}
@@ -199,6 +276,39 @@
                     {@render actions()}
                 </footer>
             {/if}
+
+            {#if canResize && !isMaximized}
+                <!-- Resize handle: Right edge -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <div
+                    class="modal-resize-edge-e"
+                    onpointerdown={(e) => startResize(e, 'e')}
+                    title="Потяните для изменения ширины"
+                ></div>
+                <!-- Resize handle: Bottom edge -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <div
+                    class="modal-resize-edge-s"
+                    onpointerdown={(e) => startResize(e, 's')}
+                    title="Потяните для изменения высоты"
+                ></div>
+                <!-- Resize handle: Bottom-right corner -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+                <div
+                    class="modal-resize-grip"
+                    onpointerdown={(e) => startResize(e, 'se')}
+                    title="Потяните в любом направлении для изменения размера"
+                >
+                    <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor">
+                        <circle cx="13" cy="13" r="1.3" />
+                        <circle cx="13" cy="8.5" r="1.3" />
+                        <circle cx="8.5" cy="13" r="1.3" />
+                        <circle cx="13" cy="4" r="1.3" />
+                        <circle cx="8.5" cy="8.5" r="1.3" />
+                        <circle cx="4" cy="13" r="1.3" />
+                    </svg>
+                </div>
+            {/if}
         </div>
     </div>
     {#if hasUnsavedChanges}
@@ -235,6 +345,7 @@
         border-radius: var(--radius);
         width: 100%;
         cursor: auto;
+        position: relative;
         /* min-width: 0 + box-sizing keeps the card from being inflated
            past its size-class max-width by an intrinsic min-content child
            (long URL placeholder, monospace text without break-points). */
@@ -248,6 +359,53 @@
         max-height: calc(100dvh - 2rem);
         display: flex;
         flex-direction: column;
+    }
+
+    .modal-card.is-resizing {
+        user-select: none;
+        transition: none !important;
+    }
+
+    .modal-resize-edge-e {
+        position: absolute;
+        top: 0;
+        right: -4px;
+        bottom: 0;
+        width: 8px;
+        cursor: ew-resize;
+        z-index: 20;
+    }
+
+    .modal-resize-edge-s {
+        position: absolute;
+        left: 0;
+        bottom: -4px;
+        right: 0;
+        height: 8px;
+        cursor: ns-resize;
+        z-index: 20;
+    }
+
+    .modal-resize-grip {
+        position: absolute;
+        right: 3px;
+        bottom: 3px;
+        width: 16px;
+        height: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: nwse-resize;
+        color: var(--color-text-muted, #888);
+        opacity: 0.5;
+        transition: opacity 0.15s, color 0.15s;
+        z-index: 30;
+        user-select: none;
+    }
+
+    .modal-resize-grip:hover {
+        opacity: 1;
+        color: var(--color-accent, #3b82f6);
     }
 
     /* Each size class caps at its target width but never exceeds the
@@ -323,6 +481,8 @@
         flex: 1;
         min-height: 0;
         min-width: 0;
+        display: flex;
+        flex-direction: column;
     }
 
     /* Defensive: ensure form controls inside any modal never push the body

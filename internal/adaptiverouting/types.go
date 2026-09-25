@@ -18,6 +18,7 @@ const (
 	EgressKindMihomoProxy        EgressKind = "mihomo-proxy"
 	EgressKindMihomoSubscription EgressKind = "mihomo-subscription"
 	EgressKindMihomoGroup        EgressKind = "mihomo-group"
+	EgressKindSingboxSubscription EgressKind = "singbox-subscription"
 	EgressKindSingboxOutbound    EgressKind = "singbox-outbound"
 )
 
@@ -66,13 +67,20 @@ type DetectionSettings struct {
 	JudgeIntervalSeconds  int `json:"judgeIntervalSeconds"`  // default 1
 	HealthIntervalSeconds int `json:"healthIntervalSeconds"` // default 5
 	TcpSynRetries         int `json:"tcpSynRetries"`         // default 2
-	LateStallBytes        int `json:"lateStallBytes"`        // default 1500
+	LateStallBytes        int `json:"lateStallBytes"`        // default 65536
 }
 
 type PersistenceConfig struct {
 	OkTTLSeconds   int  `json:"okTtlSeconds"`   // default 0 (persistent until unhealthy)
 	MaxEntries     int  `json:"maxEntries"`     // default 4096
 	SeparateTcpUdp bool `json:"separateTcpUdp"` // default true
+}
+
+type DnsSettings struct {
+	Enabled         bool     `json:"enabled"`
+	Servers         []string `json:"servers"`
+	RouteViaTunnel  bool     `json:"routeViaTunnel"`
+	InterceptPort53 bool     `json:"interceptPort53"`
 }
 
 type Settings struct {
@@ -89,6 +97,7 @@ type Settings struct {
 	FailurePolicy     string            `json:"failurePolicy"` // "direct" | "block"
 	Detection         DetectionSettings `json:"detection"`
 	Persistence       PersistenceConfig `json:"persistence"`
+	DNS               DnsSettings       `json:"dns"`
 	AlwaysFileEnabled bool              `json:"alwaysFileEnabled"`
 	NeverFileEnabled  bool              `json:"neverFileEnabled"`
 	AlwaysEntries     []string          `json:"alwaysEntries,omitempty"`
@@ -142,12 +151,18 @@ func DefaultSettings() Settings {
 			JudgeIntervalSeconds:  1,
 			HealthIntervalSeconds: 5,
 			TcpSynRetries:         2,
-			LateStallBytes:        1500,
+			LateStallBytes:        65536,
 		},
 		Persistence: PersistenceConfig{
 			OkTTLSeconds:   0,
 			MaxEntries:     4096,
 			SeparateTcpUdp: true,
+		},
+		DNS: DnsSettings{
+			Enabled:         false,
+			Servers:         []string{"1.1.1.1", "8.8.8.8"},
+			RouteViaTunnel:  true,
+			InterceptPort53:  true,
 		},
 		AlwaysFileEnabled: true,
 		NeverFileEnabled:  true,
@@ -157,10 +172,15 @@ func DefaultSettings() Settings {
 }
 
 type LogEvent struct {
-	Timestamp string `json:"timestamp"`
-	Level     string `json:"level"`
-	Action    string `json:"action"`
-	Target    string `json:"target"`
-	Message   string `json:"message"`
-	Raw       string `json:"raw"`
+	Timestamp       string `json:"timestamp"`
+	Level           string `json:"level"`
+	Action          string `json:"action"`
+	Target          string `json:"target"`
+	Message         string `json:"message"`
+	Raw             string `json:"raw"`
+	ResourceTitle   string `json:"resourceTitle,omitempty"`
+	ResourceOrg     string `json:"resourceOrg,omitempty"`
+	ResourceCountry string `json:"resourceCountry,omitempty"`
+	ResourceCC      string `json:"resourceCc,omitempty"`
+	ResourceIcon    string `json:"resourceIcon,omitempty"`
 }

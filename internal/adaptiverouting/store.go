@@ -7,16 +7,19 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 type Store struct {
-	dataDir      string
-	settingsPath string
-	statePath    string
-	mu           sync.RWMutex
-	settings     Settings
-	applied      *AppliedConfig
-	state        OperationalState
+	dataDir       string
+	settingsPath  string
+	statePath     string
+	mu            sync.RWMutex
+	settings      Settings
+	settingsMtime time.Time
+	settingsSize  int64
+	applied       *AppliedConfig
+	state         OperationalState
 }
 
 const runtimeDocumentVersion = 1
@@ -103,12 +106,19 @@ func (s *Store) loadSettings() error {
 		loaded.Detection.HealthIntervalSeconds = 5
 	}
 	if loaded.Detection.LateStallBytes <= 0 {
-		loaded.Detection.LateStallBytes = 1500
+		loaded.Detection.LateStallBytes = 65536
 	}
 	if loaded.Persistence.MaxEntries <= 0 {
 		loaded.Persistence.MaxEntries = 4096
 	}
+	if len(loaded.DNS.Servers) == 0 {
+		loaded.DNS.Servers = []string{"1.1.1.1", "8.8.8.8"}
+	}
 
+	if fi, err := os.Stat(s.settingsPath); err == nil {
+		s.settingsMtime = fi.ModTime()
+		s.settingsSize = fi.Size()
+	}
 	s.settings = loaded
 	return nil
 }
@@ -143,9 +153,20 @@ func (s *Store) loadState() error {
 	return nil
 }
 
+func (s *Store) reloadSettingsIfChangedLocked() {
+	fi, err := os.Stat(s.settingsPath)
+	if err != nil {
+		return
+	}
+	if !fi.ModTime().Equal(s.settingsMtime) || fi.Size() != s.settingsSize {
+		_ = s.loadSettings()
+	}
+}
+
 func (s *Store) GetSettings() Settings {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloadSettingsIfChangedLocked()
 	return s.cloneSettings(s.settings)
 }
 
@@ -153,6 +174,7 @@ func (s *Store) UpdateSettings(fn func(*Settings) error) (Settings, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.reloadSettingsIfChangedLocked()
 	candidate := s.cloneSettings(s.settings)
 	if err := fn(&candidate); err != nil {
 		return Settings{}, err
@@ -244,7 +266,14 @@ func (s *Store) saveSettingsValueLocked(settings Settings) error {
 	if err != nil {
 		return fmt.Errorf("adaptive routing store: marshal settings: %w", err)
 	}
-	return atomicWrite(s.settingsPath, data)
+	if err := atomicWrite(s.settingsPath, data); err != nil {
+		return err
+	}
+	if fi, err := os.Stat(s.settingsPath); err == nil {
+		s.settingsMtime = fi.ModTime()
+		s.settingsSize = fi.Size()
+	}
+	return nil
 }
 
 func (s *Store) saveStateLocked() error {

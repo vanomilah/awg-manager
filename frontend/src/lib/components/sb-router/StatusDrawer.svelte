@@ -36,6 +36,9 @@
   import { singboxProxies } from '$lib/stores/singboxProxies';
   import { subscriptionsStore } from '$lib/stores/subscriptions';
   import type { SingboxRouterSettings, SingboxRouterWANInterface, MihomoNativeGroup, MihomoNativeSubscription, MihomoNativeProxy } from '$lib/types';
+  import type { AdaptiveRoutingSettings } from '$lib/types/adaptiveRouting';
+  import { lookupIpKnowledge } from '$lib/utils/ipKnowledge';
+  import { Globe, Shield, RefreshCw } from 'lucide-svelte';
 
   const status = singboxRouterStore.status;
   const storeSettings = singboxRouterStore.settings;
@@ -153,6 +156,184 @@
       keeneticCloudOutbound: nextOutbound,
     });
   }
+
+  function toggleSusanin() {
+    const nextState = !cfg?.susaninEnabled;
+    let nextOutbound = cfg?.susaninOutbound;
+    if (nextState && (!nextOutbound || nextOutbound === 'DIRECT')) {
+      const firstTarget = availableCloudOutbounds[0]?.value || 'DIRECT';
+      nextOutbound = firstTarget;
+    }
+    void applyPatch({
+      susaninEnabled: nextState,
+      susaninOutbound: nextOutbound,
+    });
+  }
+
+  let susaninModalOpen = $state(false);
+  let susaninModalTab = $state<'learned' | 'always'>('learned');
+  let susaninIPList = $state<string[]>([]);
+  let susaninKnowledge = $state<Record<string, { title: string; org?: string; country?: string; cc?: string }>>({});
+  let susaninLoading = $state(false);
+  let susaninSearch = $state('');
+  let susaninIPCount = $state(0);
+
+  // Susanin Always (Whitelist) state
+  let susaninAlwaysList = $state<string[]>([]);
+  let susaninAlwaysInput = $state('');
+  let susaninAlwaysTextMode = $state(false);
+  let susaninAlwaysText = $state('');
+  let susaninSavingAlways = $state(false);
+  let susaninSettings = $state<AdaptiveRoutingSettings | null>(null);
+
+  const filteredSusaninIPs = $derived(
+    susaninSearch.trim()
+      ? susaninIPList.filter((ip) => {
+          const q = susaninSearch.trim().toLowerCase();
+          const k = susaninKnowledge[ip];
+          const localK = lookupIpKnowledge(ip);
+          return (
+            ip.toLowerCase().includes(q) ||
+            (k?.title && k.title.toLowerCase().includes(q)) ||
+            (localK?.title && localK.title.toLowerCase().includes(q))
+          );
+        })
+      : susaninIPList
+  );
+
+  const filteredSusaninAlways = $derived(
+    susaninSearch.trim()
+      ? susaninAlwaysList.filter((entry) => {
+          const q = susaninSearch.trim().toLowerCase();
+          const localK = lookupIpKnowledge(entry);
+          return (
+            entry.toLowerCase().includes(q) ||
+            (localK?.title && localK.title.toLowerCase().includes(q))
+          );
+        })
+      : susaninAlwaysList
+  );
+
+  async function loadSusaninData() {
+    try {
+      const [learnedRes, settingsRes] = await Promise.all([
+        api.getAdaptiveRoutingLearned(),
+        api.getAdaptiveRoutingSettings().catch(() => null)
+      ]);
+      const set = new Set<string>();
+      for (const ip of learnedRes.okTcp || []) set.add(ip);
+      for (const ip of learnedRes.okUdp || []) set.add(ip);
+      for (const ip of learnedRes.okNet || []) set.add(ip);
+      susaninIPList = Array.from(set).sort();
+      susaninIPCount = susaninIPList.length;
+
+      if (learnedRes.knowledge) {
+        susaninKnowledge = learnedRes.knowledge;
+      }
+
+      if (settingsRes) {
+        susaninSettings = settingsRes;
+        susaninAlwaysList = (settingsRes.alwaysEntries || []).map((e) => e.trim()).filter(Boolean);
+        susaninAlwaysText = susaninAlwaysList.join('\n');
+      }
+    } catch {
+      susaninIPList = [];
+      susaninIPCount = 0;
+    }
+  }
+
+  function openSusaninModal() {
+    susaninModalOpen = true;
+    susaninSearch = '';
+    void loadSusaninData();
+  }
+
+  async function handleClearSusanin() {
+    try {
+      susaninLoading = true;
+      await api.clearAdaptiveRoutingCache();
+      notifications.success('Накопленные адреса Susanin очищены');
+      await loadSusaninData();
+    } catch (e) {
+      notifications.error(e instanceof Error ? e.message : 'Ошибка очистки базы Susanin');
+    } finally {
+      susaninLoading = false;
+    }
+  }
+
+  async function saveSusaninAlways(newList?: string[]) {
+    try {
+      susaninSavingAlways = true;
+      const entriesToSave = (newList ?? (susaninAlwaysTextMode
+        ? susaninAlwaysText.split('\n').map((s) => s.trim()).filter(Boolean)
+        : susaninAlwaysList
+      ));
+
+      let currentSettings = susaninSettings;
+      if (!currentSettings) {
+        currentSettings = await api.getAdaptiveRoutingSettings();
+      }
+
+      const updated: AdaptiveRoutingSettings = {
+        ...currentSettings,
+        alwaysEntries: entriesToSave,
+      };
+
+      await api.applyAdaptiveRouting(updated);
+      susaninSettings = updated;
+      susaninAlwaysList = entriesToSave;
+      susaninAlwaysText = entriesToSave.join('\n');
+      notifications.success('Белый список Susanin обновлен');
+    } catch (e) {
+      notifications.error(e instanceof Error ? e.message : 'Ошибка сохранения белого списка');
+    } finally {
+      susaninSavingAlways = false;
+    }
+  }
+
+  function addAlwaysEntry() {
+    let val = susaninAlwaysInput.trim();
+    if (!val) return;
+    val = val.replace(/^https?:\/\//i, '').split('/')[0].trim().toLowerCase();
+    if (!val) return;
+
+    if (susaninAlwaysList.some((e) => e.toLowerCase() === val)) {
+      notifications.info(`Запись «${val}» уже есть в белом списке`);
+      susaninAlwaysInput = '';
+      return;
+    }
+
+    const nextList = [...susaninAlwaysList, val];
+    susaninAlwaysList = nextList;
+    susaninAlwaysText = nextList.join('\n');
+    susaninAlwaysInput = '';
+    void saveSusaninAlways(nextList);
+  }
+
+  function removeAlwaysEntry(entry: string) {
+    const nextList = susaninAlwaysList.filter((e) => e !== entry);
+    susaninAlwaysList = nextList;
+    susaninAlwaysText = nextList.join('\n');
+    void saveSusaninAlways(nextList);
+  }
+
+  function pinToWhitelist(ipOrCidr: string) {
+    if (susaninAlwaysList.includes(ipOrCidr)) {
+      notifications.info(`Адрес ${ipOrCidr} уже в белом списке`);
+      return;
+    }
+    const nextList = [...susaninAlwaysList, ipOrCidr];
+    susaninAlwaysList = nextList;
+    susaninAlwaysText = nextList.join('\n');
+    void saveSusaninAlways(nextList);
+    notifications.success(`Адрес ${ipOrCidr} зафиксирован в белом списке`);
+  }
+
+  $effect(() => {
+    if (open && cfg?.susaninEnabled) {
+      void loadSusaninData();
+    }
+  });
 
   async function loadMihomoClashMode() {
     if (cfg?.routingEngine !== 'mihomo') return;
@@ -769,6 +950,53 @@
         </p>
       </section>
 
+      <!-- Адаптивное обнаружение блокировок (радар Susanin) -->
+      <section class="sec">
+        <div class="sec-cap">Адаптивный радар Susanin</div>
+        <div class="chips">
+          <button type="button" class="chip" class:active={!!cfg?.susaninEnabled} onclick={toggleSusanin}>
+            <div class="chip-head">
+              <span class="chip-label">Радар Susanin (автообход блокировок)</span>
+              <span class="chip-status-badge" class:active={!!cfg?.susaninEnabled}>
+                {cfg?.susaninEnabled ? 'Включен' : 'Выключен'}
+              </span>
+            </div>
+            <span class="chip-desc">
+              автоматически обнаруживает заблокированные IP-адреса и накапливает их в правиле susanin
+            </span>
+          </button>
+        </div>
+
+        {#if cfg?.susaninEnabled}
+          <div class="field" style="margin-top: 10px;">
+            <label class="lbl" for="susanin-outbound-sel">Куда направить заблокированные IP</label>
+            <select
+              id="susanin-outbound-sel"
+              class="sel"
+              value={cfg?.susaninOutbound || (availableCloudOutbounds[0]?.value ?? '')}
+              onchange={(e) => void applyPatch({ susaninOutbound: (e.currentTarget as HTMLSelectElement).value })}
+            >
+              {#each availableCloudOutbounds as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px;">
+            <span style="font-size: 13px; color: var(--text-secondary);">
+              Накоплено адресов: <strong style="color: var(--text-primary);">{susaninIPCount}</strong>
+            </span>
+            <Button variant="secondary" size="sm" onclick={openSusaninModal}>
+              Просмотреть список IP ({susaninIPCount})
+            </Button>
+          </div>
+        {/if}
+
+        <p class="hint">
+          Радар Susanin непрерывно отслеживает сетевые сбои (таймауты TLS handshake, сбросы TCP RST) при прямых подключениях к сайтам. Все адреса с признаками блокировки DPI/РКН динамически накапливаются в правиле <code>susanin</code> активного движка и направляются через выбранный туннель или группу прокси без перезапуска.
+        </p>
+      </section>
+
       <!-- Исключения: порт-пресеты + IP-пресеты (keendns) + ручные порты/подсети -->
       <section class="sec">
         <div class="sec-cap">Исключения</div>
@@ -909,6 +1137,277 @@
       </Button>
     </div>
   </div>
+</Modal>
+
+<Modal
+  open={susaninModalOpen}
+  title="База данных и белый список Susanin"
+  size="lg"
+  onclose={() => (susaninModalOpen = false)}
+>
+  <div class="susanin-modal-body">
+    <!-- Tab navigation -->
+    <div class="susanin-tabs">
+      <button
+        type="button"
+        class="susanin-tab-btn"
+        class:active={susaninModalTab === 'learned'}
+        onclick={() => (susaninModalTab = 'learned')}
+      >
+        <span style="display: flex; align-items: center; gap: 6px;">
+          <Globe style="width: 14px; height: 14px;" />
+          Обнаруженные IP ({susaninIPList.length})
+        </span>
+      </button>
+      <button
+        type="button"
+        class="susanin-tab-btn"
+        class:active={susaninModalTab === 'always'}
+        onclick={() => (susaninModalTab = 'always')}
+      >
+        <span style="display: flex; align-items: center; gap: 6px;">
+          <Shield style="width: 14px; height: 14px;" />
+          Белый список ({susaninAlwaysList.length})
+        </span>
+      </button>
+    </div>
+
+    {#if susaninModalTab === 'learned'}
+      <p class="hint" style="margin-bottom: 8px;">
+        Адреса и подсети, к которым зафиксирован сбой прямого подключения (DPI/РКН).
+        Маршрутизируются через туннель по правилу <code>susanin</code>. Любой адрес можно зафиксировать в белом списке навсегда.
+      </p>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+        <input
+          type="search"
+          class="inp"
+          placeholder="Поиск по IP, сервису (YouTube, CDN77)..."
+          bind:value={susaninSearch}
+          style="flex: 1;"
+        />
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={susaninIPList.length === 0}
+          onclick={() => {
+            navigator.clipboard.writeText(susaninIPList.join('\n'));
+            notifications.success('Список IP скопирован в буфер');
+          }}
+        >
+          Скопировать
+        </Button>
+        <Button
+          variant="danger"
+          size="sm"
+          disabled={susaninIPList.length === 0 || susaninLoading}
+          loading={susaninLoading}
+          onclick={handleClearSusanin}
+        >
+          Очистить кэш
+        </Button>
+      </div>
+
+      <div class="susanin-ip-scrollbox">
+        {#if susaninIPList.length === 0}
+          <div style="text-align: center; padding: 32px; color: var(--text-muted);">
+            Динамический кэш пуст. При обнаружении сбоев IP появятся здесь автоматически.
+          </div>
+        {:else if filteredSusaninIPs.length === 0}
+          <div style="text-align: center; padding: 32px; color: var(--text-muted);">
+            Ничего не найдено по запросу «{susaninSearch}»
+          </div>
+        {:else}
+          <div class="susanin-card-grid">
+            {#each filteredSusaninIPs as ip}
+              {@const k = susaninKnowledge[ip] || lookupIpKnowledge(ip)}
+              {@const isPinned = susaninAlwaysList.includes(ip)}
+              <div class="susanin-card">
+                <div class="susanin-card-top">
+                  <span class="font-mono" style="font-size: 11px; font-weight: 600; user-select: all;">{ip}</span>
+                  {#if isPinned}
+                    <Badge variant="success" size="sm">В белом</Badge>
+                  {:else}
+                    <button
+                      type="button"
+                      class="pin-btn"
+                      title="Зафиксировать в белом списке навсегда"
+                      onclick={() => pinToWhitelist(ip)}
+                    >
+                      + В белый
+                    </button>
+                  {/if}
+                </div>
+                <div class="susanin-card-bottom">
+                  {#if k?.title && k.title !== 'Внешний узел'}
+                    <span class="service-chip" title="{k.org || ''} {k.country ? `(${k.country})` : ''}">
+                      {k.title}
+                    </span>
+                  {:else}
+                    <span class="service-chip muted">Интернет-сервис</span>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+    {:else}
+      <!-- Whitelist Tab -->
+      <p class="hint" style="margin-bottom: 8px;">
+        Статический список доменов, IP-адресов и подсетей CIDR, которые <strong>всегда</strong> направляются через туннель. 
+        Домены (напр. <code>example.com</code>, <code>service.net</code>) автоматически разрешаются в IP демоном Susanin.
+      </p>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+        {#if !susaninAlwaysTextMode}
+          <input
+            type="text"
+            class="inp font-mono"
+            placeholder="Домен (напр. example.com) или IP/CIDR (198.51.100.0/24)..."
+            bind:value={susaninAlwaysInput}
+            onkeydown={(e) => e.key === 'Enter' && addAlwaysEntry()}
+            style="flex: 1;"
+          />
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!susaninAlwaysInput.trim() || susaninSavingAlways}
+            onclick={addAlwaysEntry}
+          >
+            + Добавить
+          </Button>
+        {:else}
+          <div style="flex: 1; font-size: 12px; color: var(--text-muted);">
+            Редактирование текстом (по одной записи на строку):
+          </div>
+        {/if}
+
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => {
+            if (susaninAlwaysTextMode) {
+              const parsed = susaninAlwaysText.split('\n').map((s) => s.trim()).filter(Boolean);
+              susaninAlwaysList = parsed;
+            } else {
+              susaninAlwaysText = susaninAlwaysList.join('\n');
+            }
+            susaninAlwaysTextMode = !susaninAlwaysTextMode;
+          }}
+        >
+          {susaninAlwaysTextMode ? 'Режим списка' : 'Режим текста'}
+        </Button>
+      </div>
+
+      {#if susaninAlwaysTextMode}
+        <textarea
+          class="inp font-mono"
+          rows="12"
+          bind:value={susaninAlwaysText}
+          placeholder="По одной записи на строку:
+example.com
+198.51.100.0/24
+gemini.google.com"
+          style="width: 100%; resize: vertical; margin-bottom: 8px;"
+        ></textarea>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <Button
+            variant="primary"
+            size="sm"
+            loading={susaninSavingAlways}
+            onclick={() => void saveSusaninAlways()}
+          >
+            Сохранить белый список
+          </Button>
+        </div>
+      {:else}
+        <div style="margin-bottom: 8px;">
+          <input
+            type="search"
+            class="inp"
+            placeholder="Поиск по белому списку..."
+            bind:value={susaninSearch}
+            style="width: 100%;"
+          />
+        </div>
+
+        <div class="susanin-ip-scrollbox">
+          {#if susaninAlwaysList.length === 0}
+            <div style="text-align: center; padding: 32px; color: var(--text-muted);">
+              Белый список пуст. Добавьте домен или IP адрес выше.
+            </div>
+          {:else if filteredSusaninAlways.length === 0}
+            <div style="text-align: center; padding: 32px; color: var(--text-muted);">
+              Ничего не найдено по запросу «{susaninSearch}»
+            </div>
+          {:else}
+            <div class="susanin-always-list">
+              {#each filteredSusaninAlways as entry}
+                {@const isCidr = entry.includes('/')}
+                {@const isIp = !isCidr && /^[0-9.]+$/.test(entry)}
+                {@const k = isCidr || isIp ? lookupIpKnowledge(entry) : null}
+                <div class="susanin-always-item">
+                  <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <span class="font-mono" style="font-size: 11px; font-weight: 600; user-select: all;">{entry}</span>
+                    {#if isCidr}
+                      <Badge variant="muted" size="sm">Подсеть CIDR</Badge>
+                    {:else if isIp}
+                      <Badge variant="muted" size="sm">IP адрес</Badge>
+                    {:else}
+                      <Badge variant="accent" size="sm">Домен</Badge>
+                    {/if}
+                    {#if k?.title && k.title !== 'Внешний узел'}
+                      <span class="service-chip" title="{k.org || ''}">{k.title}</span>
+                    {/if}
+                  </div>
+                  <button
+                    type="button"
+                    class="del-btn"
+                    title="Удалить из белого списка"
+                    disabled={susaninSavingAlways}
+                    onclick={() => removeAlwaysEntry(entry)}
+                  >
+                    ✕
+                  </button>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    {/if}
+  </div>
+
+  {#snippet actions()}
+    <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+      <span style="font-size: 12px; color: var(--text-muted);">
+        {#if susaninModalTab === 'learned'}
+          Всего в кэше: {susaninIPList.length} IP
+        {:else}
+          Всего в белом списке: {susaninAlwaysList.length} записей
+        {/if}
+      </span>
+      <div style="display: flex; gap: 8px;">
+        {#if susaninModalTab === 'always' && !susaninAlwaysTextMode}
+          <Button
+            variant="secondary"
+            size="sm"
+            onclick={() => {
+              navigator.clipboard.writeText(susaninAlwaysList.join('\n'));
+              notifications.success('Белый список скопирован');
+            }}
+          >
+            Скопировать список
+          </Button>
+        {/if}
+        <Button variant="ghost" size="sm" onclick={() => (susaninModalOpen = false)}>
+          Закрыть
+        </Button>
+      </div>
+    </div>
+  {/snippet}
 </Modal>
 
 <style>
@@ -1178,5 +1677,139 @@
     border-radius: var(--radius-md, 8px);
     padding: 10px 12px;
     margin-top: 6px;
+  }
+  .susanin-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .susanin-tabs {
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    margin-bottom: 4px;
+  }
+  .susanin-tab-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .susanin-tab-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+  .susanin-tab-btn.active {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border-color: var(--border);
+    font-weight: 600;
+  }
+  .susanin-ip-scrollbox {
+    max-height: 380px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    padding: 8px;
+  }
+  .susanin-card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 6px;
+  }
+  .susanin-card {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: border-color 0.15s ease;
+  }
+  .susanin-card:hover {
+    border-color: var(--color-accent, #6366f1);
+  }
+  .susanin-card-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+  }
+  .susanin-card-bottom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pin-btn {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--color-accent, #6366f1);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+  }
+  .pin-btn:hover {
+    background: var(--color-accent, #6366f1);
+    color: #fff;
+  }
+  .service-chip {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .service-chip.muted {
+    opacity: 0.6;
+  }
+  .susanin-always-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .susanin-always-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    gap: 8px;
+  }
+  .del-btn {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s ease;
+  }
+  .del-btn:hover {
+    background: rgba(220, 38, 38, 0.15);
+    color: var(--color-error, #dc2626);
   }
 </style>

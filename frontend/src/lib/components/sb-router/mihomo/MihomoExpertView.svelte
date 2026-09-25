@@ -11,6 +11,9 @@
   import StatStrip, { type StatCellData } from '../StatStrip.svelte';
   import SidePanel from '../SidePanel.svelte';
   import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
+  import { singboxMemory } from '$lib/stores/singboxMemory';
+  import { singboxTrafficLive } from '$lib/stores/singboxEngineStats';
+  import { formatBytes, formatByteRate } from '$lib/utils/format';
   import { awgTags as awgTagsStore } from '$lib/stores/awgTags';
   import { subscriptionsStore } from '$lib/stores/subscriptions';
   import { formatOutboundHumanName } from '$lib/utils/outboundHumanName';
@@ -208,6 +211,16 @@
     return ruleProviders;
   });
 
+  const liveStats = $derived($singboxTrafficLive);
+  const memCellValue = $derived(
+    isEngineActive && $singboxMemory > 0 ? formatBytes($singboxMemory) : '—',
+  );
+  const rateCellValue = $derived(
+    isEngineActive && liveStats.rate.hasRate
+      ? formatByteRate(liveStats.rate.downloadRate)
+      : '—',
+  );
+
   // Top metric stat strip
   let statCells = $derived<StatCellData[]>([
     {
@@ -219,13 +232,21 @@
     },
     {
       label: 'ПАМЯТЬ',
-      value: '—',
-      tone: 'muted',
+      value: memCellValue,
+      tone: isEngineActive && $singboxMemory > 0 ? undefined : 'muted',
+      helpTitle: 'Память Mihomo',
+      helpText: 'Память Go-рантайма Mihomo по данным Clash API. Обновляется каждые ~2 секунды, пока движок работает.',
     },
     {
-      label: 'ТРАФИК',
-      value: '—',
-      tone: 'muted',
+      label: 'ТРАФИК ↓',
+      value: rateCellValue,
+      tone: isEngineActive && liveStats.rate.hasRate ? undefined : 'muted',
+      helpTitle: 'Трафик через Mihomo',
+      helpText: 'Агрегатная скорость скачивания через Mihomo (кумулятивные счётчики Clash).',
+      helpItems: [
+        `Отдача: ${isEngineActive && liveStats.rate.hasRate ? formatByteRate(liveStats.rate.uploadRate) : '—'}`,
+        `За сессию: ${isEngineActive ? formatBytes(liveStats.totals.downloadBytes + liveStats.totals.uploadBytes) : '—'}`,
+      ],
     },
     {
       label: 'ПРАВИЛ',
@@ -462,7 +483,39 @@
           </tr>
         </thead>
         <tbody>
-          {#if rules.length === 0}
+          {#if $storeSettings?.susaninEnabled}
+            {@const susaninOutbound = $storeSettings.susaninOutbound || 'DIRECT'}
+            {@const susaninCount = runtimeProviders['susanin']?.ruleCount ?? 0}
+            <tr class="susanin-rule-row">
+              <td class="col-num font-mono">⚡</td>
+              <td class="col-order">
+                <Badge variant="success" size="sm">РАДАР</Badge>
+              </td>
+              <td class="col-action">
+                <span class="action-tag">ROUTE</span>
+              </td>
+              <td class="col-matchers">
+                <div class="matcher-group">
+                  <span class="m-type">RULE-SET:</span>
+                  <span class="m-val font-mono">susanin</span>
+                  <Badge variant="muted" size="sm">{susaninCount} IP</Badge>
+                </div>
+              </td>
+              <td class="col-outbound">
+                <div class="tone-chip tone-chip-compact tone-composite">
+                  <Zap size={11} />
+                  <span>{formatOutbound(susaninOutbound)}</span>
+                </div>
+              </td>
+              <td class="col-actions">
+                <span class="managed-label" title="Динамическое правило Susanin формируется автоматически">
+                  Радар Susanin
+                </span>
+              </td>
+            </tr>
+          {/if}
+
+          {#if rules.length === 0 && !$storeSettings?.susaninEnabled}
             <tr>
               <td colspan="6" class="empty-cell">
                 Нет настроенных правил. Нажмите «+ Правило», чтобы добавить.
@@ -1288,5 +1341,16 @@
 
   .spin {
     animation: spin 1s linear infinite;
+  }
+
+  .susanin-rule-row {
+    background: rgba(34, 197, 94, 0.05);
+    border-bottom: 1px solid rgba(34, 197, 94, 0.2);
+  }
+
+  .managed-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
   }
 </style>

@@ -103,7 +103,7 @@ void config_set_defaults(susanin_config *c)
     c->watch_ttl = 2;
     c->watch_retry_below = 1;
     c->health_miss_debounce = 4;
-    c->late_stall_bytes = 16384;
+    c->late_stall_bytes = 65536;
     snprintf(c->health_probe, sizeof(c->health_probe), "%s", "1.1.1.1,8.8.8.8");
     snprintf(c->health_probe_src, sizeof(c->health_probe_src), "%s", "10.8.1.1");
     snprintf(c->vpn_always_file, sizeof(c->vpn_always_file), "%s",

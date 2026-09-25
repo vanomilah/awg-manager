@@ -154,9 +154,18 @@ func (p *ProcessManager) GenerateConfigFile(
 	sb.WriteString(fmt.Sprintf("vpn_always_file=%s\n", p.AlwaysPath()))
 	sb.WriteString(fmt.Sprintf("vpn_never_file=%s\n", p.NeverPath()))
 	if settings.DNS.Enabled && len(settings.DNS.Servers) > 0 {
-		primaryDNS := strings.TrimSpace(settings.DNS.Servers[0])
-		if primaryDNS != "" {
-			sb.WriteString(fmt.Sprintf("vpn_always_dns=%s\n", primaryDNS))
+		// Use the last configured DNS server for vpn_always_dns resolution.
+		// This allows users to place the most reliable resolver last in the list.
+		// Fallback to first if only one is present.
+		alwaysDNS := ""
+		for _, s := range settings.DNS.Servers {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				alwaysDNS = s
+			}
+		}
+		if alwaysDNS != "" {
+			sb.WriteString(fmt.Sprintf("vpn_always_dns=%s\n", alwaysDNS))
 		}
 	}
 	sb.WriteString("log_level=info\n")
@@ -205,20 +214,10 @@ func (p *ProcessManager) WriteConfigFiles(
 
 	// Write always entries
 	var alwaysContent strings.Builder
-	hasTg := false
 	for _, entry := range settings.AlwaysEntries {
 		entry = strings.TrimSpace(entry)
 		if entry != "" {
-			if strings.Contains(entry, "149.154.160.0") {
-				hasTg = true
-			}
 			alwaysContent.WriteString(entry + "\n")
-		}
-	}
-	if !hasTg {
-		alwaysContent.WriteString("# Telegram Messenger (Pre-seeded bypass)\n")
-		for _, cidr := range DefaultTelegramCIDRs {
-			alwaysContent.WriteString(cidr + "\n")
 		}
 	}
 	if err := os.WriteFile(p.AlwaysPath(), []byte(alwaysContent.String()), 0644); err != nil {

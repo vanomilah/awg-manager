@@ -66,7 +66,18 @@ func (a *app) setupSingbox() {
 
 	trafficCtx, trafficCancel := context.WithCancel(context.Background())
 	a.deferOnExit(trafficCancel)
-	go singbox.NewTrafficAggregator(a.singboxOp.Clash().Address, a.eventBus, a.trafficHistory).Run(trafficCtx)
+	clashAddr := func() string {
+		if a.settingsStore != nil {
+			if s, err := a.settingsStore.Get(); err == nil && s != nil && s.SingboxRouter.RoutingEngine == "mihomo" {
+				return "127.0.0.1:9090"
+			}
+		}
+		if a.singboxOp != nil && a.singboxOp.Clash() != nil {
+			return a.singboxOp.Clash().Address()
+		}
+		return "127.0.0.1:9090"
+	}
+	go singbox.NewTrafficAggregator(clashAddr, a.eventBus, a.trafficHistory).Run(trafficCtx)
 
 	delayCtx, delayCancel := context.WithCancel(context.Background())
 	a.deferOnExit(delayCancel)
