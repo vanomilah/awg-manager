@@ -23,6 +23,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/ftlink"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/install"
 	proxysub "github.com/hoaxisr/awg-manager/internal/proxyapp/subscription"
+	"github.com/hoaxisr/awg-manager/internal/proxyapp/watchdog"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/wdttlink"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/wdttusers"
 	"github.com/hoaxisr/awg-manager/internal/proxyrt"
@@ -1012,6 +1013,15 @@ func (a *app) wireProxyrt() {
 			journal.Warn("boot", "proxy", "прокси-рантайм не поднялся: "+err.Error())
 		}
 	}()
+
+	// (10) Сторожевой таймер автопереподключения клиентов (FreeTurn / WDTT).
+	wd := watchdog.New(watchdog.Deps{
+		Manager:  mgr,
+		Snapshot: links.snapshot,
+		LogTail:  logTail,
+		Journal:  journal,
+	})
+	go wd.Run(a.shutdownCtx)
 }
 
 // proxyRuntime — срез менеджера, нужный ретраю боота. Шов ради теста: иначе

@@ -31,6 +31,11 @@ type proxyEnabledCall struct {
 	On  bool
 }
 
+type proxyRestartCall struct {
+	Key    string
+	Reason string
+}
+
 // fakeProxyManager повторяет КОМПОЗИЦИЮ настоящего manager, а не только его
 // сигнатуры: Update гоняет мутатор по хранимой записи, возвращает его ошибку
 // БЕЗ обёртки (manager.mutateStore отдаёт её как есть — на этом стоит разбор
@@ -41,18 +46,20 @@ type fakeProxyManager struct {
 	records []instancestore.Record
 	seed    manager.SeedInfo
 
-	createErr error
-	updateErr error
-	deleteErr error
-	ackErr    error
-	postOK    bool
-	acked     int
+	createErr  error
+	updateErr  error
+	deleteErr  error
+	restartErr error
+	ackErr     error
+	postOK     bool
+	acked      int
 
-	created []instancestore.Record
-	mutated []instancestore.Record
-	enabled []proxyEnabledCall
-	deleted []string
-	posts   []proxyPostCall
+	created  []instancestore.Record
+	mutated  []instancestore.Record
+	enabled  []proxyEnabledCall
+	restarts []proxyRestartCall
+	deleted  []string
+	posts    []proxyPostCall
 }
 
 func (f *fakeProxyManager) Records() []instancestore.Record {
@@ -125,6 +132,19 @@ func (f *fakeProxyManager) Delete(_ context.Context, key string) error {
 func (f *fakeProxyManager) Post(key string, k proxyrt.EventKind) bool {
 	f.posts = append(f.posts, proxyPostCall{Key: key, Kind: k})
 	return f.postOK
+}
+
+func (f *fakeProxyManager) Restart(_ context.Context, key string, reason string) error {
+	if f.restartErr != nil {
+		return f.restartErr
+	}
+	for _, r := range f.records {
+		if r.Key() == key {
+			f.restarts = append(f.restarts, proxyRestartCall{Key: key, Reason: reason})
+			return nil
+		}
+	}
+	return fmt.Errorf("инстанс %s не найден", key)
 }
 
 type fakeProxyStates struct {
@@ -878,6 +898,46 @@ func TestProxyInstancesApply_NoLiveInstance(t *testing.T) {
 	rr := doProxy(t, h, http.MethodPost, "/api/proxyrt/instances/wdtt-server:default/apply", "")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("код = %d, ждали 404 (немого «ок» быть не должно): %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestProxyInstancesRestart_OK(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullServerRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	h := newProxyHandler(t, mgr, fakeProxyStates{})
+	rr := doProxy(t, h, http.MethodPost, "/api/proxyrt/instances/wdtt-server:default/restart", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("код = %d, ждали 200: %s", rr.Code, rr.Body.String())
+	}
+	want := []proxyRestartCall{{Key: "wdtt-server:default", Reason: "запрос пользователя"}}
+	if !reflect.DeepEqual(mgr.restarts, want) {
+		t.Fatalf("restarts = %+v, ждали %+v", mgr.restarts, want)
+	}
+}
+
+func TestProxyInstancesRestart_NotFound(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullServerRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	h := newProxyHandler(t, mgr, fakeProxyStates{})
+	rr := doProxy(t, h, http.MethodPost, "/api/proxyrt/instances/wdtt-server:nonexistent/restart", "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("код = %d, ждали 404: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestProxyInstancesRestart_MethodNotAllowed(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullServerRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	h := newProxyHandler(t, mgr, fakeProxyStates{})
+	rr := doProxy(t, h, http.MethodGet, "/api/proxyrt/instances/wdtt-server:default/restart", "")
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("код = %d, ждали 405: %s", rr.Code, rr.Body.String())
 	}
 }
 

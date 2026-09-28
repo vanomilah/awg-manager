@@ -409,6 +409,17 @@
 		}
 	}
 
+	async function restartClientInstance(id: string) {
+		try {
+			await api.restartWdttClient(id);
+			notifications.success('Перезапуск клиента запрошен');
+		} catch (e) {
+			notifications.error(errText(e) || 'Не удалось перезапустить клиент');
+		} finally {
+			await loadStatus();
+		}
+	}
+
 	async function addClient() {
 		try {
 			const inst = await api.createWdttClient();
@@ -812,6 +823,7 @@
 				onSave={saveClientConfig}
 				onRevert={revertClient}
 				onToggle={(on) => toggleClientInstance(selectedClientId, on)}
+				onRestart={() => restartClientInstance(selectedClientId)}
 				onImportPayload={applyImportPayload}
 				onRefreshSubscription={refreshFromSubscription}
 				refreshingSub={refreshingSub}

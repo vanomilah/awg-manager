@@ -47,6 +47,7 @@ type RunningInstance interface {
 	// ResetStartBackoff снимает у процесса инстанса паузу повторного старта
 	// (proxyrt.BackoffResetter).
 	ResetStartBackoff()
+	Restart(reason string)
 	Stop()
 }
 
@@ -826,6 +827,19 @@ func (m *Manager) SetEnabled(ctx context.Context, key string, on bool) error {
 		r.Enabled = on
 		return nil
 	})
+}
+
+// Restart запрашивает перезапуск процесса инстанса с указанной причиной.
+func (m *Manager) Restart(ctx context.Context, key string, reason string) error {
+	m.mu.Lock()
+	mg, ok := m.m[key]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("инстанс %s не найден", key)
+	}
+	mg.inst.ResetStartBackoff()
+	mg.inst.Restart(reason)
+	return nil
 }
 
 // Delete — порядок G3 (требование 3 + Щ5 + замечание 6): teardown-прогон с

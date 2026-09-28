@@ -241,6 +241,17 @@
 		}
 	}
 
+	async function restartClientInstance(id: string) {
+		try {
+			await api.restartFreeTurnClient(id);
+			notifications.success('Перезапуск клиента запрошен');
+		} catch (e) {
+			notifications.error(errText(e) || 'Не удалось перезапустить клиент');
+		} finally {
+			await loadStatus();
+		}
+	}
+
 	async function toggleServerInstance(id: string, on: boolean) {
 		try {
 			if (on) {
@@ -592,6 +603,7 @@
 				}}
 				onSave={saveClientConfig}
 				onToggle={(on) => toggleClientInstance(selectedClientId, on)}
+				onRestart={() => restartClientInstance(selectedClientId)}
 				onImportLink={applyImportLink}
 				onImportManualWg={importManualWg}
 				onImportWgTunnel={importManualWg}

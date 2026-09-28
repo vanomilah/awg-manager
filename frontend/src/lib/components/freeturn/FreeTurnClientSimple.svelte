@@ -39,6 +39,7 @@
 		routerClock?: string;
 		onSave: (cfg: FreeTurnClientConfig) => void | Promise<void>;
 		onToggle: (on: boolean) => void | Promise<void>;
+		onRestart?: () => void | Promise<void>;
 		onImportLink: (link: string) => FreeTurnLinkPayload | null | Promise<FreeTurnLinkPayload | null>;
 		onImportManualWg?: (wg: string) => void | Promise<void>;
 		onImportWgTunnel?: (wg: string) => void | Promise<void>;
@@ -56,6 +57,7 @@
 		routerClock,
 		onSave,
 		onToggle,
+		onRestart,
 		onImportLink,
 		onImportManualWg,
 		onImportWgTunnel,
@@ -68,12 +70,32 @@
 	let importLink = $state('');
 	let importing = $state(false);
 	let starting = $state(false);
+	let restarting = $state(false);
 	let linkParams = $state<FreeTurnLinkPayload | null>(null);
 	let manualWgConf = $state('');
 	let manualWgApplied = $state(false);
 	let opsTab = $state<ClientTab>('setup');
 	let quickActive = $state('import');
 	let wizardOpen = $state(false);
+
+	const autoReconnectIntervalOptions = [
+		{ value: 'on_failure', label: 'Только при сбое' },
+		{ value: '30m', label: '30 минут' },
+		{ value: '1h', label: '1 час (по умолчанию)' },
+		{ value: '2h', label: '2 часа' },
+		{ value: '4h', label: '4 часа' },
+		{ value: '12h', label: '12 часов' }
+	];
+
+	async function handleRestart() {
+		if (restarting || !onRestart) return;
+		restarting = true;
+		try {
+			await onRestart();
+		} finally {
+			restarting = false;
+		}
+	}
 
 	const linksCount = $derived(
 		client.links ? client.links.split(',').filter((s) => s.trim()).length : 0
@@ -359,6 +381,28 @@
 							bind:value={client.dnsServers}
 							placeholder="77.88.8.8,8.8.8.8 — пусто = встроенные"
 						/>
+						<div class="ft-reconnect-box">
+							<Toggle
+								label="Автопереподключение"
+								description="Перезапуск при 401 Unauthorized / сбое TURN или по интервалу"
+								checked={client.autoReconnect ?? false}
+								onchange={(v) => {
+									client.autoReconnect = v;
+									if (v && !client.autoReconnectInterval) {
+										client.autoReconnectInterval = '1h';
+									}
+								}}
+							/>
+							{#if client.autoReconnect}
+								<div class="ft-reconnect-interval">
+									<Dropdown
+										label="Интервал переподключения"
+										bind:value={client.autoReconnectInterval}
+										options={autoReconnectIntervalOptions}
+									/>
+								</div>
+							{/if}
+						</div>
 					</ProxyQuickStartStep>
 				{:else}
 					<ProxyQuickStartStep
@@ -380,12 +424,14 @@
 			meta={`listen ${listenMeta}`}
 			{saving}
 			{starting}
+			{restarting}
 			{canSave}
 			{canStart}
 			showWizardButton={opsMode}
 			onOpenWizard={() => (wizardOpen = true)}
 			onSave={saveOnly}
 			onToggle={onToggle}
+			onRestart={onRestart ? handleRestart : undefined}
 		>
 			{#snippet metaExtra()}
 				<ListenPortKillButton listen={listenMeta} proto="udp" />
@@ -434,6 +480,28 @@
 					bind:value={client.dnsServers}
 					placeholder="ip[:port],… — пусто = встроенные"
 				/>
+				<div class="ft-reconnect-box">
+					<Toggle
+						label="Автопереподключение"
+						description="Перезапуск при 401 Unauthorized / сбое TURN или по интервалу"
+						checked={client.autoReconnect ?? false}
+						onchange={(v) => {
+							client.autoReconnect = v;
+							if (v && !client.autoReconnectInterval) {
+								client.autoReconnectInterval = '1h';
+							}
+						}}
+					/>
+					{#if client.autoReconnect}
+						<div class="ft-reconnect-interval">
+							<Dropdown
+								label="Интервал переподключения"
+								bind:value={client.autoReconnectInterval}
+								options={autoReconnectIntervalOptions}
+							/>
+						</div>
+					{/if}
+				</div>
 				{#if isExpert}
 					<div class="ft-simple-grid">
 						<Input label="Provider" bind:value={client.provider} />
@@ -594,5 +662,17 @@
 	}
 	.ft-file-input {
 		display: none;
+	}
+	.ft-reconnect-box {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.75rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-bg-secondary);
+	}
+	.ft-reconnect-interval {
+		margin-top: 0.25rem;
 	}
 </style>

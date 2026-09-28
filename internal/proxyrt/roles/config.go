@@ -51,6 +51,9 @@ type WdttClientConfig struct {
 	CaptchaMode string `json:"captchaMode,omitempty"` // auto|rjs|wv
 	VKAuthMode  string `json:"vkAuthMode,omitempty"`
 
+	AutoReconnect         bool   `json:"autoReconnect,omitempty"`
+	AutoReconnectInterval string `json:"autoReconnectInterval,omitempty"` // on_failure|30m|1h|2h|4h|12h (default "1h")
+
 	// Пин индекса (только raw): на имя OpkgTunN ссылаются permit'ы политик.
 	NdmsIface string `json:"ndmsIface,omitempty"` // OpkgTun17..49
 	RawIface  string `json:"rawIface,omitempty"`  // opkgtun17..49
@@ -375,8 +378,10 @@ type FreeTurnClientConfig struct {
 	DNSMode        string `json:"dnsMode,omitempty"`
 	DNSServers     string `json:"dnsServers,omitempty"`
 	ClientID       string `json:"clientId,omitempty"`
-	Sub            string `json:"sub,omitempty"`
-	Debug          bool   `json:"debug,omitempty"`
+	Sub                   string `json:"sub,omitempty"`
+	Debug                 bool   `json:"debug,omitempty"`
+	AutoReconnect         bool   `json:"autoReconnect,omitempty"`
+	AutoReconnectInterval string `json:"autoReconnectInterval,omitempty"` // on_failure|30m|1h|2h|4h|12h (default "1h")
 }
 
 func (c FreeTurnClientConfig) Validate() error {

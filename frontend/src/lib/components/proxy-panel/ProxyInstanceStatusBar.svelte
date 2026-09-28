@@ -10,6 +10,7 @@
 		metaExtra?: Snippet;
 		saving?: boolean;
 		starting?: boolean;
+		restarting?: boolean;
 		canSave?: boolean;
 		canStart?: boolean;
 		saveLabel?: string;
@@ -17,6 +18,7 @@
 		wizardLabel?: string;
 		onSave?: () => void | Promise<void>;
 		onToggle?: (on: boolean) => void | Promise<void>;
+		onRestart?: () => void | Promise<void>;
 		onOpenWizard?: () => void;
 	}
 
@@ -27,6 +29,7 @@
 		metaExtra,
 		saving = false,
 		starting = false,
+		restarting = false,
 		canSave = true,
 		canStart = true,
 		saveLabel = 'Сохранить',
@@ -34,6 +37,7 @@
 		wizardLabel = 'Мастер',
 		onSave,
 		onToggle,
+		onRestart,
 		onOpenWizard
 	}: Props = $props();
 </script>
@@ -62,6 +66,11 @@
 		{#if onSave}
 			<Button variant="secondary" size="sm" loading={saving} disabled={!canSave} onclick={() => onSave?.()}>
 				{saveLabel}
+			</Button>
+		{/if}
+		{#if onRestart && running}
+			<Button variant="secondary" size="sm" loading={restarting} onclick={() => onRestart?.()}>
+				Перезапустить
 			</Button>
 		{/if}
 		{#if onToggle}

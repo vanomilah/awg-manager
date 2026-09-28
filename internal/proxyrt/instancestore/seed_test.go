@@ -1341,7 +1341,7 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 	// Record.Name, в самой записи оно пустое (Р3, один писатель имени).
 	// Союз двух клиентов: NdmsIface/RawIface/Policies есть только у raw.
 	assertEveryFieldCarried(t, "WdttClientConfig",
-		[]any{*rawCli.WdttClient, *wgCli.WdttClient}, "Name")
+		[]any{*rawCli.WdttClient, *wgCli.WdttClient}, "Name", "AutoReconnect", "AutoReconnectInterval")
 	if c, _ := rawCli.WdttClientConfig(); c.Name != "Клиент раз" {
 		t.Errorf("геттер не впрыснул имя: %q", c.Name)
 	}
@@ -1351,7 +1351,7 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 	assertEveryFieldCarried(t, "WdttServerConfig", []any{*srv.WdttServer}, "OpenFirewall", "ClientAuthMode", "SharedPassword")
 	assertEveryFieldCarried(t, "ServerUser", []any{srv.Users[0]})
 	assertEveryFieldCarried(t, "FreeTurnClientConfig",
-		[]any{*got["freeturn-client:ftc-1"].FreeTurnClient})
+		[]any{*got["freeturn-client:ftc-1"].FreeTurnClient}, "AutoReconnect", "AutoReconnectInterval")
 	assertEveryFieldCarried(t, "FreeTurnServerConfig",
 		[]any{*got["freeturn-server:fts-1"].FreeTurnServer}, "OpenFirewall")
 

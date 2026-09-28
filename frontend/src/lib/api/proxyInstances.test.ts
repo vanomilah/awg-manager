@@ -354,7 +354,9 @@ describe('toFreeTurnStatus и toFreeTurnConfig: вторая подсистем�
 			dnsServers: '1.1.1.1',
 			clientId: 'cid-1',
 			sub: 'https://sub.example/ft',
-			debug: true
+			debug: true,
+			autoReconnect: false,
+			autoReconnectInterval: '1h'
 		});
 	});
 
@@ -490,7 +492,9 @@ describe('обратные мапперы: секреты (Н5) и поля бе
 			fingerprint: '',
 			deviceId: '',
 			captchaMode: 'auto',
-			vkAuthMode: ''
+			vkAuthMode: '',
+			autoReconnect: false,
+			autoReconnectInterval: '1h'
 		});
 	});
 

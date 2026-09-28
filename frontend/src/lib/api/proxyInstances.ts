@@ -297,6 +297,8 @@ export function toWdttClientConfig(v: ProxyInstanceView): WdttClientConfig {
     peerRaw: v.peerRaw,
     ndmsIface: str(c, "ndmsIface"),
     rawIface: str(c, "rawIface"),
+    autoReconnect: bool(c, "autoReconnect") === true,
+    autoReconnectInterval: str(c, "autoReconnectInterval") ?? "1h",
   };
 }
 
@@ -362,6 +364,8 @@ export function toFreeTurnClientConfig(
     clientId: str(c, "clientId"),
     sub: str(c, "sub"),
     debug: bool(c, "debug") === true,
+    autoReconnect: bool(c, "autoReconnect") === true,
+    autoReconnectInterval: str(c, "autoReconnectInterval") ?? "1h",
   };
 }
 
@@ -613,6 +617,8 @@ export function toWdttClientPatch(cfg: WdttClientConfig): Cfg {
     deviceId: cfg.deviceId ?? "",
     captchaMode: cfg.captchaMode ?? "",
     vkAuthMode: cfg.vkAuthMode ?? "",
+    autoReconnect: cfg.autoReconnect === true,
+    autoReconnectInterval: cfg.autoReconnectInterval ?? "1h",
   };
   putSecret(out, "password", cfg.password);
   return out;
@@ -682,6 +688,8 @@ export function toFreeTurnClientPatch(cfg: FreeTurnClientConfig): Cfg {
     clientId: cfg.clientId ?? "",
     sub: cfg.sub ?? "",
     debug: cfg.debug === true,
+    autoReconnect: cfg.autoReconnect === true,
+    autoReconnectInterval: cfg.autoReconnectInterval ?? "1h",
   };
   putSecret(out, "obfKey", cfg.obfKey);
   return out;

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Input, Dropdown, SegmentedControl } from '$lib/components/ui';
+	import { Button, Input, Dropdown, SegmentedControl, Toggle } from '$lib/components/ui';
 	import ProcessLogBox from '../freeturn/ProcessLogBox.svelte';
 	import ProxyInstanceStatusBar from '../proxy-panel/ProxyInstanceStatusBar.svelte';
 	import ProxyPanelTabs from '../proxy-panel/ProxyPanelTabs.svelte';
@@ -49,6 +49,7 @@
 		onSave: (cfg: WdttClientConfig) => void | Promise<void>;
 		onRevert?: () => void;
 		onToggle: (on: boolean) => void | Promise<void>;
+		onRestart?: () => void | Promise<void>;
 		onImportPayload: (
 			payload: WdttImportPayload,
 			meta?: { subUrl?: string; clientName?: string; andStart?: boolean }
@@ -76,6 +77,7 @@
 		onSave,
 		onRevert,
 		onToggle,
+		onRestart,
 		onImportPayload,
 		onRefreshSubscription,
 		refreshingSub = false,
@@ -92,6 +94,7 @@
 
 	let importLink = $state('');
 	let starting = $state(false);
+	let restarting = $state(false);
 	let linkParams = $state<WdttImportPayload | null>(null);
 	let subscriptionPreview = $state<WdttSubscriptionPreview | null>(null);
 	let selectedProfileIdx = $state(0);
@@ -100,6 +103,25 @@
 	let fileInput: HTMLInputElement | undefined = $state();
 	let quickActive = $state('import');
 	let wizardOpen = $state(false);
+
+	const autoReconnectIntervalOptions = [
+		{ value: 'on_failure', label: 'Только при сбое' },
+		{ value: '30m', label: '30 минут' },
+		{ value: '1h', label: '1 час (по умолчанию)' },
+		{ value: '2h', label: '2 часа' },
+		{ value: '4h', label: '4 часа' },
+		{ value: '12h', label: '12 часов' }
+	];
+
+	async function handleRestart() {
+		if (restarting || !onRestart) return;
+		restarting = true;
+		try {
+			await onRestart();
+		} finally {
+			restarting = false;
+		}
+	}
 
 	const isRawMode = $derived((client.connMode ?? 'wg') === 'raw');
 	const peerWgDisplay = $derived(isRawMode ? (client.peerWg ?? '') : client.peer);
@@ -541,6 +563,28 @@
 								{ value: 'wv', label: 'wv' }
 							]}
 						/>
+						<div class="wdtt-reconnect-box">
+							<Toggle
+								label="Автопереподключение"
+								description="Перезапуск при 401 Unauthorized / сбое TURN или по интервалу"
+								checked={client.autoReconnect ?? false}
+								onchange={(v) => {
+									client.autoReconnect = v;
+									if (v && !client.autoReconnectInterval) {
+										client.autoReconnectInterval = '1h';
+									}
+								}}
+							/>
+							{#if client.autoReconnect}
+								<div class="wdtt-reconnect-interval">
+									<Dropdown
+										label="Интервал переподключения"
+										bind:value={client.autoReconnectInterval}
+										options={autoReconnectIntervalOptions}
+									/>
+								</div>
+							{/if}
+						</div>
 					</ProxyQuickStartStep>
 				{:else}
 					<ProxyQuickStartStep
@@ -578,12 +622,14 @@
 			meta={statusMeta}
 			{saving}
 			{starting}
+			{restarting}
 			{canSave}
 			{canStart}
 			showWizardButton={opsMode}
 			onOpenWizard={() => (wizardOpen = true)}
 			onSave={() => onSave(client)}
 			onToggle={onToggle}
+			onRestart={onRestart ? handleRestart : undefined}
 		>
 			{#snippet metaExtra()}
 				<ListenPortKillButton listen={listenMeta} proto="udp" />
@@ -676,6 +722,28 @@
 					{ value: 'auto', label: 'auto' },
 					{ value: 'wv', label: 'wv' }
 				]} />
+				<div class="wdtt-reconnect-box">
+					<Toggle
+						label="Автопереподключение"
+						description="Перезапуск при 401 Unauthorized / сбое TURN или по интервалу"
+						checked={client.autoReconnect ?? false}
+						onchange={(v) => {
+							client.autoReconnect = v;
+							if (v && !client.autoReconnectInterval) {
+								client.autoReconnectInterval = '1h';
+							}
+						}}
+					/>
+					{#if client.autoReconnect}
+						<div class="wdtt-reconnect-interval">
+							<Dropdown
+								label="Интервал переподключения"
+								bind:value={client.autoReconnectInterval}
+								options={autoReconnectIntervalOptions}
+							/>
+						</div>
+					{/if}
+				</div>
 				{#if isExpert}
 					<div class="wdtt-expert-grid">
 						<Dropdown label="Obfs (-obfs)" bind:value={client.obfs} options={[
@@ -829,5 +897,17 @@
 		margin: 0;
 		font-size: 0.8125rem;
 		color: var(--color-success, #2e7d32);
+	}
+	.wdtt-reconnect-box {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.75rem;
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		background: var(--color-bg-secondary);
+	}
+	.wdtt-reconnect-interval {
+		margin-top: 0.25rem;
 	}
 </style>

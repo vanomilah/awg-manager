@@ -25,6 +25,8 @@ export interface FreeTurnClientConfig {
 	/** Legacy field kept for compatibility with the retired standalone editor. */
 	turnHost?: string;
 	debug: boolean;
+	autoReconnect?: boolean;
+	autoReconnectInterval?: string;
 }
 
 export interface FreeTurnServerConfig {
