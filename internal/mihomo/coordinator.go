@@ -3075,7 +3075,9 @@ func (c *ApplyCoordinator) ApplyMutationWithOutcome(
 }
 
 func (c *ApplyCoordinator) handleApplyFailureLocked(ctx context.Context, m *TransactionManifest, origErr error) error {
-	rollbackErr := c.rollbackActiveLocked(ctx, m)
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	defer cancel()
+	rollbackErr := c.rollbackActiveLocked(rollbackCtx, m)
 
 	var cleanupErr error
 	if rollbackErr == nil && m.State != StateRecoveryRequired {
@@ -3147,6 +3149,7 @@ func (c *ApplyCoordinator) restartControlledLocked(ctx context.Context, txID str
 	if err := c.stopControlledLocked(ctx, txID, "restart"); err != nil {
 		return fmt.Errorf("stop running mihomo: %w", err)
 	}
+	ensureRulesDir(c.cfg.ConfigDir)
 	if err := c.cfg.Operator.Start(); err != nil {
 		return fmt.Errorf("start fresh mihomo: %w", err)
 	}
@@ -4507,6 +4510,9 @@ func (c *ApplyCoordinator) archiveAndPrepareRecoveryManifestLocked(next *Transac
 }
 
 func (c *ApplyCoordinator) rollbackToGenerationLocked(ctx context.Context, targetGenID string, startedFromDegraded bool) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	defer cancel()
+	ctx = rollbackCtx
 	gm, _, _, bundleErr := c.genStore.ReadGenerationBundle(targetGenID)
 	if bundleErr != nil || gm == nil {
 		c.setState(StateRecoveryRequired)
@@ -5419,4 +5425,16 @@ func isSafeIdentifier(s string) bool {
 		}
 	}
 	return true
+}
+
+func ensureRulesDir(dir string) {
+	if dir == "" {
+		return
+	}
+	rulesDir := filepath.Join(dir, "rules")
+	_ = os.MkdirAll(rulesDir, 0755)
+	susaninPath := filepath.Join(rulesDir, "susanin.yaml")
+	if _, err := os.Stat(susaninPath); os.IsNotExist(err) {
+		_ = os.WriteFile(susaninPath, []byte("payload: []\n"), 0644)
+	}
 }

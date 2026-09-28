@@ -1034,6 +1034,9 @@ func (h *MihomoHandler) withNativeMutationDetailed(
 	apply bool,
 	mutate func() (interface{}, error),
 ) (interface{}, *mihomo.MutationOutcome, error) {
+	mutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+	defer cancel()
+
 	if h.mutationApplier != nil {
 		if h.mutationApplier.IsDegraded() {
 			return nil, nil, ErrRecoveryRequired
@@ -1055,24 +1058,24 @@ func (h *MihomoHandler) withNativeMutationDetailed(
 				}
 			}
 			if h.bridgePrepare != nil {
-				if bridgeErr := h.bridgePrepare(ctx, beforeBridges); bridgeErr != nil {
+				if bridgeErr := h.bridgePrepare(mutCtx, beforeBridges); bridgeErr != nil {
 					return fmt.Errorf("prepare bridges: %w", bridgeErr)
 				}
 			} else if h.nativeBridge != nil {
-				if bridgeErr := h.nativeBridge.Reconcile(ctx, beforeBridges); bridgeErr != nil {
+				if bridgeErr := h.nativeBridge.Reconcile(mutCtx, beforeBridges); bridgeErr != nil {
 					return fmt.Errorf("reconcile bridges: %w", bridgeErr)
 				}
 			}
 			return nil
 		}
 		if apply {
-			outcome, err := h.mutationApplier.ApplyNativeMutationWithOutcome(ctx, fn)
+			outcome, err := h.mutationApplier.ApplyNativeMutationWithOutcome(mutCtx, fn)
 			if err != nil {
 				return nil, outcome, err
 			}
 			return result, outcome, nil
 		} else {
-			if err := h.mutationApplier.ApplyDraftOnly(ctx, fn); err != nil {
+			if err := h.mutationApplier.ApplyDraftOnly(mutCtx, fn); err != nil {
 				return nil, nil, err
 			}
 			return result, &mihomo.MutationOutcome{ApplyPath: mihomo.ApplyPathDraftOnly}, nil

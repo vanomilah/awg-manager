@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -21,6 +22,13 @@ import (
 func (a *app) setupMihomo() {
 	binaryPath := installer.DefaultBinaryPath
 	configDir := filepath.Join(a.dataDir, "mihomo")
+
+	rulesDir := filepath.Join(configDir, "rules")
+	_ = os.MkdirAll(rulesDir, 0755)
+	susaninPath := filepath.Join(rulesDir, "susanin.yaml")
+	if _, err := os.Stat(susaninPath); os.IsNotExist(err) {
+		_ = os.WriteFile(susaninPath, []byte("payload: []\n"), 0644)
+	}
 
 	arch := detectArch()
 	spec := installer.EmbeddedBinaries[arch]

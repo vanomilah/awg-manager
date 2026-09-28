@@ -192,7 +192,7 @@ func waitForMihomoBridgeListeners(ctx context.Context, listeners []mihomonative.
 	if len(listeners) == 0 {
 		return nil
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	pending := make(map[int]bool, len(listeners))
@@ -777,7 +777,23 @@ func (r *mihomoBridgeRuntime) PublishBridge(ctx context.Context, ref mihomo.Brid
 		return fmt.Errorf("%w: Proxy%d is owned by another entity", mihomo.ErrForeignBridgeOwnership, ref.ProxyIndex)
 	}
 
-	obs, err := r.inspectBridgeLocked(ctx, ref, canonicalOwner, legacyOwners)
+	var obs mihomo.ObservedBridge
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		obs, err = r.inspectBridgeLocked(ctx, ref, canonicalOwner, legacyOwners)
+		if err == nil && obs.Exists && obs.OwnerUUID == canonicalOwner && obs.Up && (ref.KernelInterface == "" || obs.KernelInterface == ref.KernelInterface) {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			break
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("verify publish bridge Proxy%d: %w", ref.ProxyIndex, err)
 	}
@@ -786,12 +802,11 @@ func (r *mihomoBridgeRuntime) PublishBridge(ctx context.Context, ref mihomo.Brid
 			mihomo.ErrForeignBridgeOwnership, ref.ProxyIndex, obs.Exists, obs.OwnerUUID, canonicalOwner)
 	}
 	if !obs.Up {
-		return fmt.Errorf("%w: Proxy%d publication verification failed: interface is down",
-			mihomo.ErrForeignBridgeOwnership, ref.ProxyIndex)
+		return fmt.Errorf("verify publish bridge Proxy%d: interface is down", ref.ProxyIndex)
 	}
 	if ref.KernelInterface != "" && obs.KernelInterface != ref.KernelInterface {
-		return fmt.Errorf("%w: Proxy%d publication verification failed kernel interface mismatch: live=%q, want=%q",
-			mihomo.ErrForeignBridgeOwnership, ref.ProxyIndex, obs.KernelInterface, ref.KernelInterface)
+		return fmt.Errorf("verify publish bridge Proxy%d: kernel interface mismatch: live=%q, want=%q",
+			ref.ProxyIndex, obs.KernelInterface, ref.KernelInterface)
 	}
 	return nil
 }
