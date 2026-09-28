@@ -119,6 +119,8 @@ describe('поля из ссылки', () => {
 			password: '',
 			vkHashes: '',
 			workers: DEFAULT_WORKERS,
+			autoReconnect: false,
+			autoReconnectInterval: '1h',
 		});
 	});
 

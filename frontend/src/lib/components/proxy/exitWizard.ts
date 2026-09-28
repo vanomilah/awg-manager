@@ -30,6 +30,8 @@ export interface ExitWizardFields {
 	vkHashes: string;
 	/** Строкой из поля; в конфиг уезжает числом. */
 	workers: string;
+	autoReconnect?: boolean;
+	autoReconnectInterval?: string;
 }
 
 /** WDTT: 24 клиент округляет вниз до 18, 27 — ближайшее кратное (WE-37). */
@@ -160,6 +162,8 @@ export function fieldsFromWdttConfig(cfg: WdttClientConfig, name: string): ExitW
 		password: cfg.password ?? '',
 		vkHashes: cfg.vkHashes ?? '',
 		workers: cfg.workers > 0 ? String(cfg.workers) : DEFAULT_WORKERS,
+		autoReconnect: cfg.autoReconnect ?? false,
+		autoReconnectInterval: cfg.autoReconnectInterval ?? '1h',
 	};
 }
 
@@ -170,6 +174,8 @@ export function fieldsFromFtConfig(cfg: FreeTurnClientConfig, name: string): Exi
 		password: '',
 		vkHashes: cfg.links ?? '',
 		workers: cfg.streams > 0 ? String(cfg.streams) : DEFAULT_FT_STREAMS,
+		autoReconnect: cfg.autoReconnect ?? false,
+		autoReconnectInterval: cfg.autoReconnectInterval ?? '1h',
 	};
 }
 
@@ -181,6 +187,8 @@ export function emptyFields(protocol: ExitProtocol = 'wdtt'): ExitWizardFields {
 		password: '',
 		vkHashes: '',
 		workers: defaultWorkers(protocol),
+		autoReconnect: false,
+		autoReconnectInterval: '1h',
 	};
 }
 
@@ -220,6 +228,8 @@ export function applyWdttFields(
 	cfg.password = f.password;
 	cfg.vkHashes = f.vkHashes.trim();
 	cfg.workers = Number(f.workers) || cfg.workers;
+	if (f.autoReconnect !== undefined) cfg.autoReconnect = f.autoReconnect;
+	if (f.autoReconnectInterval !== undefined) cfg.autoReconnectInterval = f.autoReconnectInterval;
 	return cfg;
 }
 
@@ -227,6 +237,8 @@ export function applyFtFields(cfg: FreeTurnClientConfig, f: ExitWizardFields): F
 	cfg.peer = f.peer.trim();
 	cfg.links = f.vkHashes.trim();
 	cfg.streams = Number(f.workers) || cfg.streams;
+	if (f.autoReconnect !== undefined) cfg.autoReconnect = f.autoReconnect;
+	if (f.autoReconnectInterval !== undefined) cfg.autoReconnectInterval = f.autoReconnectInterval;
 	return cfg;
 }
 

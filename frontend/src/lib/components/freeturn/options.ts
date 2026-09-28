@@ -24,3 +24,12 @@ export const platformOptions = [
 ];
 
 export { dnsModeOptions } from '../proxy-panel/dnsOptions';
+
+export const autoReconnectIntervalOptions = [
+	{ value: 'on_failure', label: 'Только при сбое' },
+	{ value: '30m', label: '30 минут' },
+	{ value: '1h', label: '1 час (по умолчанию)' },
+	{ value: '2h', label: '2 часа' },
+	{ value: '4h', label: '4 часа' },
+	{ value: '12h', label: '12 часов' }
+];
