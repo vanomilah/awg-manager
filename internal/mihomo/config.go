@@ -303,6 +303,27 @@ func GenerateSidecarConfig(native NativeResources) ([]byte, error) {
 		}
 		group.Type = mihomoProxyGroupType(group.Type)
 		groupNames[group.Name] = true
+
+		// In sidecar mode, only native proxies are present in cfg.Proxies.
+		// Prune non-native or missing proxy members so sidecar validation passes.
+		var sidecarProxies []string
+		for _, member := range group.Proxies {
+			norm := strings.TrimSpace(member)
+			if strings.EqualFold(norm, "direct") {
+				norm = "DIRECT"
+			} else if strings.EqualFold(norm, "reject") || strings.EqualFold(norm, "block") {
+				norm = "REJECT"
+			}
+			if _, ok := seen[norm]; ok || norm == "DIRECT" || norm == "REJECT" {
+				sidecarProxies = append(sidecarProxies, norm)
+			}
+		}
+		if len(sidecarProxies) == 0 && len(group.Use) == 0 &&
+			!group.IncludeAll && !group.IncludeAllProxies && !group.IncludeAllProviders {
+			sidecarProxies = []string{"DIRECT"}
+		}
+		group.Proxies = sidecarProxies
+
 		cfg.ProxyGroups = append(cfg.ProxyGroups, group)
 	}
 	for _, listener := range native.Listeners {
@@ -416,23 +437,29 @@ func GenerateConfigWithResources(
 			nameserverPolicy["geosite:"+g] = target
 		}
 		for _, rs := range r.RuleSet {
-			cleanRS := rs
-			if strings.HasPrefix(cleanRS, "geosite-") {
-				cleanRS = strings.TrimPrefix(cleanRS, "geosite-")
-				nameserverPolicy["geosite:"+cleanRS] = target
-			} else if strings.HasPrefix(cleanRS, "geoip-") {
-				cleanRS = strings.TrimPrefix(cleanRS, "geoip-")
-				nameserverPolicy["geoip:"+cleanRS] = target
-			} else if strings.HasPrefix(cleanRS, "geosite:") {
-				cleanRS = strings.TrimPrefix(cleanRS, "geosite:")
-				nameserverPolicy["geosite:"+cleanRS] = target
-			} else if strings.HasPrefix(cleanRS, "geoip:") {
-				cleanRS = strings.TrimPrefix(cleanRS, "geoip:")
-				nameserverPolicy["geoip:"+cleanRS] = target
-			} else if _, exists := native.RuleProviders[cleanRS]; exists {
+			cleanRS := strings.TrimSpace(rs)
+			if cleanRS == "" {
+				continue
+			}
+			lower := strings.ToLower(cleanRS)
+			if strings.HasPrefix(lower, "geoip-") || strings.HasPrefix(lower, "geoip:") ||
+				strings.HasSuffix(lower, "-cidr") || strings.HasSuffix(lower, "_cidr") ||
+				lower == "susanin" || strings.HasPrefix(lower, "susanin-") || strings.HasPrefix(lower, "susanin_") {
+				continue
+			}
+			if rp, ok := native.RuleProviders[cleanRS]; ok {
+				if b, ok := rp["behavior"].(string); ok && strings.EqualFold(b, "ipcidr") {
+					continue
+				}
 				nameserverPolicy["rule-set:"+cleanRS] = target
+				continue
+			}
+			if strings.HasPrefix(lower, "geosite-") {
+				nameserverPolicy["geosite:"+strings.TrimPrefix(lower, "geosite-")] = target
+			} else if strings.HasPrefix(lower, "geosite:") {
+				nameserverPolicy["geosite:"+strings.TrimPrefix(lower, "geosite:")] = target
 			} else {
-				nameserverPolicy["geosite:"+cleanRS] = target
+				nameserverPolicy["geosite:"+lower] = target
 			}
 		}
 		for _, d := range r.Domain {
@@ -494,8 +521,24 @@ func GenerateConfigWithResources(
 						nameserverPolicy[key] = defaultTunnelDNS
 					}
 				case "RULE-SET":
-					clean := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(payload), "geosite-"), "geosite:")
-					key := "geosite:" + clean
+					clean := strings.TrimSpace(payload)
+					lower := strings.ToLower(clean)
+					if strings.HasPrefix(lower, "geoip-") || strings.HasPrefix(lower, "geoip:") ||
+						strings.HasSuffix(lower, "-cidr") || strings.HasSuffix(lower, "_cidr") ||
+						lower == "susanin" || strings.HasPrefix(lower, "susanin-") || strings.HasPrefix(lower, "susanin_") {
+						continue
+					}
+					if rp, ok := native.RuleProviders[clean]; ok {
+						if b, ok := rp["behavior"].(string); ok && strings.EqualFold(b, "ipcidr") {
+							continue
+						}
+						key := "rule-set:" + clean
+						if _, exists := nameserverPolicy[key]; !exists {
+							nameserverPolicy[key] = defaultTunnelDNS
+						}
+						continue
+					}
+					key := "geosite:" + strings.TrimPrefix(strings.TrimPrefix(lower, "geosite-"), "geosite:")
 					if _, exists := nameserverPolicy[key]; !exists {
 						nameserverPolicy[key] = defaultTunnelDNS
 					}
@@ -507,8 +550,24 @@ func GenerateConfigWithResources(
 					continue
 				}
 				for _, rs := range r.RuleSet {
-					clean := strings.TrimPrefix(strings.TrimPrefix(strings.ToLower(rs), "geosite-"), "geosite:")
-					key := "geosite:" + clean
+					clean := strings.TrimSpace(rs)
+					lower := strings.ToLower(clean)
+					if strings.HasPrefix(lower, "geoip-") || strings.HasPrefix(lower, "geoip:") ||
+						strings.HasSuffix(lower, "-cidr") || strings.HasSuffix(lower, "_cidr") ||
+						lower == "susanin" || strings.HasPrefix(lower, "susanin-") || strings.HasPrefix(lower, "susanin_") {
+						continue
+					}
+					if rp, ok := native.RuleProviders[clean]; ok {
+						if b, ok := rp["behavior"].(string); ok && strings.EqualFold(b, "ipcidr") {
+							continue
+						}
+						key := "rule-set:" + clean
+						if _, exists := nameserverPolicy[key]; !exists {
+							nameserverPolicy[key] = defaultTunnelDNS
+						}
+						continue
+					}
+					key := "geosite:" + strings.TrimPrefix(strings.TrimPrefix(lower, "geosite-"), "geosite:")
 					if _, exists := nameserverPolicy[key]; !exists {
 						nameserverPolicy[key] = defaultTunnelDNS
 					}
@@ -668,29 +727,9 @@ func GenerateConfigWithResources(
 		cfg.ProxyGroups = append(cfg.ProxyGroups, group)
 	}
 
-	// Map subscription proxies and composite groups
-	for _, rawOb := range subProxies {
-		pType, _ := rawOb["type"].(string)
-		if pType == "selector" || pType == "urltest" || pType == "loadbalance" {
-			if pg := ConvertSingboxToMihomoProxyGroup(rawOb); pg != nil {
-				upsertGroup(*pg)
-			}
-		} else {
-			p, err := convertSingboxToMihomoProxy(rawOb)
-			if err != nil {
-				return nil, err
-			}
-			if p != nil {
-				cfg.Proxies = append(cfg.Proxies, p)
-			}
-		}
-	}
-	seenProxyNames := make(map[string]struct{}, len(cfg.Proxies)+len(native.Proxies))
-	for _, proxy := range cfg.Proxies {
-		if name, _ := proxy["name"].(string); name != "" {
-			seenProxyNames[name] = struct{}{}
-		}
-	}
+	seenProxyNames := make(map[string]struct{}, len(subProxies)+len(native.Proxies))
+
+	// 1. Native proxies take precedence and are authoritative in Mihomo mode
 	for _, proxy := range native.Proxies {
 		name, _ := proxy["name"].(string)
 		pType, _ := proxy["type"].(string)
@@ -702,6 +741,36 @@ func GenerateConfigWithResources(
 		}
 		seenProxyNames[name] = struct{}{}
 		cfg.Proxies = append(cfg.Proxies, proxy)
+	}
+
+	// 2. Map subscription proxies and composite groups (skipping duplicates & loopback bridges)
+	for _, rawOb := range subProxies {
+		pType, _ := rawOb["type"].(string)
+		if pType == "selector" || pType == "urltest" || pType == "loadbalance" {
+			if pg := ConvertSingboxToMihomoProxyGroup(rawOb); pg != nil {
+				upsertGroup(*pg)
+			}
+		} else {
+			// Skip loopback socks bridges (e.g. sing-box sidecar listeners pointing to 127.0.0.1)
+			if srv, _ := rawOb["server"].(string); srv == "127.0.0.1" || srv == "localhost" {
+				continue
+			}
+			p, err := convertSingboxToMihomoProxy(rawOb)
+			if err != nil {
+				return nil, err
+			}
+			if p != nil {
+				name, _ := p["name"].(string)
+				if name != "" {
+					if _, exists := seenProxyNames[name]; exists {
+						// Native proxy or earlier proxy takes precedence, avoid collision
+						continue
+					}
+					seenProxyNames[name] = struct{}{}
+				}
+				cfg.Proxies = append(cfg.Proxies, p)
+			}
+		}
 	}
 	for i := range cfg.Proxies {
 		if _, ok := cfg.Proxies[i]["routing-mark"]; !ok && cfg.RoutingMark != 0 {
@@ -734,10 +803,43 @@ func GenerateConfigWithResources(
 			upsertGroup(yamlGroup)
 		}
 	}
+	allGroupNames := make(map[string]bool)
+	for _, g := range settings.ProxyGroups {
+		if g.Name != "" {
+			allGroupNames[g.Name] = true
+		}
+	}
+	for _, g := range native.ProxyGroups {
+		if g.Name != "" {
+			allGroupNames[g.Name] = true
+		}
+	}
+	for _, g := range cfg.ProxyGroups {
+		if g.Name != "" {
+			allGroupNames[g.Name] = true
+		}
+	}
 	for _, group := range native.ProxyGroups {
 		if group.Name == "" || group.Type == "" {
 			return nil, fmt.Errorf("mihomo native proxy group requires non-empty name and type")
 		}
+		var validProxies []string
+		for _, member := range group.Proxies {
+			norm := strings.TrimSpace(member)
+			if strings.EqualFold(norm, "direct") {
+				norm = "DIRECT"
+			} else if strings.EqualFold(norm, "reject") || strings.EqualFold(norm, "block") {
+				norm = "REJECT"
+			}
+			if _, exists := seenProxyNames[norm]; exists || allGroupNames[norm] || norm == "DIRECT" || norm == "REJECT" {
+				validProxies = append(validProxies, norm)
+			}
+		}
+		if len(validProxies) == 0 && len(group.Use) == 0 &&
+			!group.IncludeAll && !group.IncludeAllProxies && !group.IncludeAllProviders {
+			validProxies = []string{"DIRECT"}
+		}
+		group.Proxies = validProxies
 		upsertGroup(group)
 	}
 	for _, listener := range native.Listeners {
@@ -796,6 +898,7 @@ func GenerateConfigWithResources(
 		cloudCIDRs := []string{
 			"185.162.93.0/24",
 			"95.213.212.0/24",
+			"95.213.181.0/24",
 			"87.228.71.0/24",
 			"91.92.241.0/24",
 			"193.107.216.0/24",
@@ -807,12 +910,14 @@ func GenerateConfigWithResources(
 			"84.38.177.0/24",
 			"49.12.59.0/24",
 			"167.233.7.0/24",
+			"82.202.218.0/24",
+			"82.202.0.0/16",
 		}
 		allCIDRs := append(slices.Clone(cloudCIDRs), settings.DynamicCloudCIDRs...)
 		for _, cidr := range allCIDRs {
 			cfg.Rules = append(cfg.Rules, "IP-CIDR,"+cidr+","+targetOutbound+",no-resolve")
 		}
-		cloudPorts := []string{"9", "3478", "3479", "4044", "5683"}
+		cloudPorts := []string{"9", "3478", "3479", "4044", "5683", "5684"}
 		for _, p := range cloudPorts {
 			cfg.Rules = append(cfg.Rules, "DST-PORT,"+p+","+targetOutbound)
 		}
@@ -1796,6 +1901,17 @@ func ConvertSingboxToMihomoProxyGroup(ob map[string]any) *ProxyGroup {
 					}
 					pg.Proxies = append(pg.Proxies, s)
 				}
+			}
+		} else if sl, ok := outboundsVal.([]string); ok {
+			for _, s := range sl {
+				if s == "block" {
+					s = "REJECT"
+				} else if s == "dns" {
+					s = "DIRECT"
+				} else if s == "direct" {
+					s = "DIRECT"
+				}
+				pg.Proxies = append(pg.Proxies, s)
 			}
 		}
 	}

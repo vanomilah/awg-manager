@@ -112,6 +112,10 @@ func (s *ServiceImpl) syncKeeneticCloudRelays(ctx context.Context, sr storage.Si
 		"broker.keenetic.cloud",
 		"broker.netcraze.cloud",
 		"cloud.keenetic.net",
+		"ea.master.netcraze.cloud",
+		"master.netcraze.cloud",
+		"ea.master.keenetic.cloud",
+		"master.keenetic.cloud",
 	}
 	for _, rd := range relayDomains {
 		rd = strings.TrimSpace(rd)

@@ -899,6 +899,32 @@ func (s *ServiceImpl) orchestratorApplyNow() error {
 	if s.deps.Orch == nil {
 		return nil
 	}
+	if !s.isMihomoPrimary() {
+		if engine := s.routingEngineController(); engine != nil {
+			if dyn, ok := engine.(interface{ SyncMihomoRuntime() error }); ok {
+				if err := dyn.SyncMihomoRuntime(); err != nil {
+					s.appLog.Warn("engine-sync", "", fmt.Sprintf("failed to sync Mihomo runtime before sing-box start: %v", err))
+				}
+			}
+		}
+		if s.deps.Singbox != nil {
+			if sbRunning, _ := s.deps.Singbox.IsRunning(); !sbRunning {
+				for i := 0; i < 20 && singboxIntercepting(); i++ {
+					time.Sleep(100 * time.Millisecond)
+				}
+				if singboxIntercepting() {
+					if engine := s.routingEngineController(); engine != nil {
+						if dyn, ok := engine.(interface{ ForceStopMihomo() error }); ok {
+							_ = dyn.ForceStopMihomo()
+						}
+					}
+					for i := 0; i < 15 && singboxIntercepting(); i++ {
+						time.Sleep(100 * time.Millisecond)
+					}
+				}
+			}
+		}
+	}
 	return s.deps.Orch.ReloadNow()
 }
 
@@ -998,11 +1024,46 @@ func (s *ServiceImpl) withConfig(ctx context.Context, event string, fn func(*Rou
 		return err
 	}
 	cfg = s.ruleSetMaterializer().restoreConfig(cfg)
+	if s.deps.Settings != nil {
+		if st, err := s.deps.Settings.Load(); err == nil && !st.SingboxRouter.SusaninEnabled {
+			filteredRules := make([]Rule, 0, len(cfg.Route.Rules))
+			for _, r := range cfg.Route.Rules {
+				isSusanin := false
+				for _, rs := range r.RuleSet {
+					if rs == "susanin" {
+						isSusanin = true
+						break
+					}
+				}
+				if !isSusanin {
+					filteredRules = append(filteredRules, r)
+				}
+			}
+			cfg.Route.Rules = filteredRules
+
+			filteredSets := make([]RuleSet, 0, len(cfg.Route.RuleSet))
+			for _, rs := range cfg.Route.RuleSet {
+				if rs.Tag != "susanin" {
+					filteredSets = append(filteredSets, rs)
+				}
+			}
+			cfg.Route.RuleSet = filteredSets
+		}
+	}
 	if err := fn(cfg); err != nil {
 		return err
 	}
 	if err := s.ensureDNSChainOverlayFromState(cfg); err != nil {
 		return err
+	}
+	if s.deps.Settings != nil {
+		if st, err := s.deps.Settings.Load(); err == nil && st.SingboxRouter.RoutingEngine == "mihomo" {
+			if err := s.persistConfigDirect(ctx, cfg); err != nil {
+				return err
+			}
+			s.emitCfgEvent(event, cfg)
+			return nil
+		}
 	}
 	if err := s.persistConfig(ctx, cfg); err != nil {
 		return err
@@ -1078,9 +1139,11 @@ var KeeneticCloudCIDRs = []string{
 	"157.180.11.0/24",
 	"5.9.29.0/24",
 	"185.10.184.0/24",
+	"82.202.218.0/24",
+	"82.202.0.0/16",
 }
 
-var KeeneticCloudPorts = []int{9, 3478, 3479, 4044, 5683}
+var KeeneticCloudPorts = []int{9, 3478, 3479, 4044, 5683, 5684}
 
 func BuildKeeneticCloudRules(targetOutbound string, extraCIDRs ...string) []Rule {
 	target := strings.TrimSpace(targetOutbound)
@@ -1108,10 +1171,8 @@ func insertCloudRules(rules []Rule, cloudRules []Rule) []Rule {
 	}
 	insertIdx := 0
 	for i, r := range rules {
-		if r.Action == "hijack-dns" || (r.IPIsPrivate != nil && *r.IPIsPrivate) {
+		if r.Action == "route-options" || r.Action == "sniff" || r.Action == "hijack-dns" || (r.IPIsPrivate != nil && *r.IPIsPrivate) {
 			insertIdx = i + 1
-		} else {
-			break
 		}
 	}
 	out := make([]Rule, 0, len(rules)+len(cloudRules))
@@ -1129,34 +1190,152 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 	if err != nil {
 		return
 	}
+	if settings.SingboxRouter.RoutingEngine == "mihomo" {
+		return
+	}
 
-	// Inject ProxyGroups as dummy selector outbounds so the orchestrator's validation
-	// (which reads this SlotRouter config) knows these tags exist and accepts rules
-	// targeting them.
-	filtered := make([]Outbound, 0, len(materialized.Outbounds))
+	// Enrich with Mihomo native resources (bridge listeners, groups, standalone proxies)
+	// so Sing-box can route directly to Mihomo proxy groups and proxies via loopback.
+	existingTags := make(map[string]bool)
 	for _, o := range materialized.Outbounds {
-		isDummy := false
-		if o.Type == "direct" || o.Type == "selector" {
-			for _, pg := range settings.SingboxRouter.ProxyGroups {
-				if pg.Name == o.Tag {
-					isDummy = true
+		existingTags[o.Tag] = true
+	}
+
+	mihomoOutbounds := make([]Outbound, 0)
+	mixedPort := settings.SingboxRouter.MihomoMixedPort
+	if mixedPort <= 0 {
+		mixedPort = 1099
+	}
+
+	if s.deps.MihomoNativeProxies != nil {
+		// 1. Mihomo Bridge Listeners (Proxies & Subscriptions with dedicated bridge ports)
+		for _, bridge := range s.deps.MihomoNativeProxies.ConfigBridgeListeners() {
+			if bridge.Port > 0 && bridge.Proxy != "" && !existingTags[bridge.Proxy] {
+				mihomoOutbounds = append(mihomoOutbounds, Outbound{
+					Type:       "socks",
+					Tag:        bridge.Proxy,
+					Server:     "127.0.0.1",
+					ServerPort: bridge.Port,
+				})
+				existingTags[bridge.Proxy] = true
+			}
+		}
+
+		// 2. Mihomo Native Proxy Groups (matched to loopback mixed listeners on 12100+i)
+		baseGroupPort := 12100
+		for i, rawGroup := range s.deps.MihomoNativeProxies.ConfigProviderGroups() {
+			if name, ok := rawGroup["name"].(string); ok && name != "" && !existingTags[name] {
+				mihomoOutbounds = append(mihomoOutbounds, Outbound{
+					Type:       "socks",
+					Tag:        name,
+					Server:     "127.0.0.1",
+					ServerPort: baseGroupPort + i,
+				})
+				existingTags[name] = true
+			}
+		}
+
+		// 3. Standalone Mihomo Proxies without dedicated bridge listeners
+		for _, rawProxy := range s.deps.MihomoNativeProxies.ConfigProxies() {
+			if name, ok := rawProxy["name"].(string); ok && name != "" && !existingTags[name] {
+				mihomoOutbounds = append(mihomoOutbounds, Outbound{
+					Type:       "socks",
+					Tag:        name,
+					Server:     "127.0.0.1",
+					ServerPort: mixedPort,
+				})
+				existingTags[name] = true
+			}
+		}
+	}
+
+	// Legacy settings.SingboxRouter.ProxyGroups fallback
+	for _, pg := range settings.SingboxRouter.ProxyGroups {
+		if pg.Name != "" && !existingTags[pg.Name] {
+			mihomoOutbounds = append(mihomoOutbounds, Outbound{
+				Type:       "socks",
+				Tag:        pg.Name,
+				Server:     "127.0.0.1",
+				ServerPort: mixedPort,
+			})
+			existingTags[pg.Name] = true
+		}
+	}
+
+	materialized.Outbounds = append(materialized.Outbounds, mihomoOutbounds...)
+
+	if settings.SingboxRouter.SusaninEnabled {
+		targetOutbound := strings.TrimSpace(settings.SingboxRouter.SusaninOutbound)
+		if targetOutbound == "" {
+			targetOutbound = "direct"
+		}
+		susaninRule := Rule{
+			RuleSet:  []string{"susanin"},
+			Action:   "route",
+			Outbound: targetOutbound,
+		}
+		hasSusaninRule := false
+		for i, r := range materialized.Route.Rules {
+			for _, rs := range r.RuleSet {
+				if rs == "susanin" {
+					materialized.Route.Rules[i].Outbound = targetOutbound
+					hasSusaninRule = true
 					break
 				}
 			}
+			if hasSusaninRule {
+				break
+			}
 		}
-		if !isDummy {
-			filtered = append(filtered, o)
+		if !hasSusaninRule {
+			materialized.Route.Rules = insertCloudRules(materialized.Route.Rules, []Rule{susaninRule})
 		}
-	}
-	materialized.Outbounds = filtered
 
-	for _, pg := range settings.SingboxRouter.ProxyGroups {
-		materialized.Outbounds = append(materialized.Outbounds, Outbound{
-			Type:      "selector",
-			Tag:       pg.Name,
-			Default:   "direct",
-			Outbounds: []string{"direct"},
-		})
+		hasSusaninSet := false
+		for _, rs := range materialized.Route.RuleSet {
+			if rs.Tag == "susanin" {
+				hasSusaninSet = true
+				break
+			}
+		}
+		if !hasSusaninSet {
+			susaninPath := "/opt/etc/awg-manager/sing-box/rules/susanin.json"
+			// Ensure initial file exists so sing-box check doesn't fail
+			if _, statErr := os.Stat(susaninPath); os.IsNotExist(statErr) {
+				_ = os.MkdirAll(filepath.Dir(susaninPath), 0755)
+				_ = os.WriteFile(susaninPath, []byte(`{"version": 1, "rules": []}`), 0644)
+			}
+			materialized.Route.RuleSet = append(materialized.Route.RuleSet, RuleSet{
+				Tag:    "susanin",
+				Type:   "local",
+				Format: "source",
+				Path:   susaninPath,
+			})
+		}
+	} else {
+		// When Susanin is disabled, strip any susanin route rules and susanin rule-sets
+		filteredRules := make([]Rule, 0, len(materialized.Route.Rules))
+		for _, r := range materialized.Route.Rules {
+			isSusanin := false
+			for _, rs := range r.RuleSet {
+				if rs == "susanin" {
+					isSusanin = true
+					break
+				}
+			}
+			if !isSusanin {
+				filteredRules = append(filteredRules, r)
+			}
+		}
+		materialized.Route.Rules = filteredRules
+
+		filteredSets := make([]RuleSet, 0, len(materialized.Route.RuleSet))
+		for _, rs := range materialized.Route.RuleSet {
+			if rs.Tag != "susanin" {
+				filteredSets = append(filteredSets, rs)
+			}
+		}
+		materialized.Route.RuleSet = filteredSets
 	}
 
 	if settings.SingboxRouter.KeeneticCloudTunnel && strings.TrimSpace(settings.SingboxRouter.KeeneticCloudOutbound) != "" {

@@ -41,19 +41,19 @@ echo "Building awg-manager $VERSION for $ARCH ($($GO_CMD version))..."
 case "$ARCH" in
     mipsle|mipsel)
         GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 \
-            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
+            $GO_CMD build -buildvcs=false -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
             -tags embed_frontend \
             -o build/bin/awg-manager ./cmd/awg-manager
         ;;
     mips)
         GOOS=linux GOARCH=mips GOMIPS=softfloat CGO_ENABLED=0 \
-            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
+            $GO_CMD build -buildvcs=false -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
             -tags embed_frontend \
             -o build/bin/awg-manager ./cmd/awg-manager
         ;;
     arm64|aarch64)
         GOOS=linux GOARCH=arm64 CGO_ENABLED=0 \
-            $GO_CMD build -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
+            $GO_CMD build -buildvcs=false -ldflags="-s -w -X main.version=${VERSION} -X main.buildArch=${ENTWARE_ARCH}" \
             -tags embed_frontend \
             -o build/bin/awg-manager ./cmd/awg-manager
         ;;

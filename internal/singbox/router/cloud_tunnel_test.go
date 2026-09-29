@@ -91,8 +91,8 @@ func TestKeeneticCloudIPTables(t *testing.T) {
 	if !strings.Contains(mangle, "AWGM-OUTPUT-UDP") {
 		t.Errorf("mangle output missing AWGM-OUTPUT-UDP:\n%s", mangle)
 	}
-	if !strings.Contains(mangle, "--dports 9,3478,3479,4044,5683") {
-		t.Errorf("mangle output missing dports 4044/5683:\n%s", mangle)
+	if !strings.Contains(mangle, "--dports 9,3478,3479,4044,5683,5684") {
+		t.Errorf("mangle output missing dports 4044/5683/5684:\n%s", mangle)
 	}
 
 	if !strings.Contains(mangle, "--match-set AWGM-CLOUD dst") {

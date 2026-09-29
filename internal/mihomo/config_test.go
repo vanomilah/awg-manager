@@ -616,6 +616,45 @@ func TestGenerateConfig_KeeneticCloudDynamicCIDRs(t *testing.T) {
 	}
 }
 
+func TestGenerateConfig_SubscriptionGroupInNativeProxyGroup(t *testing.T) {
+	settings := storage.SingboxRouterSettings{
+		MihomoMixedPort: 1099,
+	}
+	subProxies := []map[string]any{
+		{"type": "hysteria2", "tag": "hyst-1", "server": "1.2.3.4", "server_port": 443},
+		{"type": "urltest", "tag": "sub-5090797d", "outbounds": []string{"hyst-1"}},
+	}
+	native := NativeResources{
+		ProxyGroups: []ProxyGroup{
+			{Name: "Задний ход", Type: "fallback", Proxies: []string{"sub-5090797d", "DIRECT"}},
+		},
+	}
+
+	raw, err := GenerateConfigWithResources(settings, "", subProxies, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources failed: %v", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	var zhGroup *ProxyGroup
+	for i := range cfg.ProxyGroups {
+		if cfg.ProxyGroups[i].Name == "Задний ход" {
+			zhGroup = &cfg.ProxyGroups[i]
+			break
+		}
+	}
+	if zhGroup == nil {
+		t.Fatalf("group 'Задний ход' not found in config")
+	}
+	if len(zhGroup.Proxies) != 2 || zhGroup.Proxies[0] != "sub-5090797d" {
+		t.Fatalf("expected sub-5090797d to be preserved in 'Задний ход', got %+v", zhGroup.Proxies)
+	}
+}
+
 func TestGenerateConfig_AdaptiveEgress(t *testing.T) {
 	settings := storage.SingboxRouterSettings{
 		MihomoMixedPort: 1099,
@@ -783,6 +822,137 @@ func TestGenerateConfig_SusaninOption(t *testing.T) {
 		if strings.Contains(r, "susanin") {
 			t.Errorf("found unexpected susanin rule when disabled: %s", r)
 		}
+	}
+}
+
+func TestGenerateConfigWithResources_DuplicateProxyNamesBetweenSubAndNative(t *testing.T) {
+	settings := storage.SingboxRouterSettings{
+		RoutingMode: "tproxy",
+	}
+
+	// subProxies has a socks proxy with the same name as a native proxy (e.g. from 20-router.json)
+	subProxies := []map[string]any{
+		{
+			"type":        "socks",
+			"tag":         "FIN-Premium",
+			"server":      "127.0.0.1",
+			"server_port": 12001,
+		},
+		{
+			"type":        "vless",
+			"tag":         "Sub-Proxy-1",
+			"server":      "vless.example.com",
+			"server_port": 443,
+			"uuid":        "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+		},
+	}
+
+	native := NativeResources{
+		Proxies: []Proxy{
+			{
+				"name":   "FIN-Premium",
+				"type":   "trusttunnel",
+				"server": "fin.trutun.online",
+				"port":   443,
+			},
+		},
+	}
+
+	raw, err := GenerateConfigWithResources(settings, "", subProxies, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources failed on duplicate proxy name: %v", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+
+	if len(cfg.Proxies) != 2 {
+		t.Fatalf("len(cfg.Proxies) = %d, want 2 (FIN-Premium native and Sub-Proxy-1)", len(cfg.Proxies))
+	}
+
+	// Verify native proxy took precedence
+	var finProxy Proxy
+	for _, p := range cfg.Proxies {
+		if p["name"] == "FIN-Premium" {
+			finProxy = p
+			break
+		}
+	}
+	if finProxy == nil {
+		t.Fatal("FIN-Premium proxy not found in config")
+	}
+	if finProxy["type"] != "trusttunnel" {
+		t.Fatalf("FIN-Premium type = %v, want trusttunnel (native precedence)", finProxy["type"])
+	}
+}
+
+func TestGenerateConfigWithResources_ExcludesIPCIDRFromNameserverPolicy(t *testing.T) {
+	settings := storage.SingboxRouterSettings{
+		RoutingMode: "tproxy",
+	}
+
+	native := NativeResources{
+		RuleProviders: map[string]map[string]interface{}{
+			"telegram-cidr": {
+				"type":     "http",
+				"url":      "https://example.com/telegram.mrs",
+				"behavior": "ipcidr",
+				"format":   "mrs",
+			},
+			"telegram-domain": {
+				"type":     "http",
+				"url":      "https://example.com/telegram-domain.mrs",
+				"behavior": "domain",
+				"format":   "mrs",
+			},
+		},
+		DNSServers: []DNSServerSpec{
+			{Tag: "dns-direct", Type: "udp", Server: "77.88.8.8"},
+			{Tag: "dns-tunnel", Type: "udp", Server: "9.9.9.9", Detour: "awg-awg20"},
+		},
+		DNSRules: []DNSRuleSpec{
+			{
+				RuleSet: []string{"geosite-google-gemini", "telegram-cidr", "telegram-domain", "geoip-ru", "susanin"},
+				Server:  "dns-tunnel",
+			},
+		},
+	}
+
+	raw, err := GenerateConfigWithResources(settings, "", nil, native, nil, "DIRECT", nil)
+	if err != nil {
+		t.Fatalf("GenerateConfigWithResources failed: %v", err)
+	}
+
+	var cfg Config
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("unmarshal yaml: %v", err)
+	}
+
+	// telegram-cidr, geoip-ru and susanin MUST NOT be in NameserverPolicy
+	if _, exists := cfg.DNS.NameserverPolicy["geosite:telegram-cidr"]; exists {
+		t.Errorf("expected geosite:telegram-cidr to NOT be in NameserverPolicy")
+	}
+	if _, exists := cfg.DNS.NameserverPolicy["rule-set:telegram-cidr"]; exists {
+		t.Errorf("expected rule-set:telegram-cidr to NOT be in NameserverPolicy")
+	}
+	if _, exists := cfg.DNS.NameserverPolicy["geosite:geoip-ru"]; exists {
+		t.Errorf("expected geosite:geoip-ru to NOT be in NameserverPolicy")
+	}
+	if _, exists := cfg.DNS.NameserverPolicy["geosite:susanin"]; exists {
+		t.Errorf("expected geosite:susanin to NOT be in NameserverPolicy")
+	}
+	if _, exists := cfg.DNS.NameserverPolicy["rule-set:susanin"]; exists {
+		t.Errorf("expected rule-set:susanin to NOT be in NameserverPolicy")
+	}
+
+	// geosite-google-gemini and telegram-domain MUST be present
+	if target, exists := cfg.DNS.NameserverPolicy["geosite:google-gemini"]; !exists || !strings.Contains(target, "9.9.9.9#awg-awg20") {
+		t.Errorf("expected geosite:google-gemini in NameserverPolicy with target 9.9.9.9#awg-awg20, got %q", target)
+	}
+	if target, exists := cfg.DNS.NameserverPolicy["rule-set:telegram-domain"]; !exists || !strings.Contains(target, "9.9.9.9#awg-awg20") {
+		t.Errorf("expected rule-set:telegram-domain in NameserverPolicy with target 9.9.9.9#awg-awg20, got %q", target)
 	}
 }
 
