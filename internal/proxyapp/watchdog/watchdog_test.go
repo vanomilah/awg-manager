@@ -254,8 +254,11 @@ func TestDetectFailure_ZeroActiveWorkers(t *testing.T) {
 
 func TestDetectFailure_ActiveWorkersHealthy(t *testing.T) {
 	// Свежая телеметрия сообщает об активных воркерах: инстанс здоров, не падаем по старой строке
-	log := "2026/09/30 16:00:00 [WARN] all streams down\n" +
-		"2026/09/30 16:41:35 [СТАТИСТИКА] Активных: 36 | Трафик: 12.34 МБ\n"
+	// даже если после строки телеметрии были другие логи (трафик, keepalive)
+	log := "2026/09/30 16:00:00 [СТАТИСТИКА] Активных: 0\n" +
+		"2026/09/30 16:00:01 [WARN] all streams down\n" +
+		"2026/09/30 16:41:35 [СТАТИСТИКА] Активных: 36 | Трафик: 12.34 МБ\n" +
+		"2026/09/30 16:41:36 data transfer log\n"
 	_, found := DetectFailure(log)
 	if found {
 		t.Fatal("DetectFailure: expected no failure when latest stats show active workers > 0")
@@ -272,12 +275,8 @@ func TestDetectFailure_FreeTurnNewSignatures(t *testing.T) {
 			want: "channel-bind умер",
 		},
 		{
-			log:  "2026/09/30 18:55:02 [ERROR] [STREAM 7] failed to close TURN stream: failed to refresh allocation: write tcp: write: broken pipe",
-			want: "failed to refresh allocation",
-		},
-		{
-			log:  "2026/09/30 18:55:02 [ERROR] write tcp 10.56.150.148->91.231.135.128: write: broken pipe",
-			want: "broken pipe",
+			log:  "2026/09/30 18:55:02 [ERROR] Fatal provider error: no route to host",
+			want: "Fatal provider error",
 		},
 	}
 	for _, tc := range cases {

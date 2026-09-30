@@ -55,11 +55,11 @@ var WdttEmbeddedBinaries = map[string]ArchSpecs{
 	"aarch64-3.10": {
 		Client: BinarySpec{
 			Version: WdttPinnedClientVersion, URL: wdttReleaseBase + "wt-client-linux-arm64",
-			SHA256: "ed627553a8b970ab50edfdeb7a7fe35811387b6e19df901bb160f4db46d42367", Size: 15401122,
+			SHA256: "254718c843e5217d7ca9ed052d0b8325c3f29b5c7bce42cd5b33ae72f178c5d7", Size: 15401122,
 		},
 		Server: BinarySpec{
 			Version: WdttPinnedServerVersion, URL: wdttServerReleaseBase + "wdtt-server-linux-arm64",
-			SHA256: "ce9264b96c8b7d330dde5add7d1d4e9a43b22a56536b1720b2cfe519a5a24e90", Size: 7995576,
+			SHA256: "14f7ab9f087ad6d1e2fc99f5d4a23ffffdfc5da20d4d140a4d1441845f8f7146", Size: 8257698,
 		},
 	},
 	"mipsel-3.4": {

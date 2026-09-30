@@ -43,13 +43,9 @@ var failureSignatures = []string{
 	"DTLS: failed",
 	"channel-bind умер",
 	"умер - рецикл",
-	"failed to refresh allocation",
-	"failed to close TURN stream",
 	"ChannelBind rejected",
 	"Fatal provider error",
 	"No more solve modes available",
-	"broken pipe",
-	"connection reset by peer",
 	"Relay: сбой",
 	"Relay умер",
 }
@@ -142,6 +138,7 @@ func DetectFailure(logTail string) (string, bool) {
 	// отслеживая как фатальные ошибки, так и потерю всех воркеров в телеметрии.
 	checked := 0
 	hasZeroActive := false
+	seenTelemetry := false
 	for i := len(lines) - 1; i >= 0 && checked < 50; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
@@ -150,12 +147,13 @@ func DetectFailure(logTail string) (string, bool) {
 
 		// Телеметрия WDTT: [СТАТИСТИКА] Активных: N или [СТАТ] Активных: N
 		if strings.Contains(line, "[СТАТИСТИКА]") || strings.Contains(line, "[СТАТ]") {
-			if strings.Contains(line, "Активных: 0") || strings.Contains(line, "активных: 0") {
-				hasZeroActive = true
-			} else if strings.Contains(line, "Активных:") || strings.Contains(line, "активных:") {
-				// Если свежая строка телеметрии сообщает о наличии активных воркеров (> 0),
-				// значит клиент подключён и здоров — не падаем по старым строкам до подключения.
-				if checked == 0 {
+			if !seenTelemetry {
+				seenTelemetry = true
+				if strings.Contains(line, "Активных: 0") || strings.Contains(line, "активных: 0") {
+					hasZeroActive = true
+				} else if strings.Contains(line, "Активных:") || strings.Contains(line, "активных:") {
+					// Свежая телеметрия сообщает о наличии активных воркеров (> 0):
+					// клиент подключён и здоров — не падаем по старым строкам до подключения.
 					return "", false
 				}
 			}
