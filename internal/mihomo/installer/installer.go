@@ -3,6 +3,8 @@ package installer
 import (
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -193,6 +195,12 @@ func (i *Installer) Install(ctx context.Context) error {
 }
 
 func (i *Installer) downloadAndExtract(ctx context.Context) error {
+	free, freeOK := i.FreeBytes()
+	reqSize := i.RequiredSize()
+	if reqSize > 0 && freeOK && free < reqSize+safetyMargin {
+		return fmt.Errorf("insufficient disk space for mihomo: %d bytes free, need at least %d bytes", free, reqSize+safetyMargin)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", i.spec.URL, nil)
 	if err != nil {
 		return err
@@ -207,9 +215,12 @@ func (i *Installer) downloadAndExtract(ctx context.Context) error {
 		return fmt.Errorf("bad status code: %d", resp.StatusCode)
 	}
 
-	var reader io.Reader = resp.Body
+	hasher := sha256.New()
+	rawStream := io.TeeReader(resp.Body, hasher)
+
+	var reader io.Reader = rawStream
 	if strings.HasSuffix(i.spec.URL, ".gz") {
-		gz, err := gzip.NewReader(resp.Body)
+		gz, err := gzip.NewReader(rawStream)
 		if err != nil {
 			return fmt.Errorf("gzip reader error: %w", err)
 		}
@@ -236,6 +247,15 @@ func (i *Installer) downloadAndExtract(ctx context.Context) error {
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close tmp file: %w", err)
+	}
+
+	// Verify SHA-256 of downloaded archive
+	if i.spec.SHA256 != "" {
+		actualSha := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(actualSha, i.spec.SHA256) {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("checksum mismatch for mihomo: expected %s, got %s", i.spec.SHA256, actualSha)
+		}
 	}
 
 	if err := os.Rename(tmpPath, i.binaryPath); err != nil {

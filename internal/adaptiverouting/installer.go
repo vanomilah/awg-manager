@@ -201,15 +201,38 @@ func (i *SusaninInstaller) EnsureInstalled(ctx context.Context) (string, error) 
 		baseDir = filepath.Dir(filepath.Dir(i.targetPath))
 	}
 
+	tmpPath := i.targetPath + ".tmp"
+	_ = os.Remove(tmpPath)
+
 	if err := extractArchive(tee, baseDir, i.targetPath); err != nil {
+		_ = os.Remove(tmpPath)
 		return "", fmt.Errorf("extract susanin archive: %w", err)
 	}
+
+	// Drain any remaining bytes to ensure complete hash calculation
+	_, _ = io.Copy(io.Discard, tee)
 
 	if spec.SHA256 != "" {
 		actualSha := hex.EncodeToString(hasher.Sum(nil))
 		if !strings.EqualFold(actualSha, spec.SHA256) {
+			_ = os.Remove(tmpPath)
 			return "", fmt.Errorf("checksum mismatch for susanin-agent: expected %s, got %s", spec.SHA256, actualSha)
 		}
+	}
+
+	if err := os.Rename(tmpPath, i.targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("activate susanin binary: %w", err)
+	}
+
+	// Symlink to /opt/bin/susanin-agent
+	_ = os.MkdirAll("/opt/bin", 0755)
+	_ = os.Remove("/opt/bin/susanin-agent")
+	_ = os.Symlink(i.targetPath, "/opt/bin/susanin-agent")
+
+	// Backwards compatibility symlink /opt/susanin -> ManagedSusaninDir
+	if _, err := os.Lstat("/opt/susanin"); os.IsNotExist(err) {
+		_ = os.Symlink(ManagedSusaninDir, "/opt/susanin")
 	}
 
 	return i.targetPath, nil
@@ -265,9 +288,6 @@ func extractArchive(r io.Reader, baseDir, targetBinPath string) error {
 				_ = os.Remove(tmpPath)
 				return err
 			}
-			if err := os.Rename(tmpPath, targetBinPath); err != nil {
-				return err
-			}
 			foundBin = true
 
 		case "datapath.sh":
@@ -302,16 +322,6 @@ func extractArchive(r io.Reader, baseDir, targetBinPath string) error {
 
 	if !foundBin {
 		return fmt.Errorf("binary 'susanin-agent' not found in archive")
-	}
-
-	// Symlink to /opt/bin/susanin-agent
-	_ = os.MkdirAll("/opt/bin", 0755)
-	_ = os.Remove("/opt/bin/susanin-agent")
-	_ = os.Symlink(targetBinPath, "/opt/bin/susanin-agent")
-
-	// Backwards compatibility symlink /opt/susanin -> ManagedSusaninDir
-	if _, err := os.Lstat("/opt/susanin"); os.IsNotExist(err) {
-		_ = os.Symlink(ManagedSusaninDir, "/opt/susanin")
 	}
 
 	return nil

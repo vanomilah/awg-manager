@@ -159,71 +159,9 @@ build_ipk_one() {
     cp "$AWG_CLI_BIN" "$IPK_ROOT/opt/sbin/awg"
     chmod +x "$IPK_ROOT/opt/sbin/awg"
 
-    local SUSANIN_SRC=""
-    case "$ENTWARE_ARCH" in
-        aarch64-*)
-            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64" ]]; then
-                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.aarch64"
-            fi
-            ;;
-        mipsel-*)
-            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mipsel" ]]; then
-                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mipsel"
-            fi
-            ;;
-        mips-*)
-            if [[ -f "$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mips" ]]; then
-                SUSANIN_SRC="$PROJECT_ROOT/cmd/susanin-agent/build/susanin-agent.mips"
-            fi
-            ;;
-    esac
+    # Бинари внешних сервисов (sing-box, wdtt, freeturn, mihomo, telemt, susanin) в IPK не кладём:
+    # они устанавливаются on-demand через встроенные инсталлеры с проверкой SHA256 и места на диске.
 
-    if [[ -n "$SUSANIN_SRC" && -f "$SUSANIN_SRC" ]]; then
-        local SUSANIN_FILE
-        SUSANIN_FILE=$(file -b "$SUSANIN_SRC")
-        case "$ENTWARE_ARCH" in
-            aarch64-*) [[ "$SUSANIN_FILE" == *"ARM aarch64"* ]] || {
-                echo "ERROR: susanin-agent has wrong architecture for $ENTWARE_ARCH: $SUSANIN_FILE" >&2
-                exit 1
-            } ;;
-            mipsel-*) [[ "$SUSANIN_FILE" == *"MIPS"* && "$SUSANIN_FILE" == *"LSB"* ]] || {
-                echo "ERROR: susanin-agent has wrong architecture for $ENTWARE_ARCH: $SUSANIN_FILE" >&2
-                exit 1
-            } ;;
-            mips-*) [[ "$SUSANIN_FILE" == *"MIPS"* && "$SUSANIN_FILE" == *"MSB"* ]] || {
-                echo "ERROR: susanin-agent has wrong architecture for $ENTWARE_ARCH: $SUSANIN_FILE" >&2
-                exit 1
-            } ;;
-        esac
-        mkdir -p "$IPK_ROOT/opt/etc/awg-manager/susanin/bin" "$IPK_ROOT/opt/etc/awg-manager/susanin/tools" "$IPK_ROOT/opt/etc/awg-manager/susanin/etc" "$IPK_ROOT/opt/etc/awg-manager/susanin/var"
-        cp "$SUSANIN_SRC" "$IPK_ROOT/opt/etc/awg-manager/susanin/bin/susanin-agent"
-        chmod 755 "$IPK_ROOT/opt/etc/awg-manager/susanin/bin/susanin-agent"
-        echo "Bundled susanin-agent binary for $ENTWARE_ARCH"
-    fi
-
-    local TELEMT_SRC=""
-    local TELEMT_ARCH=""
-    case "$ENTWARE_ARCH" in
-        aarch64-*)
-            TELEMT_ARCH="aarch64"
-            if [[ -f "$PROJECT_ROOT/prebuilt/telemt/aarch64/telemt" ]]; then
-                TELEMT_SRC="$PROJECT_ROOT/prebuilt/telemt/aarch64/telemt"
-            fi
-            ;;
-        mipsel-*)
-            TELEMT_ARCH="mipsel"
-            if [[ -f "$PROJECT_ROOT/prebuilt/telemt/mipsel/telemt" ]]; then
-                TELEMT_SRC="$PROJECT_ROOT/prebuilt/telemt/mipsel/telemt"
-            fi
-            ;;
-    esac
-
-    if [[ -n "$TELEMT_SRC" && -f "$TELEMT_SRC" ]]; then
-        mkdir -p "$IPK_ROOT/opt/share/awg-manager/prebuilt/telemt/$TELEMT_ARCH"
-        cp "$TELEMT_SRC" "$IPK_ROOT/opt/share/awg-manager/prebuilt/telemt/$TELEMT_ARCH/telemt"
-        chmod 755 "$IPK_ROOT/opt/share/awg-manager/prebuilt/telemt/$TELEMT_ARCH/telemt"
-        echo "Bundled telemt prebuilt binary for $ENTWARE_ARCH ($TELEMT_ARCH)"
-    fi
 
     if [[ -f "$PROJECT_ROOT/scripts/awgm-susanin-sync.py" ]]; then
         cp "$PROJECT_ROOT/scripts/awgm-susanin-sync.py" "$IPK_ROOT/opt/bin/awgm-susanin-sync.py"

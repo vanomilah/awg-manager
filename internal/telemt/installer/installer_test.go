@@ -111,4 +111,40 @@ func TestTelemtInstaller_GetStatus_Mock(t *testing.T) {
 	if status.Arch != "aarch64" {
 		t.Fatalf("expected arch=aarch64, got %s", status.Arch)
 	}
+	if status.LatestVersion != PinnedTelemtVersion {
+		t.Fatalf("expected latestVersion=%s, got %s", PinnedTelemtVersion, status.LatestVersion)
+	}
+}
+
+func TestEmbeddedBinaries_PinsComplete(t *testing.T) {
+	for _, arch := range []string{"aarch64", "x86_64", "mipsel"} {
+		spec, ok := EmbeddedBinaries[arch]
+		if !ok {
+			t.Errorf("missing EmbeddedBinaries for arch %q", arch)
+			continue
+		}
+		if spec.Version == "" {
+			t.Errorf("empty version for %q", arch)
+		}
+		if spec.SHA256 == "" {
+			t.Errorf("empty SHA256 for %q", arch)
+		}
+		if spec.ArchiveSize <= 0 {
+			t.Errorf("invalid archive size for %q: %d", arch, spec.ArchiveSize)
+		}
+	}
+}
+
+func TestCheckLatestRelease_Pinned(t *testing.T) {
+	inst := New("aarch64")
+	ver, url, err := inst.CheckLatestRelease(context.Background())
+	if err != nil {
+		t.Fatalf("CheckLatestRelease failed: %v", err)
+	}
+	if ver != PinnedTelemtVersion {
+		t.Fatalf("expected %s, got %s", PinnedTelemtVersion, ver)
+	}
+	if url != EmbeddedBinaries["aarch64"].URL {
+		t.Fatalf("expected %s, got %s", EmbeddedBinaries["aarch64"].URL, url)
+	}
 }

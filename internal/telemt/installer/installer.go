@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,8 +32,40 @@ const (
 	LegacyTelemtDir         = "/opt/etc/telemt"
 
 	DefaultTelemtVersion = "3.5.8"
+	PinnedTelemtVersion  = "3.5.8"
 	GitHubReleasesURL    = "https://api.github.com/repos/telemt/telemt/releases/latest"
 )
+
+type BinarySpec struct {
+	Version     string
+	URL         string
+	SHA256      string // SHA256 of the downloaded tar.gz archive
+	ArchiveSize int64  // bytes
+	BinarySize  int64  // uncompressed binary bytes
+}
+
+var EmbeddedBinaries = map[string]BinarySpec{
+	"aarch64": {
+		Version:     PinnedTelemtVersion,
+		URL:         "https://github.com/telemt/telemt/releases/download/3.5.8/telemt-aarch64-linux-musl.tar.gz",
+		SHA256:      "d003522a56ba71548808cfedffe2dc3cd55203255bd61325e43d5f86f8000006",
+		ArchiveSize: 6135298,
+		BinarySize:  13141032,
+	},
+	"x86_64": {
+		Version:     PinnedTelemtVersion,
+		URL:         "https://github.com/telemt/telemt/releases/download/3.5.8/telemt-x86_64-linux-musl.tar.gz",
+		SHA256:      "2842a0ab1fef3f06125ce6818e4d48b41a6e8a850b151898486344365f8bb619",
+		ArchiveSize: 6701352,
+	},
+	"mipsel": {
+		Version:     PinnedTelemtVersion,
+		URL:         "",
+		SHA256:      "0748a44ebfc0006f8a61d82d98b04c28f14494ed63f17ab8306130acf73575a8",
+		ArchiveSize: 8020518,
+		BinarySize:  20638864,
+	},
+}
 
 type Status struct {
 	Installed       bool   `json:"installed"`
@@ -59,6 +93,7 @@ type gitHubAsset struct {
 type TelemtInstaller struct {
 	targetPath string
 	arch       string
+	spec       BinarySpec
 	client     *http.Client
 	freeDisk   func(path string) (int64, bool)
 	onRestart  func(ctx context.Context) error
@@ -71,9 +106,12 @@ type TelemtInstaller struct {
 }
 
 func New(arch string) *TelemtInstaller {
+	normArch := normalizeArch(arch)
+	spec := EmbeddedBinaries[normArch]
 	return &TelemtInstaller{
 		targetPath: ManagedTelemtBinaryPath,
-		arch:       normalizeArch(arch),
+		arch:       normArch,
+		spec:       spec,
 		client:     &http.Client{Timeout: 3 * time.Minute},
 		freeDisk:   routerinfo.FreeBytes,
 	}
@@ -186,6 +224,10 @@ func (i *TelemtInstaller) GetInstalledVersion(ctx context.Context) string {
 }
 
 func (i *TelemtInstaller) CheckLatestRelease(ctx context.Context) (latestVersion string, downloadURL string, err error) {
+	if i.spec.Version != "" {
+		return i.spec.Version, i.spec.URL, nil
+	}
+
 	i.cacheMu.RLock()
 	if i.cachedLatestVersion != "" && time.Since(i.cachedCheckTime) < 15*time.Minute {
 		latestVersion = i.cachedLatestVersion
@@ -334,10 +376,13 @@ func (i *TelemtInstaller) Update(ctx context.Context) error {
 }
 
 func (i *TelemtInstaller) downloadAndInstall(ctx context.Context) error {
-	// Disk space check
+	requiredSpace := int64(16 << 20)
+	if i.spec.BinarySize > 0 {
+		requiredSpace = i.spec.BinarySize + (5 << 20)
+	}
 	if i.freeDisk != nil {
-		if free, ok := i.freeDisk(filepath.Dir(i.targetPath)); ok && free < 8<<20 {
-			return fmt.Errorf("insufficient disk space for telemt: %d bytes free", free)
+		if free, ok := i.freeDisk(filepath.Dir(i.targetPath)); ok && free < requiredSpace {
+			return fmt.Errorf("insufficient disk space for telemt: %d bytes free, need %d bytes", free, requiredSpace)
 		}
 	}
 
@@ -387,9 +432,32 @@ func (i *TelemtInstaller) downloadAndInstall(ctx context.Context) error {
 	}
 
 	tmpTarget := ManagedTelemtBinaryPath + ".tmp"
-	if err := extractTarGzBinary(resp.Body, "telemt", tmpTarget); err != nil {
+	_ = os.Remove(tmpTarget)
+
+	hasher := sha256.New()
+	tee := io.TeeReader(resp.Body, hasher)
+
+	if err := extractTarGzBinary(tee, "telemt", tmpTarget); err != nil {
 		_ = os.Remove(tmpTarget)
 		return fmt.Errorf("extract telemt: %w", err)
+	}
+
+	// Drain remaining archive bytes if any to complete hash calculation
+	_, _ = io.Copy(io.Discard, tee)
+
+	if i.spec.SHA256 != "" {
+		actualSha := hex.EncodeToString(hasher.Sum(nil))
+		if !strings.EqualFold(actualSha, i.spec.SHA256) {
+			_ = os.Remove(tmpTarget)
+			return fmt.Errorf("checksum mismatch for telemt: expected %s, got %s", i.spec.SHA256, actualSha)
+		}
+	}
+
+	if i.spec.BinarySize > 0 {
+		if fi, err := os.Stat(tmpTarget); err == nil && fi.Size() != i.spec.BinarySize {
+			_ = os.Remove(tmpTarget)
+			return fmt.Errorf("extracted telemt binary size mismatch: expected %d bytes, got %d bytes", i.spec.BinarySize, fi.Size())
+		}
 	}
 
 	if err := os.Chmod(tmpTarget, 0755); err != nil {
