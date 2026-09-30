@@ -413,7 +413,6 @@ export function toFreeTurnServerConfig(
     clientsFile: str(c, "clientsFile"),
     debug: bool(c, "debug") === true,
     openFirewall: bool(c, "openFirewall"),
-    linkPeer: v.linkPeer,
   };
 }
 
