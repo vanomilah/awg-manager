@@ -23,7 +23,6 @@ type TunnelService interface {
 	// CRUD
 	List(ctx context.Context) ([]service.TunnelWithStatus, error)
 	Get(ctx context.Context, tunnelID string) (*service.TunnelWithStatus, error)
-	Create(ctx context.Context, stored *storage.AWGTunnel) error
 	Update(ctx context.Context, oldStored, newStored *storage.AWGTunnel) error
 	Delete(ctx context.Context, tunnelID string) error
 
@@ -42,11 +41,16 @@ type TunnelService interface {
 	SetEnabled(ctx context.Context, tunnelID string, enabled bool) error
 	SetDefaultRoute(ctx context.Context, tunnelID string, enabled bool) error
 
-	// Import
-	Import(ctx context.Context, confContent, name, backend string) (*service.TunnelWithStatus, error)
+	// Import. Поля владения прокси-подсистем едут ПАРАМЕТРОМ, а не дописываются
+	// после: см. service.ImportLink.
+	Import(ctx context.Context, confContent, name, backend string, link service.ImportLink) (*service.TunnelWithStatus, error)
 
 	// ReplaceConfig replaces a tunnel's config from a new .conf file.
-	ReplaceConfig(ctx context.Context, tunnelID, confContent, newName string) error
+	ReplaceConfig(ctx context.Context, tunnelID, confContent, newName string, opts service.ReplaceOptions) error
+
+	// SyncDescription — описание НАШЕЙ записи в NDMS = name; prevName — имя
+	// до переименования, по нему проверяется владение (F517).
+	SyncDescription(ctx context.Context, tunnelID, prevName, name string)
 
 	// WAN state model
 	WANModel() *wan.Model
@@ -82,11 +86,6 @@ type TunnelsHandler struct {
 	// (амендмент F2).
 	proxyRecords ProxyRecordLister
 
-	// opkgOccupancy — занятость номеров OpkgTun для выдачи идентификатора.
-	// wdttListSource из develop сюда не переехал: файлы, где он жил
-	// (wdtt_raw_tunnel*.go), унёс снос старого мира — их работу делает
-	// proxyRecords выше.
-	opkgOccupancy storage.OpkgTunPins
 	// buildTunnelsSnapshot (optional) assembles the composite
 	// {tunnels, external, system} payload used by GetAll and by
 	// mutation handlers that return fresh state. Injected by server.go
@@ -106,11 +105,6 @@ func NewTunnelsHandler(svc TunnelService, store *storage.AWGTunnelStore, appLogg
 
 // SetEventBus sets the event bus for SSE publishing.
 func (h *TunnelsHandler) SetEventBus(bus *events.Bus) { h.bus = bus }
-
-// SetOpkgTunOccupancy задаёт источник занятости номеров OpkgTun — он нужен
-// выдаче идентификатора kernel-туннеля, потому что этот номер одновременно
-// является номером интерфейса в NDMS.
-func (h *TunnelsHandler) SetOpkgTunOccupancy(occ storage.OpkgTunPins) { h.opkgOccupancy = occ }
 
 // SetCatalog sets the routing catalog for tunnel list updates.
 func (h *TunnelsHandler) SetCatalog(cat routing.Catalog) { h.catalog = cat }

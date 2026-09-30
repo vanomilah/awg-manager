@@ -47,6 +47,8 @@ type HookHandler struct {
 	wanModel       HookWANModel   // may be nil until SetWANModel is called
 	refreshTunnels TunnelHookInvalidator
 	proxyNudge     ProxyRuntimeNudge
+	endpointNudge  func()
+	ipv4Running    func(ndmsID string)
 	log            *logging.ScopedLogger
 	wanLog         *logging.ScopedLogger
 	// selfCreateGate counts in-flight awg-manager-initiated NDMS interface
@@ -110,6 +112,21 @@ func (h *HookHandler) SetProxyRuntimeNudge(fn ProxyRuntimeNudge) {
 	h.proxyNudge = fn
 }
 
+// SetEndpointGuardNudge подключает внеочередной проход endpoint-стража.
+// Повод — ifipchanged: адрес WAN сменился, и адрес сервера за DDNS-именем
+// мог смениться заодно (у провайдера это одно событие). Ждать тика стража
+// незачем — лишний проход дёшев, адрес он меняет только на смену резолва.
+func (h *HookHandler) SetEndpointGuardNudge(fn func()) {
+	h.endpointNudge = fn
+}
+
+// SetIPv4RunningHook — колбэк на iflayerchanged layer=ipv4 level=running для
+// ЛЮБОГО интерфейса: переприменение клиентских маршрутов system:-выхода
+// (F497; ядро снимает `default dev` на down/up интерфейса).
+func (h *HookHandler) SetIPv4RunningHook(fn func(ndmsID string)) {
+	h.ipv4Running = fn
+}
+
 // HandleNDMS is the unified hook endpoint. The shared forwarder script
 // installed into /opt/etc/ndm/{iflayerchanged,ifcreated,ifdestroyed,
 // ifipchanged}.d/ POSTs here with a `type` discriminator. The handler
@@ -156,9 +173,10 @@ func (h *HookHandler) HandleNDMS(w http.ResponseWriter, r *http.Request) {
 		Layer:      r.PostForm.Get("layer"),
 		Level:      r.PostForm.Get("level"),
 		Address:    r.PostForm.Get("address"),
-		Up:         r.PostForm.Get("up") == "1" || r.PostForm.Get("up") == "true",
-		Connected:  r.PostForm.Get("connected") == "1" || r.PostForm.Get("connected") == "true",
 	}
+	// up/connected форвардер тоже присылает, и мы их НЕ разбираем: состояние
+	// линка берётся из iflayerchanged, а этим полям доверять нельзя
+	// (InterfaceStore.OnIPChanged). Лишние поля формы безвредны.
 
 	switch event.Type {
 	case events.EventIfLayerChanged, events.EventIfCreated,
@@ -172,6 +190,13 @@ func (h *HookHandler) HandleNDMS(w http.ResponseWriter, r *http.Request) {
 	// 1) Enqueue into Dispatcher for cache invalidation (async, non-blocking).
 	if h.dispatcher != nil {
 		h.dispatcher.Enqueue(event)
+	}
+
+	// 1a) Смена адреса интерфейса — повод перепроверить DDNS-имена: страж
+	// пройдётся вне очереди. Вызов неблокирующий (будит чужую горутину), так
+	// что ответ на хук он не задерживает.
+	if event.Type == events.EventIfIPChanged && h.endpointNudge != nil {
+		h.endpointNudge()
 	}
 
 	// 1b) On interface create/destroy, rebroadcast the tunnel list so
@@ -201,6 +226,9 @@ func (h *HookHandler) HandleNDMS(w http.ResponseWriter, r *http.Request) {
 	//    - layer=conf → NDMS hook path (tunnel lifecycle)
 	//    - layer=ipv4 → WAN model update + EventWANUp/Down
 	if event.Type == events.EventIfLayerChanged {
+		if event.Layer == "ipv4" && event.Level == "running" && h.ipv4Running != nil {
+			go h.ipv4Running(event.ID)
+		}
 		if event.Layer == "ipv4" {
 			h.handleWANLayerEvent(event)
 		} else if h.orch != nil {

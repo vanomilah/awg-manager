@@ -11,8 +11,10 @@ import (
 )
 
 // ruleRecheck — подстраховочная сверка: правила вычищает reconcile sing-box и
-// перезапись таблиц движком ndm. Период — паритет natReconcileInterval (15 с)
-// старого NAT-ресинка. Это ЕДИНСТВЕННЫЙ волатильный класс ресурсов (спека §3).
+// перезапись таблиц движком ndm. Это ЕДИНСТВЕННЫЙ волатильный класс ресурсов
+// (спека §3). Период задаёт компромисс «сколько правило лежит стёртым» против
+// «сколько exec'ов на тик»; 15 с взяты у прежнего NAT-ресинка и замером не
+// подтверждены — менять только по измерению на железе.
 const ruleRecheck = 15 * time.Second
 
 // RuleSet — ресурс «набор групп правил приведён». Общий для nat_rules и
@@ -38,14 +40,40 @@ type RuleSet struct {
 	// full→internet-only, WAN, интерфейса или RelayMode обязана сносить
 	// прежние формы — иначе класс H1 (PR #697) и утечка правил 2.17.0.
 	doomed map[string]Rule
-	// enableForward — включение ip_forward вместе с правилами; nil — не нужно.
-	// Прод: запись "1" в /proc/sys/net/ipv4/ip_forward.
-	enableForward func() error
+	// reaped — ключи doomed-правил, снос которых ДОВЕДЁН до конца. Защёлка
+	// для Doom: он зовётся из декларации роли каждый проход, а снятое правило
+	// прежней версии обратно не появляется. Без защёлки ведомость воскресала
+	// бы вечно, и Observe держал бы по `iptables -C` на правило каждый тик —
+	// exec-churn на роутере (PR #734).
+	//
+	// Множество общее по пространству ключей (Rule.Key), но консультирует его
+	// ТОЛЬКО Doom. Поэтому правило, ушедшее из желаемого и сметённое, а потом
+	// снова ставшее желаемым и снова ушедшее, не застревает: путь разности
+	// желаемых кладёт его в doomed сам, минуя латч. Плата — обратная: Doom
+	// формы, СОВПАВШЕЙ с однажды сметённой, становится no-op до конца жизни
+	// процесса.
+	reaped map[string]bool
+	// adopt — области усыновления, НЕ зависящие от текущего желаемого.
+	// Владение принадлежит метке: что мы когда-то поставили со своей меткой,
+	// то обязаны и снести — даже когда сейчас не хотим там ничего. Без этого
+	// «нечего хотеть» читается как «нечего убирать»: у выключенного инстанса
+	// и у режима без маскарада помеченных правил в желаемом нет, область
+	// сканирования пуста, и правило прошлого запуска демона живёт дальше.
+	adopt []adoptScope
 }
 
-func NewRuleSet(id proxyrt.ResourceID, ipt IPT, enableForward func() error) *RuleSet {
+// adoptScope — где искать чужие правила с нашей меткой.
+type adoptScope struct{ table, chain, tag string }
+
+// AdoptMarked объявляет постоянную область усыновления. Зовётся при сборке
+// роли, по одному разу на (table, chain, метка).
+func (r *RuleSet) AdoptMarked(table, chain, tag string) {
+	r.adopt = append(r.adopt, adoptScope{table: table, chain: chain, tag: tag})
+}
+
+func NewRuleSet(id proxyrt.ResourceID, ipt IPT) *RuleSet {
 	return &RuleSet{id: id, ipt: ipt, provider: StaticGroups(nil),
-		doomed: map[string]Rule{}, enableForward: enableForward}
+		doomed: map[string]Rule{}, reaped: map[string]bool{}}
 }
 
 // SetDesired: провайдер, дающий пустой набор, означает «правил быть не
@@ -55,6 +83,22 @@ func (r *RuleSet) SetDesired(provider GroupProvider) {
 		provider = StaticGroups(nil)
 	}
 	r.provider = provider
+}
+
+// Doom кладёт правила в ведомость на снос БЕЗ желаемого: форму, которую мы
+// больше не ставим, но обязаны убрать. Разность желаемых её не даст (в
+// желаемом её не было ни разу за этот запуск), усыновление-по-метке не
+// увидит (метки правило не несёт) — остаётся назвать её адресно.
+//
+// Уже снесённое правило Doom НЕ воскрешает: зовут его из декларации роли, то
+// есть каждый проход, а снос доводится один раз.
+func (r *RuleSet) Doom(rules ...Rule) {
+	for _, rule := range rules {
+		if r.reaped[rule.Key()] {
+			continue
+		}
+		r.doomed[rule.Key()] = rule
+	}
 }
 
 func (r *RuleSet) ID() proxyrt.ResourceID { return r.id }
@@ -92,15 +136,45 @@ func (r *RuleSet) Observe(ctx context.Context) (proxyrt.Observation, error) {
 	r.last = groups
 	missing := 0
 	for _, g := range groups {
-		all, _ := g.present(ctx, r.ipt)
+		all := g.present(ctx, r.ipt)
 		if !all {
 			missing++
 		}
 	}
 	stale := 0
-	for _, rule := range r.doomed {
-		if r.ipt.Run(ctx, rule.CheckArgs()...) == nil {
+	for key, rule := range r.doomed {
+		err := r.ipt.Run(ctx, rule.CheckArgs()...)
+		if err == nil {
 			stale++
+			continue
+		}
+		// Правила в ядре НЕТ — сносить нечего, снос доведён. Без этой защёлки
+		// ведомость не пустела никогда: Doom зовётся из декларации роли каждый
+		// проход, а sweep, который один и чистит ведомость, запускается только
+		// при stale != 0. На роутере, где легаси-правила не заводились ни разу,
+		// stale вечно 0 → `iptables -C` на каждую запись каждый раунд до конца
+		// жизни процесса, и RecheckAfter держал ruleRecheck из-за непустой
+		// ведомости даже при пустом желаемом.
+		//
+		// Защёлкиваем, только если правила нет И ЦЕПОЧКА ПРИ ЭТОМ ЕСТЬ.
+		//
+		// Цепочку могла только что снести перезапись таблиц движком ndm — и
+		// тогда легаси-правило, восстановленное потом хуком прежней версии, не
+		// было бы сметено уже никогда: Doom для защёлкнутого ключа — no-op до
+		// конца жизни процесса.
+		//
+		// Отличить эти случаи ПО ТЕКСТУ ошибки нельзя: на прошивке стенда
+		// (5.01, iptables из entware) `-C` отвечает одинаково и на «нет
+		// правила», и на «нет цепочки» — дословно «Bad rule (does a matching
+		// rule exist in that chain?)». Проверено пробой на железе 17.09.
+		// Поэтому признак берём НАБЛЮДЕНИЕМ: `-S <chain>` на существующей
+		// цепочке успешен, на отсутствующей выходит с ошибкой.
+		//
+		// Цена — один лишний `-S` на запись ведомости, и только в тот раунд,
+		// когда защёлка ставится: дальше ведомость пуста и проверять нечего.
+		if ruleAbsent(err) && r.chainExists(ctx, rule.table(), rule.Chain) {
+			delete(r.doomed, key)
+			r.reaped[key] = true
 		}
 	}
 	// Усыновление-по-метке (I-1): помеченные правила прежних запусков демона
@@ -121,30 +195,41 @@ func (r *RuleSet) Observe(ctx context.Context) (proxyrt.Observation, error) {
 	}, nil
 }
 
-// markedComments — метки и их (table, chain) из ТЕКУЩЕГО желаемого: где мы
-// ставим помеченные правила, там и усыновляем чужие той же метки.
+// markedOrphans — помеченные правила, живые в ядре сверх текущего желаемого.
+// Область поиска — объединение постоянных областей (AdoptMarked) и тех, где
+// помеченные правила есть в текущем желаемом.
 func (r *RuleSet) markedOrphans(ctx context.Context, current map[string]bool) ([]Rule, error) {
 	seen := map[string]bool{}
 	var orphans []Rule
+	scan := func(table, chain, tag string) error {
+		if tag == "" {
+			return nil
+		}
+		scope := table + "|" + chain + "|" + tag
+		if seen[scope] {
+			return nil
+		}
+		seen[scope] = true
+		live, err := listMarked(ctx, r.ipt, table, chain, tag)
+		if err != nil {
+			return err
+		}
+		for _, l := range live {
+			if !current[l.Key()] {
+				orphans = append(orphans, l)
+			}
+		}
+		return nil
+	}
+	for _, a := range r.adopt {
+		if err := scan(a.table, a.chain, a.tag); err != nil {
+			return nil, err
+		}
+	}
 	for _, g := range r.last {
 		for _, rule := range g.Rules {
-			tag := rule.CommentTag()
-			if tag == "" {
-				continue
-			}
-			scope := rule.table() + "|" + rule.Chain + "|" + tag
-			if seen[scope] {
-				continue
-			}
-			seen[scope] = true
-			live, err := listMarked(ctx, r.ipt, rule.table(), rule.Chain, tag)
-			if err != nil {
+			if err := scan(rule.table(), rule.Chain, rule.CommentTag()); err != nil {
 				return nil, err
-			}
-			for _, l := range live {
-				if !current[l.Key()] {
-					orphans = append(orphans, l)
-				}
 			}
 		}
 	}
@@ -167,11 +252,6 @@ func (r *RuleSet) Plan(obs proxyrt.Observation) []proxyrt.Step {
 func (r *RuleSet) Apply(ctx context.Context, s proxyrt.Step) error {
 	switch s.Op {
 	case "ensure":
-		if r.enableForward != nil {
-			if err := r.enableForward(); err != nil {
-				return err
-			}
-		}
 		for _, g := range r.last {
 			if err := g.ensure(ctx, r.ipt); err != nil {
 				return err
@@ -189,6 +269,7 @@ func (r *RuleSet) Apply(ctx context.Context, s proxyrt.Step) error {
 			}
 			if gone {
 				delete(r.doomed, key)
+				r.reaped[key] = true
 			}
 		}
 		if firstErr != nil {
@@ -217,8 +298,10 @@ func (r *RuleSet) Apply(ctx context.Context, s proxyrt.Step) error {
 	}
 }
 
-// sweepPasses — потолок проходов сноса ОДНОГО правила за шаг; паритет пяти
-// проходов старого NAT-ресинка (entware_nat_linux.go:316).
+// sweepPasses — потолок проходов сноса ОДНОГО правила за шаг. Смысл числа —
+// ограничить цикл: копий правила бывает больше одной, а `iptables -D` снимает
+// по одной за вызов. Пять — с запасом над реально виденными дублями (их
+// единицы), точной величины за числом нет.
 const sweepPasses = 5
 
 // deleteAll сносит ВСЕ копии правила. `iptables -D` снимает ровно одну, а
@@ -260,6 +343,14 @@ func ruleAbsent(err error) bool {
 		strings.Contains(msg, "no chain/target/match by that name")
 }
 
+// chainExists — есть ли цепочка, проверено НАБЛЮДЕНИЕМ. Текст ошибки `-C` для
+// этого не годится (см. защёлку в Observe): прошивка отвечает одинаково и на
+// «нет правила», и на «нет цепочки».
+func (r *RuleSet) chainExists(ctx context.Context, table, chain string) bool {
+	_, err := r.ipt.Output(ctx, "-t", table, "-S", chain)
+	return err == nil
+}
+
 func (r *RuleSet) RecheckAfter() time.Duration {
 	if len(r.last) == 0 && len(r.doomed) == 0 {
 		return 0
@@ -287,9 +378,7 @@ func (m *MSSClamp) SetDesired(cidrs []string) { m.cidrs = cidrs }
 
 func (m *MSSClamp) ID() proxyrt.ResourceID { return m.id }
 
-func (m *MSSClamp) jump() Rule {
-	return Rule{Table: "mangle", Chain: "FORWARD", Pos: 1, Spec: []string{"-j", MSSChain}}
-}
+func (m *MSSClamp) jump() Rule { return MSSJump() }
 
 func (m *MSSClamp) Observe(ctx context.Context) (proxyrt.Observation, error) {
 	if len(m.cidrs) == 0 {
@@ -319,17 +408,41 @@ func (m *MSSClamp) Apply(ctx context.Context, s proxyrt.Step) error {
 		return fmt.Errorf("неизвестный шаг %q", s.Op)
 	}
 	_ = m.ipt.Run(ctx, "-t", "mangle", "-N", MSSChain)
-	_ = m.ipt.Run(ctx, "-t", "mangle", "-F", MSSChain)
+	// Сверка перед вставкой вместо «флаш + безусловная вставка».
+	//
+	// Флаш опасен с тех пор, как эту же цепочку восстанавливает netfilter.d-хук
+	// (F349 §1): NDM запускает его в произвольный момент, и попади он между
+	// нашим `-F` и нашими вставками — правила встали бы дважды. Observe этого
+	// не увидел бы: он проверяет `-C`, а `-C` на дубле проходит. Дубли жили бы
+	// до следующей перезаписи таблиц.
+	//
+	// Идемпотентная форма снимает вопрос: и мы, и хук вставляем только
+	// отсутствующее, порядок прогонов значения не имеет.
+	//
+	// Вставляем ТОЛЬКО на ruleAbsent. Отказ, из которого «правила нет» не
+	// следует (занят xtables-лок, движок ndm переписывает таблицы, exec не
+	// запустился), в форме `err != nil` читался бы как «нет» — и мы вставили бы
+	// дубль, которого Observe не увидит: `-C` на дубле проходит. Ретраи в
+	// sys/iptables это смягчают, но не исключают.
+	ensure := func(r Rule) error {
+		err := m.ipt.Run(ctx, r.CheckArgs()...)
+		if err == nil {
+			return nil
+		}
+		if !ruleAbsent(err) {
+			return err
+		}
+		return m.ipt.Run(ctx, r.InsertArgs()...)
+	}
 	for _, r := range MSSRules(m.cidrs) {
-		if err := m.ipt.Run(ctx, r.InsertArgs()...); err != nil {
+		if err := ensure(r); err != nil {
 			return err
 		}
 	}
-	// Дубли jump снимаются до трёх раз — паритет setupEntwareMSSClamp.
-	for i := 0; i < 3; i++ {
-		_ = m.ipt.Run(ctx, m.jump().DeleteArgs()...)
-	}
-	return m.ipt.Run(ctx, m.jump().InsertArgs()...)
+	// Переход — тоже идемпотентно. Прежняя форма «снять до трёх раз, затем
+	// вставить» сама создавала окно: между последним `-D` и `-I` хук успевал
+	// вставить свою копию, и их становилось две.
+	return ensure(m.jump())
 }
 
 func (m *MSSClamp) RecheckAfter() time.Duration {

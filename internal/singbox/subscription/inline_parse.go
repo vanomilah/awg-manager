@@ -13,17 +13,17 @@ func parseInlineImportBody(body []byte) vlink.BatchResult {
 	if len(body) == 0 {
 		return vlink.BatchResult{}
 	}
-	if vlink.IsTrustTunnelClientTOML(body) {
-		return vlink.ParseTrustTunnelClientTOML(body)
+	if vlink.IsTrustTunnelTOML(body) {
+		return vlink.ParseTrustTunnelTOML(body)
 	}
 
 	out := vlink.BatchResult{}
 	tomlBlocks, linkBody := extractTrustTunnelTOMLBlocks(body)
 	for _, block := range tomlBlocks {
-		if !vlink.IsTrustTunnelClientTOML([]byte(block)) {
+		if !vlink.IsTrustTunnelTOML([]byte(block)) {
 			continue
 		}
-		res := vlink.ParseTrustTunnelClientTOML([]byte(block))
+		res := vlink.ParseTrustTunnelTOML([]byte(block))
 		out.Outbounds = append(out.Outbounds, res.Outbounds...)
 		out.Errors = append(out.Errors, res.Errors...)
 	}
@@ -101,9 +101,6 @@ func isInlineImportLinkLine(line string) bool {
 		return true
 	}
 	if strings.HasPrefix(lower, "tt://") {
-		return true
-	}
-	if vlink.IsTrustTunnelRawPayload(line) {
 		return true
 	}
 	return shareURLStartPlain.MatchString(line)

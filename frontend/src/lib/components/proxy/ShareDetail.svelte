@@ -10,7 +10,11 @@
 	import { errText } from '$lib/utils/errorMessage';
 	import { createIngressMutationLock } from '$lib/utils/ingressMutation';
 	import { servers, type ServersSnapshot } from '$lib/stores/servers';
-	import { buildRunningServerPeerDropdownOptions } from '$lib/utils/serverPeerOptions';
+	import {
+		buildRunningServerDropdownOptions,
+		connectForServerValue,
+		serverValueForConnect,
+	} from '$lib/utils/serverPeerOptions';
 	import { formatUptime } from '../freeturn/uptime';
 	import type { NatMode } from '$lib/utils/network';
 	import type {
@@ -24,7 +28,6 @@
 	import LogSection from './LogSection.svelte';
 	import ServerAllowlist from './ServerAllowlist.svelte';
 	import ServerClients from './ServerClients.svelte';
-	import ServerFreeTurnAuth from './ServerFreeTurnAuth.svelte';
 	import ServerSharedAuth from './ServerSharedAuth.svelte';
 	import { CLIENT_TEXT } from './serverClients';
 	import ShareAdvancedSection from './ShareAdvancedSection.svelte';
@@ -93,11 +96,9 @@
 	// на котором человек каждый день смотрит состояние и правит абонентов.
 	let settingsOpen = $state(false);
 
-	let peerConf = $state('');
-	// Выбранный пир живёт здесь: его показывают ДВА контрола — быстрый селект
-	// строки состояния (Дополнение №4 п.3) и виджет «Сети». Состояние одно,
-	// вся механика (.conf Keenetic, запрос конфига) осталась в «Сети».
-	let peer = $state('');
+	// WG-сервер раздачи показывают ДВА контрола — быстрый селект строки
+	// состояния (Дополнение №4 п.3) и «Сеть»; оба — производная от `-connect`
+	// черновика, второго состояния нет (#871).
 	let peerSnap = $state<ServersSnapshot | null>(null);
 	let lanOptions = $state<{ value: string; label: string }[]>([]);
 	let wanOptions = $state<{ value: string; label: string }[]>([]);
@@ -121,7 +122,8 @@
 	const clientAuthMode = $derived(wdttDraft?.clientAuthMode ?? localAuthMode);
 	const isSharedMode = $derived(clientAuthMode === 'shared');
 
-	const peerOptions = $derived(buildRunningServerPeerDropdownOptions(peerSnap));
+	const wgServerOptions = $derived(buildRunningServerDropdownOptions(peerSnap));
+	const wgServer = $derived(serverValueForConnect(peerSnap, ftDraft?.connect ?? ''));
 	const wdttStatus = $derived(row.protocol === 'wdtt' ? (status as WdttProcessStatus) : undefined);
 	const running = $derived(row.state === 'running');
 
@@ -171,6 +173,7 @@
 	// `undefined` — не знает и он (сервер не запускался, остановлен, процесс
 	// усыновлён); тогда расхождения не показываем (SH-56 молчит).
 	const exposeApplied = $derived(wdttStatus?.appliedExposeToPolicies);
+	const foreignAcls = $derived(wdttStatus?.foreignAcls);
 
 	// Каталог пиров общий со «Сетью»: стор один, второго запроса не будет.
 	// Отдельным эффектом, а не в onMount: асинхронный onMount отписку не вернёт.
@@ -406,16 +409,12 @@
 				/>
 			{/if}
 		{:else if ftServer}
-			<ServerFreeTurnAuth
+			<ServerAllowlist
 				serverId={row.id}
 				serverName={row.name}
-				server={ftDraft ?? ftServer}
-				{running}
+				server={ftServer}
 				busy={mutating}
 				{locked}
-				onsave={save}
-				bind:peer
-				bind:peerConf
 			/>
 		{/if}
 	</div>
@@ -451,6 +450,7 @@
 		bind:ftServer={ftDraft}
 		{lanOptions}
 		{exposeApplied}
+		{foreignAcls}
 		{saving}
 		busy={mutating}
 		onnat={setNat}
@@ -458,8 +458,6 @@
 		onpolicy={setPolicy}
 		onsave={save}
 		onrevert={revert}
-		onpeerconf={(conf) => (peerConf = conf)}
-		bind:peer
 	/>
 
 	<ShareAdvancedSection
@@ -470,21 +468,23 @@
 	/>
 </SideDrawer>
 
-<!-- RB-12: быстрый выбор пира зеркалит тумблер RB-09 у WDTT. Механика живёт
-     в «Сети»; здесь — тот же выбор под рукой. -->
+<!-- RB-12: быстрый выбор WG-сервера зеркалит тумблер RB-09 у WDTT. Тот же
+     выбор есть в «Сети»; здесь — под рукой. -->
 {#snippet peerSelect()}
 	<div class="run-toggle">
 		<Dropdown
-			label="Пир"
-			value={peer}
-			options={peerOptions}
-			placeholder={peerOptions.length ? 'Выберите…' : 'Нет поднятых WG-серверов с пирами'}
-			disabled={!peerOptions.length || mutating}
-			onchange={(v) => (peer = v)}
+			label="WG-сервер"
+			value={wgServer}
+			options={wgServerOptions}
+			placeholder={wgServerOptions.length ? 'Выберите…' : 'Нет поднятых WG-серверов'}
+			disabled={!wgServerOptions.length || mutating}
+			onchange={(v) => {
+				if (ftDraft) ftDraft.connect = connectForServerValue(peerSnap, v);
+			}}
 		/>
 		<FieldHint
-			text="Пир — вход для всех абонентов этого сервера: их трафик FreeTurn отдаёт в выбранный WG-сервер роутера, и маршрутизация абонентов повторяет маршрутизацию этого пира. Ссылка абоненту собирается из конфига пира."
-			ariaLabel="Подсказка: пир сервера"
+			text="WG-сервер роутера, в который FreeTurn отдаёт трафик абонентов (-connect). Пира под каждого абонента выбирают или создают при добавлении."
+			ariaLabel="Подсказка: WG-сервер раздачи"
 		/>
 	</div>
 {/snippet}

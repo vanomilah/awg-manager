@@ -8,8 +8,11 @@ type PolicyTunInboundSpec struct {
 	TunAddr4   string // e.g. "172.18.0.1/30"
 	TunAddr6   string // e.g. "fdfe:dcba:9876::1/126" (empty to omit v6)
 	MTU        int    //
-	Stack      string // "gvisor" (default; empty → gvisor) or "system"
+	Stack      string // пусто → ключ не пишется (собственный стек sing-tun); legacy: gvisor/system/mixed
 	UDPTimeout string // empty → DefaultUDPTimeout via resolveUDPTimeout
+	UDPNATMax  int    // 0 → sing-box сам выбирает (авто, ключ не пишется)
+	// ExternalConfiguration — см. Inbound.ExternalConfiguration.
+	ExternalConfiguration bool
 }
 
 // ensurePolicyTunInbound replaces the tproxy/redirect inbound pair of slot 20
@@ -41,28 +44,26 @@ func ensurePolicyTunInbound(in []Inbound, spec PolicyTunInboundSpec) []Inbound {
 	if spec.TunAddr6 != "" {
 		addrs = append(addrs, spec.TunAddr6)
 	}
-	// Stack: empty defaults to gvisor (robust, no gso flag). system REQUIRES
-	// gso:false on this router's kernel (4.9) — the system stack with GSO panics
-	// sing-tun under load (PoC-proven 2026-06-13).
-	stack := spec.Stack
-	if stack == "" {
-		stack = "gvisor"
-	}
+	// gso и endpoint_independent_nat здесь больше не выставляются: sing-box
+	// ≥1.13 удалил `gso` (true — фатальная ошибка при старте, false молча
+	// игнорируется; GSO движок теперь включает сам, и только при
+	// flow-outbound'ах вида wireguard/tailscale/bridge с TCP, которых у наших
+	// слотов нет), а `endpoint_independent_nat` удалён в 1.14 — по умолчанию
+	// `udp_mapping`/`udp_filtering` уже endpoint_independent.
 	tun := Inbound{
-		Type:                   "tun",
-		Tag:                    "tun-in",
-		InterfaceName:          spec.Iface,
-		Address:                addrs,
-		MTU:                    spec.MTU,
-		AutoRoute:              boolPtr(false),
-		AutoRedirect:           boolPtr(false),
-		StrictRoute:            boolPtr(false),
-		Stack:                  stack,
-		EndpointIndependentNAT: boolPtr(false),
-		UDPTimeout:             resolveUDPTimeout(spec.UDPTimeout),
-	}
-	if stack == "system" {
-		tun.GSO = boolPtr(false)
+		Type:          "tun",
+		Tag:           "tun-in",
+		InterfaceName: spec.Iface,
+		Address:       addrs,
+		MTU:           spec.MTU,
+		AutoRoute:     boolPtr(false),
+		AutoRedirect:  boolPtr(false),
+		StrictRoute:   boolPtr(false),
+		Stack:         spec.Stack,
+		UDPTimeout:    resolveUDPTimeout(spec.UDPTimeout),
+		UDPNATMax:     spec.UDPNATMax,
+
+		ExternalConfiguration: spec.ExternalConfiguration,
 	}
 	return append([]Inbound{tun}, out...)
 }

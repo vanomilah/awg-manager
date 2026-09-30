@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -556,8 +559,8 @@ func TestReconcileFakeIPTun_PoolV6HealsWhenV4Present(t *testing.T) {
 // F22: после рестарта демона в fakeip-режиме могли выжить чужие AWGM-цепочки
 // прежнего tproxy-режима — они заворачивают policy-трафик в порт без
 // слушателя, и не лечит их никто: fakeip своего netfilter не ставит, а
-// провал Uninstall внутри Disable молча проглатывается (Uninstall всегда
-// возвращает nil, F79). Первый тик реконсиляции обязан свипнуть один раз,
+// Uninstall best-effort и ошибки не возвращает (F79), поэтому провал шага
+// внутри Disable не наблюдаем. Первый тик реконсиляции обязан свипнуть один раз,
 // второй — молчать.
 func TestReconcileFakeIPTun_FirstTickSweepsForeignNetfilter(t *testing.T) {
 	h := newFakeIPEnableHarness(t, "")
@@ -589,5 +592,353 @@ func TestReconcileFakeIPTun_FirstTickSweepsForeignNetfilter(t *testing.T) {
 	}
 	if got := countCalls(h.log, "Uninstall"); got != 1 {
 		t.Errorf("тик 2: Uninstall вызван ещё раз (всего %d) — свип обязан быть разовым", got)
+	}
+}
+
+// F109: heal1140SlotMigration обобщён на два слота — эта проверка мирроит
+// TestReconcilePolicyTun_Heal1140SlotMigration (router-slot ветка), но для
+// 21-fakeip.json. Слот, поднятый до миграции на sing-box 1.14, годами
+// оставался бы в устаревшей форме (download_detour/gso/endpoint_independent_nat),
+// потому что fakeip-tun не проходит через reconcileInstalled/reconcilePolicyTun.
+func TestReconcileFakeIPTun_Heal1140SlotMigration(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	provisionForDisable(t, h) // Enable + live index + очистка лога
+
+	legacy := `{
+		"inbounds": [{
+			"type": "tun", "tag": "tun-in", "interface_name": "OpkgTun0",
+			"address": ["172.18.0.1/30"], "mtu": 1400, "stack": "gvisor",
+			"udp_timeout": "5m0s", "auto_route": false, "auto_redirect": false,
+			"strict_route": false, "gso": false, "endpoint_independent_nat": false
+		}],
+		"outbounds": [{"type": "direct", "tag": "direct"}],
+		"route": {
+			"rule_set": [{
+				"tag": "geosite-x", "type": "remote", "format": "binary",
+				"url": "https://example.com/x.srs", "update_interval": "24h",
+				"download_detour": "direct"
+			}],
+			"rules": [{"action": "route", "rule_set": ["geosite-x"], "outbound": "direct"}],
+			"final": "direct"
+		}
+	}`
+	activePath := filepath.Join(h.dir, "21-fakeip.json")
+	if err := os.WriteFile(activePath, []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	all, _ := h.store.Load()
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun: %v", err)
+	}
+
+	raw, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	for _, want := range []string{`"http_clients"`, `"http_client"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("migrated slot missing %s: %s", want, raw)
+		}
+	}
+	for _, gone := range []string{"download_detour", "gso", "endpoint_independent_nat"} {
+		if strings.Contains(string(raw), gone) {
+			t.Errorf("migrated slot still has legacy key %q: %s", gone, raw)
+		}
+	}
+
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun (2nd tick): %v", err)
+	}
+
+	after, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("second reconcile tick rewrote already-migrated slot (before=%v after=%v)", before.ModTime(), after.ModTime())
+	}
+}
+
+// F114: смена udpTimeout/udpNatMax доезжает до fakeip tun-in без
+// Disable/Enable — до фикса tun-in строится только на enable
+// (ensureFakeIPOverlay), и UpdateSettings оставался мёртвым до перезапуска
+// режима.
+func TestReconcileFakeIPTun_HealsUDPSettings(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	provisionForDisable(t, h)
+
+	all, _ := h.store.Load()
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+	sr.UDPTimeout = "10m0s"
+	sr.UDPNATMax = 8192
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun: %v", err)
+	}
+
+	activePath := filepath.Join(h.dir, "21-fakeip.json")
+	raw, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	cfg, err := parseRouterConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("parse active: %v", err)
+	}
+	var tun *Inbound
+	for i := range cfg.Inbounds {
+		if cfg.Inbounds[i].Tag == "tun-in" {
+			tun = &cfg.Inbounds[i]
+		}
+	}
+	if tun == nil {
+		t.Fatal("tun-in инбаунд отсутствует")
+	}
+	if tun.UDPTimeout != "10m0s" || tun.UDPNATMax != 8192 {
+		t.Errorf("tun-in UDPTimeout=%q UDPNATMax=%d, want 10m0s/8192", tun.UDPTimeout, tun.UDPNATMax)
+	}
+	ruleOK := false
+	for _, r := range cfg.Route.Rules {
+		if isSystemUDPTimeoutRule(r) {
+			ruleOK = r.UDPTimeout == "10m0s"
+		}
+	}
+	if !ruleOK {
+		t.Error("route-options правило udp_timeout не обновлено до 10m0s")
+	}
+
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun (2nd tick): %v", err)
+	}
+	after, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("второй тик без изменений переписал слот (before=%v after=%v)", before.ModTime(), after.ModTime())
+	}
+}
+
+// F114 fix round 1: guard в healTunSettings обязан ловить не только
+// расхождение полей tun-in, но и пропавшее/устаревшее route-options
+// правило — иначе при уже верных полях инбаунда heal no-op'ится навсегда,
+// хотя правило снято. Инбаунд не трогаем (sr не меняем — дефолт "5m0s"),
+// вырезаем ТОЛЬКО правило.
+func TestReconcileFakeIPTun_HealsMissingUDPTimeoutRule(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	provisionForDisable(t, h)
+
+	all, _ := h.store.Load()
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+
+	activePath := filepath.Join(h.dir, "21-fakeip.json")
+	raw, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	cfg, err := parseRouterConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("parse active: %v", err)
+	}
+	cfg.EnsureUDPTimeoutRule("") // снимает правило, ничего не добавляя
+	if err := h.svc.persistFakeIPConfig(context.Background(), cfg); err != nil {
+		t.Fatalf("persistFakeIPConfig: %v", err)
+	}
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun: %v", err)
+	}
+
+	raw, err = os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active (после): %v", err)
+	}
+	after, err := parseRouterConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("parse active (после): %v", err)
+	}
+	ruleOK := false
+	for _, r := range after.Route.Rules {
+		if isSystemUDPTimeoutRule(r) {
+			ruleOK = r.UDPTimeout == "5m0s"
+		}
+	}
+	if !ruleOK {
+		t.Error("route-options правило udp_timeout не восстановлено")
+	}
+
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun (2nd tick): %v", err)
+	}
+	afterStat, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !afterStat.ModTime().Equal(before.ModTime()) {
+		t.Errorf("второй тик без изменений переписал слот (before=%v after=%v)", before.ModTime(), afterStat.ModTime())
+	}
+}
+
+// fakeip: адрес tun'а, снятый мимо NDMS, повторяется через NDMS, а флаг
+// external_configuration доводится до пиннутого бинаря (см. policy-tun-близнецы).
+func TestReconcileFakeIPTun_HealsTunAddressAndExternalConfiguration(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	provisionForDisable(t, h)
+	all, _ := h.store.Load()
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+	stubTunKernelAddrs(t)
+	stubExternalFlipFast(t)
+	h.log.calls = nil
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun: %v", err)
+	}
+	if !h.log.has("SetAddress:OpkgTun0:172.18.0.1:255.255.255.252") {
+		t.Errorf("IPv4 не повторён через NDMS: %v", h.log.calls)
+	}
+	raw, err := os.ReadFile(filepath.Join(h.dir, "21-fakeip.json"))
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	cfg, err := parseRouterConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("parse active: %v", err)
+	}
+	ok := false
+	for _, in := range cfg.Inbounds {
+		if in.Tag == "tun-in" {
+			ok = in.ExternalConfiguration
+		}
+	}
+	if !ok {
+		t.Error("флаг external_configuration не доведён до tun-in слота 21")
+	}
+}
+
+// fakeipTunExternal читает флаг external_configuration tun-in из слота 21.
+func fakeipTunExternal(t *testing.T, h *fakeIPEnableHarness) bool {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(h.dir, "21-fakeip.json"))
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	cfg, err := parseRouterConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("parse active: %v", err)
+	}
+	for _, in := range cfg.Inbounds {
+		if in.Tag == "tun-in" {
+			return in.ExternalConfiguration
+		}
+	}
+	t.Fatal("tun-in отсутствует в слоте 21")
+	return false
+}
+
+// Правка конфига fakeip пользователем не переключает флаг: переход на него под
+// живым инстансом без флага снимает адрес, и закрывает этот переход только тик
+// (completeExternalFlip). Overlay переносит флаг из слота как есть.
+func TestFakeIPWithConfig_OverlayKeepsExternalConfiguration(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	provisionForDisable(t, h) // бинарь не пиннутый — флаг false
+	sb := h.svc.deps.Singbox.(*fakeSingbox)
+	sb.tunHotReload = true // бинарь обновили, тик ещё не прошёл
+
+	noop := func(*RouterConfig) error { return nil }
+	if err := h.svc.fakeipWithConfig(context.Background(), "test", noop); err != nil {
+		t.Fatalf("fakeipWithConfig: %v", err)
+	}
+	if fakeipTunExternal(t, h) {
+		t.Error("правка пользователя включила флаг мимо тика")
+	}
+
+	// Флаг уже стоит (тик прошёл) — правка его не снимает.
+	all, _ := h.store.Load()
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+	stubTunKernelAddrs(t, "172.18.0.1", "fdfe:dcba:9876::1")
+	stubExternalFlipFast(t)
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun: %v", err)
+	}
+	if !fakeipTunExternal(t, h) {
+		t.Fatal("фикстура: тик обязан включить флаг")
+	}
+	sb.tunHotReload = false
+	if err := h.svc.fakeipWithConfig(context.Background(), "test", noop); err != nil {
+		t.Fatalf("fakeipWithConfig (2): %v", err)
+	}
+	if !fakeipTunExternal(t, h) {
+		t.Error("правка пользователя сняла флаг мимо тика")
+	}
+}
+
+func TestFakeIPEnable_WritesExternalConfiguration(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+	if err := h.svc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(h.dir, "21-fakeip.json"))
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	cfg, err := parseRouterConfigBytes(raw)
+	if err != nil {
+		t.Fatalf("parse active: %v", err)
+	}
+	found := false
+	for _, in := range cfg.Inbounds {
+		if in.Tag == "tun-in" {
+			found = in.ExternalConfiguration
+		}
+	}
+	if !found {
+		t.Error("включение не записало external_configuration в tun-in")
+	}
+}
+
+// Тиковый heal адреса в fakeip — без перехода (флаг уже стоит).
+func TestReconcileFakeIPTun_HealsTunAddressWithoutFlip(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+	provisionForDisable(t, h)
+	if !fakeipTunExternal(t, h) {
+		t.Fatal("фикстура: флаг после включения")
+	}
+	all, _ := h.store.Load()
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+	stubTunKernelAddrs(t, "fdfe:dcba:9876::1")
+	applies := stubExternalFlipApply(t, nil)
+	h.log.calls = nil
+
+	if err := h.svc.reconcileFakeIPTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcileFakeIPTun: %v", err)
+	}
+	if !h.log.has("SetAddress:OpkgTun0:172.18.0.1:255.255.255.252") {
+		t.Errorf("IPv4 не возвращён тиком: %v", h.log.calls)
+	}
+	if *applies != 0 {
+		t.Errorf("без перехода применять нечего, применений %d", *applies)
 	}
 }

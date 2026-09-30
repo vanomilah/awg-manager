@@ -1,0 +1,56 @@
+package main
+
+import (
+	"path/filepath"
+
+	ndmstransport "github.com/hoaxisr/awg-manager/internal/ndms/transport"
+	"github.com/hoaxisr/awg-manager/internal/obfuscator"
+	"github.com/hoaxisr/awg-manager/internal/singbox/router"
+	"github.com/hoaxisr/awg-manager/internal/storage"
+	"github.com/hoaxisr/awg-manager/internal/sys/kmod"
+	"github.com/hoaxisr/awg-manager/internal/sys/ndmsinfo"
+	"github.com/hoaxisr/awg-manager/internal/tunnel"
+)
+
+// applyDataDir перенацеливает пакеты, чьи каталоги производны от каталога
+// данных. Пакеты держат их отдельными переменными (их же подменяют тесты), и
+// без этой раздачи флаг `-data-dir` соблюдался наполовину: запуск «в
+// песочнице» всё равно писал в /opt/etc/awg-manager.
+//
+// Сюда попадает то, что демон ПИШЕТ как свои данные и что умеет
+// перенацеливаться. Осознанно не тронуты: бинари Entware (/opt/bin); белый
+// список файлового редактора (`sys/files/sandbox.go`) — там боевой каталог
+// зашит константой, и с нестандартным -data-dir корень «AWG Manager» в UI
+// покажет чужой каталог; дерево sing-box (бинарь, config.d, cache.db) — его
+// пути константны и требуют правки сигнатур.
+//
+// Под флагом работает и `--cleanup` (он удаляет туннели и конфиги релея из
+// того же каталога). `--service` перенацеленных путей не читает вовсе.
+func applyDataDir(dataDir string) {
+	// Абсолютный путь обязателен: значение уезжает в тело шелл-скрипта хука
+	// ndm, а его запускает роутер со своим рабочим каталогом.
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs
+	}
+	tunnel.ConfDir = dataDir
+	obfuscator.ConfDir = filepath.Join(dataDir, "obfuscator")
+	kmod.ModulesDir = filepath.Join(dataDir, "modules")
+	obfuscator.ArmPath = filepath.Join(kmod.ModulesDir, "awgm_relay.arming")
+	router.SetDataDir(dataDir)
+	ndmstransport.SetTokenFile(filepath.Join(dataDir, storage.RCITokenFile), ndmsinfo.SupportsRCIToken)
+
+	if dataDir == defaultDataDir {
+		singboxDataDir = ""
+		return
+	}
+	// Дальше — только для НЕбоевого каталога. Хук ndm лежит вне каталога
+	// данных, но его тело ссылается на перенацеленные файлы: оставив хук на
+	// месте, песочница переписала бы боевой скрипт ссылками на /tmp, и после
+	// её ухода ndm восстанавливал бы правила по мёртвым путям.
+	router.SetNetfilterHookPath(filepath.Join(dataDir, "ndm-netfilter.d", "50-awgm-tproxy.sh"))
+	singboxDataDir = filepath.Join(dataDir, "singbox")
+}
+
+// singboxDataDir — каталог sing-box для небоевого -data-dir (F487); пусто =
+// умолчание оператора рядом с боевым бинарём.
+var singboxDataDir string

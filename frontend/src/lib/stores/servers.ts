@@ -17,7 +17,16 @@ async function fetchServers(): Promise<ServersSnapshot> {
 
 export const servers = createPollingStore<ServersSnapshot>(fetchServers, {
 	staleTime: 5_000,
-	pollInterval: 5_000,
+	// Таймера нет. Утверждение «у managedStats публикатора НЕТ» было неверным:
+	// GetStats читает НЕ удалённого агента, а тот же WGServers локального
+	// роутера (internal/managed/service_server.go), и его наблюдает поллер
+	// метрик — он публикует `servers` на смену дайджеста пиров. Плюс наши
+	// мутации, плюс теперь хук NDMS на появление и исчезновение интерфейса
+	// (F364).
+	//
+	// Остаточный случай: сервер, заведённый мимо панели и не породивший
+	// интерфейсного хука, доедет при следующем открытии страницы.
+	pollInterval: 0,
 });
 
 registerStore('servers', servers);

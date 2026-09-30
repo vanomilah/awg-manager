@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
+	import { startVisiblePoll } from '$lib/utils/visiblePoll';
 	import { Eye, EyeOff, Server } from 'lucide-svelte';
 	import type { SystemTunnel, ConnectivityResult } from '$lib/types';
 	import { api } from '$lib/api/client';
@@ -48,17 +49,26 @@
 		}
 	}
 
-	// Auto-check connectivity every 60s when up
+	// Проверка раз в 60 с, пока туннель поднят.
+	//
+	// Спит в фоновой вкладке и догоняет при возврате: проверка стоит полного
+	// TLS-рукопожатия через интерфейс, а на этом железе это дорого. Заменить её
+	// данными матрицы нельзя — системные туннели матрица НЕ зондирует вовсе
+	// (их строки добавляются без SelfTarget, см. monitoring/scheduler.go).
+	//
+	// Эффект зависит от `isUp`, а не от `tunnel.status`: объект `tunnel` новый
+	// на каждом обновлении снимка (событие трафика раз в ~10 с), и чтение поля
+	// пропа перезапускало эффект, а с ним и немедленную проверку — на стенде
+	// 114 проверок за 7 минут вместо 14.
+	const isUp = $derived(tunnel.status === 'up');
 	$effect(() => {
-		const status = tunnel.status;
+		const up = isUp;
 		const disabled = checkDisabled;
-		if (status !== 'up' || disabled) {
+		if (!up || disabled) {
 			connectivity = null;
 			return;
 		}
-		untrack(() => checkConnectivity());
-		const interval = setInterval(checkConnectivity, 60000);
-		return () => clearInterval(interval);
+		return untrack(() => startVisiblePoll(checkConnectivity, 60000));
 	});
 
 	let statusDot = $derived.by((): { variant: StatusDotVariant; pulse: boolean; label: string } => {
@@ -147,6 +157,13 @@
 					</div>
 					<div class="meta-tags-dense">
 						<Badge variant="info" size="sm">Системный</Badge>
+						{#if tunnel.external === 'phobos'}
+							<Badge
+								variant="warning"
+								size="sm"
+								title="Создан установщиком Phobos; awg-manager им не управляет"
+							>внешний (Phobos)</Badge>
+						{/if}
 						<span class="iface-chip-dense" title={tunnel.interfaceName}>{tunnel.interfaceName}</span>
 					</div>
 				</div>
@@ -189,6 +206,12 @@
 					<div class="meta-line">
 						<span class="iface-name">{tunnel.interfaceName}</span>
 						<span class="version-badge badge-system">Системный</span>
+						{#if tunnel.external === 'phobos'}
+							<span
+								class="version-badge badge-system"
+								title="Создан установщиком Phobos; awg-manager им не управляет"
+							>внешний (Phobos)</span>
+						{/if}
 					</div>
 					{#if compactStatusHint}
 						<span class="status-hint-left">{compactStatusHint}</span>

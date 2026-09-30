@@ -7,6 +7,8 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/nwg"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/wan"
 )
 
 // === Mock implementations ===
@@ -33,7 +35,6 @@ func (m *MockStateManager) SetState(tunnelID string, state tunnel.StateInfo) {
 
 // MockOperator is a mock operator.
 type MockOperator struct {
-	createError      error
 	startError       error
 	stopError        error
 	deleteError      error
@@ -45,7 +46,6 @@ type MockOperator struct {
 	// TrackedEndpointIPs maps tunnelID -> IP for GetTrackedEndpointIP.
 	TrackedEndpointIPs map[string]string
 
-	CreateCalls                  []tunnel.Config
 	StartCalls                   []tunnel.Config
 	StopCalls                    []string
 	DeleteCalls                  []string
@@ -58,17 +58,14 @@ type MockOperator struct {
 		ID  string
 		MTU int
 	}
-	UpdateDescriptionCalls []struct{ ID, Desc string }
+	UpdateDescriptionCalls []descCall
 	SyncDNSCalls           [][]string
 	SyncAddressCalls       []struct {
 		ID, Addr, IPv6 string
 		Prefix         int
 	}
-}
 
-func (m *MockOperator) Create(ctx context.Context, cfg tunnel.Config) error {
-	m.CreateCalls = append(m.CreateCalls, cfg)
-	return m.createError
+	CaptureDescriptionCalls []descCall
 }
 
 func (m *MockOperator) ColdStart(ctx context.Context, cfg tunnel.Config) error {
@@ -76,7 +73,7 @@ func (m *MockOperator) ColdStart(ctx context.Context, cfg tunnel.Config) error {
 	return m.startError
 }
 
-func (m *MockOperator) Stop(ctx context.Context, tunnelID string) error {
+func (m *MockOperator) Stop(ctx context.Context, tunnelID, _ string) error {
 	m.StopCalls = append(m.StopCalls, tunnelID)
 	return m.stopError
 }
@@ -142,8 +139,17 @@ func (m *MockOperator) RemoveDefaultRoute(ctx context.Context, tunnelID string) 
 	return nil
 }
 
-func (m *MockOperator) UpdateDescription(ctx context.Context, tunnelID, description string) error {
-	m.UpdateDescriptionCalls = append(m.UpdateDescriptionCalls, struct{ ID, Desc string }{tunnelID, description})
+// descCall — вызов записи описания: Prev — имя до переименования (по нему
+// оператор проверяет владение записью), у захвата пусто.
+type descCall struct{ ID, Prev, Desc string }
+
+func (m *MockOperator) UpdateDescription(ctx context.Context, tunnelID, prevName, description string) error {
+	m.UpdateDescriptionCalls = append(m.UpdateDescriptionCalls, descCall{tunnelID, prevName, description})
+	return nil
+}
+
+func (m *MockOperator) CaptureDescription(ctx context.Context, tunnelID, description string) error {
+	m.CaptureDescriptionCalls = append(m.CaptureDescriptionCalls, descCall{ID: tunnelID, Desc: description})
 	return nil
 }
 
@@ -579,3 +585,62 @@ func TestApplyDiffKernel_AggregatesErrors(t *testing.T) {
 type errStub string
 
 func (e errStub) Error() string { return string(e) }
+
+// TestNew_NativeWGStateWiring пинует шов присваивания svc.nwgState (RT76):
+// New гардирует typed-nil явной проверкой `nwgOp != nil` — без гарда
+// *nwg.OperatorNativeWG(nil), упакованный в интерфейс nativeWGStateReader,
+// дал бы non-nil интерфейс, и последующий код читал бы состояние через
+// nil-указатель.
+func TestNew_NativeWGStateWiring(t *testing.T) {
+	store := &storage.AWGTunnelStore{}
+	legacyOp := &MockOperator{}
+	stateMgr := NewMockStateManager()
+	wanModel := wan.NewModel()
+
+	t.Run("nil operator", func(t *testing.T) {
+		var nwgOp *nwg.OperatorNativeWG
+		svc := New(store, nwgOp, legacyOp, stateMgr, wanModel, nil)
+		if svc.nwgState != nil {
+			t.Error("nwgState должен остаться nil при nil-операторе")
+		}
+	})
+
+	t.Run("live operator", func(t *testing.T) {
+		svc := New(store, &nwg.OperatorNativeWG{}, legacyOp, stateMgr, wanModel, nil)
+		if svc.nwgState == nil {
+			t.Error("nwgState должен быть установлен при живом операторе")
+		}
+	})
+}
+
+// Правка обфусцированного туннеля обязана доехать до релея и без рукопожатия:
+// без ASC такой туннель висит в Starting, с ASC уезжает в Broken, упавший
+// релей — тоже Broken. Обычный туннель по-прежнему синхронизируется только
+// запущенным (Q21).
+func TestShouldSyncRuntime(t *testing.T) {
+	obf := &storage.AWGTunnel{Obfuscator: &storage.Obfuscator{Flavor: storage.ObfuscatorFlavorPhobos}}
+	plain := &storage.AWGTunnel{}
+	cases := []struct {
+		name   string
+		stored *storage.AWGTunnel
+		state  tunnel.State
+		want   bool
+	}{
+		{"обычный Running", plain, tunnel.StateRunning, true},
+		{"обычный Starting", plain, tunnel.StateStarting, false},
+		{"обычный Broken", plain, tunnel.StateBroken, false},
+		{"обычный Stopped", plain, tunnel.StateStopped, false},
+		{"обфускатор Running", obf, tunnel.StateRunning, true},
+		{"обфускатор Starting", obf, tunnel.StateStarting, true},
+		{"обфускатор Broken", obf, tunnel.StateBroken, true},
+		{"обфускатор Stopped", obf, tunnel.StateStopped, false},
+		{"обфускатор NotCreated", obf, tunnel.StateNotCreated, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := shouldSyncRuntime(c.stored, tunnel.StateInfo{State: c.state}); got != c.want {
+				t.Errorf("shouldSyncRuntime(%v) = %v, want %v", c.state, got, c.want)
+			}
+		})
+	}
+}

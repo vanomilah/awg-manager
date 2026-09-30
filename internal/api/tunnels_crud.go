@@ -3,17 +3,18 @@ package api
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/hoaxisr/awg-manager/internal/obfuscator"
 	"github.com/hoaxisr/awg-manager/internal/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/response"
+	"github.com/hoaxisr/awg-manager/internal/signature"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/traffic"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
@@ -194,142 +195,17 @@ func (h *TunnelsHandler) Get(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, resp)
 }
 
-// Create creates a new tunnel.
-//
-//	@Summary		Create tunnel
-//	@Tags			tunnels
-//	@Accept			json
-//	@Produce		json
-//	@Security		CookieAuth
-//	@Success		200	{object}	APIEnvelope
-//	@Failure		400	{object}	APIErrorEnvelope
-//	@Failure		500	{object}	APIErrorEnvelope
-//	@Router			/tunnels/create [post]
-func (h *TunnelsHandler) Create(w http.ResponseWriter, r *http.Request) {
-	req, ok := parseJSON[storage.AWGTunnel](w, r, http.MethodPost)
-	if !ok {
-		return
+// awg3ErrorCode отделяет отказы по сигнатуре от прочих отказов гейта
+// config.ValidateObfuscation: карточка показывает их на полях I1-I5.
+func awg3ErrorCode(err error) string {
+	switch {
+	case errors.Is(err, signature.ErrPacketsTooLarge):
+		return "SIGNATURE_TOO_LARGE"
+	case errors.Is(err, signature.ErrInvalidPacketTag):
+		return "SIGNATURE_INVALID_TAG"
+	default:
+		return "INVALID_AWG3"
 	}
-
-	if err := config.ValidateKeepaliveForBackend(req.Peer.PersistentKeepalive, req.Backend); err != nil {
-		response.Error(w, err.Error(), "INVALID_KEEPALIVE")
-		return
-	}
-
-	// Validate endpoint resolves
-	if err := config.ValidateAWG3(&req.Interface.AWGObfuscation); err != nil {
-		response.Error(w, err.Error(), "INVALID_AWG3")
-		return
-	}
-	if req.Peer.Endpoint != "" {
-		if _, _, err := netutil.ResolveEndpoint(req.Peer.Endpoint); err != nil {
-			response.Error(w, "endpoint не резолвится: "+err.Error(), "INVALID_ENDPOINT")
-			return
-		}
-	}
-
-	// Generate ID if not provided
-	tunnelID := req.ID
-	if tunnelID == "" {
-		var err error
-		tunnelID, err = h.store.NextAvailableID(r.Context(), req.Backend, h.opkgOccupancy)
-		if err != nil {
-			response.Error(w, "failed to generate tunnel ID", "CREATE_FAILED")
-			return
-		}
-	} else if !isValidTunnelID(tunnelID) {
-		response.Error(w, "invalid tunnel ID", "INVALID_ID")
-		return
-	} else if err := h.checkExplicitIDFree(r.Context(), tunnelID, req.Backend); err != nil {
-		response.ErrorWithStatus(w, http.StatusConflict, err.Error(), "INDEX_TAKEN")
-		return
-	}
-
-	// Prepare tunnel data
-	req.ID = tunnelID
-	req.Type = "awg"
-	req.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-	if !req.Enabled {
-		req.Enabled = true
-	}
-	req.ISPInterface = "" // auto mode: NDMS picks default gateway
-	req.ISPInterfaceLabel = "Определяет роутер"
-
-	// Gate from before the NDMS Create call through publishTunnelList so
-	// the hook-driven snapshot rebroadcast sees the finalized store state.
-	// Only relevant for NativeWG (kernel backend doesn't touch NDMS at
-	// Create time), but always entering is cheap and keeps the flow
-	// symmetric. The final publishTunnelList at the bottom triggers its
-	// own snapshot refresh AFTER gate exit.
-	if h.selfCreateGate != nil {
-		h.selfCreateGate.EnterSelfCreate()
-		defer h.selfCreateGate.ExitSelfCreate()
-	}
-	// Дефолты пингчека — ДО вызова: запись сохраняет сервис, и всё, что
-	// должно попасть на диск, обязано быть проставлено раньше.
-	if req.PingCheck == nil && h.pingCheck != nil {
-		req.PingCheck = &storage.TunnelPingCheck{
-			Enabled:       false,
-			Method:        "icmp",
-			Target:        "8.8.8.8",
-			Interval:      45,
-			DeadInterval:  120,
-			FailThreshold: 3,
-			MinSuccess:    1,
-			Timeout:       5,
-			Restart:       true,
-		}
-	}
-
-	// Ресурс в NDMS, запись и конфиг создаёт сервис одной операцией — вместе
-	// с откатом. Раньше запись и конфиг писал этот хендлер уже после
-	// возврата, и при их провале созданный ресурс оставался сиротой.
-	if err := h.svc.Create(r.Context(), &req); err != nil {
-		h.log.Warn("create", req.Name, "Service create failed: "+err.Error())
-		response.Error(w, err.Error(), "CREATE_FAILED")
-		return
-	}
-
-	h.log.Info("create", req.Name, "Tunnel created")
-	h.publishTunnelList(r.Context())
-
-	// Return the created tunnel
-	resp, err := BuildTunnelResponse(r, h.svc, h.store, tunnelID, h.quiescentFor(tunnelID))
-	if err != nil {
-		response.Error(w, err.Error(), "CREATE_FAILED")
-		return
-	}
-	response.Success(w, resp)
-}
-
-// checkExplicitIDFree проверяет присланный клиентом идентификатор той же
-// занятостью, что и сгенерированный.
-//
-// Идентификатор задаёт номер интерфейса OpkgTun — включая клиентские вроде
-// "myvpn", которым extractTunnelNum подставляет ноль. Без этой проверки запись
-// создавалась бы на номере, который держит чужая подсистема, и первое же
-// включение усыновило бы её интерфейс: kernel-путь опознаёт свой интерфейс по
-// номеру, а не по описанию.
-//
-// nativewg не спрашивается: он живёт как Wireguard<N> и номеров OpkgTun не
-// занимает. Пустой источник занятости — тоже не отказ: явный идентификатор
-// принимали и до появления занятости, ломать это на неполной проводке незачем.
-func (h *TunnelsHandler) checkExplicitIDFree(ctx context.Context, tunnelID, backend string) error {
-	if backend == "nativewg" || h.opkgOccupancy == nil {
-		return nil
-	}
-	idx, occupies := tunnel.OpkgTunIndexOf(tunnelID)
-	if !occupies {
-		return nil
-	}
-	taken, err := h.opkgOccupancy(ctx)
-	if err != nil {
-		return fmt.Errorf("не удалось проверить занятость номеров: %w", err)
-	}
-	if taken[idx] {
-		return fmt.Errorf("номер интерфейса OpkgTun%d уже занят — выберите другой идентификатор или не задавайте его вовсе", idx)
-	}
-	return nil
 }
 
 // Update updates an existing tunnel.
@@ -342,6 +218,8 @@ func (h *TunnelsHandler) checkExplicitIDFree(ctx context.Context, tunnelID, back
 //	@Param			id	query	string	true	"Tunnel id"
 //	@Success		200	{object}	APIEnvelope
 //	@Failure		400	{object}	APIErrorEnvelope
+//	@Failure		403	{object}	APIErrorEnvelope
+//	@Failure		409	{object}	APIErrorEnvelope
 //	@Failure		500	{object}	APIErrorEnvelope
 //	@Router			/tunnels/update [post]
 func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -366,6 +244,13 @@ func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	existing, err := h.store.Get(id)
 	if err != nil {
 		response.Error(w, "tunnel not found", "NOT_FOUND")
+		return
+	}
+
+	// Защита (#818) отвергает правку до всякого побочного действия: и до
+	// ветки зеркальной записи, которая пишет сама, и до svc.Update.
+	if existing.Locked {
+		response.ErrorWithStatus(w, http.StatusForbidden, tunnelLockedMessage, "TUNNEL_LOCKED")
 		return
 	}
 
@@ -484,13 +369,43 @@ func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	applyTunnelUpdate(&merged, &req)
 	newPingCheckEnabled := merged.PingCheck != nil && merged.PingCheck.Enabled
 
-	if err := config.ValidateKeepaliveForBackend(merged.Peer.PersistentKeepalive, merged.Backend); err != nil {
+	if err := config.ValidateKeepalive(merged.Peer.PersistentKeepalive); err != nil {
 		response.Error(w, err.Error(), "INVALID_KEEPALIVE")
 		return
 	}
-	if err := config.ValidateAWG3(&merged.Interface.AWGObfuscation); err != nil {
-		response.Error(w, err.Error(), "INVALID_AWG3")
+	// Запрет нулевой нижней границы — только на ПРИСЛАННОМ значении: на слитой
+	// записи он запер бы туннель, сохранённый с "0-80" до запрета. Признак
+	// «блок пира прислали» — тот же, по которому его применяет mergedPeer.
+	if req.Peer.PublicKey != "" {
+		if err := config.ValidateKeepaliveSubmitted(req.Peer.PersistentKeepalive); err != nil {
+			response.Error(w, err.Error(), "INVALID_KEEPALIVE")
+			return
+		}
+	}
+	if err := config.ValidateObfuscation(&merged.Interface.AWGObfuscation); err != nil {
+		response.Error(w, err.Error(), awg3ErrorCode(err))
 		return
+	}
+	if err := obfuscator.Validate(merged.Obfuscator); err != nil {
+		response.Error(w, err.Error(), "INVALID_OBFUSCATOR")
+		return
+	}
+	// UI этого не шлёт (endpoint disabled, вкладка «Обфускация» скрыта), а
+	// MCP/curl — может: чужой endpoint увёл бы WG мимо релея, а AWG-параметры
+	// легли бы ASC-обфускацией поверх обфускации релея.
+	if existing.Obfuscator != nil {
+		if merged.Peer.Endpoint != existing.Peer.Endpoint {
+			response.Error(w, "endpoint обфусцированного туннеля не правится", "INVALID_OBFUSCATOR")
+			return
+		}
+		// Сравнение с записью, а не абсолютное состояние: ручной импорт
+		// ClusterM принимает любой .conf, в том числе с AWG-параметрами, и
+		// такой туннель иначе стал бы вечно нередактируемым.
+		if config.IsAWGObfuscated(&merged.Interface) &&
+			merged.Interface.AWGObfuscation != existing.Interface.AWGObfuscation {
+			response.Error(w, "параметры AWG несовместимы с обфускатором", "INVALID_OBFUSCATOR")
+			return
+		}
 	}
 
 	// Validate endpoint resolves (only if changed)
@@ -507,6 +422,14 @@ func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// the change to the running interface, we don't persist it either,
 	// otherwise on-disk state would diverge from the live state.
 	if err := h.svc.Update(r.Context(), existing, &merged); err != nil {
+		if errors.Is(err, tunnel.ErrOperationInProgress) {
+			// Занятый per-tunnel замок — ретраибельный конфликт, а не отказ
+			// правки: карточка цела, туннель просто занят своим действием
+			// (WAN-up, рестарт по ping-check). Тот же контракт, что у
+			// delete выше и у start/stop/restart в control.go.
+			response.ErrorWithStatus(w, http.StatusConflict, err.Error(), "OPERATION_IN_PROGRESS")
+			return
+		}
 		h.log.Warn("update", merged.Name, "Service update failed: "+err.Error())
 		response.Error(w, err.Error(), "UPDATE_FAILED")
 		return
@@ -593,6 +516,87 @@ func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
 	response.Success(w, resp)
 }
 
+// tunnelLockedMessage — текст 403 у всех шести защищённых операций (#818).
+// Один на всех, чтобы пользователь везде читал одну и ту же подсказку.
+const tunnelLockedMessage = "туннель защищён от изменений — снимите защиту на карточке"
+
+// SetLock включает и снимает защиту туннеля от изменений (#818).
+//
+//	@Summary		Set tunnel lock
+//	@Description	Включает или снимает защиту туннеля от изменений: у защищённого туннеля Stop, ToggleEnabled,
+//	@Description	ToggleDefaultRoute, Update, Delete и Replace отвечают 403. Постановка замка на зеркальную запись
+//	@Description	wdtt-raw отвергается 409 (WDTT_RAW_OWNED, WDTT_RAW_OWNER_UNKNOWN) — замок ставится на инстансе;
+//	@Description	снятие проходит.
+//	@Tags			tunnels
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			id		query	string	true	"Tunnel id"
+//	@Param			locked	query	bool	true	"Включить (true) или снять (false) защиту"
+//	@Success		200	{object}	TunnelLockResponse
+//	@Failure		400	{object}	APIErrorEnvelope
+//	@Failure		409	{object}	APIErrorEnvelope
+//	@Failure		500	{object}	APIErrorEnvelope
+//	@Router			/tunnels/lock [post]
+func (h *TunnelsHandler) SetLock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	id, ok := requireQueryID(w, r)
+	if !ok {
+		return
+	}
+	if !isValidTunnelID(id) {
+		response.Error(w, "invalid tunnel ID", "INVALID_ID")
+		return
+	}
+	// Желаемое состояние приходит явно, а не переключением: две вкладки,
+	// нажавшие замок одновременно, придут к одному и тому же результату,
+	// а не к взаимной отмене.
+	locked, err := strconv.ParseBool(r.URL.Query().Get("locked"))
+	if err != nil {
+		response.Error(w, "параметр locked должен быть true или false", "INVALID_LOCKED")
+		return
+	}
+	// Замок на зеркальной записи ничего не держит: инстанс выключают и удаляют
+	// мимо ручек туннеля (exitreg/mirror.go, /api/proxyrt/instances/…), а сама
+	// запись — проекция конфига инстанса. Отказ по образцу Delete вместо
+	// декоративной галки (F95). Снятие (locked=false) не отвергаем.
+	if stored, err := h.store.Get(id); locked && err == nil && stored != nil && stored.Backend == backendWdttRaw {
+		owner, ownErr := h.mirrorOwnerKey(stored)
+		switch {
+		case ownErr != nil:
+			h.log.Warn("lock", stored.Name, "Refused: владелец raw-записи не проверен: "+ownErr.Error())
+			response.ErrorWithStatus(w, http.StatusConflict,
+				"владелец raw-записи не проверен: "+ownErr.Error(), "WDTT_RAW_OWNER_UNKNOWN")
+			return
+		case owner != "":
+			h.log.Info("lock", stored.Name, "Refused: запись принадлежит инстансу "+owner)
+			response.ErrorWithStatus(w, http.StatusConflict,
+				"запись принадлежит прокси-инстансу "+owner+"; замок ставится на инстансе", "WDTT_RAW_OWNED")
+			return
+		}
+	}
+	// Повторный запрос того же значения не переписывает файл: ErrNoChange
+	// гасит запись внутри Update, ответ остаётся успешным.
+	if err := h.store.Update(id, func(t *storage.AWGTunnel) error {
+		if t.Locked == locked {
+			return storage.ErrNoChange
+		}
+		t.Locked = locked
+		return nil
+	}); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			response.Error(w, "tunnel not found", "NOT_FOUND")
+			return
+		}
+		response.Error(w, err.Error(), "UPDATE_FAILED")
+		return
+	}
+	h.publishTunnelList(r.Context())
+	response.Success(w, TunnelLockResultData{ID: id, Locked: locked})
+}
+
 // Delete deletes a tunnel.
 //
 //	@Summary		Delete tunnel
@@ -606,6 +610,7 @@ func (h *TunnelsHandler) Update(w http.ResponseWriter, r *http.Request) {
 //	@Param			id	query	string	true	"Tunnel id"
 //	@Success		200	{object}	TunnelDeleteResponse
 //	@Failure		400	{object}	APIErrorEnvelope
+//	@Failure		403	{object}	APIErrorEnvelope
 //	@Failure		409	{object}	TunnelReferencedResponse
 //	@Failure		500	{object}	APIErrorEnvelope
 //	@Router			/tunnels/delete [post]
@@ -657,6 +662,12 @@ func (h *TunnelsHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isValidTunnelID(id) {
 		response.Error(w, "invalid tunnel ID", "INVALID_ID")
+		return
+	}
+
+	// Защита (#818) отвергает удаление до всякого побочного действия.
+	if stored, err := h.store.Get(id); err == nil && stored != nil && stored.Locked {
+		response.ErrorWithStatus(w, http.StatusForbidden, tunnelLockedMessage, "TUNNEL_LOCKED")
 		return
 	}
 
@@ -781,6 +792,9 @@ func (h *TunnelsHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 
 	content := config.GenerateForExport(stored)
+	if stored.Obfuscator != nil {
+		content += "\n" + obfuscator.RenderInstance(stored.Obfuscator)
+	}
 	filename := stored.Name + ".conf"
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -849,6 +863,7 @@ func (h *TunnelsHandler) ExportAll(w http.ResponseWriter, r *http.Request) {
 //	@Param			id	query	string	true	"Tunnel id"
 //	@Success		200	{object}	APIEnvelope
 //	@Failure		400	{object}	APIErrorEnvelope
+//	@Failure		403	{object}	APIErrorEnvelope
 //	@Failure		409	{object}	APIErrorEnvelope
 //	@Failure		500	{object}	APIErrorEnvelope
 //	@Router			/tunnels/replace [post]
@@ -868,6 +883,11 @@ func (h *TunnelsHandler) ReplaceConf(w http.ResponseWriter, r *http.Request) {
 	req, ok := parseJSON[struct {
 		Content string `json:"content"`
 		Name    string `json:"name"`
+		// AmneziaCountry — страна подписки Amnezia Premium, из которой взята
+		// НОВАЯ конфигурация. Поле шлёт мастер; замена файлом его не шлёт, и
+		// прежняя метка обязана исчезнуть — иначе пользователь видел бы
+		// привязку к стране у конфигурации, к подписке не относящейся.
+		AmneziaCountry string `json:"amneziaCountry"`
 	}](w, r, http.MethodPost)
 	if !ok {
 		return
@@ -879,8 +899,25 @@ func (h *TunnelsHandler) ReplaceConf(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check tunnel exists
-	if _, err := h.store.Get(id); err != nil {
+	stored, err := h.store.Get(id)
+	if err != nil {
 		response.ErrorWithStatus(w, http.StatusNotFound, "tunnel not found", "NOT_FOUND")
+		return
+	}
+	// Тот же предел проверяет ReplaceConfig, но уже после Stop ниже: отказ там
+	// оставил бы работающий туннель выключенным. Как и там — только при смене
+	// имени.
+	if req.Name != "" && req.Name != stored.Name {
+		if err := tunnel.ValidateName(req.Name); err != nil {
+			response.BadRequest(w, err.Error())
+			return
+		}
+	}
+
+	// Защита (#818) отвергает замену конфига до всякого побочного действия:
+	// и до svc.Stop, и до самой записи конфига.
+	if stored.Locked {
+		response.ErrorWithStatus(w, http.StatusForbidden, tunnelLockedMessage, "TUNNEL_LOCKED")
 		return
 	}
 
@@ -904,15 +941,22 @@ func (h *TunnelsHandler) ReplaceConf(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Replace config
+	// Replace config. Страна едет в ту же запись, что и сама конфигурация:
+	// отдельного сохранения из handler'а здесь нет — оно было бы вторым
+	// циклом записи на флеш и окном рассогласования.
 	var warnings []string
-	if err := h.svc.ReplaceConfig(r.Context(), id, req.Content, req.Name); err != nil {
+	opts := service.ReplaceOptions{AmneziaCountry: &req.AmneziaCountry}
+	if err := h.svc.ReplaceConfig(r.Context(), id, req.Content, req.Name, opts); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			response.ErrorWithStatus(w, http.StatusNotFound, err.Error(), "NOT_FOUND")
 			return
 		}
 		if strings.Contains(err.Error(), "parse conf") {
 			response.BadRequest(w, err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "validate conf") {
+			response.Error(w, err.Error(), awg3ErrorCode(err))
 			return
 		}
 		response.InternalError(w, err.Error())
@@ -981,6 +1025,13 @@ func applyTunnelUpdate(t *storage.AWGTunnel, req *storage.AWGTunnel) {
 	case req.ISPInterface != "":
 		t.ISPInterface, t.ISPInterfaceLabel = req.ISPInterface, req.ISPInterfaceLabel
 	}
+	// Обфускатор: только пользовательские поля и только у туннеля, который
+	// уже обфусцирован (Q26: обычный туннель в обфусцированный не превращается;
+	// Flavor и LocalPort — не пользовательские).
+	if req.Obfuscator != nil && t.Obfuscator != nil {
+		merged := mergedObfuscator(*t.Obfuscator, *req.Obfuscator)
+		t.Obfuscator = &merged
+	}
 	if req.PingCheck != nil {
 		t.PingCheck = req.PingCheck
 	}
@@ -1013,6 +1064,23 @@ func mergedInterface(base, req storage.AWGInterface) storage.AWGInterface {
 	// AWG obfuscation block (issue #131): editable in the full edit form,
 	// so req is the source of truth — including explicit clears (i1 -> "").
 	base.AWGObfuscation = req.AWGObfuscation
+	return base
+}
+
+// mergedObfuscator накладывает пользовательские поля req на base; Flavor и
+// LocalPort остаются от base. Пустой Target = «не прислали».
+func mergedObfuscator(base, req storage.Obfuscator) storage.Obfuscator {
+	if req.Target == "" {
+		return base
+	}
+	base.Target = req.Target
+	if req.Key != "" {
+		base.Key = req.Key
+	}
+	base.Masking = req.Masking
+	base.MaxDummy = req.MaxDummy
+	base.IdleTimeout = req.IdleTimeout
+	base.ObfuscateBytes = req.ObfuscateBytes
 	return base
 }
 

@@ -46,9 +46,6 @@ func (o *Orchestrator) executeOne(ctx context.Context, action Action) error {
 		return o.executeRestoreKmod(ctx, action)
 	case ActionRestoreEndpointTracking:
 		return o.executeRestoreEndpointTracking(ctx)
-	case ActionLinkToggle:
-		// Placeholder: pingcheck calls ip link down/up directly.
-		return nil
 	case ActionReconcileKernel:
 		return o.executeReconcileKernel(ctx, action)
 	case ActionSuspendKernel:
@@ -211,8 +208,12 @@ func (o *Orchestrator) executeColdStartKernel(ctx context.Context, action Action
 
 	// Check address conflict
 	managedIfaces := collectManagedIfaceNames(o.store)
-	if err := checkSystemAddressConflict(cfg.Address, cfg.AddressIPv6, managedIfaces); err != nil {
-		return fmt.Errorf("start %s: %w", action.Tunnel, err)
+	addrWarnings, addrErr := checkSystemAddressConflict(cfg.Address, cfg.AddressIPv6, managedIfaces)
+	for _, w := range addrWarnings {
+		o.appLog.Warn("address-conflict", action.Tunnel, w)
+	}
+	if addrErr != nil {
+		return fmt.Errorf("start %s: %w", action.Tunnel, addrErr)
 	}
 
 	// ColdStart
@@ -306,7 +307,54 @@ func (o *Orchestrator) executeResumeKernel(ctx context.Context, action Action) e
 		return err
 	}
 	o.appLog.Info("resume", action.Tunnel, "kernel tunnel resumed")
+	o.refreshEndpointRouteAfterResume(ctx, action.Tunnel)
 	return nil
+}
+
+// refreshEndpointRouteAfterResume приводит маршрут до endpoint после возврата
+// линка.
+//
+// Resume — это ровно `ip link set up`, о маршрутах он не знает. А пока линк
+// лежал, ядро вычистило всё, что вело через этот интерфейс, включая хост-
+// маршрут до endpoint; вдобавок после передозвона (PPPoE/DHCP) шлюз может
+// оказаться другим. Раньше маршрут не переигрывался до следующего полного
+// старта туннеля.
+//
+// Канал при этом НЕ менялся: ActionResumeKernel выдаётся только туннелю с
+// явной привязкой и только когда поднялся тот же самый интерфейс
+// (canStartOnWAN). Смена канала — это ветка ISPInterface=="" → Reconcile,
+// который маршрут обновляет сам.
+//
+// Отказ не фатален — см. контракт SetupEndpointRoute; туннель уже поднят, и
+// ронять его из-за маршрута нельзя.
+func (o *Orchestrator) refreshEndpointRouteAfterResume(ctx context.Context, tunnelID string) {
+	stored, err := o.store.Get(tunnelID)
+	if err != nil || stored.Peer.Endpoint == "" {
+		return
+	}
+	resolvedWAN, err := o.resolveWAN(ctx, stored.ISPInterface)
+	if err != nil {
+		o.appLog.Warn("resume", tunnelID, "маршрут до endpoint не обновлён, WAN не разрешён: "+err.Error())
+		return
+	}
+	ip, err := o.kernelOp.SetupEndpointRoute(ctx, tunnelID, stored.Peer.Endpoint,
+		o.resolveKernelDevice(resolvedWAN), resolvedWAN)
+	if err != nil {
+		o.appLog.Warn("resume", tunnelID, "маршрут до endpoint не обновлён: "+err.Error())
+		return
+	}
+	// Свежий адрес обязан осесть в записи — как это делают старт и реконсайл.
+	// Иначе следующий холодный старт засеет маршрут протухшим IP из стора
+	// (execute.go, ветка ColdStart), и туннель пойдёт через мёртвый шлюз.
+	if err := o.store.Update(tunnelID, func(t *storage.AWGTunnel) error {
+		t.ActiveWAN = resolvedWAN
+		if ip != "" {
+			t.ResolvedEndpointIP = ip
+		}
+		return nil
+	}); err != nil {
+		o.persistWarn(tunnelID, "resume endpoint route", err)
+	}
 }
 
 // executeStartNativeWG starts a NativeWG tunnel via the NWG operator.
@@ -331,12 +379,19 @@ func (o *Orchestrator) executeStartNativeWG(ctx context.Context, action Action) 
 	// WAN events. Empty result preserves the previous ActiveWAN — protects
 	// against transient RCI failure when re-starting an already-running tunnel.
 	activeWAN := o.nwgOp.ResolveActiveWAN(ctx, stored)
+	// Адрес — в ту же транзакцию: ActionPersistRunning доедет лишь через
+	// несколько действий, а до тех пор соседний туннель с тем же target
+	// читает из стора прежний адрес и решает по нему, чей это host-route.
+	trackedIP := o.nwgOp.GetTrackedEndpointIP(action.Tunnel)
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	if err := o.store.Update(action.Tunnel, func(t *storage.AWGTunnel) error {
 		t.Enabled = true
 		t.StartedAt = startedAt
 		if activeWAN != "" {
 			t.ActiveWAN = activeWAN
+		}
+		if trackedIP != "" {
+			t.ResolvedEndpointIP = trackedIP
 		}
 		return nil
 	}); err != nil {
@@ -395,7 +450,11 @@ func (o *Orchestrator) executeReconcileNativeWG(ctx context.Context, action Acti
 
 // executeStopKernel stops a kernel tunnel.
 func (o *Orchestrator) executeStopKernel(ctx context.Context, action Action) error {
-	if err := o.kernelOp.Stop(ctx, action.Tunnel); err != nil {
+	var name string
+	if stored, err := o.store.Get(action.Tunnel); err == nil {
+		name = stored.Name
+	}
+	if err := o.kernelOp.Stop(ctx, action.Tunnel, name); err != nil {
 		return err
 	}
 
@@ -679,11 +738,65 @@ func (o *Orchestrator) executePersistStopped(action Action) error {
 	return nil
 }
 
+// hostIface — интерфейс хоста в том виде, в каком его читает проверка
+// конфликта адресов: имя, состояние и уже разобранные адреса.
+//
+// Шов отдаёт ГОТОВЫЕ адреса, а не net.Interface, и это не украшательство:
+// Addrs() у net.Interface ходит в ядро по индексу, подменить его тестом
+// нечем, поэтому прежний шов умел ровно одно — «пустой список». Обе ветки
+// severity ниже при таком шве непроверяемы, а цена ошибки в них — либо
+// невидимый конфликт адресов, либо туннель, который перестал стартовать.
+type hostIface struct {
+	Name  string
+	Up    bool
+	Addrs []string
+}
+
+// listInterfaces — шов над net.Interfaces: тесты подставляют свой список,
+// иначе проверка конфликта адресов читает интерфейсы хоста разработчика.
+var listInterfaces = hostInterfaces
+
+// hostInterfaces — прод-половина шва. Петля отсеивается здесь, чтобы у
+// проверки остался один смысл на функцию.
+func hostInterfaces() ([]hostIface, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]hostIface, 0, len(ifaces))
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		ips := make([]string, 0, len(addrs))
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok {
+				ips = append(ips, ipNet.IP.String())
+			}
+		}
+		out = append(out, hostIface{Name: iface.Name, Up: iface.Flags&net.FlagUp != 0, Addrs: ips})
+	}
+	return out, nil
+}
+
 // checkSystemAddressConflict checks if ipv4 or ipv6 is already assigned to any
 // system network interface. excludeIfaceNames are excluded from the check.
-func checkSystemAddressConflict(ipv4, ipv6 string, excludeIfaceNames []string) error {
+//
+// Severity разведена по состоянию чужого интерфейса, и это не косметика.
+// Погашенный интерфейс адрес ДЕРЖИТ — с точки зрения занятости он ничем не
+// отличается от поднятого, и прежний пропуск не-UP делал конфликт невидимым
+// ровно до момента, когда сирота поднимется (сирота opkgtun10 с адресом живого
+// opkgtun13 в дампе с роутера). Но поднятым он станет не сейчас, а отказать
+// сейчас значит уронить туннель, который до обновления работал. Поэтому:
+// поднятый чужой интерфейс — отказ, погашенный — предупреждение вызывающему,
+// и старт продолжается.
+func checkSystemAddressConflict(ipv4, ipv6 string, excludeIfaceNames []string) (warnings []string, err error) {
 	if ipv4 == "" && ipv6 == "" {
-		return nil
+		return nil, nil
 	}
 
 	excludeSet := make(map[string]struct{}, len(excludeIfaceNames))
@@ -691,42 +804,31 @@ func checkSystemAddressConflict(ipv4, ipv6 string, excludeIfaceNames []string) e
 		excludeSet[name] = struct{}{}
 	}
 
-	ifaces, err := net.Interfaces()
+	ifaces, err := listInterfaces()
 	if err != nil {
-		return nil // can't check — don't block start
+		return nil, nil // can't check — don't block start
 	}
 
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		if iface.Flags&net.FlagUp == 0 {
-			continue
-		}
 		if _, ok := excludeSet[iface.Name]; ok {
 			continue
 		}
-
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok {
+		for _, ip := range iface.Addrs {
+			taken := ""
+			switch {
+			case ipv4 != "" && ip == ipv4:
+				taken = ipv4
+			case ipv6 != "" && ip == ipv6:
+				taken = ipv6
+			default:
 				continue
 			}
-			ip := ipNet.IP.String()
-
-			if ipv4 != "" && ip == ipv4 {
-				return fmt.Errorf("%w: address %s already assigned to interface %s", tunnel.ErrAddressInUse, ipv4, iface.Name)
+			if iface.Up {
+				return warnings, fmt.Errorf("%w: address %s already assigned to interface %s", tunnel.ErrAddressInUse, taken, iface.Name)
 			}
-			if ipv6 != "" && ip == ipv6 {
-				return fmt.Errorf("%w: address %s already assigned to interface %s", tunnel.ErrAddressInUse, ipv6, iface.Name)
-			}
+			warnings = append(warnings, fmt.Sprintf("address %s is also assigned to %s (interface is down); it will collide if that interface comes up", taken, iface.Name))
 		}
 	}
 
-	return nil
+	return warnings, nil
 }

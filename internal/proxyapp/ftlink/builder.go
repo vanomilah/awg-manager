@@ -3,6 +3,7 @@ package ftlink
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/wdttlink"
@@ -11,9 +12,10 @@ import (
 
 // BuilderDeps — зависимости сборщика ссылок freeturn-сервера.
 type BuilderDeps struct {
-	// ExternalIP — внешний адрес роутера, когда peer не задан запросом.
-	// Записи адрес НЕ помнят: LinkPeer — поле wdtt-сервера, freeturn-ссылка
-	// его никогда не персистила (паритет старого generateLinkCore).
+	// ExternalIP — внешний адрес роутера, когда адреса нет ни в запросе, ни в
+	// настройках сервера. Этот путь отдаёт ТОЛЬКО IP: DNS-имя роутера он не
+	// вернёт никогда, даже при настроенном KeenDNS, — ради имени и заведена
+	// настройка LinkPeer (#933).
 	ExternalIP func(ctx context.Context) (string, error)
 }
 
@@ -32,19 +34,23 @@ func (b *Builder) BuildLink(ctx context.Context, rec instancestore.Record, req w
 		return nil, &wdttlink.LinkError{Code: "FREETURN_SERVER_NOT_FOUND", Msg: err.Error()}
 	}
 
+	// Адрес: запрос → настройка сервера → внешний IP роутера (#933). Средним
+	// звеном была дыра: поле ввода адреса пропало при переезде UI на общую
+	// поверхность прокси-рантайма (#814), и любая ссылка после этого получала
+	// внешний IP — DNS-имя вписать стало негде, а ExternalIP имён не отдаёт.
 	peer := strings.TrimSpace(req.Peer)
-	if peer != "" {
-		if !strings.Contains(peer, ":") {
-			peer = peer + ":" + listenPortOf(cfg.Listen)
-		}
-	} else {
+	if peer == "" {
+		peer = strings.TrimSpace(cfg.LinkPeer)
+	}
+	if peer == "" {
 		ip, ipErr := b.externalIP(ctx)
 		if ipErr != nil {
 			return nil, &wdttlink.LinkError{Code: "FREETURN_EXTERNAL_IP_FAILED",
-				Msg: "Не удалось определить внешний IP: " + ipErr.Error() + ". Укажите peer вручную."}
+				Msg: "Не удалось определить внешний IP: " + ipErr.Error() + ". Укажите адрес сервера в настройках раздачи."}
 		}
-		peer = ip + ":" + listenPortOf(cfg.Listen)
+		peer = ip
 	}
+	peer = withLinkPort(peer, listenPortOf(cfg.Listen))
 
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
@@ -56,11 +62,11 @@ func (b *Builder) BuildLink(ctx context.Context, rec instancestore.Record, req w
 	}
 	n := req.N
 	if n <= 0 {
-		n = 10
+		n = 12 // DefaultStreams бинаря
 	}
 	spc := req.StreamsPerCred
 	if spc <= 0 {
-		spc = 10
+		spc = 12 // DefaultStreamsPerCred бинаря
 	}
 	transport := strings.TrimSpace(req.Transport)
 	if transport == "" {
@@ -99,6 +105,11 @@ func (b *Builder) BuildLink(ctx context.Context, rec instancestore.Record, req w
 		return nil, &wdttlink.LinkError{Code: "FREETURN_LINK_ENCODE_FAILED", Msg: err.Error()}
 	}
 
+	// Ссылку эта ручка НЕ сохраняет: запоминает её внесение в список (#919,
+	// F370). Иначе ссылка абонента, которого в список не внесли, оседала бы в
+	// файле навсегда — показать её негде, а приватный ключ пира лежал бы там
+	// до удаления инстанса.
+	//
 	// clientId отдаётся ТАКИМ, КАКИМ пришёл (без трима) — форма старого
 	// ответа; фронт тримит его сам (ServerAllowlist.svelte:72).
 	return map[string]string{"link": link, "peer": peer, "clientId": req.ClientID}, nil
@@ -109,6 +120,17 @@ func (b *Builder) externalIP(ctx context.Context) (string, error) {
 		return "", errors.New("определение внешнего адреса не подключено")
 	}
 	return b.deps.ExternalIP(ctx)
+}
+
+// withLinkPort дописывает порт, если его нет. Признак «есть порт» — разбор
+// net.SplitHostPort, а НЕ наличие двоеточия: у голого IPv6 двоеточий много, и
+// проверка по символу оставляла такой адрес без порта (F390). Форма `[v6]`
+// распознаётся отдельно — SplitHostPort её не разбирает, порта в ней нет.
+func withLinkPort(peer, port string) string {
+	if _, _, err := net.SplitHostPort(peer); err == nil {
+		return peer
+	}
+	return peer + ":" + port
 }
 
 // listenPortOf — хвост после последнего двоеточия: ровно то, что делал старый

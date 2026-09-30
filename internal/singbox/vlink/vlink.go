@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -19,17 +20,47 @@ type ParsedOutbound struct {
 	Port     uint16
 	Outbound json.RawMessage // sing-box outbound JSON
 	Label    string          // human-readable name: Clash "name" field, or URI #fragment for share-links (empty if no fragment)
+	// LabelRank: насколько имя в Label принадлежит именно этому узлу.
+	// 0 — имя дал провайдер (фрагмент share-link, name у Clash, remarks
+	// одиночного профиля Xray). N>1 — имя выведено из профиля на N узлов
+	// (узлы самого профиля, включая пропущенные при разборе)
+	// («<remarks> #i», у всех узлов профиля один remarks), и чем крупнее
+	// профиль, тем грубее имя. LabelRankNone — имени нет вовсе, в Label
+	// лежит технический тег конфига («proxy») или заглушка разбора
+	// («trojan-node»). Ранг решает, чьё имя останется у сервера, который
+	// пришёл в подписке дважды: Happ/Remnawave отдают его и в сводном
+	// профиле («Авто» на 13 узлов), и отдельной записью со своим именем —
+	// имя берётся от второй (internal/singbox/subscription/diff.go).
+	LabelRank int
+	// MultiAddress: outbound — один из N адресов одного TrustTunnel-конфига.
+	// «Один сервер» такой ввод отбивает в Группу серверов (spec-manager.md п. 4).
+	MultiAddress bool
 }
+
+// LabelRankNone — ранг имени, которого провайдер не давал: технический тег
+// конфига или заглушка разбора. Хуже любого выведенного имени.
+const LabelRankNone = math.MaxInt
 
 // ParseError describes a single failed link in ParseBatch.
 type ParseError struct {
 	LineIdx int    // 0-based index in the input slice
 	Scheme  string // detected scheme prefix or "" if undetectable
 	Message string
+	// Node помечает индекс как номер УЗЛА, а не строки: у подписок в формате
+	// JSON и YAML строк нет, и звать номер строкой значит посылать искать не
+	// там. Ноль-значение — текстовая подписка, где это действительно строки.
+	Node bool
 }
 
 func (e ParseError) Error() string {
-	return fmt.Sprintf("line %d (%s): %s", e.LineIdx, e.Scheme, e.Message)
+	// Номер человеческий, с единицы: к тому же индексу прибавляет единицу и
+	// одиночное добавление ссылки (internal/singbox/operator_tunnels.go), а
+	// два разных отсчёта в одном интерфейсе читаются как ошибка.
+	unit := "line"
+	if e.Node {
+		unit = "node"
+	}
+	return fmt.Sprintf("%s %d (%s): %s", unit, e.LineIdx+1, e.Scheme, e.Message)
 }
 
 // BatchResult aggregates successful parses with skipped/failed accounting.
@@ -93,21 +124,11 @@ func ParseLinkMany(input string) ([]ParsedOutbound, error) {
 	case strings.HasPrefix(lower, "socks://"):
 		return singleOutbound(parseSocks(input))
 	case strings.HasPrefix(lower, "tt://"):
-		parsed, err := parseTrustTunnelLink(input)
-		if err != nil {
-			return nil, err
-		}
-		return parsed, nil
-	case strings.HasPrefix(lower, "http://"), strings.HasPrefix(lower, "https://"):
-		if isTrustTunnelConnectURL(input) {
-			return parseTrustTunnelConnectURL(input)
-		}
-		return nil, ErrUnsupportedScheme
+		return parseTrustTunnelLink(input)
+	case isTrustTunnelConnectURL(input):
+		return parseTrustTunnelConnectURL(input)
 	case strings.HasPrefix(lower, "vmess://"):
 		return nil, ErrSchemeDropped
-	}
-	if IsTrustTunnelRawPayload(input) {
-		return trustTunnelPayloadToOutbounds(strings.TrimSpace(input), "")
 	}
 	return nil, ErrUnsupportedScheme
 }

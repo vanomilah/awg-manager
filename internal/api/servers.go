@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/events"
@@ -37,6 +38,28 @@ type WireguardServerPeerDTO struct {
 	Online        bool     `json:"online" example:"true"`
 	Enabled       bool     `json:"enabled" example:"true"`
 	ConfAvailable bool     `json:"confAvailable,omitempty" example:"true"`
+
+	// Сигнатура пира (CONTEXT.md «Сигнатура AWG»). Есть только у пиров с
+	// локальным секретом: у чужих её негде хранить.
+	I1               string `json:"i1,omitempty" example:"<b 0xc0>"`
+	I2               string `json:"i2,omitempty"`
+	I3               string `json:"i3,omitempty"`
+	I4               string `json:"i4,omitempty"`
+	I5               string `json:"i5,omitempty"`
+	SignatureProfile string `json:"signatureProfile,omitempty" example:"quic_initial"`
+
+	// DNS — резолвер пира для `.conf` (#933). Пусто = «подставить LAN-адрес
+	// роутера»; хранится в секрете, поэтому есть только у пиров с локальным
+	// секретом — как и сигнатура.
+	DNS string `json:"dns,omitempty" example:"192.168.1.1"`
+
+	// ClientAllowedIPs / RemoteSubnets — сети клиента (#713); есть только у
+	// пиров с локальным секретом. TunnelIP — адрес из секрета: у пира с
+	// сетями за клиентом в allowedIPs больше одного кандидата, и фронт не
+	// должен угадывать; у чужих пиров пусто — фронт применяет эвристику.
+	ClientAllowedIPs string   `json:"clientAllowedIPs,omitempty" example:"10.0.1.0/24, 192.168.1.0/24"`
+	RemoteSubnets    []string `json:"remoteSubnets,omitempty" example:"192.168.77.0/24"`
+	TunnelIP         string   `json:"tunnelIP,omitempty" example:"10.0.1.2/32"`
 }
 
 // WireguardServerDTO mirrors frontend WireguardServer.
@@ -273,7 +296,7 @@ func (h *ServersHandler) listServers(ctx context.Context) ([]ndms.WireguardServe
 		if managedSet[s.ID] || managedServerSet[s.ID] {
 			continue
 		}
-		isBuiltIn := s.Description == "Wireguard VPN Server"
+		isBuiltIn := s.Description == ndms.BuiltInVPNServerDescription
 		isMarked := serverSet[s.ID]
 		if isBuiltIn || isMarked {
 			servers = append(servers, s)
@@ -350,6 +373,7 @@ func (h *ServersHandler) writeAll(w http.ResponseWriter, r *http.Request) {
 		response.Error(w, err.Error(), "LIST_FAILED")
 		return
 	}
+	h.overlayLivePeers(ctx, list)
 	enriched := make([]WireguardServerDTO, len(list))
 	for i, srv := range list {
 		enriched[i] = h.enrichServerDTO(ctx, srv)
@@ -357,7 +381,7 @@ func (h *ServersHandler) writeAll(w http.ResponseWriter, r *http.Request) {
 	managedList := []*managedServerResponse{}
 	managedStats := map[string]*managed.ManagedServerStats{}
 	if h.managed != nil {
-		managedList = h.managed.getManagedList()
+		managedList = h.managed.getManagedList(ctx)
 		managedStats = h.managed.getManagedStatsMap(ctx)
 	}
 	payload := map[string]any{
@@ -366,6 +390,29 @@ func (h *ServersHandler) writeAll(w http.ResponseWriter, r *http.Request) {
 		"managedStats": managedStats,
 	}
 	response.Success(w, payload)
+}
+
+// overlayLivePeers — живые поля пиров поверх кэша списка серверов (F476).
+// Пиров держит PeerStore (TTL 8 с), при открытой панели его греет поллер
+// метрик, так что обычно это ноль запросов к роутеру; при холодном кэше
+// чтения идут параллельно, и батчер склеивает их в один POST. Сбой чтения
+// оставляет данные списка и не логируется: поллер пишет ту же ошибку по
+// этому интерфейсу на каждом тике.
+func (h *ServersHandler) overlayLivePeers(ctx context.Context, list []ndms.WireguardServer) {
+	if h.queries == nil || h.queries.Peers == nil {
+		return
+	}
+	var wg sync.WaitGroup
+	for i := range list {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if live, err := h.queries.Peers.GetPeers(ctx, list[i].ID); err == nil {
+				list[i] = query.WithLivePeers(list[i], live)
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 // GetAll returns the composite servers snapshot (list + managed + stats + wanIP).

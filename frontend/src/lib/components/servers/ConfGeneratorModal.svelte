@@ -8,10 +8,16 @@
 		peer: WireguardServerPeerConfig;
 		ascParams: ASCParams | null;
 		wanIP: string;
+		/**
+		 * LAN-адрес роутера — тот же дефолт DNS, что подставляет бэкенд (#933).
+		 * Пусто — строки DNS в файле не будет: подставлять адрес сервера
+		 * внутри туннеля мы перестали, он давал третий ответ на один вопрос.
+		 */
+		routerIP?: string;
 		onclose: () => void;
 	}
 
-	let { open = $bindable(false), serverConfig, peer, ascParams, wanIP, onclose }: Props = $props();
+	let { open = $bindable(false), serverConfig, peer, ascParams, wanIP, routerIP = '', onclose }: Props = $props();
 
 	let privateKey = $state('');
 
@@ -20,11 +26,17 @@
 			'[Interface]',
 			`PrivateKey = ${privateKey}`,
 			`Address = ${peer.address}/32`,
-			`DNS = ${serverConfig.address}`,
 			`MTU = ${serverConfig.mtu}`,
 		];
+		// DNS — LAN-адрес роутера, ровно как у бэкендовых генераторов (#933).
+		// Не определился — строки нет: пустого значения в файле быть не должно.
+		if (routerIP) lines.splice(3, 0, `DNS = ${routerIP}`);
 
-		if (ascParams) {
+		// Сигнатуры (I1-I5) здесь нет: она принадлежит пиру (CONTEXT.md
+		// «Сигнатура AWG»), а этот генератор открывается как раз для пиров,
+		// чьих ключей у нас нет. Jc == 0 — сервер без обфускации: числовые
+		// параметры в конфиг не пишем, как и на бэкенде.
+		if (ascParams && ascParams.jc > 0) {
 			lines.push(`Jc = ${ascParams.jc}`);
 			lines.push(`Jmin = ${ascParams.jmin}`);
 			lines.push(`Jmax = ${ascParams.jmax}`);
@@ -37,11 +49,6 @@
 			if ('s3' in ascParams) {
 				lines.push(`S3 = ${ascParams.s3}`);
 				lines.push(`S4 = ${ascParams.s4}`);
-				lines.push(`I1 = ${ascParams.i1}`);
-				lines.push(`I2 = ${ascParams.i2}`);
-				lines.push(`I3 = ${ascParams.i3}`);
-				lines.push(`I4 = ${ascParams.i4}`);
-				lines.push(`I5 = ${ascParams.i5}`);
 			}
 		}
 

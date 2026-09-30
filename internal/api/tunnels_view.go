@@ -178,9 +178,18 @@ func BuildTunnelResponse(r *http.Request, svc TunnelService, store *storage.AWGT
 		peer := stored.Peer
 		peer.PresharedKey = ""
 		resp["peer"] = peer
+		if stored.Obfuscator != nil {
+			// Целиком, включая key: это XOR-ключ релея, а не приватный ключ
+			// WG — без него вкладка «Обфускатор» не может показать и править
+			// его (mergedObfuscator пустой ключ не затирает).
+			resp["obfuscator"] = stored.Obfuscator
+		}
 		resp["pingCheck"] = stored.PingCheck
 		resp["connectivityCheck"] = stored.ConnectivityCheck
 		resp["ispInterfaceLabel"] = stored.ISPInterfaceLabel
+		// Страна подписки: карточка показывает, из какой страны Amnezia
+		// Premium получена текущая конфигурация.
+		resp["amneziaCountry"] = stored.AmneziaCountry
 		backend := stored.Backend
 		if backend == "" {
 			backend = "kernel"
@@ -225,8 +234,40 @@ type tunnelItem struct {
 	// список помечает туннели, принадлежащие прокси-выходу, и без второго
 	// поля метки не было бы ровно у половины из них.
 	FreeTurnClientID string `json:"freeTurnClientId,omitempty"`
-	// ToggleLocked — при true тумблер вкл/выкл заблокирован (#818).
-	ToggleLocked bool `json:"toggleLocked,omitempty"`
+	// AmneziaCountry — страна подписки Amnezia Premium, из которой получена
+	// конфигурация туннеля; пусто у прочих. Мастер читает ИМЕННО список
+	// (главная страница), поэтому поле обязано быть и здесь, а не только в
+	// детальном ответе: иначе метка «этой стране уже соответствует туннель»
+	// не появится никогда.
+	AmneziaCountry string `json:"amneziaCountry,omitempty"`
+	// Locked — при true туннель защищён от изменений (#818).
+	Locked bool `json:"locked,omitempty"`
+	// StatusDetails — человекочитаемая причина состояния (StateInfo.Details),
+	// напр. «обфускатор не запущен».
+	StatusDetails string          `json:"statusDetails,omitempty"`
+	Obfuscator    *obfuscatorItem `json:"obfuscator,omitempty"`
+}
+
+// obfuscatorItem — что показывает список о релее; Key наружу не отдаём.
+type obfuscatorItem struct {
+	Flavor    string `json:"flavor"`
+	Target    string `json:"target"`
+	LocalPort int    `json:"localPort"`
+	// Relay — бэкенд релея из StateInfo.RelayBackend ("kernel"/"process"),
+	// чтобы карточка красила бейджем «ядро» без захода во вкладку.
+	Relay string `json:"relay,omitempty"`
+}
+
+func obfItem(stored *storage.AWGTunnel, relay string) *obfuscatorItem {
+	if stored == nil || stored.Obfuscator == nil {
+		return nil
+	}
+	return &obfuscatorItem{
+		Flavor:    stored.Obfuscator.Flavor,
+		Target:    stored.Obfuscator.Target,
+		LocalPort: stored.Obfuscator.LocalPort,
+		Relay:     relay,
+	}
 }
 
 // listItems builds the tunnel list items for API response and SSE snapshots.
@@ -252,12 +293,17 @@ func (h *TunnelsHandler) listItems(ctx context.Context) ([]tunnelItem, error) {
 		stored, _ := h.store.Get(t.ID)
 
 		awgVersion := "wg"
-		var endpoint, address, wdttClientID, freeTurnClientID string
+		var endpoint, address, wdttClientID, freeTurnClientID, amneziaCountry string
 		var ispInterface, ispInterfaceLabel string
 		var resolvedISPInterface, resolvedISPInterfaceLabel string
 		var mtu int
 		if stored != nil {
 			endpoint = stored.Peer.Endpoint
+			if stored.Obfuscator != nil {
+				// У обфусцированного туннеля Peer.Endpoint — loopback релея;
+				// пользователю показываем реальный сервер (Q7).
+				endpoint = stored.Obfuscator.Target
+			}
 			address = stored.Interface.Address
 			mtu = stored.Interface.MTU
 			awgVersion = config.ClassifyAWGVersion(&stored.Interface)
@@ -271,6 +317,7 @@ func (h *TunnelsHandler) listItems(ctx context.Context) ([]tunnelItem, error) {
 			ispInterfaceLabel = stored.ISPInterfaceLabel
 			wdttClientID = strings.TrimSpace(stored.WdttClientID)
 			freeTurnClientID = strings.TrimSpace(stored.FreeTurnClientID)
+			amneziaCountry = stored.AmneziaCountry
 
 			// NativeWG stores NDMS IDs (e.g. "ISP"), but frontend uses kernel names (e.g. "eth3").
 			// Convert back so the dropdown can match the stored value.
@@ -372,12 +419,20 @@ func (h *TunnelsHandler) listItems(ctx context.Context) ([]tunnelItem, error) {
 			PingCheck:                 pcInfo,
 			WdttClientID:              wdttClientID,
 			FreeTurnClientID:          freeTurnClientID,
+			AmneziaCountry:            amneziaCountry,
+			Obfuscator:                obfItem(stored, t.StateInfo.RelayBackend),
+		}
+		if item.Obfuscator != nil {
+			// Только у обфусцированных: причины оттуда пишет nwg/obfuscated.go
+			// по-русски и для пользователя, а у остальных бэкендов Details —
+			// внутренняя английская строка классификатора состояния.
+			item.StatusDetails = t.StateInfo.Details
 		}
 		if stored != nil && stored.ConnectivityCheck != nil {
 			item.ConnectivityCheck = stored.ConnectivityCheck
 		}
-		if stored != nil && stored.ToggleLocked {
-			item.ToggleLocked = true
+		if stored != nil && stored.Locked {
+			item.Locked = true
 		}
 		items = append(items, item)
 	}

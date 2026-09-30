@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy, untrack } from 'svelte';
+	import { startVisiblePoll } from '$lib/utils/visiblePoll';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { tunnels } from '$lib/stores/tunnels';
@@ -15,7 +16,7 @@
 		DefaultRouteBadge,
 		TunnelCardSkeleton,
 	} from '$lib/components/tunnels';
-	import { TunnelListActions } from '$lib/components/ui';
+	import { Button, TunnelListActions } from '$lib/components/ui';
 	import { PageContainer, PageHeader, EmptyState, WelcomeBanner } from '$lib/components/layout';
 	import { tunnelsSkeletonCount, clampSkeletonCount } from '$lib/stores/skeletonCounts';
 	import {
@@ -32,7 +33,9 @@
 	import { singboxDelayHistory, singboxStatus, singboxTraffic, singboxTunnels } from '$lib/stores/singbox';
 	import { awg3Tunnels } from '$lib/stores/awg3';
 	import { Awg3TunnelsSection, Awg3ImportModal } from '$lib/components/awg3';
-	import { feedTraffic, getTrafficRates, getTrafficSparklineSeries, subscribeTraffic } from '$lib/stores/traffic';
+	import { AmneziaPremiumWizard } from '$lib/components/amneziapremium';
+	import type { PremiumWizardResult } from '$lib/components/amneziapremium';
+	import { getTrafficRates, getTrafficSparklineSeries, subscribeTraffic } from '$lib/stores/traffic';
 	import { usageLevel } from '$lib/stores/settings';
 	import { isSectionVisible, isTunnelDashboardAvailable } from '$lib/types/usageLevel';
 	import { subscriptionsStore } from '$lib/stores/subscriptions';
@@ -88,7 +91,7 @@
 		type TunnelRenderMode,
 	} from '$lib/constants/singboxLayout';
 	import { isMockDevMode as getIsMockDevMode } from '$lib/env';
-	import { Eye, EyeOff, Server, Upload, LayoutGrid, Link, Globe, TriangleAlert } from 'lucide-svelte';
+	import { Eye, EyeOff, Server, Upload, LayoutGrid, Link, Globe, TriangleAlert, Crown } from 'lucide-svelte';
 	import { formatRunningSub, pluralForm, SUBSCRIPTION_WORDS, TUNNEL_WORDS } from '$lib/utils/pluralize';
 	import TunnelSectionHeader from '$lib/components/tunnels/TunnelSectionHeader.svelte';
 	import {
@@ -161,25 +164,6 @@
 		tunnelSnap.data === null && (tunnelSnap.status === 'idle' || tunnelSnap.status === 'loading')
 	);
 
-	// System tunnels don't emit tunnel:traffic stream events (no awg-manager
-	// peer entry tracks them) — feed the traffic store from the polled
-	// snapshot so the per-system-tunnel rate chart stays alive. Runs on
-	// every snapshot refresh (~5s).
-	$effect(() => {
-		// Skip system tunnels that are ALSO tracked as managed — they receive
-		// tunnel:traffic stream events via +layout. Double-feeding doubles
-		// the rate sample and produces a spurious chart spike.
-		for (const st of systemList) {
-			const isManaged = awgList.some((m) =>
-				(m.ndmsName && m.ndmsName === st.id) || (m.interfaceName && m.interfaceName === st.id)
-			);
-			if (isManaged) continue;
-			if (st.status === 'up' && st.peer) {
-				feedTraffic(st.id, st.peer.rxBytes, st.peer.txBytes);
-			}
-		}
-	});
-
 	const goArch = $derived(sysInfo?.goArch ?? '');
 	let singboxStatusState = $derived($singboxStatus);
 	const singboxInstalled = $derived($singboxStatus.data?.installed ?? false);
@@ -201,6 +185,7 @@
 	let connectivitySettingsTunnel = $state<TunnelListItem | null>(null);
 	let deleteLoading = $state<Record<string, boolean>>({});
 	let deleteConfirmId = $state<string | null>(null);
+	let unlockConfirmId = $state<string | null>(null);
 	let referencedDetails = $state<import('$lib/types').TunnelReferencedError | null>(null);
 	let referencedTunnelName = $state<string>('');
 
@@ -353,6 +338,25 @@
 		deleteConfirmId = id;
 	}
 
+	// Замок на карточке (#818). Включение — сразу, снятие — через подтверждение:
+	// защита затем и ставится, чтобы её нельзя было снять случайным кликом.
+	function handleLockClick(id: string) {
+		if (awgList.find((t) => t.id === id)?.locked) {
+			unlockConfirmId = id;
+			return;
+		}
+		void setLock(id, true);
+	}
+
+	async function setLock(id: string, locked: boolean) {
+		try {
+			await api.setTunnelLock(id, locked);
+			notifications.success(locked ? 'Защита включена' : 'Защита снята');
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : 'Не удалось изменить защиту');
+		}
+	}
+
 	async function handleDelete(id: string) {
 		deleteConfirmId = null;
 		deleteLoading = { ...deleteLoading, [id]: true };
@@ -377,6 +381,12 @@
 			const { [id]: _, ...rest } = deleteLoading;
 			deleteLoading = rest;
 		}
+	}
+
+	async function confirmUnlock() {
+		const id = unlockConfirmId;
+		unlockConfirmId = null;
+		if (id) await setLock(id, false);
 	}
 
 	// On-demand store subscriptions: only active tab's stores are subscribed.
@@ -538,8 +548,13 @@
 		return s ? s.label || s.url : id;
 	});
 
-	// Same as detail page — poll Clash for live "now" pointer this often.
-	const URLTEST_POLL_MS = 5000;
+	// Указатель «сейчас активен» меняет сам sing-box, и не чаще своего
+	// urltest-интервала (IntervalSec, по умолчанию 60 с). Прежние 5 с
+	// опрашивали значение в 12 раз чаще, чем оно способно измениться, —
+	// и это на ГЛАВНОЙ, то есть на вкладке, которую держат открытой.
+	// На странице подписки шаг оставлен прежним: туда заходят осознанно
+	// и ненадолго.
+	const URLTEST_POLL_MS = 30_000;
 
 	let liveActives = $state<Record<string, string>>({});
 
@@ -572,11 +587,10 @@
 				/* ignore — keep last known */
 			}
 		};
-		void tick();
-		const handle = setInterval(() => void tick(), URLTEST_POLL_MS);
+		const stop = startVisiblePoll(tick, URLTEST_POLL_MS);
 		return () => {
 			cancelled = true;
-			clearInterval(handle);
+			stop();
 		};
 	});
 
@@ -1035,12 +1049,64 @@
 	// External tunnels
 	let adoptDialogOpen = $state(false);
 	let adoptingInterface = $state('');
+	let confirmExternalDelete = $state<{
+		interfaceName: string;
+		label: string;
+		live: boolean;
+		conflictsWith: string;
+		address: string;
+	} | null>(null);
+	let confirmExternalDeleteBusy = $state(false);
 	let adoptError = $state('');
 	let adoptLoading = $state(false);
 
 	function handleAdoptClick(interfaceName: string): void {
 		adoptingInterface = interfaceName;
 		adoptDialogOpen = true;
+	}
+
+	// Удаление чужого интерфейса необратимо и уносит вместе с ним адреса,
+	// маршруты и permit'ы в политиках, поэтому спрашиваем подтверждение и
+	// называем в нём описание — по нему пользователь и опознаёт интерфейс.
+	function handleExternalDelete(interfaceName: string): void {
+		const ext = externalList.find((t) => t.interfaceName === interfaceName);
+		confirmExternalDelete = {
+			interfaceName,
+			label: ext?.description ? ` «${ext.description}»` : '',
+			// Живой чужой туннель — отдельная строка предупреждения: рукопожатие
+			// и трафик у него идут прямо сейчас, и снос оборвёт работающее.
+			live: !!ext?.lastHandshake,
+			conflictsWith: ext?.conflictsWith ?? '',
+			address: ext?.addresses?.[0] ?? '',
+		};
+	}
+
+	async function handleForeignUnmark(interfaceName: string): Promise<void> {
+		try {
+			await api.unmarkForeignIface(interfaceName);
+			notifications.success(`Отметка с ${interfaceName} снята`);
+			await tunnels.refetch();
+		} catch (e) {
+			notifications.error(`Не удалось снять отметку с ${interfaceName}: ${e instanceof Error ? e.message : e}`);
+		}
+	}
+
+	async function confirmExternalDeleteNow(): Promise<void> {
+		const target = confirmExternalDelete;
+		if (!target) return;
+		confirmExternalDeleteBusy = true;
+		try {
+			await api.deleteOrphanIface(target.interfaceName);
+			notifications.success(`Интерфейс ${target.interfaceName} удалён`);
+			confirmExternalDelete = null;
+			await tunnels.refetch();
+		} catch (e) {
+			notifications.error(
+				`Не удалось удалить ${target.interfaceName}: ${e instanceof Error ? e.message : e}`,
+			);
+		} finally {
+			confirmExternalDeleteBusy = false;
+		}
 	}
 
 	async function handleAdopt(data: { content: string; name: string }): Promise<void> {
@@ -1128,7 +1194,7 @@
 			importing = true;
 			try {
 				const name = file.name.replace(/\.conf$/i, '');
-				const tunnel = await tunnels.importConfig(content, name, selectedBackend);
+				const tunnel = await tunnels.importConfig({ content, name, backend: selectedBackend });
 				if (tunnel.warnings?.length) {
 					tunnel.warnings.forEach(w => notifications.warning(w));
 				}
@@ -1141,6 +1207,34 @@
 			}
 		};
 		reader.readAsText(file);
+	}
+
+	let premiumWizardOpen = $state(false);
+
+	/**
+	 * Конфигурация, выданная мастером Amnezia Premium, заводится обычным
+	 * импортом — своей ручки создания у мастера нет. Страна уезжает вместе с
+	 * конфигурацией: по ней список стран потом показывает «туннель awg-nl».
+	 */
+	async function importPremiumConfig(result: PremiumWizardResult) {
+		importing = true;
+		try {
+			const tunnel = await tunnels.importConfig({
+				content: result.config,
+				name: result.suggestedName,
+				backend: result.backend,
+				amneziaCountry: result.countryCode
+			});
+			if (tunnel.warnings?.length) {
+				tunnel.warnings.forEach(w => notifications.warning(w));
+			}
+			notifications.success('Туннель импортирован');
+			goto(`/tunnels/${tunnel.id}`);
+		} catch (err) {
+			notifications.error(err instanceof Error ? err.message : 'Ошибка импорта');
+		} finally {
+			importing = false;
+		}
 	}
 
 	// Terminal status line
@@ -1645,7 +1739,7 @@
 		set selectedBackend(v) { selectedBackend = v; },
 		get fileInput() { return fileInput; },
 		set fileInput(v) { fileInput = v; },
-		endpointHost, endpointPort, endpointVisible, toggleEndpointVisible, externalStatusLabel, externalStatusVariant, systemStatusLabel, systemStatusVariant, isManagedTunnelOn, managedRouteMeta, showManagedPing, latestRate, sparklineSeries, handleAdoptClick, handleAwgSortChange, handleDragLeave, handleDragOver, handleDrop, handleFileSelect, openAwgDiagnostics, openConnectivitySettings, openDetail, requestDelete, markAsServer, handleToggleOnOff, checkPing, handleExportAll,
+		endpointHost, endpointPort, endpointVisible, toggleEndpointVisible, externalStatusLabel, externalStatusVariant, systemStatusLabel, systemStatusVariant, isManagedTunnelOn, managedRouteMeta, showManagedPing, latestRate, sparklineSeries, handleAdoptClick, handleExternalDelete, handleForeignUnmark, handleAwgSortChange, handleDragLeave, handleDragOver, handleDrop, handleFileSelect, openAwgDiagnostics, openConnectivitySettings, openDetail, requestDelete, handleLockClick, markAsServer, handleToggleOnOff, checkPing, handleExportAll,
 	};
 
 	// Live-контекст flat-дашборда (см. dashboardFlatContext.ts).
@@ -1685,11 +1779,15 @@
 		set dashboardTagFilter(v) { dashboardTagFilter = v; },
 		get flatGridEl() { return flatGridEl; },
 		set flatGridEl(v) { flatGridEl = v; },
-		handleAdoptClick, handleExportAll, handleGripKeydown, handleGripPointerDown, handleToggleOnOff, markAsServer, openAwg3Import, openAwgDiagnostics, openDetail, openSingboxDetail, openWizard, requestDelete, requestSubscriptionDelete,
+		handleAdoptClick, handleExternalDelete, handleForeignUnmark, handleExportAll, handleGripKeydown, handleGripPointerDown, handleToggleOnOff, markAsServer, openAwg3Import, openAwgDiagnostics, openDetail, openSingboxDetail, openWizard, requestDelete, handleLockClick, requestSubscriptionDelete,
 	};
 
 	// Live-контекст модалок страницы (см. tunnelPageModalsContext.ts).
 	const pageModalsCtx: TunnelPageModalsContext = {
+		get confirmExternalDelete() { return confirmExternalDelete; },
+		set confirmExternalDelete(v) { confirmExternalDelete = v; },
+		get confirmExternalDeleteBusy() { return confirmExternalDeleteBusy; },
+		confirmExternalDeleteNow,
 		get awgList() { return awgList; },
 		get systemList() { return systemList; },
 		get singboxTunnelsList() { return singboxTunnelsList; },
@@ -1706,6 +1804,8 @@
 		get adoptingInterface() { return adoptingInterface; },
 		get deleteConfirmId() { return deleteConfirmId; },
 		set deleteConfirmId(v) { deleteConfirmId = v; },
+		get unlockConfirmId() { return unlockConfirmId; },
+		set unlockConfirmId(v) { unlockConfirmId = v; },
 		get referencedDetails() { return referencedDetails; },
 		set referencedDetails(v) { referencedDetails = v; },
 		get referencedTunnelName() { return referencedTunnelName; },
@@ -1724,7 +1824,7 @@
 		get connectivitySettingsTunnel() { return connectivitySettingsTunnel; },
 		get connectivitySettingsOpen() { return connectivitySettingsOpen; },
 		set connectivitySettingsOpen(v) { connectivitySettingsOpen = v; },
-		handleAdopt, handleDelete, confirmSubscriptionDelete, closeDetail, closeSingboxDetail, closeAwgDiagnostics, closeConnectivitySettings,
+		handleAdopt, handleDelete, confirmUnlock, confirmSubscriptionDelete, closeDetail, closeSingboxDetail, closeAwgDiagnostics, closeConnectivitySettings,
 	};
 </script>
 
@@ -1733,7 +1833,14 @@
 </svelte:head>
 
 <PageContainer width="full">
-	<PageHeader title="Туннели" />
+	<PageHeader title="Туннели">
+		{#snippet actions()}
+			<Button variant="secondary" size="sm" onclick={() => (premiumWizardOpen = true)}>
+				{#snippet iconBefore()}<Crown size={14} aria-hidden="true" />{/snippet}
+				Amnezia Premium
+			</Button>
+		{/snippet}
+	</PageHeader>
 	<WelcomeBanner />
 	{#if dashboardOn}
 		{#if loading}
@@ -1926,6 +2033,16 @@
 {/if}
 
 <TunnelPageModals ctx={pageModalsCtx} />
+
+<!-- Карта «страна → туннель» и доступность бэкендов берутся из уже
+     загруженного страницей: своих запросов мастер на это не делает. -->
+<AmneziaPremiumWizard
+	open={premiumWizardOpen}
+	countryTunnels={awgList}
+	backendAvailability={sysInfo?.backendAvailability}
+	onclose={() => (premiumWizardOpen = false)}
+	onconfig={(result) => void importPremiumConfig(result)}
+/>
 
 {#if awg3Visible}
 	<!-- Импорт AWG3: из меню «Создать», empty-state и вкладки WG endpoints. -->

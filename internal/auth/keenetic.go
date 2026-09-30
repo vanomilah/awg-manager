@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/ndms/transport"
+	"github.com/hoaxisr/awg-manager/internal/sys/appver"
 	"github.com/hoaxisr/awg-manager/internal/sys/netif"
 )
 
@@ -23,21 +25,29 @@ const (
 	httpTimeout  = 10 * time.Second
 )
 
+// Швы для тестов: адрес LAN-моста и порт HTTP роутера — хостовые запросы.
+var (
+	lanIPv4        = netif.FirstIPv4
+	routerHTTPPort = getHTTPPort
+)
+
 // KeeneticClient handles authentication against Keenetic router.
 type KeeneticClient struct {
-	routerAddr     string
-	routerAddrOnce sync.Once
-	httpClient     *http.Client
+	routerAddr string
+	mu         sync.Mutex
+	httpClient *http.Client
 }
 
 // NewKeeneticClient creates a new Keenetic auth client.
-// Router address (IP + port) is resolved lazily on first Authenticate call
+// Router address (IP + port) is resolved lazily on Authenticate and cached only
+// once the LAN address and HTTP port were actually read (see resolveAddr),
 // to avoid a race with NDMS at boot — getHTTPPort queries RCI which may
 // not be ready when the daemon starts.
 func NewKeeneticClient() *KeeneticClient {
 	return &KeeneticClient{
 		httpClient: &http.Client{
-			Timeout: httpTimeout,
+			Timeout:   httpTimeout,
+			Transport: routerTransport(),
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -45,27 +55,74 @@ func NewKeeneticClient() *KeeneticClient {
 	}
 }
 
-// resolveAddr detects router IP (br0) and HTTP port (RCI) once.
-func (c *KeeneticClient) resolveAddr() {
-	c.routerAddrOnce.Do(func() {
-		ip := netif.FirstIPv4("br0")
-		if ip == "" {
-			ip = "192.168.1.1"
-		}
-
-		port := getHTTPPort()
-
-		if port != 0 && port != 80 {
-			c.routerAddr = fmt.Sprintf("%s:%d", ip, port)
-		} else {
-			c.routerAddr = ip
-		}
-	})
+// routerTransport — транспорт для запросов к СОБСТВЕННОМУ роутеру.
+//
+// Единственное его отличие от умолчания — снятый прокси, и снят он не для
+// порядка. Без `Transport` клиент берёт `http.DefaultTransport`, а тот
+// уважает HTTP_PROXY/HTTPS_PROXY из окружения демона. Go исключает из этого
+// только `localhost` и loopback, а адрес роутера (см. resolveAddr, фолбэк
+// 192.168.1.1) под исключение НЕ попадает. При заданном HTTP_PROXY на чужой
+// хост по НЕЗАШИФРОВАННОМУ http уехали бы логин администратора, cookies и
+// sha256(challenge + md5(login:realm:password)) — то есть значение,
+// эквивалентное паролю для этого challenge.
+//
+// Путь не умозрительный: init-скрипт (entware/files/etc/init.d/S99awg-manager)
+// окружение не чистит, он правит только PATH и TZ, так что `export HTTP_PROXY`
+// перед рестартом демона достаточно.
+//
+// Прокси к собственному роутеру по локальной сети не помогает НИКОГДА, поэтому
+// здесь не поле выбора, а безусловное снятие. Новому коду, которому нужен
+// прямой выход, брать httpclient.TransportConfig{Proxy: httpclient.ProxyDirect};
+// здесь базовый транспорт клонируется, чтобы правка меняла ровно прокси и
+// ничего больше — остальные умолчания (пул, таймауты, h2) остаются как были.
+func routerTransport() http.RoundTripper {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		// Чужой DefaultTransport подменить нечем, но и молча ходить через него
+		// нельзя: пустой транспорт хуже по умолчаниям, зато без прокси.
+		return &http.Transport{}
+	}
+	tr := base.Clone()
+	tr.Proxy = nil
+	return tr
 }
 
-// getHTTPPort returns router HTTP port from NDMS RCI API.
-func getHTTPPort() int {
+// resolveAddr returns the router address to use. The result is cached only when
+// both the LAN address and the HTTP port were actually read: on early boot RCI
+// may not be ready yet, and a guessed "192.168.1.1:80" must not stick until restart.
+// Host lookups run outside the mutex so concurrent logins do not queue behind a 5 s RCI timeout.
+func (c *KeeneticClient) resolveAddr() string {
+	c.mu.Lock()
+	cached := c.routerAddr
+	c.mu.Unlock()
+	if cached != "" {
+		return cached
+	}
+	ip := lanIPv4("br0")
+	port, portOK := routerHTTPPort()
+	resolved := ip != "" && portOK
+	if ip == "" {
+		ip = "192.168.1.1"
+	}
+	addr := ip
+	if port != 0 && port != 80 {
+		addr = fmt.Sprintf("%s:%d", ip, port)
+	}
+	if resolved {
+		c.mu.Lock()
+		if c.routerAddr == "" {
+			c.routerAddr = addr
+		}
+		c.mu.Unlock()
+	}
+	return addr
+}
+
+// getHTTPPort returns router HTTP port from NDMS RCI API. ok is false when the
+// running-config could not be read at all (the port is then a default guess).
+func getHTTPPort() (port int, ok bool) {
 	client := transport.New(transport.NewSemaphore(1))
+	defer client.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -74,36 +131,45 @@ func getHTTPPort() int {
 		Message []string `json:"message"`
 	}
 	if err := client.Get(ctx, "/show/running-config", &result); err != nil {
-		return 80
+		return 80, false
 	}
 
 	for _, line := range result.Message {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "ip http port ") {
-			var port int
-			if _, err := fmt.Sscanf(line, "ip http port %d", &port); err == nil {
-				return port
+			var p int
+			if _, err := fmt.Sscanf(line, "ip http port %d", &p); err == nil {
+				return p, true
 			}
 		}
 	}
 
-	return 80
+	return 80, true
 }
 
 // Authenticate verifies credentials against Keenetic router.
 // Returns nil on success, error on failure.
 func (c *KeeneticClient) Authenticate(ctx context.Context, login, password string) error {
-	c.resolveAddr()
-	authURL := fmt.Sprintf("http://%s%s", c.routerAddr, authEndpoint)
+	addr := c.resolveAddr()
+	authURL := fmt.Sprintf("http://%s%s", addr, authEndpoint)
 
 	// Step 1: GET /auth to get challenge, realm and cookies
-	challenge, realm, cookies, err := c.getChallenge(ctx, authURL)
+	challenge, realm, ndw4, cookies, err := c.getChallenge(ctx, authURL)
 	if err != nil {
 		// If we get 200 on GET, auth is disabled or already authenticated
-		if err == errAuthDisabled {
+		if errors.Is(err, errAuthDisabled) {
 			return nil
 		}
 		return fmt.Errorf("get challenge from %s: %w", authURL, err)
+	}
+	if ndw4 {
+		if err := c.authenticateNDW4(ctx, authURL, login, password, cookies); err != nil {
+			return fmt.Errorf("authentication failed: %w", err)
+		}
+		return nil
+	}
+	if challenge == "" || realm == "" {
+		return fmt.Errorf("get challenge from %s: missing challenge or realm headers", authURL)
 	}
 
 	// Step 2: Calculate hashed password
@@ -124,40 +190,46 @@ var errAuthDisabled = fmt.Errorf("auth disabled")
 var ErrInvalidCredentials = fmt.Errorf("invalid credentials")
 
 // getChallenge performs GET /auth and extracts challenge/realm from 401 response.
+// ndw4 reports that the router offers x-ndw4-interactive (5.2+).
 // Also returns cookies that must be sent with POST request.
-func (c *KeeneticClient) getChallenge(ctx context.Context, authURL string) (challenge, realm string, cookies []*http.Cookie, err error) {
+func (c *KeeneticClient) getChallenge(ctx context.Context, authURL string) (challenge, realm string, ndw4 bool, cookies []*http.Cookie, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", false, nil, err
 	}
+	req.Header.Set("User-Agent", appver.UA())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("request failed: %w", err)
+		return "", "", false, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	// 200 means auth is disabled or user already authenticated
 	if resp.StatusCode == http.StatusOK {
-		return "", "", nil, errAuthDisabled
+		return "", "", false, nil, errAuthDisabled
 	}
 
 	// 401 is expected - extract challenge and realm
 	if resp.StatusCode != http.StatusUnauthorized {
-		return "", "", nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		return "", "", false, nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
 	challenge = strings.TrimSpace(resp.Header.Get("X-NDM-Challenge"))
 	realm = strings.TrimSpace(resp.Header.Get("X-NDM-Realm"))
-
-	if challenge == "" || realm == "" {
-		return "", "", nil, fmt.Errorf("missing challenge or realm headers")
+	// Endpoint из предложения («endpoint="/auth"») не разбираем: на стенде он
+	// всегда /auth, а адрес из заголовка — лишний путь увести креды не туда.
+	for _, v := range resp.Header.Values("WWW-Authenticate") {
+		scheme, _, _ := strings.Cut(strings.TrimSpace(v), " ")
+		if strings.EqualFold(scheme, "x-ndw4-interactive") {
+			ndw4 = true
+		}
 	}
 
 	// Get cookies from response (needed for POST)
 	cookies = resp.Cookies()
 
-	return challenge, realm, cookies, nil
+	return challenge, realm, ndw4, cookies, nil
 }
 
 // hashPassword calculates the Keenetic password hash.
@@ -191,6 +263,7 @@ func (c *KeeneticClient) postAuth(ctx context.Context, authURL, login, hashedPas
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", appver.UA())
 
 	// Add cookies from GET response
 	for _, cookie := range cookies {

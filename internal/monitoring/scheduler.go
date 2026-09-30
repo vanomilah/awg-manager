@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -126,8 +127,24 @@ type SchedulerDeps struct {
 
 // Scheduler runs ICMP probes through running tunnels on a fixed interval.
 type Scheduler struct {
-	deps         SchedulerDeps
-	interval     time.Duration
+	deps     SchedulerDeps
+	interval time.Duration
+	// idleInterval — период тика, когда панель не открыта НИ У КОГО.
+	//
+	// Зонд связности стоит дорого: для метода "http" (умолчание у любого
+	// туннеля, где пользователь ничего не настраивал) это HTTPS с полным
+	// рукопожатием, а на softfloat MIPS оно съедает ~190 мс CPU. При этом
+	// итог прогона уходит ТОЛЬКО в показ: снимок и SSE-пуш; автоматических
+	// действий на нём не висит — перезапуск по отказу делает NDMS ping-check,
+	// другая подсистема.
+	//
+	// Полностью гасить прогон нельзя из-за ОДНОГО потребителя, который
+	// переживает закрытие панели: журнал переходов (probe unreachable →
+	// reachable again) — единственный след, по которому пользователь видит
+	// проблему задним числом. Буфер history тут ни при чём: Service.History
+	// в проде не читает никто (проверено grep'ом), он живёт под будущий
+	// график. Поэтому не «выключить», а «разрядить».
+	idleInterval time.Duration
 	probeTimeout time.Duration
 	workerLimit  int
 	history      *History
@@ -135,6 +152,14 @@ type Scheduler struct {
 	// только переходы ok→fail (Warn) и восстановления (Info) — сами пробы
 	// каждые 60 секунд журнал не трогают.
 	transitions *logging.TransitionTracker
+
+	// runGate — страж от параллельного входа в прогон (ёмкость 1). Канал, а
+	// не atomic.Bool: у стража два режима. Периодический и триггерный прогоны
+	// при занятом страже ПРОПУСКАЮТСЯ — тот, что в полёте, всё равно обновит
+	// снимок целиком. А форсированный (смена настроек) обязан ДОЖДАТЬСЯ:
+	// его зовут ровно тогда, когда свежие данные и нужны, и молчаливый
+	// пропуск означал бы «настройку применили, а показ остался старым».
+	runGate chan struct{}
 
 	mu       sync.RWMutex
 	lastSnap Snapshot
@@ -146,8 +171,10 @@ type Scheduler struct {
 // 5s probe timeout, worker pool size 10.
 func NewScheduler(deps SchedulerDeps, history *History) *Scheduler {
 	return &Scheduler{
+		runGate:      make(chan struct{}, 1),
 		deps:         deps,
 		interval:     60 * time.Second,
+		idleInterval: 10 * time.Minute,
 		probeTimeout: 5 * time.Second,
 		workerLimit:  10,
 		history:      history,
@@ -159,7 +186,30 @@ func NewScheduler(deps SchedulerDeps, history *History) *Scheduler {
 // SetEventBus wires the bus after construction so the server bootstrap can
 // build the bus once and inject it later.
 func (s *Scheduler) SetEventBus(bus *events.Bus) {
+	// Под локом: цикл читает шину на каждом тике (nobodyWatching), а проводка
+	// зовёт этот сеттер уже после конструирования.
+	s.mu.Lock()
 	s.deps.Bus = bus
+	s.mu.Unlock()
+}
+
+// nobodyWatching — правда ли, что ни одной панели сейчас не открыто.
+// Считаются только КЛИЕНТСКИЕ подписки: внутренние живут всё время работы
+// процесса и на вопрос «смотрит ли кто-нибудь» ответа не дают (F340).
+// Шины нет (тесты, ранняя проводка) — считаем, что смотрят: разряжать вслепую
+// хуже, чем зондировать лишний раз.
+func (s *Scheduler) nobodyWatching() bool {
+	bus := s.eventBus()
+	return bus != nil && bus.ClientCount() == 0
+}
+
+// eventBus читает шину под тем же локом, под которым её пишет SetEventBus.
+// Односторонняя защита (лок только у писателя) создавала бы ложное
+// впечатление безопасности: читателей у поля два — этот и Publish в RunOnce.
+func (s *Scheduler) eventBus() *events.Bus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.deps.Bus
 }
 
 // SetSingboxTunnels wires the sing-box tunnel lister after construction so
@@ -213,12 +263,21 @@ func (s *Scheduler) History() *History { return s.history }
 
 func (s *Scheduler) loop(ctx context.Context) {
 	s.RunOnce(ctx)
+	lastRun := time.Now()
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
+			// Панель не открыта — держим шаг idleInterval, пропуская
+			// промежуточные тики. Открылась — ближайший тик отработает
+			// как обычно, то есть ждать её придётся не дольше, чем ждали
+			// до этой правки.
+			if s.nobodyWatching() && time.Since(lastRun) < s.idleInterval {
+				continue
+			}
 			s.RunOnce(ctx)
+			lastRun = time.Now()
 		case <-s.stopCh:
 			return
 		case <-ctx.Done():
@@ -227,17 +286,26 @@ func (s *Scheduler) loop(ctx context.Context) {
 	}
 }
 
-// RunOnceForced invalidates the Clash cache (if wired) and runs a
-// fresh tick. Used by /monitoring/matrix?force=1 so the Refresh
-// button delivers fresh ICMP and Clash data in one round-trip.
+// RunOnceForced invalidates the Clash cache (if wired) and runs a fresh tick,
+// ДОЖИДАЯСЬ занятого стража. Зовётся после смены настроек
+// (internal/api/settings.go) и из /monitoring/matrix?force=1.
+//
+// Ждёт, а не пропускает, по двум причинам. Прогон, идущий в полёте, прочитал
+// данные Clash ДО того, как мы сбросили их кэш, — его результат уже устарел.
+// И пропуск был бы молчаливым: пользователь применил настройку, а показ
+// остался прежним, без единого признака отказа.
 func (s *Scheduler) RunOnceForced(ctx context.Context) {
 	s.mu.RLock()
 	cs := s.deps.ClashState
 	s.mu.RUnlock()
-	if cs != nil {
-		cs.Invalidate()
-	}
-	s.RunOnce(ctx)
+	s.runOnce(ctx, true, func() {
+		// Кэш Clash сбрасываем ПОСЛЕ захвата стража. Раньше — значило бы, что
+		// прогон, идущий в полёте, успеет перезаполнить его данными, собранными
+		// ДО правки настроек, и форсированный прочитал бы именно их.
+		if cs != nil {
+			cs.Invalidate()
+		}
+	})
 }
 
 // RunOnce executes a single tick — exposed for testing. Probes every
@@ -245,6 +313,45 @@ func (s *Scheduler) RunOnceForced(ctx context.Context) {
 // history, replaces lastSnap, prunes deleted-tunnel buffers, publishes to
 // the bus.
 func (s *Scheduler) RunOnce(ctx context.Context) {
+	s.runOnce(ctx, false, nil)
+}
+
+// runOnce с wait=false пропускает прогон, когда страж занят; с wait=true —
+// дожидается его освобождения (или отмены контекста). afterAcquire, если задан,
+// выполняется сразу после захвата стража и до первого зонда.
+func (s *Scheduler) runOnce(ctx context.Context, wait bool, afterAcquire func()) {
+	if wait {
+		select {
+		case s.runGate <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+	} else {
+		select {
+		case s.runGate <- struct{}{}:
+		default:
+			return
+		}
+	}
+	defer func() { <-s.runGate }()
+
+	// Контекст мог истечь, пока мы ждали стража: форсированный прогон приходит
+	// с бюджетом 10 с (internal/api/settings.go), а плановый на лежащем WAN
+	// занимает до 8 с. Пойти дальше значило бы прозондировать всё на мёртвом
+	// контексте, получить ok=false по каждой ячейке и записать это КАК ПРАВДУ:
+	// «probe unreachable» в журнал, провалы в историю графика и красную
+	// матрицу в панель. Пользователь применил настройку — и связь «пропала».
+	//
+	// Та же проверка закрывает и гонку на входе: при свободном страже и уже
+	// отменённом контексте select выше выбрал бы случайный из двух готовых
+	// случаев.
+	if ctx.Err() != nil {
+		return
+	}
+	if afterAcquire != nil {
+		afterAcquire()
+	}
+
 	defer func() {
 		if r := recover(); r != nil && s.deps.Log != nil {
 			s.deps.Log.AppLog(logging.LevelError, logging.GroupSystem, "monitoring",
@@ -289,6 +396,14 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 				defer func() { <-sem }()
 
 				latency, ok := s.runProbeCell(ctx, t, tn, self)
+				// Контекст истёк ПОСРЕДИ обхода: runProbeCell на отменённом
+				// контексте отдаёт ok=false по каждой оставшейся ячейке, и
+				// записать это как правду значило бы налгать — «probe
+				// unreachable» в журнал, провал в историю и красная ячейка
+				// в панели. Молчим: следующий прогон измерит честно.
+				if ctx.Err() != nil {
+					return
+				}
 				now := time.Now()
 
 				probedMu.Lock()
@@ -324,6 +439,12 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	}
 	wg.Wait()
 
+	// Оборванный обход снимок не заменяет: он неполон, и подменять им
+	// прежний — то же враньё, только оптом.
+	if ctx.Err() != nil {
+		return
+	}
+
 	snap := Snapshot{
 		Targets:   targets,
 		Tunnels:   tunnels,
@@ -342,8 +463,8 @@ func (s *Scheduler) RunOnce(ctx context.Context) {
 	s.history.PruneTunnels(keepIDs)
 	s.transitions.Retain(probed)
 
-	if s.deps.Bus != nil {
-		s.deps.Bus.Publish("monitoring:matrix-update", snap)
+	if bus := s.eventBus(); bus != nil {
+		bus.Publish("monitoring:matrix-update", snap)
 	}
 }
 
@@ -424,7 +545,29 @@ func (s *Scheduler) runProbeCell(ctx context.Context, t Target, tn Tunnel, isSel
 		}
 		return d, true
 	}
-	return s.proberFor(tn, isSelf).Probe(ctx, t.Host, tn.IfaceName, s.probeTimeout)
+	target := t.Host
+	if isSelf && tn.SelfURL != "" {
+		target = tn.SelfURL
+	}
+	return s.proberFor(tn, isSelf).Probe(ctx, target, tn.IfaceName, s.probeTimeout)
+}
+
+// connectivityCheckURL returns the configured connectivity-check URL and its
+// host (settings, else the default; the default when the stored one does not
+// parse). Same source as the manual check in testing.Service.
+func (s *Scheduler) connectivityCheckURL() (rawURL, host string) {
+	rawURL = storage.DefaultConnectivityCheckURL
+	if s.deps.SettingsStore != nil {
+		if settings, err := s.deps.SettingsStore.Get(); err == nil && settings != nil && settings.ConnectivityCheckURL != "" {
+			rawURL = settings.ConnectivityCheckURL
+		}
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		rawURL = storage.DefaultConnectivityCheckURL
+		u, _ = url.Parse(rawURL)
+	}
+	return rawURL, u.Hostname()
 }
 
 // collectTunnels assembles Tunnel records from:
@@ -478,11 +621,12 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 					}
 				}
 			}
-			// Default self-target for HTTP method matches the connectivity-
-			// check service: probe the same gstatic endpoint so the matrix
-			// cell labelled with that host shows the canonical card metric.
+			// Self-target for HTTP method is the configured connectivity-check
+			// URL — the same endpoint and probe the manual «Тест» button uses,
+			// so the card indicator cannot disagree with it.
+			selfURL := ""
 			if selfTarget == "" && selfMethod == "http" {
-				selfTarget = "connectivitycheck.gstatic.com"
+				selfURL, selfTarget = s.connectivityCheckURL()
 			}
 			if rt.IfaceName != "" {
 				managedClaimed[rt.IfaceName] = true
@@ -493,6 +637,7 @@ func (s *Scheduler) collectTunnels(ctx context.Context) []Tunnel {
 				IfaceName:       rt.IfaceName,
 				PingcheckTarget: pingTarget,
 				SelfTarget:      selfTarget,
+				SelfURL:         selfURL,
 				SelfMethod:      selfMethod,
 				Source:          "awg",
 				Backend:         rt.BackendType,

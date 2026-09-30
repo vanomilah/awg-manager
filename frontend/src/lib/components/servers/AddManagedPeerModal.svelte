@@ -1,8 +1,12 @@
 <script lang="ts">
 	import type { ManagedServer } from '$lib/types';
-	import { Modal, FormToggle, Button } from '$lib/components/ui';
+	import { Modal, FormToggle, Button, FieldHint } from '$lib/components/ui';
+	import { routerDnsHint } from './routerDnsHint';
+	import { validateTunnelIP, validateDNSList, validatePeerNetworks, parseRemoteSubnets, normalizeClientAllowedIPs } from '$lib/utils/peerForm';
+	import PeerNetworksFields from './PeerNetworksFields.svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
+	import { suggestNextPeerIP } from '$lib/utils/serverPeerOptions';
 
 	interface Props {
 		open: boolean;
@@ -19,6 +23,8 @@
 	let tunnelIP = $state('');
 	let dns = $state('');
 	let useRouterDNS = $state(false);
+	let clientAllowedIPs = $state('');
+	let remoteSubnets = $state('');
 	let adding = $state(false);
 	let wasOpen = $state(false);
 
@@ -38,36 +44,42 @@
 			initialDns = '';
 			useRouterDNS = false;
 			initialUseRouterDNS = false;
+			clientAllowedIPs = '';
+			remoteSubnets = '';
 		}
 		wasOpen = open;
 	});
+
+	const ipError = $derived(validateTunnelIP(tunnelIP));
+	const dnsError = $derived(validateDNSList(dns));
+	const netError = $derived(validatePeerNetworks(clientAllowedIPs, remoteSubnets));
 
 	const isDirty = $derived(
 		description !== initialDescription ||
 		tunnelIP !== initialTunnelIP ||
 		dns !== initialDns ||
-		useRouterDNS !== initialUseRouterDNS
+		useRouterDNS !== initialUseRouterDNS ||
+		clientAllowedIPs !== '' ||
+		remoteSubnets !== ''
 	);
 
 	function suggestNextIP(): string {
-		const parts = server.address.split('.');
-		if (parts.length !== 4) return '';
-		const base = parts.slice(0, 3).join('.');
-		const usedIPs = new Set([
+		return suggestNextPeerIP(
 			server.address,
-			...(server.peers ?? []).map(p => p.tunnelIP.replace(/\/\d+$/, ''))
-		]);
-		for (let i = 2; i < 255; i++) {
-			const candidate = `${base}.${i}`;
-			if (!usedIPs.has(candidate)) return `${candidate}/32`;
-		}
-		return '';
+			(server.peers ?? []).map((p) => p.tunnelIP.replace(/\/\d+$/, ''))
+		);
 	}
 
 	async function handleAdd() {
 		adding = true;
 		try {
-			await api.addManagedPeer(serverId, { description, tunnelIP, dns: dns || undefined });
+			await api.addManagedPeer(serverId, {
+				description,
+				tunnelIP,
+				dns: dns || undefined,
+				clientAllowedIPs: normalizeClientAllowedIPs(clientAllowedIPs),
+				remoteSubnets: parseRemoteSubnets(remoteSubnets)
+			});
 			notifications.success('Клиент добавлен');
 			onclose();
 			onAdded();
@@ -88,24 +100,38 @@
 		<div class="form-group">
 			<label class="label" for="amp-ip">Tunnel IP (CIDR)</label>
 			<input type="text" id="amp-ip" class="input" bind:value={tunnelIP} placeholder="10.0.0.2/32" />
-			<span class="hint-text">Адрес клиента в VPN-сети</span>
+			{#if ipError}
+				<span class="field-hint is-error">{ipError}</span>
+			{:else}
+				<span class="hint-text">Адрес клиента в VPN-сети</span>
+			{/if}
 		</div>
 		<div class="form-group">
 			<label class="label" for="amp-dns">DNS серверы</label>
-			<input type="text" id="amp-dns" class="input" bind:value={dns} placeholder="1.1.1.1, 8.8.8.8" disabled={useRouterDNS} />
+			<input type="text" id="amp-dns" class="input" bind:value={dns} placeholder="192.168.1.1" disabled={useRouterDNS} />
 			{#if routerIP}
 				<div class="toggle-row">
-					<span class="toggle-label">DNS роутера ({routerIP})</span>
+					<span class="toggle-label">DNS роутера ({routerIP})<FieldHint text={routerDnsHint} ariaLabel="Подсказка: DNS роутера" /></span>
 					<FormToggle bind:checked={useRouterDNS} onchange={(val) => { dns = val ? routerIP : ''; }} size="sm" />
 				</div>
 			{/if}
-			<span class="hint-text">По умолчанию: 1.1.1.1, 8.8.8.8</span>
+			{#if dnsError}
+				<span class="field-hint is-error">{dnsError}</span>
+			{:else}
+				<span class="hint-text">Пусто — DNS роутера</span>
+			{/if}
 		</div>
+		<PeerNetworksFields
+			bind:clientAllowedIPs
+			bind:remoteSubnets
+			idPrefix="amp"
+			loadPresets={() => api.getManagedPeerPresets(serverId, dns)}
+		/>
 	</div>
 
 	{#snippet actions()}
 		<Button variant="ghost" size="md" onclick={onclose}>Отмена</Button>
-		<Button variant="primary" size="md" onclick={handleAdd} disabled={!tunnelIP} loading={adding}>
+		<Button variant="primary" size="md" onclick={handleAdd} disabled={adding || !!ipError || !!dnsError || !!netError} loading={adding}>
 			Добавить
 		</Button>
 	{/snippet}
@@ -157,6 +183,9 @@
 	}
 
 	.toggle-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
 		font-size: 0.75rem;
 		color: var(--text-secondary);
 	}

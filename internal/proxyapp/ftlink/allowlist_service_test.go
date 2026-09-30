@@ -113,6 +113,31 @@ func TestAllowlist_ListDisabled(t *testing.T) {
 	}
 }
 
+// Выключенный список показывает записи файла по умолчанию: они получат доступ
+// при следующем включении, и «Список пуст» здесь был бы неправдой (#871, стенд).
+// Снять такую запись тоже можно, не включая проверку.
+func TestAllowlist_ListDisabledShowsDefaultFile(t *testing.T) {
+	s, _, _, dataDir := newAllowlistService(t, ftServerRecord(""))
+	path := defaultAllowlistPath(dataDir, "default")
+	if err := addAllowlistClient(path, okClientID, "Зомби"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.List(ftServerKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := AllowlistStatus{Enabled: false, Clients: []AllowlistEntry{{ClientID: okClientID, Comment: "Зомби"}}}
+	if !reflect.DeepEqual(st, want) {
+		t.Fatalf("статус=%+v, want %+v", st, want)
+	}
+	if err := s.Remove(ftServerKey, okClientID); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ = s.List(ftServerKey); len(st.Clients) != 0 {
+		t.Fatalf("после Remove у выключенного списка: %+v", st.Clients)
+	}
+}
+
 func TestAllowlist_ListReadsConfiguredFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "clients.json")
@@ -137,7 +162,7 @@ func TestAllowlist_AddEnablesListAndAsksRestart(t *testing.T) {
 	rec := ftServerRecord("")
 	s, src, mut, dir := newAllowlistService(t, rec)
 
-	res, err := s.Add(context.Background(), ftServerKey, okClientID, "Alice")
+	res, err := s.Add(context.Background(), ftServerKey, okClientID, "Alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +200,7 @@ func TestAllowlist_AddToEnabledListKeepsRunning(t *testing.T) {
 	path := filepath.Join(dir, "clients.json")
 	s, _, mut, _ := newAllowlistService(t, ftServerRecord(path))
 
-	res, err := s.Add(context.Background(), ftServerKey, okClientID, "Alice")
+	res, err := s.Add(context.Background(), ftServerKey, okClientID, "Alice", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +221,7 @@ func TestAllowlist_AddStopsWhenConfigNotSaved(t *testing.T) {
 	s, _, mut, dir := newAllowlistService(t, ftServerRecord(""))
 	mut.fail = errors.New("диск полон")
 
-	if _, err := s.Add(context.Background(), ftServerKey, okClientID, ""); err == nil {
+	if _, err := s.Add(context.Background(), ftServerKey, okClientID, "", ""); err == nil {
 		t.Fatal("отказ записи конфига обязан доехать до вызывающего")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "freeturn", "allowlist-default.json")); !os.IsNotExist(err) {
@@ -206,7 +231,7 @@ func TestAllowlist_AddStopsWhenConfigNotSaved(t *testing.T) {
 
 func TestAllowlist_AddRejectsBadClientID(t *testing.T) {
 	s, src, mut, _ := newAllowlistService(t, ftServerRecord(""))
-	if _, err := s.Add(context.Background(), ftServerKey, "not-hex", ""); err == nil {
+	if _, err := s.Add(context.Background(), ftServerKey, "not-hex", "", ""); err == nil {
 		t.Fatal("нехекс обязан быть отвергнут")
 	}
 	// Путь при этом уже записан — включение списка идёт ДО проверки id
@@ -240,8 +265,11 @@ func TestAllowlist_Remove(t *testing.T) {
 	}
 }
 
+// Без каталога данных у выключенного списка нет и файла по умолчанию —
+// удалять неоткуда (с каталогом — см. TestAllowlist_ListDisabledShowsDefaultFile).
 func TestAllowlist_RemoveWhenDisabled(t *testing.T) {
-	s, _, _, _ := newAllowlistService(t, ftServerRecord(""))
+	_, src, mut, _ := newAllowlistService(t, ftServerRecord(""))
+	s := New(Deps{Records: src, Mutator: mut})
 	err := s.Remove(ftServerKey, okClientID)
 	if err == nil || err.Error() != "allowlist не включён" {
 		t.Fatalf("err=%v", err)
@@ -293,7 +321,7 @@ func TestAllowlist_UnknownInstance(t *testing.T) {
 	}{
 		{"list", func() error { _, err := s.List("freeturn-server:нет"); return err }},
 		{"add", func() error {
-			_, err := s.Add(context.Background(), "freeturn-server:нет", okClientID, "")
+			_, err := s.Add(context.Background(), "freeturn-server:нет", okClientID, "", "")
 			return err
 		}},
 		{"remove", func() error { return s.Remove("freeturn-server:нет", okClientID) }},
@@ -319,7 +347,7 @@ func TestAllowlist_RejectsForeignKind(t *testing.T) {
 	if _, err := s.List(key); err == nil {
 		t.Fatal("список чужой роли обязан быть отвергнут")
 	}
-	if _, err := s.Add(context.Background(), key, okClientID, ""); err == nil {
+	if _, err := s.Add(context.Background(), key, okClientID, "", ""); err == nil {
 		t.Fatal("добавление в чужую роль обязано быть отвергнуто")
 	}
 	if err := s.Remove(key, okClientID); err == nil {
@@ -341,14 +369,14 @@ func TestAllowlist_FailClosedWithoutWiring(t *testing.T) {
 
 	src := &fakeSource{recs: map[string]instancestore.Record{ftServerKey: ftServerRecord("")}}
 	noMut := New(Deps{Records: src, DataDir: t.TempDir()})
-	if _, err := noMut.Add(context.Background(), ftServerKey, okClientID, ""); err == nil {
+	if _, err := noMut.Add(context.Background(), ftServerKey, okClientID, "", ""); err == nil {
 		t.Fatal("без мутатора включение списка обязано отказать, а не записать файл втихую")
 	}
 
 	// Без каталога данных путь получился бы относительным, и сервер искал бы
 	// список относительно своего рабочего каталога — проверка пропускала бы всех.
 	noDir := New(Deps{Records: src, Mutator: &fakeMutator{src: src}})
-	if _, err := noDir.Add(context.Background(), ftServerKey, okClientID, ""); err == nil {
+	if _, err := noDir.Add(context.Background(), ftServerKey, okClientID, "", ""); err == nil {
 		t.Fatal("без каталога данных включение списка обязано отказать")
 	}
 	if src.recs[ftServerKey].FreeTurnServer.ClientsFile != "" {
@@ -462,9 +490,10 @@ func TestAllowlistHandler_ErrorCodes(t *testing.T) {
 	if code, _ := decodeEnvelope(t, rr)["code"].(string); code != "FREETURN_ALLOWLIST_ADD_FAILED" {
 		t.Fatalf("код добавления=%v", decodeEnvelope(t, rr)["code"])
 	}
-	// Свежий сервис: неудачное добавление выше уже включило список, а отказ
-	// удаления нужен именно на ВЫКЛЮЧЕННОМ.
-	off, _, _, _ := newAllowlistService(t, ftServerRecord(""))
+	// Свежий сервис без каталога данных: неудачное добавление выше уже
+	// включило список, а отказ удаления нужен на ВЫКЛЮЧЕННОМ без файла по умолчанию.
+	_, src, mut, _ := newAllowlistService(t, ftServerRecord(""))
+	off := New(Deps{Records: src, Mutator: mut})
 	rr = serveAllowlist(t, off, http.MethodDelete, ftServerKey, []string{okClientID}, "")
 	if code, _ := decodeEnvelope(t, rr)["code"].(string); code != "FREETURN_ALLOWLIST_REMOVE_FAILED" {
 		t.Fatalf("код удаления=%v", decodeEnvelope(t, rr)["code"])

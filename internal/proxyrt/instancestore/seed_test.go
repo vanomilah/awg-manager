@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/childproc"
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/proxyrt/roles"
 )
 
@@ -23,10 +25,21 @@ func writeFile(t *testing.T, path, data string) {
 }
 
 type seedEnv struct {
-	st    *Store
-	deps  SeedDeps
-	lives map[string][]string
-	asked []string
+	st      *Store
+	deps    SeedDeps
+	lives   map[string][]string
+	asked   []string
+	journal []string
+}
+
+// poolOf — пул с заданным потолком и занятостью. Заменяет прежнюю подстановку
+// аллокатора: у пула нет «выдай, что просят» — есть занятость и правила, и
+// тесты проверяют ИСХОД, а не то, о чём его попросили.
+func poolOf(ceiling int, taken opkgtun.Taken) *opkgtun.Pool {
+	return opkgtun.NewPool(ceiling, opkgtun.Source{
+		Name: "тест",
+		Read: func(context.Context) (opkgtun.Taken, error) { return taken, nil },
+	})
 }
 
 func newSeedEnv(t *testing.T) *seedEnv {
@@ -37,17 +50,17 @@ func newSeedEnv(t *testing.T) *seedEnv {
 		WdttPath:     filepath.Join(dir, "wdtt.json"),
 		FreeturnPath: filepath.Join(dir, "freeturn.json"),
 		RuntimeDir:   filepath.Join(dir, "run"),
-		GOARCH:       "arm64",
 		LivePermits: func(_ context.Context, iface string) ([]string, error) {
 			e.asked = append(e.asked, iface)
 			return e.lives[iface], nil
 		},
-		AllocIndex: func(_ string, pinned int, havePin bool) (int, error) {
-			if havePin {
-				return pinned, nil
-			}
-			return 30, nil
-		},
+		// Пул с пустой занятостью: пины честатся как есть, беспиновые идут
+		// перебором с первого свободного.
+		OpkgTunPool: opkgtun.NewPool(49, opkgtun.Source{
+			Name: "тест",
+			Read: func(context.Context) (opkgtun.Taken, error) { return nil, nil },
+		}),
+		Journal: func(_, target, msg string) { e.journal = append(e.journal, target+": "+msg) },
 	}
 	return e
 }
@@ -459,31 +472,28 @@ func TestSeedFailsClosedWhenLivePermitsUnavailable(t *testing.T) {
 	}
 }
 
-func TestSeedFailsClosedWhenAllocIndexFails(t *testing.T) {
+func TestSeedFailsClosedWhenOccupancyUnavailable(t *testing.T) {
 	// Исчерпанный пул индексов — не повод посеять raw-клиента без пина:
 	// запись без пина отвергнет валидация store, а посев с половиной
 	// инстансов оставил бы пользователя с непредсказуемой конфигурацией.
 	e := newSeedEnv(t)
-	boom := errors.New("пул исчерпан")
-	e.deps.AllocIndex = func(string, int, bool) (int, error) { return 0, boom }
+	boom := errors.New("занятость недоступна")
+	e.deps.OpkgTunPool = opkgtun.NewPool(49, opkgtun.Source{
+		Name: "тест",
+		Read: func(context.Context) (opkgtun.Taken, error) { return nil, boom },
+	})
 	writeFile(t, e.deps.WdttPath, oldWdttJSON)
 	if _, err := Seed(context.Background(), e.st, e.deps); !errors.Is(err, boom) {
-		t.Fatalf("отказ аллокатора обязан валить посев: %v", err)
+		t.Fatalf("отказ занятости обязан валить посев: %v", err)
 	}
 	if _, statErr := os.Stat(e.st.path); !os.IsNotExist(statErr) {
-		t.Fatal("при отказе аллокатора store-файл не должен появляться")
+		t.Fatal("при отказе занятости store-файл не должен появляться")
 	}
 }
 
 func TestSeedRepinsOutOfRangeIndexOnMips(t *testing.T) {
 	e := newSeedEnv(t)
-	e.deps.GOARCH = "mipsle"
-	e.deps.AllocIndex = func(owner string, pinned int, havePin bool) (int, error) {
-		if havePin {
-			t.Fatalf("перепин обязан идти БЕЗ старого пина (вне диапазона), пришло %d", pinned)
-		}
-		return 3, nil
-	}
+	e.deps.OpkgTunPool = poolOf(16, nil) // потолок mips
 	writeFile(t, e.deps.WdttPath, oldWdttJSON)
 	res, err := Seed(context.Background(), e.st, e.deps)
 	if err != nil {
@@ -496,8 +506,15 @@ func TestSeedRepinsOutOfRangeIndexOnMips(t *testing.T) {
 		}
 	}
 	cfg, _ := c.WdttClientConfig()
-	if cfg.NdmsIface != "OpkgTun3" || cfg.RawIface != "opkgtun3" {
+	// Пин 18 выше потолка mips — интерфейс с ним не поднимется, поэтому это
+	// перепин, а не владение. Конкретное число задаёт порядок обхода пула;
+	// проверяется свойство: номер сменился и достижим.
+	idx, ok := opkgtun.NDMSIndexOf(cfg.NdmsIface)
+	if !ok || idx == 18 || idx > 16 {
 		t.Fatalf("перепин на mips: %+v", cfg)
+	}
+	if cfg.RawIface != "opkgtun"+strconv.Itoa(idx) {
+		t.Fatalf("kernel-имя разошлось с NDMS-именем: %+v", cfg)
 	}
 	for _, name := range e.asked {
 		if name == "OpkgTun18" {
@@ -506,32 +523,47 @@ func TestSeedRepinsOutOfRangeIndexOnMips(t *testing.T) {
 	}
 }
 
-func TestSeedKeepsOpkgTun0PinOnMips(t *testing.T) {
-	// Щ13: ноль — законный индекс на mips (диапазон 0..15); сентинел «пина
-	// нет» не имеет права совпадать с ним.
+// Номер выше потолка прошивки удержать нельзя: интерфейс с ним не поднимется,
+// поэтому такой пин — перепин, а не владение. Единственное место, где годность
+// пина проверяется (пул отвергает недостижимый пин и уводит в перебор).
+func TestSeedRepinsAboveCeiling(t *testing.T) {
 	e := newSeedEnv(t)
-	e.deps.GOARCH = "mipsle"
+	// Потолок mips: 0..16. Всё, кроме 5, занято — перепин обязан дать ровно 5.
+	busy := opkgtun.Taken{}
+	for i := 0; i <= 16; i++ {
+		if i != 5 {
+			busy[i] = opkgtun.TunnelHolder("awg"+strconv.Itoa(i), "чужой")
+		}
+	}
+	e.deps.OpkgTunPool = poolOf(16, busy)
+	writeFile(t, e.deps.WdttPath, `{"clients":[{"id":"z","name":"Z","config":{
+	  "enabled":true,"listen":"127.0.0.1:9000","peer":"1.1.1.1:1","password":"pw",
+	  "vkHashes":"h","connMode":"raw","peerRaw":"1.1.1.1:2",
+	  "ndmsIface":"OpkgTun40","rawIface":"opkgtun40"}}]}`)
+	res, err := Seed(context.Background(), e.st, e.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := res.State.Records[0].WdttClientConfig()
+	if cfg.NdmsIface != "OpkgTun5" {
+		t.Fatalf("OpkgTun40 не перепинован: %+v", cfg)
+	}
+}
+
+func TestSeedKeepsOpkgTun0PinOnMips(t *testing.T) {
+	// Щ13: ноль — законный УДЕРЖИВАЕМЫЙ номер. Он ниже окна выдачи (0..1 —
+	// резерв режимов роутера), но инстанс мог занять его на прошлых версиях,
+	// и переезд с него порвал бы permit'ы политики.
+	e := newSeedEnv(t)
+	e.deps.OpkgTunPool = poolOf(16, nil)
 	json0 := `{"clients":[{"id":"z","name":"Z","config":{
 	  "enabled":true,"listen":"127.0.0.1:9000","peer":"1.1.1.1:1","password":"pw",
 	  "vkHashes":"h","connMode":"raw","peerRaw":"1.1.1.1:2",
 	  "ndmsIface":"OpkgTun0","rawIface":"opkgtun0"}}]}`
 	writeFile(t, e.deps.WdttPath, json0)
-	sawPin := false
-	e.deps.AllocIndex = func(_ string, pinned int, havePin bool) (int, error) {
-		if havePin && pinned == 0 {
-			sawPin = true
-		}
-		if havePin {
-			return pinned, nil
-		}
-		return 5, nil
-	}
 	res, err := Seed(context.Background(), e.st, e.deps)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !sawPin {
-		t.Fatal("пин OpkgTun0 обязан прийти как (0, havePin=true)")
 	}
 	cfg, _ := res.State.Records[0].WdttClientConfig()
 	if cfg.NdmsIface != "OpkgTun0" {
@@ -555,11 +587,15 @@ func TestSeedUnparsablePinAsksFreshIndex(t *testing.T) {
 	for _, name := range []string{"", "   ", "wdtt0", "OpkgTun", "OpkgTun-1", "OpkgTunX", "opkgtun18"} {
 		t.Run("iface="+name, func(t *testing.T) {
 			e := newSeedEnv(t)
-			gotHavePin := true
-			e.deps.AllocIndex = func(_ string, _ int, havePin bool) (int, error) {
-				gotHavePin = havePin
-				return 30, nil
+			// Всё, кроме 30, занято: перепин обязан дать ровно 30, а
+			// сохранённый пин дал бы другое число.
+			busy := opkgtun.Taken{}
+			for i := 0; i <= 49; i++ {
+				if i != 30 {
+					busy[i] = opkgtun.TunnelHolder("awg"+strconv.Itoa(i), "чужой")
+				}
 			}
+			e.deps.OpkgTunPool = poolOf(49, busy)
 			writeFile(t, e.deps.WdttPath, `{"clients":[{"id":"z","name":"Z","config":{
 			  "enabled":true,"listen":"127.0.0.1:9000","peer":"1.1.1.1:1","password":"pw",
 			  "vkHashes":"h","connMode":"raw","peerRaw":"1.1.1.1:2",
@@ -567,9 +603,6 @@ func TestSeedUnparsablePinAsksFreshIndex(t *testing.T) {
 			res, err := Seed(context.Background(), e.st, e.deps)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if gotHavePin {
-				t.Fatalf("имя %q — не пин, аллокатор обязан получить havePin=false", name)
 			}
 			cfg, _ := res.State.Records[0].WdttClientConfig()
 			if cfg.NdmsIface != "OpkgTun30" || cfg.RawIface != "opkgtun30" {
@@ -634,10 +667,13 @@ func TestSeedWgClientGetsNoPinAndNoLivePermits(t *testing.T) {
 	for _, mode := range []string{"", "wg"} {
 		t.Run("connMode="+mode, func(t *testing.T) {
 			e := newSeedEnv(t)
-			e.deps.AllocIndex = func(string, int, bool) (int, error) {
-				t.Fatal("wg-клиенту индекс не выделяется")
-				return 0, nil
+			// Пул исчерпан целиком: если wg-клиенту попросят номер, посев
+			// упадёт — а он обязан пройти.
+			busy := opkgtun.Taken{}
+			for i := 0; i <= 49; i++ {
+				busy[i] = opkgtun.TunnelHolder("awg"+strconv.Itoa(i), "чужой")
 			}
+			e.deps.OpkgTunPool = poolOf(49, busy)
 			writeFile(t, e.deps.WdttPath, `{"clients":[{"id":"z","name":"Z","config":{
 			  "enabled":true,"listen":"127.0.0.1:9000","peer":"9.9.9.9:1","password":"pw",
 			  "vkHashes":"h","connMode":"`+mode+`","peerWg":"1.1.1.1:56000"}}]}`)
@@ -776,7 +812,10 @@ func TestSeedMarksCleanupPendingAndPersistsLegacyIfaces(t *testing.T) {
 	if err := os.MkdirAll(e.deps.RuntimeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, filepath.Join(e.deps.RuntimeDir, "wdtt-server-s.pid"), "321")
+	// Номер заведомо мёртвый (выше pid_max): отпечаток снимается по реальному
+	// /proc, и живой на хосте номер дал бы StartTime != 0 — так тест падал на
+	// CI-раннере, где PID 321 был занят.
+	writeFile(t, filepath.Join(e.deps.RuntimeDir, "wdtt-server-s.pid"), "999999999")
 	first, err := Seed(context.Background(), e.st, e.deps)
 	if err != nil {
 		t.Fatal(err)
@@ -794,7 +833,7 @@ func TestSeedMarksCleanupPendingAndPersistsLegacyIfaces(t *testing.T) {
 	if !reflect.DeepEqual(st.LegacyKernelIfaces, []string{"wdtt0", "wdttraw0"}) {
 		t.Fatalf("прежние kernel-имена не сохранены: %v", st.LegacyKernelIfaces)
 	}
-	if !reflect.DeepEqual(st.OldGenProcs, []OldGenProc{{PID: 321}}) {
+	if !reflect.DeepEqual(st.OldGenProcs, []OldGenProc{{PID: 999999999}}) {
 		t.Fatalf("процессы старого поколения не сохранены: %+v", st.OldGenProcs)
 	}
 
@@ -814,7 +853,7 @@ func TestSeedMarksCleanupPendingAndPersistsLegacyIfaces(t *testing.T) {
 	if !reflect.DeepEqual(second.LegacyKernelIfaces, []string{"wdtt0", "wdttraw0"}) {
 		t.Fatalf("список имён не доехал до повтора: %v", second.LegacyKernelIfaces)
 	}
-	if !reflect.DeepEqual(second.OldGenProcs, []OldGenProc{{PID: 321}}) {
+	if !reflect.DeepEqual(second.OldGenProcs, []OldGenProc{{PID: 999999999}}) {
 		t.Fatalf("список процессов пересобран с диска: %+v", second.OldGenProcs)
 	}
 }
@@ -1006,12 +1045,15 @@ func TestSeedSkipsLivePermitsWhenAllocatorMovedPin(t *testing.T) {
 	e := newSeedEnv(t)
 	e.lives["OpkgTun18"] = []string{"ЧужаяПолитика"}
 	e.lives["OpkgTun31"] = []string{"НесуществующийИнтерфейс"}
-	e.deps.AllocIndex = func(_ string, pinned int, havePin bool) (int, error) {
-		if !havePin || pinned != 18 {
-			t.Fatalf("ждали заявку на сохранение пина 18, пришло (%d, havePin=%v)", pinned, havePin)
+	// Пин 18 занят ЧУЖОЙ заявленной записью — пул его не отдаст. Всё, кроме
+	// 31, тоже занято, поэтому сдвиг однозначен.
+	busy := opkgtun.Taken{}
+	for i := 0; i <= 49; i++ {
+		if i != 31 {
+			busy[i] = opkgtun.TunnelHolder("awg"+strconv.Itoa(i), "чужой")
 		}
-		return 31, nil // пин занят другим владельцем — аллокатор подвинул
 	}
+	e.deps.OpkgTunPool = poolOf(49, busy)
 	writeFile(t, e.deps.WdttPath, `{"clients":[{"id":"z","name":"Z","config":{
 	  "enabled":true,"listen":"127.0.0.1:9000","peer":"1.1.1.1:1","password":"pw",
 	  "vkHashes":"h","connMode":"raw","peerRaw":"1.1.1.1:2",
@@ -1123,7 +1165,6 @@ const fullFreeturnJSON = `{
     "streams":12,
     "transport":"udp",
     "mode":"tcp",
-    "bond":true,
     "obfProfile":"rtpopus2",
     "obfKey":"ft-obf-key-client",
     "streamsPerCred":6,
@@ -1285,7 +1326,6 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 				Streams:        12,
 				Transport:      "udp",
 				Mode:           "tcp",
-				Bond:           true,
 				ObfProfile:     "rtpopus2",
 				ObfKey:         "ft-obf-key-client",
 				StreamsPerCred: 6,
@@ -1350,10 +1390,17 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 	// Форма nil→true закрыта TestSeedOpenFirewallAbsentOrNullMeansOn.
 	assertEveryFieldCarried(t, "WdttServerConfig", []any{*srv.WdttServer}, "OpenFirewall", "ClientAuthMode", "SharedPassword")
 	assertEveryFieldCarried(t, "ServerUser", []any{srv.Users[0]})
+	// KCP появился в freeturn 3.2 (F144) и приезжает только ссылкой freeturn://;
+	// старый freeturn.json, который переносит посев, его не знал. ObfTimingMs
+	// (4.0) — та же причина. Bond в старом файле был, но под протокол 2.x
+	// (tcpfwd/smux), с bond 4.x поверх KCP он несовместим — не переносим.
 	assertEveryFieldCarried(t, "FreeTurnClientConfig",
-		[]any{*got["freeturn-client:ftc-1"].FreeTurnClient}, "AutoReconnect", "AutoReconnectInterval")
+		[]any{*got["freeturn-client:ftc-1"].FreeTurnClient}, "KCP", "Bond", "ObfTimingMs", "AutoReconnect", "AutoReconnectInterval")
+	// LinkPeer — настройка адреса для ссылок абонентам (#933), заведена
+	// панелью; в старом freeturn.json такого поля не было вовсе, переносить
+	// нечего. Та же причина исключения, что у KCP клиента.
 	assertEveryFieldCarried(t, "FreeTurnServerConfig",
-		[]any{*got["freeturn-server:fts-1"].FreeTurnServer}, "OpenFirewall")
+		[]any{*got["freeturn-server:fts-1"].FreeTurnServer}, "OpenFirewall", "LinkPeer")
 
 	// Record и PolicyPermit — те же права. Именно в Record живут Sub,
 	// PeerWg/PeerRaw, Users и link-метаданные: класс, который уже терялся
@@ -1377,11 +1424,12 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 	assertEveryFieldCarried(t, "PolicyPermit", permits)
 }
 
-// TestSeedServerWithoutNatModeGetsFull — РЕГРЕСС МИГРАЦИИ. У пользователя,
-// который режим NAT никогда не трогал, поле старого конфига пустое, а старый
-// мир трактовал пустое как full (wdtt.normalizeNatMode, access.go:30-37).
-// Дефолт "none" на посеве снял бы NAT с РАБОТАВШЕЙ раздачи после обновления:
-// абоненты подключаются, интернета нет.
+// РЕГРЕСС МИГРАЦИИ. Инвариант: обновление не имеет права менять поведение
+// уже работающей у пользователя раздачи — он её не трогал и об изменении не
+// узнает, пока абоненты не потеряют интернет. У того, кто режим NAT никогда
+// не выбирал, поле старого конфига пустое, и на его роутере СЕЙЧАС работает
+// полный NAT; посев обязан это сохранить. Ссылка на старый мир здесь — про
+// установленную базу (что реально крутится у людей), а не про правильность.
 //
 // Проверка отдельная от нормализации на записи (store_test.go) сознательно:
 // посев переносит NatMode как есть (seed.go:412), и ломается этот путь
@@ -1406,7 +1454,7 @@ func TestSeedServerWithoutNatModeGetsFull(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.NatMode != "full" {
-		t.Fatalf("natMode после посева = %q, ждали full (паритет со старым миром)", cfg.NatMode)
+		t.Fatalf("natMode после посева = %q, ждали full — обновление не меняет поведение работающей раздачи", cfg.NatMode)
 	}
 }
 
@@ -1616,5 +1664,118 @@ func TestSeedMarksEachRecordWithItsSource(t *testing.T) {
 		if r.SeededFrom != src {
 			t.Errorf("%s: seededFrom %q, ждали %q", key, r.SeededFrom, src)
 		}
+	}
+}
+
+// Два клиента с одним id дают один ключ хранилища. Записать оба нельзя:
+// validateState роняет ВЕСЬ посев, а с ним прокси-подсистему, и боот уходит в
+// вечные ретраи. Выигрывает первый; о втором говорят и в журнал, и на диск —
+// повторного посева не будет никогда.
+func TestSeedDedupesDuplicateIDs(t *testing.T) {
+	e := newSeedEnv(t)
+	writeFile(t, e.deps.WdttPath, `{"clients":[
+	  {"id":"z","name":"Первый","config":{"enabled":true,"listen":"127.0.0.1:9000",
+	    "peer":"1.1.1.1:1","password":"pw","vkHashes":"h","connMode":"raw","peerRaw":"1.1.1.1:2"}},
+	  {"id":"z","name":"Второй","config":{"enabled":true,"listen":"127.0.0.1:9001",
+	    "peer":"2.2.2.2:1","password":"pw2","vkHashes":"h2","connMode":"raw","peerRaw":"2.2.2.2:2"}}]}`)
+
+	res, err := Seed(context.Background(), e.st, e.deps)
+	if err != nil {
+		t.Fatalf("дубль ключа обязан схлопываться, а не валить посев: %v", err)
+	}
+	if len(res.State.Records) != 1 {
+		t.Fatalf("записей %d, ждали одну", len(res.State.Records))
+	}
+	if res.State.Records[0].Name != "Первый" {
+		t.Fatalf("выиграла запись %q, ждали первую", res.State.Records[0].Name)
+	}
+	if len(res.State.DroppedDuplicates) != 1 ||
+		!strings.Contains(res.State.DroppedDuplicates[0], "wdtt-client:z") ||
+		!strings.Contains(res.State.DroppedDuplicates[0], "Второй") {
+		t.Fatalf("схлопнутый дубль не записан на диск: %v", res.State.DroppedDuplicates)
+	}
+	if len(e.journal) != 1 || !strings.Contains(e.journal[0], "wdtt-client:z") {
+		t.Fatalf("о схлопнутом дубле не сказано в журнал: %v", e.journal)
+	}
+}
+
+// Пины честатся раньше беспиновых ПО ВСЕМУ файлу: раздельные выдачи отдали бы
+// номер с чужим пином тому, кто просто встретился в файле раньше.
+func TestSeedPinsWinOverEarlierUnpinned(t *testing.T) {
+	e := newSeedEnv(t)
+	// Пул из двух номеров: 10 и 11. Беспиновый клиент идёт ПЕРВЫМ и по
+	// перебору взял бы 10; пин второго — ровно 10.
+	busy := opkgtun.Taken{}
+	for i := 0; i <= 49; i++ {
+		if i != 10 && i != 11 {
+			busy[i] = opkgtun.TunnelHolder("awg"+strconv.Itoa(i), "чужой")
+		}
+	}
+	e.deps.OpkgTunPool = poolOf(49, busy)
+	writeFile(t, e.deps.WdttPath, `{"clients":[
+	  {"id":"a","name":"Беспиновый","config":{"enabled":true,"listen":"127.0.0.1:9000",
+	    "peer":"1.1.1.1:1","password":"pw","vkHashes":"h","connMode":"raw","peerRaw":"1.1.1.1:2"}},
+	  {"id":"b","name":"Спином","config":{"enabled":true,"listen":"127.0.0.1:9001",
+	    "peer":"2.2.2.2:1","password":"pw","vkHashes":"h","connMode":"raw","peerRaw":"2.2.2.2:2",
+	    "ndmsIface":"OpkgTun10","rawIface":"opkgtun10"}}]}`)
+
+	res, err := Seed(context.Background(), e.st, e.deps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]string{}
+	for _, r := range res.State.Records {
+		cfg, _ := r.WdttClientConfig()
+		byID[r.ID] = cfg.NdmsIface
+	}
+	if byID["b"] != "OpkgTun10" {
+		t.Fatalf("пин проигран беспиновому соседу: %v", byID)
+	}
+	if byID["a"] != "OpkgTun11" {
+		t.Fatalf("беспиновый = %v, ждали оставшийся номер", byID)
+	}
+}
+
+// Страж порядка локов: Reserve НЕ зовётся из-под Store.Replace. Замок стора не
+// реентрантен, и выделение внутри транзакции вешает посев НАВСЕГДА, а с ним
+// боот прокси-подсистемы.
+//
+// Источник занятости здесь делает то же, что боевой, — читает тот же стор.
+// Если бы выдача шла из-под транзакции, это чтение встало бы на её замке.
+func TestSeedDoesNotReserveUnderStoreTransaction(t *testing.T) {
+	e := newSeedEnv(t)
+	reads := 0
+	e.deps.OpkgTunPool = opkgtun.NewPool(49, opkgtun.Source{
+		Name: "читающий стор",
+		Read: func(context.Context) (opkgtun.Taken, error) {
+			reads++
+			if _, err := e.st.Load(); err != nil {
+				return nil, err
+			}
+			// Запись берёт тот же замок, что и транзакция посева.
+			_, err := e.st.Replace(func(st *State) error {
+				st.CleanupPending = true
+				return nil
+			})
+			return nil, err
+		},
+	})
+	writeFile(t, e.deps.WdttPath, oldWdttJSON)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := Seed(context.Background(), e.st, e.deps)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("посев отказал: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("посев завис: выделение идёт из-под транзакции стора")
+	}
+	if reads != 1 {
+		t.Fatalf("источник прочитан %d раз, ждали один", reads)
 	}
 }

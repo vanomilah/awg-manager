@@ -12,6 +12,7 @@ type Queries struct {
 	Policies         *PolicyStore
 	Hotspot          *HotspotStore
 	Routes           *RouteStore
+	StaticRoutes     *StaticRouteStore
 	ObjectGroups     *ObjectGroupStore
 	DNSProxy         *DNSProxyStore
 	DNSProxyConfig   *DNSProxyConfigStore
@@ -70,10 +71,11 @@ func NewQueries(d Deps) *Queries {
 	runningConfig := NewRunningConfigStore(d.Getter, d.Logger)
 	return &Queries{
 		Interfaces:       ifaces,
-		Peers:            NewPeerStore(d.Getter, d.Logger),
+		Peers:            NewPeerStore(d.Getter, d.Logger, ifaces),
 		Policies:         NewPolicyStore(d.Getter, d.Logger),
 		Hotspot:          NewHotspotStore(d.Getter, d.Logger),
 		Routes:           NewRouteStore(d.Getter, d.Logger),
+		StaticRoutes:     NewStaticRouteStore(d.Getter, d.Logger),
 		ObjectGroups:     NewObjectGroupStore(d.Getter, d.Logger),
 		DNSProxy:         NewDNSProxyStore(d.Getter, d.Logger, isOS5),
 		DNSProxyConfig:   NewDNSProxyConfigStore(d.Getter, d.Logger),

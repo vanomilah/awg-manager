@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
@@ -97,13 +98,15 @@ func TestExecuteColdStartKernel_ConcurrentUserEditSurvives(t *testing.T) {
 	tunnel.ConfDir = confDir
 	t.Cleanup(func() { tunnel.ConfDir = oldConfDir })
 
+	prevIfaces := listInterfaces
+	listInterfaces = func() ([]hostIface, error) { return nil, nil }
+	t.Cleanup(func() { listInterfaces = prevIfaces })
+
 	store := storage.NewAWGTunnelStoreWithLockDir(dir, filepath.Join(dir, "locks"))
 	if err := store.Create(&storage.AWGTunnel{
 		ID: "awg10", Name: "старое имя", Backend: "kernel",
 		ISPInterface: "eth3",
-		// Адрес заведомо не занят ни одним интерфейсом машины —
-		// checkSystemAddressConflict не должен сорвать пуск.
-		Interface: storage.AWGInterface{Address: "10.253.254.2", DNS: "1.1.1.1"},
+		Interface:    storage.AWGInterface{Address: "10.253.254.2", DNS: "1.1.1.1"},
 		// IP-литерал: резолв endpoint не ходит в DNS.
 		Peer: storage.AWGPeer{Endpoint: "203.0.113.7:51820"},
 	}); err != nil {
@@ -160,30 +163,79 @@ func TestExecuteColdStartKernel_ConcurrentUserEditSurvives(t *testing.T) {
 type fakeKernelOp struct {
 	entered chan struct{}
 	release chan struct{}
+
+	// coldStartErr/deleteErr — отказ соответствующего шага. Счётчики атомарны
+	// на будущее: сегодня все читатели стоят после join, гонки нет, но
+	// ColdStart умеет парковаться в отдельной горутине — первое же чтение
+	// счётчика параллельно с парковкой стало бы флейком.
+	coldStartErr error
+	deleteErr    error
+	stops        atomic.Int64
+	stopName     atomic.Value // имя туннеля, с которым звали Stop
+	coldStarts   atomic.Int64
+
+	// resumes/endpointRoutes — для проверки того, что возврат линка приводит
+	// и маршрут до endpoint (см. resume_endpoint_route_test.go). Срез под
+	// мьютексом по той же причине, что счётчики атомарны.
+	resumes        atomic.Int64
+	routesMu       sync.Mutex
+	endpointRoutes []endpointRouteCall
+	endpointErr    error
+	endpointIP     string // что SetupEndpointRoute вернёт вызывающему
+}
+
+// endpointRouteCall — аргументы одного вызова SetupEndpointRoute.
+type endpointRouteCall struct {
+	tunnelID     string
+	endpoint     string
+	kernelDevice string
+	ispName      string
 }
 
 func (f *fakeKernelOp) Create(context.Context, tunnel.Config) error { return nil }
 func (f *fakeKernelOp) ColdStart(context.Context, tunnel.Config) error {
+	f.coldStarts.Add(1)
 	park(f.entered, f.release)
+	return f.coldStartErr
+}
+func (f *fakeKernelOp) Stop(_ context.Context, _, name string) error {
+	f.stops.Add(1)
+	f.stopName.Store(name)
 	return nil
 }
-func (f *fakeKernelOp) Stop(context.Context, string) error                      { return nil }
-func (f *fakeKernelOp) Delete(context.Context, *storage.AWGTunnel) error        { return nil }
-func (f *fakeKernelOp) Reconcile(context.Context, tunnel.Config) error          { return nil }
-func (f *fakeKernelOp) Suspend(context.Context, string) error                   { return nil }
-func (f *fakeKernelOp) Resume(context.Context, string) error                    { return nil }
-func (f *fakeKernelOp) ApplyConfig(context.Context, string, string) error       { return nil }
-func (f *fakeKernelOp) SetDefaultRoute(context.Context, string) error           { return nil }
-func (f *fakeKernelOp) RemoveDefaultRoute(context.Context, string) error        { return nil }
-func (f *fakeKernelOp) CleanupEndpointRoute(context.Context, string) error      { return nil }
-func (f *fakeKernelOp) GetTrackedEndpointIP(string) string                      { return "" }
-func (f *fakeKernelOp) SetMTU(context.Context, string, int) error               { return nil }
-func (f *fakeKernelOp) SyncDNS(context.Context, string, []string) error         { return nil }
-func (f *fakeKernelOp) UpdateDescription(context.Context, string, string) error { return nil }
-func (f *fakeKernelOp) GetSystemName(context.Context, string) string            { return "" }
-func (f *fakeKernelOp) SetAppLogger(logging.AppLogger)                          {}
-func (f *fakeKernelOp) SetupEndpointRoute(context.Context, string, string, string, string) (string, error) {
-	return "", nil
+func (f *fakeKernelOp) Delete(context.Context, *storage.AWGTunnel) error {
+	return f.deleteErr
+}
+func (f *fakeKernelOp) Reconcile(context.Context, tunnel.Config) error           { return nil }
+func (f *fakeKernelOp) Suspend(context.Context, string) error                    { return nil }
+func (f *fakeKernelOp) Resume(context.Context, string) error                     { f.resumes.Add(1); return nil }
+func (f *fakeKernelOp) ApplyConfig(context.Context, string, string) error        { return nil }
+func (f *fakeKernelOp) SetDefaultRoute(context.Context, string) error            { return nil }
+func (f *fakeKernelOp) RemoveDefaultRoute(context.Context, string) error         { return nil }
+func (f *fakeKernelOp) CleanupEndpointRoute(context.Context, string) error       { return nil }
+func (f *fakeKernelOp) GetTrackedEndpointIP(string) string                       { return "" }
+func (f *fakeKernelOp) SetMTU(context.Context, string, int) error                { return nil }
+func (f *fakeKernelOp) SyncDNS(context.Context, string, []string) error          { return nil }
+func (f *fakeKernelOp) GetSystemName(context.Context, string) string             { return "" }
+func (f *fakeKernelOp) SetAppLogger(logging.AppLogger)                           {}
+func (f *fakeKernelOp) CaptureDescription(context.Context, string, string) error { return nil }
+func (f *fakeKernelOp) UpdateDescription(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeKernelOp) SetupEndpointRoute(_ context.Context, tunnelID, endpoint, kernelDevice, ispName string) (string, error) {
+	f.routesMu.Lock()
+	f.endpointRoutes = append(f.endpointRoutes, endpointRouteCall{
+		tunnelID: tunnelID, endpoint: endpoint, kernelDevice: kernelDevice, ispName: ispName,
+	})
+	f.routesMu.Unlock()
+	return f.endpointIP, f.endpointErr
+}
+
+// routeCalls — снимок записанных вызовов под тем же мьютексом.
+func (f *fakeKernelOp) routeCalls() []endpointRouteCall {
+	f.routesMu.Lock()
+	defer f.routesMu.Unlock()
+	return append([]endpointRouteCall(nil), f.endpointRoutes...)
 }
 func (f *fakeKernelOp) RestoreEndpointTracking(context.Context, string, string) (string, error) {
 	return "", nil

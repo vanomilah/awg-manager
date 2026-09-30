@@ -69,7 +69,7 @@ func TestCheck_UpdateAvailable(t *testing.T) {
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.0.0")
+	info := checkWithDownloader(context.Background(), "2.0.0", channelStable, newDefaultDownloader(), nil)
 
 	if !info.Available {
 		t.Fatal("expected Available=true")
@@ -104,7 +104,7 @@ Filename: awg-manager_2.7.3_` + arch + `-kn.ipk
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.0.0")
+	info := checkWithDownloader(context.Background(), "2.0.0", channelStable, newDefaultDownloader(), nil)
 	if !info.Available {
 		t.Fatal("expected Available=true")
 	}
@@ -121,7 +121,7 @@ func TestCheck_AlreadyUpToDate(t *testing.T) {
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.3.11")
+	info := checkWithDownloader(context.Background(), "2.3.11", channelStable, newDefaultDownloader(), nil)
 	if info.Available {
 		t.Fatal("expected Available=false (same version)")
 	}
@@ -138,7 +138,7 @@ func TestCheck_BuildRevisionSameAsRepoRelease(t *testing.T) {
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.11.2+r70")
+	info := checkWithDownloader(context.Background(), "2.11.2+r70", channelStable, newDefaultDownloader(), nil)
 	if info.Available {
 		t.Fatal("expected Available=false when repo release matches base of build revision")
 	}
@@ -155,7 +155,7 @@ func TestCheck_NewerThanRepo(t *testing.T) {
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.3.11")
+	info := checkWithDownloader(context.Background(), "2.3.11", channelStable, newDefaultDownloader(), nil)
 	if info.Available {
 		t.Fatal("expected Available=false (current is newer)")
 	}
@@ -168,7 +168,7 @@ func TestCheck_PackageMissing(t *testing.T) {
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.0.0")
+	info := checkWithDownloader(context.Background(), "2.0.0", channelStable, newDefaultDownloader(), nil)
 	if info.Available {
 		t.Fatal("expected Available=false when package not found in index")
 	}
@@ -185,7 +185,7 @@ func TestCheck_HTTPError(t *testing.T) {
 	defer srv.Close()
 	withMockRepo(t, srv)
 
-	info := Check(context.Background(), "2.0.0")
+	info := checkWithDownloader(context.Background(), "2.0.0", channelStable, newDefaultDownloader(), nil)
 	if info.Available {
 		t.Fatal("expected Available=false on HTTP 500")
 	}
@@ -208,7 +208,7 @@ func TestCheck_DevelopDetectsNewerRevision(t *testing.T) {
 		},
 	}
 
-	info := checkWithDownloader(context.Background(), "2.11.2+r70", "develop", dl)
+	info := checkWithDownloader(context.Background(), "2.11.2+r70", "develop", dl, nil)
 
 	if !strings.Contains(seen.URL, "/develop/") {
 		t.Errorf("request URL %q does not contain /develop/", seen.URL)
@@ -243,7 +243,7 @@ func TestCheck_DevelopSameRevisionUpToDate(t *testing.T) {
 		},
 	}
 
-	info := checkWithDownloader(context.Background(), "2.11.2+r70", "develop", dl)
+	info := checkWithDownloader(context.Background(), "2.11.2+r70", "develop", dl, nil)
 
 	if !strings.Contains(seen.URL, "/develop/") {
 		t.Errorf("request URL %q does not contain /develop/", seen.URL)

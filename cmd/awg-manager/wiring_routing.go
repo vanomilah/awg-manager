@@ -14,7 +14,6 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/managed"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
-	"github.com/hoaxisr/awg-manager/internal/ndms"
 	ndmsevents "github.com/hoaxisr/awg-manager/internal/ndms/events"
 	ndmsmetrics "github.com/hoaxisr/awg-manager/internal/ndms/metrics"
 	ndmsquery "github.com/hoaxisr/awg-manager/internal/ndms/query"
@@ -34,13 +33,16 @@ func (a *app) setupOrchestrator() {
 	// Create orchestrator — single brain for all lifecycle decisions.
 	a.orch = orchestrator.New(a.awgStore, a.operator, a.nwgOp, a.stateMgr, a.wanModel, a.loggingService)
 	a.tunnelService.SetOrchestrator(a.orch)
-	a.nwgOp.SetHookNotifier(a.orch) // operators register expected hooks before InterfaceUp/Down
-	// OS5 kernel operator also uses ExpectHook (via OpkgTun two-layer arch).
-	if os5Op, ok := a.operator.(interface {
-		SetHookNotifier(tunnel.HookNotifier)
-	}); ok {
-		os5Op.SetHookNotifier(a.orch)
-	}
+	// Оба оператора регистрируют ожидаемые хуки до InterfaceUp/Down.
+	wireHookNotifiers(a.orch, a.nwgOp, a.operator)
+	// Endpoint-страж правит host-route и перезапускает релей — то же, что
+	// действия оркестратора, значит под тем же per-tunnel замком.
+	a.nwgOp.SetTunnelLock(func(ctx context.Context, tunnelID, owner string, work func() error) error {
+		return a.orch.WithTunnelLock(ctx, tunnelID, owner, work)
+	})
+	// Новый адрес target'а обязан пережить рестарт демона: по нему снимается
+	// host-route, и по нему сосед с тем же target решает, чей это маршрут.
+	a.nwgOp.SetResolvedIPPersister(a.tunnelService.PersistObfuscatorTargetIP)
 	a.orch.SetSupportsASC(ndmsinfo.SupportsWireguardASC)
 	a.orch.SetPingCheck(a.pingCheckFacade)
 	// dnsRouteService wiring to orchestrator happens later, after ndmsCommands is built.
@@ -50,7 +52,8 @@ func (a *app) setupOrchestrator() {
 	a.ndmsCommands.SetHookNotifier(a.orch)
 
 	// System WireGuard tunnels (read-only + ASC editing) — wired to NDMS CQRS layer.
-	a.systemTunnelSvc = systemtunnel.New(a.ndmsQueries, a.ndmsCommands)
+	a.systemTunnelSvc = systemtunnel.New(a.ndmsQueries, a.ndmsCommands, a.settingsStore,
+		logging.NewScopedLogger(a.loggingService, logging.GroupTunnel, logging.SubOps))
 
 	// Monitoring service (target × tunnel matrix probing). Constructed here so
 	// it can include Keenetic-native (system) tunnels in the matrix via the
@@ -60,7 +63,7 @@ func (a *app) setupOrchestrator() {
 		TunnelStore:   a.awgStore,
 		SettingsStore: a.settingsStore,
 		SystemTunnels: &monitoringSystemTunnelAdapter{svc: a.systemTunnelSvc},
-		Prober:        monitoring.NewTCPProber(),
+		Prober:        monitoring.NewHTTPProber(),
 		ICMPProber:    monitoring.NewICMPProber(),
 		Log:           a.loggingService,
 	})
@@ -171,7 +174,19 @@ func (a *app) setupEventWiring() {
 		metricsLogger(a.loggingService),
 		a.loggingService,
 	)
+	// Тот же счётчик зрителей, что у поллера метрик и матрицы: в простое
+	// шаг разрежается, публикация всё равно уходила бы в никуда.
+	a.sysfsTrafficPoller.SetClientCounter(a.eventBus)
 	a.sysfsTrafficPoller.Start()
+
+	// Сторож hrneo: за живостью чужого процесса раньше следила ПАНЕЛЬ — стор
+	// опрашивал статус из каждой открытой вкладки по HTTP (F353). Событий о
+	// смерти процесса не бывает ни у кого, поэтому наблюдать надо, но наблюдает
+	// пусть демон, один раз и локально (F364).
+	if a.hydraService != nil {
+		stopHydraWatchdog := a.hydraService.StartWatchdog(context.Background(), a.eventBus)
+		a.deferOnExit(stopHydraWatchdog)
+	}
 
 	a.orch.SetEventBus(a.eventBus)
 	// Refresh the NDMS interface cache when a kernel tunnel is confirmed up:
@@ -179,15 +194,31 @@ func (a *app) setupEventWiring() {
 	// a frozen "down" snapshot and policy/WAN/all-interface lists misreport the
 	// tunnel as down (#328). Async — Invalidate does a blocking HTTP.
 	a.orch.SetInterfaceInvalidator(func(name string) { go a.ndmsQueries.Interfaces.Invalidate(name) })
-	// Second-guess an external conf=disabled edge before stopping a tunnel:
-	// FetchSummary goes to NDMS on every call, so it sees the interface as it
-	// is now, not as the last hook left it (#669).
+	// Перепроверка внешней грани conf перед действием — и disabled перед
+	// остановкой, и running перед подъёмом: FetchSummary ходит в NDMS на
+	// каждый вызов, поэтому видит интерфейс таким, каков он сейчас, а не
+	// каким его оставил последний хук (#669).
+	//
+	// Пустой ответ (интерфейса нет, status-error «unable to find») — это «не
+	// знаем», а НЕ «держит down»: иначе подъём по грани conf=running получал
+	// бы вето от неответившего NDMS, хотя обе проверки обязаны в таком случае
+	// оставлять грань в силе.
 	a.orch.SetConfLayerProbe(func(ctx context.Context, name string) (bool, error) {
 		details, err := a.ndmsQueries.Interfaces.FetchSummary(ctx, name)
-		if err != nil || details == nil {
+		if err != nil {
 			return false, err
 		}
-		return details.Intent() == ndms.IntentUp, nil
+		if details == nil {
+			return false, fmt.Errorf("interface %s: NDMS не вернул данных", name)
+		}
+		// Не Intent(): он двузначен и относит "pending" к down. Для грани
+		// conf=running это вето без второй попытки — NDMS шлёт её однократно,
+		// и настоящее включение, застигнутое в переходной фазе, потерялось бы.
+		up, known := details.ConfIntent()
+		if !known {
+			return false, fmt.Errorf("interface %s: conf layer %q — состояние переходное", name, details.ConfLayer)
+		}
+		return up, nil
 	})
 	// Full hr-neo restart on tunnel-running — NDMS assigns fwmarks only
 	// during rci_create_policies (hr-neo startup), so tunnels appearing
@@ -246,4 +277,23 @@ func (j dnsFailoverJournal) Warnf(format string, args ...interface{}) {
 
 func (j dnsFailoverJournal) Infof(format string, args ...interface{}) {
 	j.log.Info("failover", "", fmt.Sprintf(format, args...))
+}
+
+// hookNotifierSetter — оператор, умеющий принять источник ожидаемых хуков.
+type hookNotifierSetter interface {
+	SetHookNotifier(tunnel.HookNotifier)
+}
+
+// wireHookNotifiers подключает оркестратор обоим операторам: nwg и, на OS5,
+// kernel-оператору (у того ExpectHook работает через двухслойный OpkgTun).
+// Вынесено из setupOrchestrator ради страж-теста: пропущенный здесь оператор
+// молча превращает свой expectHook в no-op, и собственное `conf: disabled`
+// приезжает в оркестратор как чужое событие.
+func wireHookNotifiers(orch tunnel.HookNotifier, nwgOp hookNotifierSetter, kernelOp any) {
+	if nwgOp != nil {
+		nwgOp.SetHookNotifier(orch)
+	}
+	if ks, ok := kernelOp.(hookNotifierSetter); ok {
+		ks.SetHookNotifier(orch)
+	}
 }

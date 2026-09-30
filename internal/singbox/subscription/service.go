@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/singbox/vlink"
+	sysfiles "github.com/hoaxisr/awg-manager/internal/sys/files"
 )
 
 // ConfigMutator is the narrow contract for committing subscription state to
@@ -112,6 +114,10 @@ type Service struct {
 	// happKeys — RSA-ключи расшифровки happ://crypt… ссылок. Живут рядом с
 	// файлом подписок, состояние принадлежит сервису, не пакету.
 	happKeys *happKeys
+	// files — песочница чтения файлового источника подписки (#710). Корни
+	// те же, что у файлового менеджера (DefaultRoots): путь вне их отбивается
+	// ещё до создания строки в store.
+	files *sysfiles.Sandbox
 }
 
 func NewService(store *Store, mutator ConfigMutator) *Service {
@@ -123,6 +129,7 @@ func NewService(store *Store, mutator ConfigMutator) *Service {
 		store:    store,
 		mutator:  mutator,
 		happKeys: newHappKeys(happKeysPath(storePath)),
+		files:    sysfiles.NewSandbox(nil),
 	}
 }
 
@@ -134,6 +141,21 @@ func (s *Service) SetNDMSProxyEnabled(fn func() bool) { s.ndmsProxyEnabled = fn 
 
 // SetBindInterfaceValidator wires router bindable-interface validation.
 func (s *Service) SetBindInterfaceValidator(v BindInterfaceValidator) { s.bindValidator = v }
+
+// SetFileSandbox overrides the roots a file-backed subscription may read
+// from. Production uses the DefaultRoots sandbox wired in NewService.
+func (s *Service) SetFileSandbox(sb *sysfiles.Sandbox) { s.files = sb }
+
+// readFileBody reads a file-backed subscription body through the sandbox.
+// Корни, лимит размера, «is a directory» и бинарник — забота ReadFile;
+// ошибка приходит наружу как есть, содержимое файла в неё не попадает.
+func (s *Service) readFileBody(path string) ([]byte, string, error) {
+	content, _, err := s.files.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("subscription: %w", err)
+	}
+	return []byte(content), "text/plain; charset=utf-8", nil
+}
 
 func (s *Service) proxyEnabled() bool {
 	if s.ndmsProxyEnabled == nil {
@@ -356,6 +378,12 @@ func (s *Service) logInfo(action, target, msg string) {
 	}
 }
 
+func (s *Service) logDebug(action, target, msg string) {
+	if s.log != nil {
+		s.log.Debug(action, target, msg)
+	}
+}
+
 func (s *Service) logWarn(action, target, msg string) {
 	if s.log != nil {
 		s.log.Warn(action, target, msg)
@@ -398,16 +426,40 @@ func (s *Service) lockSub(id string) *sync.Mutex {
 }
 
 func (s *Service) Create(ctx context.Context, in CreateInput) (*Subscription, error) {
+	in.Path = strings.TrimSpace(in.Path)
+	// Файловая подписка без label рисует пустые заголовки карточек (везде
+	// label || url, а url у неё пуст), а мастер создания label не принуждает —
+	// подставляем имя файла здесь, до лога и до записи в store.
+	if strings.TrimSpace(in.Label) == "" && in.Path != "" {
+		in.Label = filepath.Base(in.Path)
+	}
 	source := "url"
-	if in.Inline != "" {
+	switch {
+	case in.Inline != "":
 		source = "inline"
+	case in.Path != "":
+		source = "file"
 	}
 	s.logInfo("subscription-create", in.Label, fmt.Sprintf("start source=%s refresh_hours=%d enabled=%v", source, in.RefreshHours, in.Enabled))
-	switch {
-	case in.URL == "" && in.Inline == "":
-		return nil, errors.New("subscription: either URL or inline content is required")
-	case in.URL != "" && in.Inline != "":
-		return nil, errors.New("subscription: URL and inline content are mutually exclusive")
+	sources := 0
+	for _, v := range []string{in.URL, in.Inline, in.Path} {
+		if v != "" {
+			sources++
+		}
+	}
+	switch sources {
+	case 0:
+		return nil, fmt.Errorf("%w: URL, inline content or file path is required", ErrInvalidInput)
+	case 1:
+	default:
+		return nil, fmt.Errorf("%w: URL, inline content and file path are mutually exclusive", ErrInvalidInput)
+	}
+	// Путь проверяется ДО createMu и store: отказ по корням не должен
+	// доходить до аллокации listen_port / ProxyN.
+	if in.Path != "" {
+		if _, _, err := s.files.Resolve(in.Path); err != nil {
+			return nil, fmt.Errorf("subscription: %w", err)
+		}
 	}
 	// Regex-фильтры валидируются до создания строки в store: битый шаблон
 	// не должен попасть на диск (refreshLocked падал бы на каждом refresh).
@@ -571,6 +623,17 @@ func (s *Service) refreshLockedOpts(ctx context.Context, id string, forceInlineR
 		}
 		body = []byte(sub.Inline)
 		ct = "text/plain; charset=utf-8"
+	} else if sub.IsFile() {
+		// Файловый источник: тело — содержимое файла на роутере. MaskURL
+		// не нужен (маскировать нечего, URL у такой подписки нет), само
+		// содержимое в ошибку не попадает — это ошибки os и лимитов.
+		b, fileCT, readErr := s.readFileBody(sub.Path)
+		if readErr != nil {
+			s.store.UpdateState(id, RefreshResult{When: time.Now(), Err: readErr})
+			s.logWarn("subscription-refresh", id, "read failed: "+readErr.Error())
+			return nil, readErr
+		}
+		body, ct = b, fileCT
 	} else {
 		// Rewrite well-known git-hosting web-view URLs (github blob /
 		// gitlab /-/blob/ / gitea src/branch/) to the raw-content URL.
@@ -616,7 +679,7 @@ func (s *Service) refreshLockedOpts(ctx context.Context, id string, forceInlineR
 	// декодирования строки без share-схем отбрасываются. Ограничение
 	// сознательное и симметричное для обоих JSON-форматов.
 	isMieruJSON := !isClash && !isSbJSON && !isXrayJSON && vlink.IsMieruClientJSON(body)
-	isTrustTunnelTOML := !isClash && !isSbJSON && !isXrayJSON && !isMieruJSON && vlink.IsTrustTunnelClientTOML(body)
+	isTrustTunnelTOML := !isClash && !isSbJSON && !isXrayJSON && !isMieruJSON && vlink.IsTrustTunnelTOML(body)
 	// Body that's valid JSON but not a recognised sing-box subscription
 	// (no outbounds key in the right place) or mieru client config (no
 	// profiles) gets a precise error rather than a fall-through into
@@ -647,10 +710,10 @@ func (s *Service) refreshLockedOpts(ctx context.Context, id string, forceInlineR
 		case isSbJSON && emptyClean:
 			errMsg = "subscription: подписка пуста (outbounds: []). Возможно, истекла или ещё не активирована — проверь на стороне провайдера."
 		case len(parseRes.Errors) > 0:
-			hint := "ни одной валидной ссылки. Поддерживаются: base64-encoded share-links, HTML с share-link якорями, plain text со ссылками vless://, trojan://, ss://, hysteria2://, mieru://, mierus://, TrustTunnel (https://trustunnel.ru/connect/?d=…, tt://, TOML AdGuard), Clash YAML / mihomo, sing-box JSON (одиночный, массив конфигов, или массив outbounds; типы vless, trojan, ss, hysteria2, mieru, trusttunnel), а также mieru JSON config (формат mieru apply config, экспорт панелей). Записи vmess пропускаются."
+hint := "ни одной валидной ссылки. Поддерживаются: base64-encoded share-links, HTML с share-link якорями, plain text со ссылками vless://, trojan://, ss://, hysteria2://, mieru://, mierus://, TrustTunnel (https://trustunnel.ru/connect/?d=…, tt://, TOML AdGuard / экспорт endpoint), Clash YAML / mihomo, sing-box JSON (одиночный, массив конфигов, или массив outbounds; типы vless, trojan, ss, hysteria2, mieru, trusttunnel), а также mieru JSON config (формат mieru apply config, экспорт панелей). Записи vmess пропускаются."
 			errMsg = fmt.Sprintf("subscription: %s Первая ошибка парсера: %s", hint, parseRes.Errors[0].Error())
 		default:
-			hint := "ни одной валидной ссылки. Поддерживаются: base64-encoded share-links, HTML с share-link якорями, plain text со ссылками vless://, trojan://, ss://, hysteria2://, mieru://, mierus://, TrustTunnel (https://trustunnel.ru/connect/?d=…, tt://, TOML AdGuard), Clash YAML / mihomo, sing-box JSON (одиночный, массив конфигов, или массив outbounds; типы vless, trojan, ss, hysteria2, mieru, trusttunnel), а также mieru JSON config (формат mieru apply config, экспорт панелей). Записи vmess пропускаются."
+			hint := "ни одной валидной ссылки. Поддерживаются: base64-encoded share-links, HTML с share-link якорями, plain text со ссылками vless://, trojan://, ss://, hysteria2://, mieru://, mierus://, TrustTunnel (https://trustunnel.ru/connect/?d=…, tt://, TOML AdGuard / экспорт endpoint), Clash YAML / mihomo, sing-box JSON (одиночный, массив конфигов, или массив outbounds; типы vless, trojan, ss, hysteria2, mieru, trusttunnel), а также mieru JSON config (формат mieru apply config, экспорт панелей). Записи vmess пропускаются."
 			if len(parts.Info) > 0 {
 				hint += fmt.Sprintf(" (инфо-строк провайдера: %d — не являются серверами)", len(parts.Info))
 			}
@@ -904,8 +967,19 @@ func (s *Service) applyDiff(ctx context.Context, sub *Subscription, diff DiffRes
 
 	// Selector / urltest — remove old (idempotent) then add fresh.
 	// BuildGroupOutbound dispatches by sub.Mode.
+	// default = сохранённый активный член (remapStaleTags выше уже перенёс его
+	// на текущую схему тегов): иначе selector стартовал бы с memberTags[0],
+	// то есть с нового сервера, и refresh молча переключал бы пользователя
+	// на другой выход (F424). Выпавший из состава актив → "" (первый член).
+	defaultTag := ""
+	for _, t := range memberTags {
+		if t == sub.ActiveMember {
+			defaultTag = t
+			break
+		}
+	}
 	s.mutator.RemoveOutbound(sub.SelectorTag)
-	if err := s.mutator.AddOutbound(sub.SelectorTag, BuildGroupOutbound(*sub, memberTags, sub.ActiveMember)); err != nil {
+if err := s.mutator.AddOutbound(sub.SelectorTag, BuildGroupOutbound(*sub, memberTags, defaultTag)); err != nil {
 		return err
 	}
 
@@ -1071,17 +1145,28 @@ func (s *Service) Update(id string, patch UpdatePatch) (*Subscription, error) {
 	// Source-type guard: URL-backed and inline subscriptions stay on
 	// their original source for life. Reject patches that would clear
 	// a URL (would make a URL-backed sub source-less) or that would
-	// add a URL to an inline sub (would dual-source it). Inline body
+	// add a URL to an inline or file sub (would dual-source it). Inline body
 	// is not in UpdatePatch at all, so the reverse direction is
 	// unreachable from API.
 	if patch.URL != nil {
 		newURL := *patch.URL
+		if current.IsFile() {
+			return nil, fmt.Errorf("%w: cannot add URL to a file subscription", ErrInvalidInput)
+		}
 		if current.IsInline() {
-			return nil, errors.New("subscription: cannot add URL to an inline subscription")
+			return nil, fmt.Errorf("%w: cannot add URL to an inline subscription", ErrInvalidInput)
 		}
 		if newURL == "" {
-			return nil, errors.New("subscription: cannot clear URL after creation")
+			return nil, fmt.Errorf("%w: cannot clear URL after creation", ErrInvalidInput)
 		}
+	}
+	// Тот же дефолт, что в Create: файловая подписка без label рисует пустой
+	// заголовок карточки (везде label || url, а url у неё пуст), а инпут
+	// настроек стирание не запрещает. Для URL/inline пустой label допустим —
+	// там фолбэк на url работает.
+	if patch.Label != nil && strings.TrimSpace(*patch.Label) == "" && current.IsFile() {
+		base := filepath.Base(current.Path)
+		patch.Label = &base
 	}
 	// Валидация regex-фильтров ДО записи в store: битый шаблон не должен
 	// сохраниться (refresh падал бы на каждом цикле). Компилируем итоговую
@@ -1269,9 +1354,9 @@ func (s *Service) stageGroupRebuild(sub *Subscription) error {
 var ErrActiveMemberOnURLTest = errors.New("subscription: SetActiveMember not supported in urltest mode")
 
 // SetActiveMember updates the selector's "default" pointer to memberTag.
-// It updates the config slot for restart persistence and persists the active
-// member in the store, then hits the Clash API for an instant runtime switch
-// — no SIGHUP, no connection drop.
+// It persists the active member in the store, then hits the Clash API for an
+// instant runtime switch — no SIGHUP, no connection drop. The config slot is
+// deliberately left alone (see the comment at the store write below).
 func (s *Service) SetActiveMember(ctx context.Context, id, memberTag string) error {
 	s.logInfo("subscription-active-member", id, "set requested: "+memberTag)
 	mu := s.lockSub(id)
@@ -1297,10 +1382,11 @@ func (s *Service) SetActiveMember(ctx context.Context, id, memberTag string) err
 	}
 
 	// Persist the choice in the store — the source of truth for the active
-	// member. The config slot is deliberately NOT rewritten: selector.default
-	// is rebuilt as first-member on every refresh, so persisting it here buys
-	// nothing, and a slot write without Reload would only leave an uncommitted
-	// batch open in the adapter.
+	// member. The config slot is deliberately NOT rewritten: refresh rebuilds
+	// selector.default from the stored active member (F424), and a slot write
+	// without Reload would only leave an uncommitted batch open in the
+	// adapter. Trade-off: until the next refresh/rebuild the slot still holds
+	// the previous default, so a sing-box restart starts from it.
 	if err := s.store.SetActiveMember(id, memberTag); err != nil {
 		return err
 	}
@@ -1340,6 +1426,12 @@ var ErrAllMembersExcluded = errors.New("subscription: cannot exclude all members
 // (батч остаётся чистым); HTTP-обработчики маппят через errors.Is на 409
 // ALL_MEMBERS_FILTERED — зеркально ErrAllMembersExcluded.
 var ErrAllMembersFiltered = errors.New("subscription: фильтр и исключения скрывают все серверы подписки; ослабьте фильтр в настройках")
+
+// ErrInvalidInput wraps refusals caused by the caller's payload: a create
+// without a source or with two of them, a patch that would add a URL to a
+// non-URL subscription or clear the URL of a URL-backed one. HTTP handlers
+// map it via errors.Is to 400 INVALID_INPUT instead of 500 (F425).
+var ErrInvalidInput = errors.New("subscription: invalid input")
 
 // ErrValidation wraps subscription-save failures produced by the Pass-2
 // `sing-box check` gate when the merged config is rejected. Callers can
@@ -1724,6 +1816,8 @@ type PreviewMember struct {
 }
 
 // ParseSubscriptionBody parses raw subscription bytes into BatchResult.
+var parseSubscriptionBody = ParseSubscriptionBody
+
 func ParseSubscriptionBody(body []byte, ct string) vlink.BatchResult {
 	switch {
 	case vlink.IsClashYAML(body):
@@ -1734,8 +1828,8 @@ func ParseSubscriptionBody(body []byte, ct string) vlink.BatchResult {
 		return vlink.ParseXrayBody(body)
 	case vlink.IsMieruClientJSON(body):
 		return vlink.ParseMieruClientJSON(body)
-	case vlink.IsTrustTunnelClientTOML(body):
-		return vlink.ParseTrustTunnelClientTOML(body)
+case vlink.IsTrustTunnelTOML(body):
+		return vlink.ParseTrustTunnelTOML(body)
 	default:
 		return vlink.ParseBatch(NormalizeBody(body, ct))
 	}
@@ -1758,6 +1852,24 @@ func (s *Service) PreviewURL(ctx context.Context, url string, headers []Header) 
 	if err != nil {
 		return nil, fmt.Errorf("%s", MaskURL(err.Error(), url))
 	}
+return s.previewBody(body, ct)
+}
+
+// PreviewPath is PreviewURL for a file-backed source: the body comes from
+// the sandbox instead of the network (#710).
+func (s *Service) PreviewPath(ctx context.Context, path string) ([]PreviewMember, error) {
+	if path == "" {
+		return nil, errors.New("subscription: preview requires a file path")
+	}
+	body, ct, err := s.readFileBody(path)
+	if err != nil {
+		return nil, err
+	}
+	return s.previewBody(body, ct)
+}
+
+// previewBody — общий хвост превью: разбор тела в список участников.
+func (s *Service) previewBody(body []byte, ct string) ([]PreviewMember, error) {
 	parseRes := ParseSubscriptionBody(body, ct)
 	parts := partitionParsedOutbounds("preview", parseRes.Outbounds)
 
@@ -1772,13 +1884,20 @@ func (s *Service) PreviewURL(ctx context.Context, url string, headers []Header) 
 	// the preview must not list it twice either. Issue #428: duplicate keys
 	// also crash the frontend's keyed list (each_key_duplicate) and freeze
 	// the add-subscription wizard on «Загрузка...».
-	seen := make(map[string]struct{}, len(parts.Valid))
+	seen := make(map[string]int, len(parts.Valid))
+	labelRank := make([]int, 0, len(parts.Valid))
 	for i, p := range parts.Valid {
 		key := suffixOf(keys[i])
-		if _, dup := seen[key]; dup {
+		if j, dup := seen[key]; dup {
+			// Как в ApplyDiff: имя дубликата вытесняет выдуманное
+			// «<профиль> #N» из сводного профиля подписки.
+			if betterLabel(p.LabelRank, labelRank[j]) {
+				out[j].Label, labelRank[j] = p.Label, p.LabelRank
+			}
 			continue
 		}
-		seen[key] = struct{}{}
+seen[key] = len(out)
+		labelRank = append(labelRank, p.LabelRank)
 		mi := ToMemberInfo(StableTag("preview00", p), p) // tag игнорируется, берём поля
 		out = append(out, PreviewMember{
 			Key: key, Label: mi.Label, Protocol: mi.Protocol,
@@ -1934,10 +2053,14 @@ func (s *Service) GetActiveNow(_ context.Context, id string) (string, error) {
 		s.logWarn("subscription-active-now", id, "clash query failed: "+err.Error())
 		return "", err
 	}
+	// Debug, не Info: ручку дёргает опрос карточек подписок — раз в 30 с на
+	// главной и раз в 5 с на странице подписки. Парную строку в обработчике
+	// (internal/api/subscription_members.go) понизили, а эту пропустили, и
+	// журнал по-прежнему получал запись на каждый вызов.
 	if now == "" {
-		s.logInfo("subscription-active-now", id, "no live active member (clash unavailable or not selected yet)")
+		s.logDebug("subscription-active-now", id, "no live active member (clash unavailable or not selected yet)")
 	} else {
-		s.logInfo("subscription-active-now", id, "live active member: "+now)
+		s.logDebug("subscription-active-now", id, "live active member: "+now)
 	}
 	return now, nil
 }

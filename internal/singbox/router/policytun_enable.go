@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
@@ -23,7 +24,8 @@ import (
 func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Settings, sr storage.SingboxRouterSettings) (err error) {
 	// Fail-fast nil-guard: a degraded / mis-wired build would otherwise
 	// nil-panic mid-provision. Refuse loudly before touching any state.
-	if s.deps.OpkgTun == nil || s.deps.OpkgTunIndices == nil || s.deps.DefaultRoute == nil {
+	if s.deps.OpkgTun == nil || s.deps.OpkgTunIndices == nil || s.deps.DefaultRoute == nil ||
+		s.deps.OpkgTunPool == nil {
 		return fmt.Errorf("policy-tun: provisioning deps not wired")
 	}
 	// Последний рубеж гейта прошивки: сюда приходит и восстановление режима из
@@ -81,48 +83,60 @@ func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Set
 	}
 
 	// Handover: единая запись владения одна на всех, поэтому запись ЧУЖОГО
-	// режима (fakeip) обязана быть освобождена ДО аллокации (restore NAT
-	// best-effort → teardown). Провал release оставляет чужой интерфейс живым —
-	// live не перечитываем, аллокатор его пропустит.
+	// режима (fakeip) обязана быть освобождена ДО выдачи (restore NAT
+	// best-effort → teardown).
+	//
+	// Пин на отобранный номер честится ТОЛЬКО при removed — то есть когда
+	// интерфейс снесли МЫ САМИ. Провал release и «доказанно чужой» дают
+	// removed=false: в первом случае чужой интерфейс жив, во втором на номере
+	// стоит посторонний, и претендовать на него мы не вправе.
 	prevRecord := settings.OpkgTun // снапшот ДО каких-либо мутаций
+	pin := noPin
 	if prevRecord != nil && prevRecord.Mode != storage.OpkgTunModePolicyTun {
-		if _, rerr := s.releaseForeignOpkgTun(ctx, prevRecord, "policy-tun-enable"); rerr != nil {
+		removed, rerr := s.releaseForeignOpkgTun(ctx, prevRecord, "policy-tun-enable")
+		// Скан упал — Warn уже дал teardownGate, второй не нужен.
+		if rerr != nil && !errors.Is(rerr, errOpkgTunOwnershipUnknown) {
 			s.appLog.Warn("policy-tun-enable", tunNDMSName(prevRecord.Index), "release foreign opkgtun: "+rerr.Error())
-		} else if live, err = s.deps.OpkgTunIndices.LiveOpkgTunIndices(ctx); err != nil {
-			return fmt.Errorf("enable policy-tun: list opkgtun indices: %w", err)
 		}
+		// live после сноса НЕ перечитывается: занятость собирает пул сам, а
+		// вторая ветка (пин на свой прежний номер) сюда не попадает вовсе.
+		// Прежде перечитывание было обязательным — live шла в аллокатор, — а
+		// теперь оно только лишний обход RCI, чей транзиентный отказ обрывал
+		// бы включение УЖЕ ПОСЛЕ сноса прежнего режима.
+		if removed {
+			// Интерфейс снесли МЫ САМИ — номер точно наш и точно пуст, поэтому
+			// пин обычный: перебивать на нём больше нечего.
+			pin = opkgTunPin{index: prevRecord.Index, proven: true}
+		}
+	} else {
+		// Свой прежний номер предпочитается, пока он наш: пользователь
+		// закрепил permit'ы в политике за конкретным именем. Занятый персистом
+		// номер тоже наш, если на нём висит НАШ интерфейс — выключение его
+		// больше не удаляет, а удерживает (holdOpkgTun).
+		pin = s.pinFor(ctx, prev, live, policyTunDescription)
 	}
 
-	// Prefer the persisted index while it is free: the user pins permits in the
-	// NDMS policy to a concrete OpkgTun name, and silently renaming the exit on
-	// every enable would break them.
-	//
-	// Занятый персистом индекс тоже наш, если на нём висит НАШ интерфейс:
-	// выключение его больше не удаляет, а удерживает (holdOpkgTun). Без этой
-	// ветки удержание оборачивалось бы дрейфом хуже прежнего — номер занят,
-	// аллокатор берёт следующий, permit в политике остаётся на прежнем имени.
-	// Владение доказывается описанием; скан не подключён — «не знаем» ≠ «наш».
-	idx := 0
-	switch {
-	case prev != nil && !live[prev.Index]:
-		idx = prev.Index
-	case prev != nil && s.ownsOpkgTun(ctx, tunNDMSName(prev.Index), policyTunDescription):
-		idx = prev.Index
-	default:
-		taken, oerr := allocOccupancy(ctx, live, s.deps.OpkgTunPins)
-		if oerr != nil {
-			return fmt.Errorf("enable policy-tun: %w", oerr)
-		}
-		if idx, err = allocateFakeIPIndex(taken); err != nil {
-			return fmt.Errorf("enable policy-tun: allocate index: %w", err)
-		}
+	idx, res, err := s.reserveOpkgTun(ctx, storage.OpkgTunModePolicyTun, pin)
+	if err != nil {
+		return fmt.Errorf("enable policy-tun: %w", err)
 	}
+	// Резервация держит номер до записи владения. Закрывается ПОСЛЕДНЕЙ: её
+	// defer регистрируется раньше отката, а defer'ы идут в обратном порядке.
+	//
+	// НЕ упрощать до res.Close() здесь: окно между выдачей и персистом узкое,
+	// и ни один тест разницы не увидит — соседний проситель в него попадает
+	// только на живом роутере. Свойство «пока резервация открыта, номер чужому
+	// не достаётся» проверено этажом ниже, у пула.
+	defer res.Close()
 	// Two names per index: NDMS RCI takes the CamelCase ndmsName, the kernel
 	// (sing-box config, ip flush, /sys carrier) sees the lowercase iface.
 	ndmsName := tunNDMSName(idx)
 	iface := tunIfaceName(idx)
-	if prev != nil && prev.Index != idx {
-		s.appLog.Warn("policy-tun", iface, "индекс OpkgTun изменился — проверьте permit в политиках")
+	// Сравнение с ПРЕЖНЕЙ записью, чья бы она ни была: на handover своя запись
+	// (prev) пуста, а номер меняется именно там.
+	if prevRecord != nil && prevRecord.Index != idx {
+		s.appLog.Warn("policy-tun-enable", iface,
+			"индекс OpkgTun изменился — проверьте permit в политиках")
 	}
 
 	// rollback is a LIFO stack of inverse operations; each resource-creating
@@ -266,13 +280,6 @@ func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Set
 		return fmt.Errorf("enable policy-tun: iface up: %w", err)
 	}
 
-	// Flush stale kernel addresses PRE-start, while the tun is still bare, so
-	// sing-box's attach re-adds its own configured address cleanly (the fakeip
-	// 1F.1 ordering — a post-start flush kills the just-attached address).
-	if err = fakeIPAddrFlush(ctx, iface); err != nil {
-		return fmt.Errorf("enable policy-tun: addr flush: %w", err)
-	}
-
 	// Slot 20 keeps its user rules/outbounds; only the ingress changes — the
 	// tproxy/redirect pair is replaced by a single tun inbound.
 	cfg, err := s.loadAppliedRouterConfig()
@@ -286,12 +293,15 @@ func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Set
 		MTU:        p.MTU,
 		Stack:      sr.FakeIPStack,
 		UDPTimeout: sr.UDPTimeout,
+		UDPNATMax:  sr.UDPNATMax,
+
+		ExternalConfiguration: s.tunExternalWant(),
 	})
-	cfg.Outbounds = stripAutoManagedDirect(cfg.Outbounds)
+	cfg.Outbounds = stripAutoManagedDirect(cfg.Outbounds, s.foreignIfaces())
 	cfg.EnsureSystemRules(sr.SnifferEnabled)
 	cfg.EnsureUDPTimeoutRule(resolveUDPTimeout(sr.UDPTimeout))
 	qosClasses := activeQoSClasses(sr.QoSClasses)
-	cfg.Inbounds, _ = ensureQoSInbounds(cfg.Inbounds, qosClasses, sr.UDPTimeout)
+	cfg.Inbounds, _ = ensureQoSInbounds(cfg.Inbounds, qosClasses, sr.UDPTimeout, sr.UDPNATMax)
 	cfg.EnsureRouteWAN(sr.WANAutoDetect, sr.WANInterface)
 
 	// Promote SlotRouter FIRST so persistConfigDirect targets the active path.
@@ -422,6 +432,11 @@ func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Set
 	if err = s.deps.DefaultRoute.SetDefaultRoute(ctx, ndmsName); err != nil {
 		return fmt.Errorf("enable policy-tun: set default route: %w", err)
 	}
+	// Жалобы на потерянный маршрут относились к ПРЕЖНЕМУ воплощению режима:
+	// дефолт только что поставлен заново. Выключение счётчик тоже сбрасывает —
+	// вместе эти два места закрывают и ручное off→on (лечение, которое мы сами
+	// советуем при #932), и полный re-provision из drift-heal.
+	s.policyTunRouteStrikes.Store(0)
 	push(func() {
 		if e := s.deps.DefaultRoute.RemoveDefaultRoute(rbCtx, ndmsName); e != nil {
 			s.appLog.Warn("policy-tun-rollback", iface, "remove default route: "+e.Error())
@@ -446,12 +461,13 @@ func (s *ServiceImpl) enablePolicyTun(ctx context.Context, settings *storage.Set
 	// Откат уже поставленный permit НЕ снимает (осознанно: DenyInterface мог бы
 	// снять разрешение, поставленное пользователем).
 	permitted := false
-	if s.deps.RunningConfig != nil {
-		if lines, e := s.deps.RunningConfig.Lines(ctx); e == nil {
-			permitted = policyTunPermitted(lines, ndmsName, sr.PolicyName)
-		}
+	lines := s.runningConfigLines(ctx, "policy-tun")
+	if lines != nil {
+		permitted = policyTunPermitted(lines, ndmsName, sr.PolicyName)
 	}
 	s.ensurePolicyTunPermit(ctx, sr, iface, ndmsName, permitted)
+	// WAN в политике — обход туннеля: снимаем (F440).
+	s.denyPolicyWAN(ctx, sr, lines)
 
 	// Ingress-заворот интерфейсов с галкой «Маршрутизация через sing-box» плюс
 	// перехват DNS у членов политики: тот же механизм, что у fakeip (issue

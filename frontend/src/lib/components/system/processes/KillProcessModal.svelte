@@ -42,7 +42,7 @@
 				</div>
 				<div class="kill-row">
 					<span>Использование:</span>
-					<span>CPU: {target.cpuPercent.toFixed(1)}% | RAM: {formatBytes(target.memoryRss)}</span>
+					<span>CPU: {target.cpuPercent.toFixed(1)}% | RAM: {formatBytes(target.memoryOwn)}</span>
 				</div>
 			</div>
 

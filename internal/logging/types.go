@@ -62,6 +62,7 @@ const (
 	SubBoot           = "boot"
 	SubWan            = "wan"
 	SubAuth           = "auth"
+	SubMcp            = "mcp"
 	SubSettings       = "settings"
 	SubUpdate         = "update"
 	SubCleanup        = "cleanup"
@@ -128,7 +129,7 @@ var KnownSubgroups = map[string][]string{
 		SubHTTP, SubManaged,
 	},
 	GroupSystem: {
-		SubBoot, SubAuth, SubSettings, SubUpdate, SubWan, SubSystemTunnel,
+		SubBoot, SubAuth, SubMcp, SubSettings, SubUpdate, SubWan, SubSystemTunnel,
 		SubCleanup, SubDnsCheck, SubConnections, SubTraffic, SubDiagnostics,
 		SubProfiling, SubRCI, SubNDMS, SubStorage, SubMonitoring,
 	},
@@ -155,4 +156,14 @@ type LogEntry struct {
 	Message   string     `json:"message"`
 	Repeats   int        `json:"repeats,omitempty"`
 	LastSeen  *time.Time `json:"lastSeen,omitempty"`
+
+	// coalesceHash — хеш полей, по которым сворачивается повтор. Неэкспортное:
+	// в JSON не уходит, наружу не видно, живёт только внутри буфера.
+	//
+	// Нужен ради скана коалесцирования: он проходит до 300 последних записей
+	// на КАЖДОЙ строке, а сообщения движка почти всегда уникальны и делят
+	// длинный префикс («outbound connection to …»), так что сравнение строк
+	// доходит до различия только в хвосте. Замер: скан 300 записей по полям —
+	// 3.3 мкс, с предфильтром по хешу — 0.27 мкс, сам хеш — 76 нс (amd64).
+	coalesceHash uint64
 }

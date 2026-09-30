@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -15,6 +17,7 @@ import (
 // нулевой индекс в JSON отсутствует вовсе — именно поэтому снятие делается в
 // Go, а не парсингом файла шеллом (на прошивке нет jq).
 func TestReleasePolicyTunForRemoval_RemovesHeldInterface(t *testing.T) {
+	stubLinkAbsent(t)
 	store := newTestSettingsStore(t, storage.SingboxRouterSettings{RoutingMode: statePolicyTun})
 	if err := store.SetOpkgTunState(&storage.OpkgTunState{Mode: storage.OpkgTunModePolicyTun, Index: 0}); err != nil {
 		t.Fatalf("SetOpkgTunState: %v", err)
@@ -46,6 +49,7 @@ func TestReleasePolicyTunForRemoval_RemovesHeldInterface(t *testing.T) {
 // `opkg remove` при включённом source-preserve оставил бы сегменты на
 // static-NAT навсегда.
 func TestReleasePolicyTunForRemoval_RestoresSegmentNATFirst(t *testing.T) {
+	stubLinkAbsent(t)
 	store := newTestSettingsStore(t, storage.SingboxRouterSettings{RoutingMode: statePolicyTun})
 	if err := store.SetOpkgTunState(&storage.OpkgTunState{Mode: storage.OpkgTunModePolicyTun, Index: 1, PolicyTun: &storage.OpkgTunPolicyData{NATSegments: []storage.PolicyTunNATSegment{{Name: "Home", PriorMode: "dynamic"}}}}); err != nil {
 		t.Fatalf("SetOpkgTunState: %v", err)
@@ -94,5 +98,57 @@ func TestReleasePolicyTunForRemoval_NoopWithoutPersist(t *testing.T) {
 
 	if len(opkg.deleted) != 0 || len(log.calls) != 0 {
 		t.Errorf("без персиста NDMS не трогаем: deleted=%v calls=%v", opkg.deleted, log.calls)
+	}
+}
+
+// F450: fakeip OpkgTun переживал `opkg remove` — cleanup снимал только
+// policy-tun. Снос идёт по записи владения fakeip и щадит чужой интерфейс на
+// нашем индексе так же, как у policy-tun.
+func TestReleaseFakeIPTunForRemoval_DeletesOwnSparesForeign(t *testing.T) {
+	stubLinkAbsent(t)
+	for _, tc := range foreignTeardownCases(fakeIPTunDescription, "OpkgTun2") {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestSettingsStore(t, storage.SingboxRouterSettings{RoutingMode: stateFakeIPTun})
+			if err := store.SetOpkgTunState(&storage.OpkgTunState{
+				Mode: storage.OpkgTunModeFakeIP, Index: 2, Provisioned: true,
+			}); err != nil {
+				t.Fatalf("SetOpkgTunState: %v", err)
+			}
+			opkg := &recordingOpkgTunProvisioner{}
+			err := ReleaseFakeIPTunForRemoval(context.Background(), Deps{
+				Settings:    store,
+				OpkgTun:     opkg,
+				OpkgTunScan: tc.scan,
+			})
+			// Скан упал — отказ ошибкой, как у policy-tun (F493): после `opkg
+			// remove` реапить некому, молчаливый nil оставил бы интерфейс навсегда.
+			if tc.unknown {
+				if !errors.Is(err, errOpkgTunOwnershipUnknown) || !strings.HasPrefix(err.Error(), "OpkgTun2: ") {
+					t.Fatalf("err = %v, want «OpkgTun2: » + errOpkgTunOwnershipUnknown", err)
+				}
+			} else if err != nil {
+				t.Fatalf("ReleaseFakeIPTunForRemoval: %v", err)
+			}
+			if got := len(opkg.deleted) == 1 && opkg.deleted[0] == "OpkgTun2"; got != tc.wantDel {
+				t.Errorf("deleted = %v, want снос = %v", opkg.deleted, tc.wantDel)
+			}
+		})
+	}
+}
+
+// Запись владения policy-tun — не наша: fakeip-снятие её не трогает (иначе
+// удаление пакета снесло бы интерфейс дважды разными путями).
+func TestReleaseFakeIPTunForRemoval_IgnoresPolicyTunRecord(t *testing.T) {
+	stubLinkAbsent(t)
+	store := newTestSettingsStore(t, storage.SingboxRouterSettings{RoutingMode: statePolicyTun})
+	if err := store.SetOpkgTunState(&storage.OpkgTunState{Mode: storage.OpkgTunModePolicyTun, Index: 1}); err != nil {
+		t.Fatalf("SetOpkgTunState: %v", err)
+	}
+	opkg := &recordingOpkgTunProvisioner{}
+	if err := ReleaseFakeIPTunForRemoval(context.Background(), Deps{Settings: store, OpkgTun: opkg}); err != nil {
+		t.Fatalf("ReleaseFakeIPTunForRemoval: %v", err)
+	}
+	if len(opkg.deleted) != 0 {
+		t.Errorf("снесён чужой режим: %v", opkg.deleted)
 	}
 }

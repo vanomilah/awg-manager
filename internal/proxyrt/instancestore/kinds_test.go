@@ -169,6 +169,7 @@ func TestKinds_DataTargetsClassified(t *testing.T) {
 		KindFreeTurnServer: {
 			"/opt/etc/awg-manager/freeturn/clients.json",
 			FreeTurnAllowlistPath(dataDir, "g"),
+			FreeTurnLinksPath(dataDir, "g"),
 		},
 	}
 	for _, k := range AllKinds {
@@ -190,5 +191,38 @@ func TestKinds_DataTargetsClassified(t *testing.T) {
 				t.Errorf("%s: DataTargets не вернул %q — файл переживёт удаление инстанса, а убрать его из UI нечем", k, p)
 			}
 		}
+	}
+}
+
+// Классификация ролей на клиентские и серверные — от неё зависит уборка
+// связанных AWG-туннелей на пути удаления инстанса. Новая роль, не попавшая
+// сюда, молча осталась бы без уборщика.
+func TestKinds_IsClientClassified(t *testing.T) {
+	want := map[Kind]bool{
+		KindWdttClient:     true,
+		KindWdttServer:     false,
+		KindFreeTurnClient: true,
+		KindFreeTurnServer: false,
+	}
+	for _, k := range AllKinds {
+		exp, ok := want[k]
+		if !ok {
+			t.Errorf("роль %s не классифицирована: клиентская она или серверная? см. Kind.IsClient", k)
+			continue
+		}
+		if got := k.IsClient(); got != exp {
+			t.Errorf("%s: IsClient = %v, ждали %v", k, got, exp)
+		}
+	}
+	// ClientKinds — производная того же предиката, а не второй список.
+	var n int
+	for _, k := range ClientKinds() {
+		if !k.IsClient() {
+			t.Errorf("ClientKinds вернул серверную роль %s", k)
+		}
+		n++
+	}
+	if n != 2 {
+		t.Errorf("ClientKinds вернул %d ролей, ждали 2", n)
 	}
 }

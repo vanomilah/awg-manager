@@ -1,6 +1,7 @@
 package ftlink
 
 import (
+	"encoding/base64"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,7 +11,8 @@ import (
 // Перенос тестов link.go старого пакета (freeturn_test.go:27-72).
 
 func TestLink_Roundtrip(t *testing.T) {
-	p := LinkPayload{V: 1, Provider: "vk", Peer: "1.2.3.4:56000", Obf: "rtpopus2", Key: "aabb", MTU: 1280, WG: "[Interface]\nPrivateKey = x\n"}
+	p := LinkPayload{V: 1, Provider: "vk", Peer: "1.2.3.4:56000", Mode: "tcp", Obf: "rtpopus2", Key: "aabb", MTU: 1280, WG: "[Interface]\nPrivateKey = x\n",
+		KCP: &KCP{NoDelay: 1, Interval: 20, Resend: 2, NC: 1, SndWnd: 512, RcvWnd: 512, MTU: 1200, ACKNoDelay: true}}
 	link, err := EncodeLink(p)
 	if err != nil {
 		t.Fatal(err)
@@ -85,5 +87,26 @@ func TestTunnelNameFromClientTruncatesByRunes(t *testing.T) {
 	}
 	if !utf8.ValidString(got) {
 		t.Fatalf("обрезка порвала UTF-8: %q", got)
+	}
+}
+
+// Ссылка апстрима 4.0: ключи bond/timing/vk пишет его uri.Config, не мы.
+func TestDecodeLink_Upstream40Fields(t *testing.T) {
+	raw := `{"v":1,"peer":"p:1","mode":"tcp","bond":true,"obf":"rtpopus3","key":"k","timing":20,"vk":"https://vk.ru/call/join/X"}`
+	got, err := DecodeLink(LinkScheme + base64.RawURLEncoding.EncodeToString([]byte(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Bond || got.TimingMs != 20 || got.VK != "https://vk.ru/call/join/X" {
+		t.Fatalf("поля 4.0 потеряны: %+v", got)
+	}
+
+	compact := `{"url":"p:1?mode=tcp&bond=1&obf-profile=rtpopus&obf-timing=20ms"}`
+	got, err = DecodeLink(LinkScheme + base64.RawURLEncoding.EncodeToString([]byte(compact)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Bond || got.TimingMs != 20 {
+		t.Fatalf("компактная форма: %+v", got)
 	}
 }

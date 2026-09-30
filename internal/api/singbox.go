@@ -149,6 +149,12 @@ type ndmsProxyToggler interface {
 
 var errTunnelNoInterface = errors.New("tunnel has no kernel interface")
 
+// Швы над сетевыми пробами: тесты подменяют, прод — функции пакета testing.
+var (
+	checkIPByInterface              = testing.CheckIPByInterface
+	checkConnectivityByInterfaceURL = testing.CheckConnectivityByInterfaceURL
+)
+
 // NewSingboxHandler creates a new singbox handler.
 func NewSingboxHandler(op *singbox.Operator, bus *events.Bus, dc *singbox.DelayChecker, ts *testing.Service, appLogger ...logging.AppLogger) *SingboxHandler {
 	var lg logging.AppLogger
@@ -314,6 +320,11 @@ func (h *SingboxHandler) DelayCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	response.Success(w, map[string]any{"tag": tag, "delay": delay})
 }
+
+// DelayChecker exposes the latency prober so other wiring (the MCP
+// adapter) can reuse the one instance that already runs periodically —
+// a second checker would double the probes against the same proxies.
+func (h *SingboxHandler) DelayChecker() *singbox.DelayChecker { return h.delayChecker }
 
 // Status handles GET /api/singbox/status.
 //
@@ -573,6 +584,16 @@ func (h *SingboxHandler) AddTunnels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	batch := singbox.ParseTunnelLinksInput(body.Links)
+	// Мульти-адресный TrustTunnel-конфиг — это Группа серверов, не N одиночных
+	// туннелей (spec-manager.md п. 4). n — число мульти-адресных outbound'ов во
+	// всём батче (может прийти из нескольких склеенных конфигов), не адресов
+	// одного конфига. Отбиваем ДО записи, фронт переводит в группу.
+	if n := trustTunnelAddressCount(batch.Outbounds); n > 1 {
+		response.ErrorWithData(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("TrustTunnel-конфиг с несколькими адресами (%d) — создайте Группу серверов", n),
+			"TRUSTTUNNEL_MULTI_ADDRESS", map[string]int{"addresses": n})
+		return
+	}
 	for _, p := range batch.Outbounds {
 		if err := h.validateOutboundBind(r.Context(), p.Outbound); err != nil {
 			response.BadRequest(w, err.Error())
@@ -611,6 +632,18 @@ func (h *SingboxHandler) AddTunnels(w http.ResponseWriter, r *http.Request) {
 		resp.Errors = append(resp.Errors, errItem{Line: e.Line, Input: e.Input, Error: e.Err.Error()})
 	}
 	response.Success(w, resp)
+}
+
+// trustTunnelAddressCount returns how many parsed outbounds came from a
+// multi-address TrustTunnel config (Task 2 marks each of them).
+func trustTunnelAddressCount(parsed []vlink.ParsedOutbound) int {
+	n := 0
+	for _, p := range parsed {
+		if p.MultiAddress {
+			n++
+		}
+	}
+	return n
 }
 
 // GetTunnel handles GET /api/singbox/tunnels/get?tag={tag}. The response
@@ -884,7 +917,7 @@ func (h *SingboxHandler) CheckConnectivity(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	result := testing.CheckConnectivityByInterfaceURL(r.Context(), iface, h.connectivityCheckURL())
+	result := checkConnectivityByInterfaceURL(r.Context(), iface, h.connectivityCheckURL())
 	response.Success(w, result)
 }
 
@@ -958,7 +991,7 @@ func (h *SingboxHandler) CheckIP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	service := r.URL.Query().Get("service")
-	result, err := testing.CheckIPByInterface(r.Context(), iface, service)
+	result, err := checkIPByInterface(r.Context(), iface, service)
 	if err != nil {
 		response.Error(w, err.Error(), "IP_CHECK_FAILED")
 		return

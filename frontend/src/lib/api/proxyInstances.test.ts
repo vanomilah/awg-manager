@@ -110,6 +110,7 @@ const ftClientView: ProxyInstanceView = {
 		bond: true,
 		obfProfile: 'rtpopus',
 		obfKeySet: true,
+		obfTimingMs: 20,
 		streamsPerCred: 5,
 		platform: 'mobile',
 		dnsMode: 'doh',
@@ -138,6 +139,7 @@ const ftServerView: ProxyInstanceView = {
 	config: {
 		listen: '0.0.0.0:56000',
 		connect: '10.0.0.1:51820',
+		linkPeer: 'vpn.example.org',
 		mode: 'tcp',
 		obfProfile: 'none',
 		obfKeySet: false,
@@ -224,6 +226,24 @@ describe('toWdttStatus: блок процесса и install-блок', () => {
 		expect(st.ndmsIface).toBe('OpkgTun18');
 		expect(st.rawNdmsIface).toBe('OpkgTun19');
 		expect(st.rawIface).toBe('opkgtun19');
+	});
+
+	it('посторонний ACL читается из ресурса ndms_access', () => {
+		const withForeignAcl = {
+			...wdttServerView,
+			state: {
+				intent: 'up',
+				phase: 'applied',
+				resources: [{ id: 'ndms_access', status: 'ok', attrs: { 'foreign-acl': 'OpkgTun17:GUEST_ACL' } }]
+			}
+		};
+		const st = toWdttStatus({ seed: list.seed, instances: [withForeignAcl] }, install, now).servers[0].status;
+		expect(st.foreignAcls).toEqual(['OpkgTun17:GUEST_ACL']);
+	});
+
+	it('без ресурса ndms_access или без attrs постороннего ACL нет', () => {
+		const st = toWdttStatus(list, install, now).servers[0].status;
+		expect(st.foreignAcls).toBeUndefined();
 	});
 
 	it('install-блок целиком приезжает из статуса установки', () => {
@@ -348,6 +368,7 @@ describe('toFreeTurnStatus и toFreeTurnConfig: вторая подсистем�
 			obfProfile: 'rtpopus',
 			obfKey: '',
 			obfKeySet: true,
+			obfTimingMs: 20,
 			streamsPerCred: 5,
 			platform: 'mobile',
 			dnsMode: 'doh',
@@ -365,6 +386,7 @@ describe('toFreeTurnStatus и toFreeTurnConfig: вторая подсистем�
 			enabled: false,
 			listen: '0.0.0.0:56000',
 			connect: '10.0.0.1:51820',
+			linkPeer: 'vpn.example.org',
 			mode: 'tcp',
 			obfProfile: 'none',
 			obfKey: '',
@@ -532,6 +554,7 @@ describe('обратные мапперы: секреты (Н5) и поля бе
 			obfProfile: 'rtpopus',
 			obfKey: '',
 			obfKeySet: true,
+			obfTimingMs: 0,
 			streamsPerCred: 10,
 			platform: 'desktop',
 			dnsMode: 'auto',
@@ -541,6 +564,9 @@ describe('обратные мапперы: секреты (Н5) и поля бе
 		// Тот же владелец, что у wdtt-клиента: локальный порт выдаёт бэкенд.
 		expect('listen' in toFreeTurnClientPatch(ftClient)).toBe(false);
 		expect(toFreeTurnClientPatch({ ...ftClient, obfKey: 'k1' }).obfKey).toBe('k1');
+		// Поля 4.0 обязаны уезжать на бэкенд, иначе тумблер декоративный.
+		const p40 = toFreeTurnClientPatch({ ...ftClient, bond: true, obfTimingMs: 20 });
+		expect([p40.bond, p40.obfTimingMs]).toEqual([true, 20]);
 
 		const ftServer: FreeTurnServerConfig = {
 			enabled: true,
@@ -552,6 +578,25 @@ describe('обратные мапперы: секреты (Н5) и поля бе
 			debug: false
 		};
 		expect('obfKey' in toFreeTurnServerPatch(ftServer)).toBe(false);
+	});
+
+	// Адрес для ссылок абонентам (#933) обязан УЕЗЖАТЬ на бэкенд: без этой
+	// проверки строку маппинга можно было удалить, и настройка стала бы
+	// декоративной при зелёной сюите.
+	it('адрес для ссылок уезжает в патч раздачи FreeTurn', () => {
+		const ftServer: FreeTurnServerConfig = {
+			enabled: true,
+			listen: '0.0.0.0:56000',
+			connect: '',
+			linkPeer: 'vpn.example.org',
+			mode: 'udp',
+			obfProfile: 'none',
+			obfKey: '',
+			debug: false
+		};
+		expect(toFreeTurnServerPatch(ftServer).linkPeer).toBe('vpn.example.org');
+		// Снятое значение обязано уехать пустым, иначе адрес не убрать.
+		expect(toFreeTurnServerPatch({ ...ftServer, linkPeer: '' }).linkPeer).toBe('');
 	});
 });
 
@@ -779,15 +824,14 @@ describe('адреса новой поверхности', () => {
 		});
 	});
 
-	it('удаление клиента сперва снимает связи, потом сносит инстанс', async () => {
-		const calls = stubFetch((url) =>
-			url.endsWith('/linked-tunnels/clear')
-				? { deletedTunnels: ['t1'], tunnelErrors: [], message: 'linked AWG tunnels cleared' }
-				: { ok: true }
-		);
+	// PF20: инвариант «клиент уходит вместе со своими туннелями» держит
+	// БЭКЕНД. Пара вызовов с фронта держала его плохо: удаление мимо панели
+	// оставляло карточку туннеля навсегда, а здесь отказ ручки clear ловился
+	// и удаление шло дальше.
+	it('удаление клиента — ОДИН запрос, связи снимает бэкенд', async () => {
+		const calls = stubFetch(() => ({ ok: true, deletedTunnels: ['t1'], tunnelErrors: [] }));
 		const res = await api.deleteWdttClient('nl');
 		expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
-			'POST /api/proxyrt/instances/wdtt-client%3Anl/linked-tunnels/clear',
 			'DELETE /api/proxyrt/instances/wdtt-client%3Anl'
 		]);
 		expect(res.deletedTunnels).toEqual(['t1']);

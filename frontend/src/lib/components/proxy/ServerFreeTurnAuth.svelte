@@ -296,7 +296,6 @@
 				{serverId}
 				{serverName}
 				{server}
-				{peerConf}
 				{busy}
 				{locked}
 			/>

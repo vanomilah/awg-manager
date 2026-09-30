@@ -346,3 +346,80 @@ func TestHookHandler_HandleNDMS_IPv4_EmptySystemName_Skipped(t *testing.T) {
 		t.Errorf("wan SetUp: want 0 (empty system_name), got %#v", calls)
 	}
 }
+
+// F118: смена адреса WAN (DHCP lease, IPCP у PPPoE) — повод перепроверить
+// DDNS-имена, за которыми следит страж, не дожидаясь его тика.
+func TestHookHandler_IPChanged_NudgesEndpointGuard(t *testing.T) {
+	h := newTestHookHandler(&spyDispatcher{})
+	nudged := make(chan struct{}, 1)
+	h.SetEndpointGuardNudge(func() { nudged <- struct{}{} })
+
+	body := strings.NewReader("type=ifipchanged&id=PPPoE0&address=203.0.113.9")
+	req := httptest.NewRequest(http.MethodPost, "/api/hook/ndms", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.HandleNDMS(httptest.NewRecorder(), req)
+
+	select {
+	case <-nudged:
+	case <-time.After(2 * time.Second):
+		t.Fatal("страж не разбужен на смену адреса WAN")
+	}
+}
+
+// Прочие хуки стража не будят: он ходит в DNS, и дёргать его на каждом
+// событии интерфейса незачем.
+func TestHookHandler_LayerChanged_DoesNotNudgeGuard(t *testing.T) {
+	h := newTestHookHandler(&spyDispatcher{})
+	nudged := make(chan struct{}, 1)
+	h.SetEndpointGuardNudge(func() { nudged <- struct{}{} })
+
+	body := strings.NewReader("type=iflayerchanged&id=Wireguard0&layer=conf&level=running")
+	req := httptest.NewRequest(http.MethodPost, "/api/hook/ndms", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.HandleNDMS(httptest.NewRecorder(), req)
+
+	select {
+	case <-nudged:
+		t.Fatal("страж разбужен не своим событием")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// F497: клиентские маршруты на system:-выходе теряются на down/up
+// интерфейса — ядро снимает default dev. Хук ipv4 running обязан
+// переприменить их для ЛЮБОГО интерфейса, не только ISP.
+func TestHookHandler_IPv4Running_CallsHookForAnyInterface(t *testing.T) {
+	h := newTestHookHandler(&spyDispatcher{})
+	got := make(chan string, 1)
+	h.SetIPv4RunningHook(func(id string) { got <- id })
+
+	body := strings.NewReader("type=iflayerchanged&id=OpkgTun7&system_name=opkgtun7&layer=ipv4&level=running")
+	req := httptest.NewRequest(http.MethodPost, "/api/hook/ndms", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.HandleNDMS(httptest.NewRecorder(), req)
+
+	select {
+	case id := <-got:
+		if id != "OpkgTun7" {
+			t.Fatalf("id = %q", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("хук ipv4 running не вызван для OpkgTun7")
+	}
+}
+
+func TestHookHandler_IPv4Disabled_NoHook(t *testing.T) {
+	h := newTestHookHandler(&spyDispatcher{})
+	fired := make(chan struct{}, 1)
+	h.SetIPv4RunningHook(func(string) { fired <- struct{}{} })
+	body := strings.NewReader("type=iflayerchanged&id=OpkgTun7&system_name=opkgtun7&layer=ipv4&level=disabled")
+	req := httptest.NewRequest(http.MethodPost, "/api/hook/ndms", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.HandleNDMS(httptest.NewRecorder(), req)
+
+	select {
+	case <-fired:
+		t.Fatal("хук вызван на disabled")
+	case <-time.After(200 * time.Millisecond):
+	}
+}

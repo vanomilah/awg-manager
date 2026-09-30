@@ -48,6 +48,20 @@ func (a *app) setupCore() {
 	}
 	applyGoMemoryLimits(a.settings.DisableMemorySaving)
 
+	// MCP API keys — loaded next to settings: the /mcp mount needs both the
+	// McpEnabled toggle and the key store at route-registration time.
+	// A load failure is not fatal: MCP is an optional side channel, and
+	// bricking a router's VPN daemon over its key file would be worse than
+	// serving with no keys (every /mcp request then fails auth, which is the
+	// safe direction). Load already self-heals a corrupt file by quarantine,
+	// and an UNREADABLE file leaves the store read-only, so continuing here
+	// cannot overwrite keys we failed to read — key management then reports
+	// the failure instead of silently issuing a fresh, lone key.
+	a.mcpKeys = storage.NewMcpKeyStore(a.dataDir)
+	if err := a.mcpKeys.Load(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load MCP keys (MCP will accept no key; key management disabled until fixed): %v\n", err)
+	}
+
 	a.awgStore = storage.NewAWGTunnelStore(
 		filepath.Join(a.dataDir, "tunnels"),
 	)
@@ -95,15 +109,37 @@ func (a *app) setupNDMS() {
 
 	// Initialize SystemInfoStore at boot — one-shot fetch of /show/version.
 	// Compute timeout based on system uptime (wait longer at early boot).
-	ndmsTimeout := time.Second // normal restart: single attempt
+	//
+	// Бюджет НЕ поднимаем, и вот почему. Первая попытка идёт без своего
+	// таймаута, а дедлайн проверяется только в select ПОСЛЕ её возврата
+	// (internal/sys/ndmsinfo/info.go) — значит медленный, но успешный ответ
+	// RCI бюджетом не отсекается вовсе, сколько его ни увеличивай. Отсекается
+	// только быстрый отказ (:79 ещё не слушает), и лечится он не ожиданием, а
+	// вторым каналом: при исчерпании бюджета ndmsinfo спрашивает ndm через
+	// unix-сокет. Чем короче бюджет, тем быстрее до этого канала доходит.
+	ndmsTimeout := time.Second // normal restart: single attempt, дальше ndmc
 	if a.uptime > 0 && a.uptime < 120 {
-		ndmsTimeout = 30 * time.Second // boot: wait for NDMS
+		ndmsTimeout = 30 * time.Second // boot: ждём, пока NDMS вообще поднимется
 	}
 	// Wire ndmsinfo to the SystemInfoStore, then initialize with retry.
 	// MUST run before kmod.New(): the kmod loader reads model/SoC from
 	// ndmsinfo.Get() at construction time.
 	if err := ndmsinfo.Init(context.Background(), a.ndmsQueries.SystemInfo, ndmsTimeout); err != nil {
-		a.bootLog.Warn("ndms-version", "", err.Error())
+		// Init перебрал все каналы — RCI, ndmc и файл /etc/components.xml.
+		// Раз версии нет и оттуда, действовать нельзя: половина проводки
+		// (выбор оператора, режим файрвола, гейт DNS-маршрутов) замерзает
+		// снимком прямо здесь и не переигрывается никогда.
+		a.waitForNDMSVersion(err)
+	} else if src := ndmsinfo.Source(); src != ndmsinfo.SourceRCI {
+		// Запасной канал сработал — значит RCI не ответил. Туннельный тракт
+		// при этом в порядке, но это ранний признак залипшей HTTP-морды NDMS.
+		a.bootLog.Warn("ndms-version", "",
+			"RCI не ответил, версия получена каналом "+src+": "+osdetect.ReleaseString())
+	}
+
+	// Остатки восстановлений удалены в main — здесь только след в журнале.
+	if n := a.prunedRestoreDirs; n > 0 {
+		a.bootLog.Info("startup", "", fmt.Sprintf("removed %d leftover backup-restore dir(s) of %s", n, a.dataDir))
 	}
 
 	// Load kernel module if available (before backend detection).
@@ -139,4 +175,72 @@ func (a *app) setupNDMS() {
 		warmCancel()
 	}
 
+}
+
+// ndmsVersionRetryPeriod — пауза между попытками узнать версию NDMS.
+var ndmsVersionRetryPeriod = time.Minute
+
+// waitForNDMSVersion ждёт версию NDMS, сколько понадобится.
+//
+// Не узнали версию — НЕ ДЕЙСТВУЕМ. Раньше здесь молча продолжалась проводка
+// на умолчании osdetect, и это была худшая из возможных развилок: половина
+// решений (выбор оператора, режим файрвола, гейт DNS-маршрутов) замерзает
+// снимком прямо здесь и не переигрывается никогда, а остальные потребители
+// спрашивают версию вживую. Демон оказывался не просто неправ, а
+// ПРОТИВОРЕЧИВ сам себе — и чинилось это только перезапуском.
+//
+// Молчат оба канала (RCI по HTTP и ndm через unix-сокет) — значит ndm не
+// отвечает вообще, и делать нам всё равно нечего: каждая операция с
+// туннелем идёт через него. Поэтому просто ждём и пробуем снова.
+//
+// Пока цикл крутится, HTTP-морда не поднята (setupNDMS — вторая фаза из
+// двенадцати), поэтому журнал приложения недоступен: он живёт в памяти и
+// отдаётся только через API. Значит отчитываться надо наружу — см.
+// reportStartupStall.
+func (a *app) waitForNDMSVersion(firstErr error) {
+	err := firstErr
+	for attempt := 1; ; attempt++ {
+		// Первый повтор — немедленно. Сюда попадают после двух отказов RCI и
+		// одного ndmc, уложившихся в пару секунд: такой отказ вполне может
+		// быть транзиентным и уже пройти, а ожидание минуты — это минута
+		// недоступного демона на ровном месте.
+		wait := ndmsVersionRetryPeriod
+		if attempt == 1 {
+			wait = 0
+		}
+		msg := fmt.Sprintf("версия NDMS не определена ни через RCI, ни через ndmc (попытка %d: %v) — повтор через %v; без версии действовать нельзя",
+			attempt, err, wait)
+		a.bootLog.Error("ndms-version", "", msg)
+		a.reportStartupStall(msg)
+
+		time.Sleep(wait)
+
+		if err = ndmsinfo.Init(context.Background(), a.ndmsQueries.SystemInfo, 5*time.Second); err == nil {
+			msg := fmt.Sprintf("версия NDMS определена с %d-й попытки (%s): %s",
+				attempt+1, ndmsinfo.Source(), osdetect.ReleaseString())
+			a.bootLog.Warn("ndms-version", "", msg)
+			a.reportStartupStall(msg)
+			return
+		}
+	}
+}
+
+// reportStartupStall сообщает о задержке старта туда, где её видно до
+// поднятия HTTP.
+//
+// Одного stderr мало: init-скрипт запускает демон через busybox
+// `start-stop-daemon -S -b`, а тот уводит stdio в /dev/null (проверено на
+// стенде 5.01 — fd 2 демонизированного процесса указывает на /dev/null).
+// Путь `--service start` перенаправляет stderr в этот же файл сам, но
+// init-скриптом он не используется. Без файла ожидание выглядит как молча
+// зависший демон: ни морды, ни журнала, ни консоли.
+func (a *app) reportStartupStall(msg string) {
+	fmt.Fprintln(os.Stderr, "awg-manager: "+msg)
+	os.MkdirAll(filepath.Dir(serviceStderrLog), 0755)
+	f, err := os.OpenFile(serviceStderrLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(f, "awg-manager: %s\n", msg)
+	f.Close()
 }

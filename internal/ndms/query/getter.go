@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -101,6 +102,7 @@ type FakeGetter struct {
 	postSystemName      map[string][]byte
 	postSystemNameErr   map[string]error
 	postSystemNameCalls map[string]int
+	batchPosts          int
 
 	postHandler func(payload any) (json.RawMessage, error)
 }
@@ -163,6 +165,9 @@ func (f *FakeGetter) Get(ctx context.Context, path string, dst any) error {
 
 	if haveErr {
 		return err
+	}
+	if !haveBody {
+		body, haveBody = f.interfaceFromList(path)
 	}
 	if !haveBody {
 		if defaultErr != nil {
@@ -274,6 +279,13 @@ func (f *FakeGetter) SetPostSystemNameError(name string, err error) {
 	f.mu.Unlock()
 }
 
+// BatchPostCalls — сколько пакетных POST (массив команд) пришло.
+func (f *FakeGetter) BatchPostCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.batchPosts
+}
+
 // PostSystemNameCalls returns how many Post calls hit the system-name
 // resolver with the given NDMS id.
 func (f *FakeGetter) PostSystemNameCalls(name string) int {
@@ -316,7 +328,23 @@ func (f *FakeGetter) PostInterfaceCalls(name string) int {
 // Post implements Getter.Post. ShowInterface-shaped payloads dispatch on
 // the embedded "name"; system-name resolver payloads dispatch on the
 // embedded id; everything else falls through to postHandler.
-func (f *FakeGetter) Post(_ context.Context, payload any) (json.RawMessage, error) {
+func (f *FakeGetter) Post(ctx context.Context, payload any) (json.RawMessage, error) {
+	// Пакет команд, как у NDMS: каждый элемент отвечается отдельно, ответ —
+	// массив в том же порядке.
+	if batch, ok := payload.([]any); ok {
+		f.mu.Lock()
+		f.batchPosts++
+		f.mu.Unlock()
+		items := make([]json.RawMessage, len(batch))
+		for i, cmd := range batch {
+			item, err := f.Post(ctx, cmd)
+			if err != nil {
+				return nil, err
+			}
+			items[i] = item
+		}
+		return json.Marshal(items)
+	}
 	if name := extractShowSystemName(payload); name != "" {
 		f.mu.Lock()
 		if f.postSystemNameCalls == nil {
@@ -355,10 +383,22 @@ func (f *FakeGetter) Post(_ context.Context, payload any) (json.RawMessage, erro
 			return nil, err
 		}
 		if !haveBody {
+			// Не заскриптован явно (SetPostInterface): отвечаем тем же
+			// снимком `/show/interface/`, что и GET-путь (interfaceFromList)
+			// — так пишущие только SetJSON("/show/interface/", …) фикстуры
+			// продолжают работать и на свежем чтении (InterfaceStore.Refresh),
+			// не только на кэше (Get/bootstrap).
+			if entry, ok := f.interfaceListEntry(name); ok {
+				return []byte(`{"show":{"interface":` + entry + `}}`), nil
+			}
 			if defaultErr != nil {
 				return nil, defaultErr
 			}
-			return nil, errNoFakeResponse("POST show.interface name=" + name)
+			// Имени нет и в снимке списка — настоящий NDMS такой POST не
+			// 404-ит, а отвечает конвертом `unable to find` (стенд KN-1810,
+			// 5.02.A.11, код 6553619); fetchOne разбирает именно эту форму
+			// в (nil, nil). Синтезируем тот же конверт вместо ошибки фикстуры.
+			return []byte(`{"show":{"interface":{"status":[{"status":"error","code":"6553619","message":"unable to find"}]}}}`), nil
 		}
 		out := make([]byte, len(body))
 		copy(out, body)
@@ -396,4 +436,34 @@ func extractShowInterfaceName(payload any) string {
 	}
 	name, _ := iface["name"].(string)
 	return name
+}
+
+// interfaceFromList отвечает на `/show/interface/<name>` записью из заданного
+// полного списка, как настоящий NDMS (ответы побайтно совпадают, стенд
+// 5.02.A.11). Явный SetJSON на точечный путь имеет приоритет.
+func (f *FakeGetter) interfaceFromList(path string) (string, bool) {
+	name, ok := strings.CutPrefix(path, "/show/interface/")
+	if !ok || name == "" || strings.ContainsAny(name, "/?") {
+		return "", false
+	}
+	return f.interfaceListEntry(name)
+}
+
+// interfaceListEntry возвращает сырой JSON записи `name` из заданного
+// SetJSON("/show/interface/", …) снимка. Общий поиск для GET-пути
+// (interfaceFromList, по URL-пути) и POST-формы ShowInterface (по имени из
+// тела запроса).
+func (f *FakeGetter) interfaceListEntry(name string) (string, bool) {
+	f.mu.Lock()
+	list, ok := f.jsonResp["/show/interface/"]
+	f.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(list), &m) != nil {
+		return "", false
+	}
+	entry, ok := m[name]
+	return string(entry), ok
 }

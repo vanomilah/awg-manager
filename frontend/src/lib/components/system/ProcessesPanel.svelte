@@ -19,7 +19,7 @@
 	let snapshot = $state<SystemProcSnapshot | null>(null);
 	let loading = $state(false);
 	let initialLoaded = $state(false);
-	let autoRefreshInterval = $state<number>(2); // seconds, 0 = paused
+	let autoRefreshInterval = $state<number>(5); // seconds, 0 = paused
 	let timer = $state<ReturnType<typeof setInterval> | null>(null);
 
 	// Search and filter
@@ -147,7 +147,10 @@
 					res = a.cpuPercent - b.cpuPercent;
 					break;
 				case 'mem':
-					res = a.memoryRss - b.memoryRss;
+					res = a.memoryOwn - b.memoryOwn;
+					break;
+				case 'time':
+					res = a.cpuTimeSec - b.cpuTimeSec;
 					break;
 				case 'pid':
 					res = a.pid - b.pid;
@@ -196,6 +199,7 @@
 		{showKernelThreads}
 		{searchQuery}
 		processCount={filteredProcesses.length}
+		snapshotAt={snapshot?.timestamp}
 		ontoggleenabled={toggleMasterEnabled}
 		onrefresh={() => fetchSnapshot(true)}
 		onintervalchange={setRefreshInterval}
@@ -225,6 +229,7 @@
 			processes={filteredProcesses}
 			{loading}
 			{initialLoaded}
+			cpuCount={snapshot?.cpuCount ?? 0}
 			{sortField}
 			{sortAsc}
 			onsort={toggleSort}

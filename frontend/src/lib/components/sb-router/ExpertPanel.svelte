@@ -941,7 +941,11 @@
     }
   }
 
-  async function handleDnsGlobalsSave(globals: { final: string; strategy: SingboxRouterDNSStrategy }) {
+  async function handleDnsGlobalsSave(globals: {
+    final: string;
+    strategy: SingboxRouterDNSStrategy;
+    timeout: string;
+  }) {
     await api.singboxRouterPutDNSGlobals(globals);
     dnsGlobalsModalOpen = false;
     await singboxRouterStore.loadAll();
@@ -1280,6 +1284,7 @@
 <!-- CompositeOutboundEditModal: add -->
 {#if outboundAddOpen}
   <CompositeOutboundEditModal
+    outbounds={$storeOutbounds}
     outboundOptions={$storeOptions}
     onClose={() => (outboundAddOpen = false)}
     onSave={handleOutboundAddSave}
@@ -1290,6 +1295,7 @@
 {#if outboundEditTag !== null && outboundEditTarget !== undefined}
   <CompositeOutboundEditModal
     outbound={outboundEditTarget}
+    outbounds={$storeOutbounds}
     outboundOptions={$storeOptions}
     onClose={() => (outboundEditTag = null)}
     onSave={handleOutboundEditSave}
@@ -1348,6 +1354,7 @@
     servers={$storeDnsServers}
     final={$storeDnsGlobals.final}
     strategy={$storeDnsGlobals.strategy}
+    timeout={$storeDnsGlobals.timeout ?? ''}
     onClose={() => (dnsGlobalsModalOpen = false)}
     onSave={handleDnsGlobalsSave}
   />

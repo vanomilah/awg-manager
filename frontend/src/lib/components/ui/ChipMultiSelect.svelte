@@ -206,7 +206,7 @@
             <span class="placeholder">{placeholder}</span>
         {/if}
         {#each knownChips as opt (opt.value)}
-            <span class="chip">
+            <span class="value-chip">
                 <span class="chip-label">{opt.label ?? opt.value}</span>
                 <button
                     type="button"
@@ -218,7 +218,7 @@
             </span>
         {/each}
         {#each orphanValues as v (v)}
-            <span class="chip chip-orphan" title="Набор не найден в текущем конфиге">
+            <span class="value-chip chip-orphan" title="Набор не найден в текущем конфиге">
                 <span class="chip-label">{v}</span>
                 <span class="chip-orphan-badge">сирота / orphaned</span>
                 <button
@@ -311,17 +311,18 @@
         gap: 0.3rem;
         align-items: center;
         padding: 0.35rem 0.45rem;
-        background: var(--bg);
+        background: var(--bg-secondary);
         border: 1px solid var(--border);
         border-radius: 4px;
         min-height: 2rem;
     }
     .placeholder {
-        color: var(--muted-text);
+        color: var(--text-muted);
         font-size: 0.85rem;
         padding: 0 0.25rem;
     }
-    .chip {
+    /* Не .chip: имя занято утилитой Skeleton и app.css — их свойства протекали сюда. */
+    .value-chip {
         display: inline-flex;
         align-items: center;
         gap: 0.25rem;
@@ -331,7 +332,10 @@
         border-radius: 999px;
         font-family: ui-monospace, monospace;
         font-size: 0.78rem;
-        color: var(--text);
+        font-weight: 600;
+        line-height: calc(1 / 0.75);
+        color: var(--text-primary);
+        white-space: nowrap;
     }
     .chip-orphan {
         border-color: var(--warning, #e0af68);
@@ -346,14 +350,14 @@
     .chip-remove {
         background: none;
         border: none;
-        color: var(--muted-text);
+        color: var(--text-muted);
         cursor: pointer;
         font-size: 1rem;
         line-height: 1;
         padding: 0 0.15rem;
     }
     .chip-remove:hover {
-        color: var(--text);
+        color: var(--text-primary);
     }
     .chip-remove:disabled {
         cursor: not-allowed;
@@ -363,14 +367,14 @@
         background: none;
         border: 1px dashed var(--border);
         border-radius: 999px;
-        color: var(--muted-text);
+        color: var(--text-muted);
         cursor: pointer;
         font-size: 0.95rem;
         line-height: 1;
         padding: 0.15rem 0.55rem;
     }
     .trigger:hover:not(:disabled) {
-        color: var(--text);
+        color: var(--text-primary);
         border-color: var(--accent, #3b82f6);
     }
     .trigger:disabled {
@@ -399,10 +403,10 @@
     }
     .search-input {
         width: 100%;
-        background: var(--bg);
+        background: var(--bg-secondary);
         border: 1px solid var(--border);
         border-radius: 4px;
-        color: var(--text);
+        color: var(--text-primary);
         font-family: ui-monospace, monospace;
         font-size: 0.82rem;
         padding: 0.35rem 0.5rem;
@@ -429,7 +433,7 @@
         padding: 0.45rem 0.7rem;
         font-family: ui-monospace, monospace;
         font-size: 0.82rem;
-        color: var(--text);
+        color: var(--text-primary);
         cursor: pointer;
     }
     .panel-item:hover {
@@ -442,14 +446,14 @@
         white-space: nowrap;
     }
     .panel-item-used .opt-label {
-        color: var(--muted-text);
+        color: var(--text-muted);
     }
     .usage-badge {
         flex: 0 0 auto;
         font-size: 0.7rem;
         font-weight: 600;
-        color: var(--muted-text);
-        background: var(--bg);
+        color: var(--text-muted);
+        background: var(--bg-secondary);
         border: 1px solid var(--border);
         border-radius: 999px;
         padding: 0.05rem 0.4rem;
@@ -460,16 +464,16 @@
         border-top: 1px solid var(--border);
         font-size: 0.7rem;
         font-weight: 600;
-        color: var(--muted-text);
+        color: var(--text-muted);
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        background: var(--bg);
+        background: var(--bg-secondary);
     }
     .empty {
         padding: 0.6rem 0.7rem;
         font-family: ui-monospace, monospace;
         font-size: 0.8rem;
-        color: var(--muted-text);
+        color: var(--text-muted);
         text-align: center;
     }
 </style>

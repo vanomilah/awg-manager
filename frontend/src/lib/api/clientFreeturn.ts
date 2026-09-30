@@ -31,14 +31,15 @@ import {
 	type ProxyInstanceView,
 	type ProxyKind,
 	type ProxyListData,
-	type ProxySeedView
+	type ProxySeedView,
+	type ProxySubsystem
 } from './proxyInstances';
 
-/** Очистка связанных AWG-туннелей — прежняя форма ответа ручки. */
-export interface ProxyLinkedClearResult {
+/** Ответ удаления инстанса: что снесено вместе с ним. */
+export interface ProxyDeleteResult {
+	ok?: boolean;
 	deletedTunnels?: string[];
 	tunnelErrors?: string[];
-	message?: string;
 }
 
 export class FreeturnClient extends SubscriptionsClient {
@@ -92,11 +93,11 @@ export class FreeturnClient extends SubscriptionsClient {
 
 	// Публичные: этими же ручками живёт карточка «Интеграции» в настройках,
 	// где подсистемы ставят и удаляют целиком.
-	async proxyInstallStatus(subsystem: 'wdtt' | 'freeturn'): Promise<ProxyInstallStatus> {
+	async proxyInstallStatus(subsystem: ProxySubsystem): Promise<ProxyInstallStatus> {
 		return this.request<ProxyInstallStatus>(`/proxyrt/install/status?subsystem=${subsystem}`);
 	}
 
-	async proxyInstall(subsystem: 'wdtt' | 'freeturn'): Promise<void> {
+	async proxyInstall(subsystem: ProxySubsystem): Promise<void> {
 		await this.request('/proxyrt/install', {
 			method: 'POST',
 			body: JSON.stringify({ subsystem })
@@ -104,7 +105,7 @@ export class FreeturnClient extends SubscriptionsClient {
 	}
 
 	/** Снять бинари подсистемы. Отклоняется, пока есть её инстансы. */
-	async proxyUninstall(subsystem: 'wdtt' | 'freeturn'): Promise<void> {
+	async proxyUninstall(subsystem: ProxySubsystem): Promise<void> {
 		await this.request('/proxyrt/install/uninstall', {
 			method: 'POST',
 			body: JSON.stringify({ subsystem })
@@ -142,29 +143,17 @@ export class FreeturnClient extends SubscriptionsClient {
 		});
 	}
 
-	protected async proxyDelete(kind: ProxyKind, id: string): Promise<void> {
-		await this.request(instancePath(kind, id), { method: 'DELETE' });
-	}
-
 	/**
-	 * Снос AWG-туннелей, связанных с клиентским инстансом. Отказ ручки не
-	 * роняет удаление инстанса, а уезжает в `tunnelErrors`: в старом мире
-	 * удаление сносило и связи, и инстанс, и об ошибках туннелей отчитывалось
-	 * списком — молча потерять их нельзя, но и запирать удаление из-за них
-	 * пользователь не просил.
+	 * Удаление инстанса. Связанные AWG-туннели уносит САМ бэкенд, в этом же
+	 * запросе, и отчитывается о них в теле ответа.
+	 *
+	 * Прежде инвариант «клиент уходит вместе со своими туннелями» держал фронт
+	 * двумя вызовами подряд (clear-linked, затем delete). Держался он плохо:
+	 * удаление мимо панели оставляло карточку туннеля навсегда, а на нашем
+	 * собственном пути отказ ручки clear ловился и удаление шло дальше.
 	 */
-	protected async proxyClearLinkedTunnels(
-		kind: ProxyKind,
-		id: string
-	): Promise<ProxyLinkedClearResult> {
-		try {
-			return await this.request<ProxyLinkedClearResult>(
-				instancePath(kind, id, '/linked-tunnels/clear'),
-				{ method: 'POST' }
-			);
-		} catch (e) {
-			return { tunnelErrors: [e instanceof Error ? e.message : String(e)] };
-		}
+	protected async proxyDelete(kind: ProxyKind, id: string): Promise<ProxyDeleteResult> {
+		return this.request<ProxyDeleteResult>(instancePath(kind, id), { method: 'DELETE' });
 	}
 
 	protected async proxyRestart(kind: ProxyKind, id: string): Promise<void> {
@@ -226,19 +215,10 @@ export class FreeturnClient extends SubscriptionsClient {
 		return { id: view.id, name: view.name, config: toFreeTurnServerConfig(view) };
 	}
 
-	/**
-	 * Удаление клиента: связанные AWG-туннели сносит своя ручка, удаление
-	 * инстанса их не трогает. Порядок «сначала связи, потом инстанс» —
-	 * уборщик ищет туннели по id ЖИВОЙ записи.
-	 */
+	/** Удаление клиента: связанные AWG-туннели уносит бэкенд тем же запросом. */
 	async deleteFreeTurnClient(id: string): Promise<FreeTurnDeleteClientResult> {
-		const cleared = await this.proxyClearLinkedTunnels('freeturn-client', id);
-		await this.proxyDelete('freeturn-client', id);
-		return {
-			message: cleared.message,
-			deletedTunnels: cleared.deletedTunnels,
-			tunnelErrors: cleared.tunnelErrors
-		};
+		const res = await this.proxyDelete('freeturn-client', id);
+		return { deletedTunnels: res.deletedTunnels, tunnelErrors: res.tunnelErrors };
 	}
 
 	async deleteFreeTurnServer(id: string): Promise<void> {
@@ -310,14 +290,20 @@ export class FreeturnClient extends SubscriptionsClient {
 		);
 	}
 
+	/**
+	 * link — выданная абоненту ссылка (#919). Её запоминает внесение в список,
+	 * а не выдача: у абонента без записи в списке ссылку негде показать, и в
+	 * хранилище она осталась бы сиротой с приватным ключом пира.
+	 */
 	async addFreeTurnServerAllowlistClient(
 		serverId: string,
 		clientId: string,
-		comment: string
+		comment: string,
+		link = ''
 	): Promise<FreeTurnAllowlistAddResult> {
 		return this.request<FreeTurnAllowlistAddResult>(
 			instancePath('freeturn-server', serverId, '/allowlist'),
-			{ method: 'POST', body: JSON.stringify({ clientId, comment }) }
+			{ method: 'POST', body: JSON.stringify({ clientId, comment, link }) }
 		);
 	}
 

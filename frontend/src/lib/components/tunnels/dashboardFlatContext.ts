@@ -54,6 +54,8 @@ export interface DashboardFlatContext {
 	flatGridEl: HTMLElement | null;
 	// --- обработчики ---
 	handleAdoptClick(interfaceName: string): void;
+	handleExternalDelete(interfaceName: string): void;
+	handleForeignUnmark(interfaceName: string): void;
 	handleExportAll(): Promise<void>;
 	toggleFreeturn?(): void;
 	toggleWdtt?(): void;
@@ -67,5 +69,6 @@ export interface DashboardFlatContext {
 	openSingboxDetail(tag: string): void;
 	openWizard(preselect: 'choose' | 'single' | 'inline' | 'url'): void;
 	requestDelete(id: string): void;
+	handleLockClick(id: string): void;
 	requestSubscriptionDelete(id: string): void;
 }

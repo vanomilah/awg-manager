@@ -4,28 +4,53 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/aiassistant"
 	"github.com/hoaxisr/awg-manager/internal/api"
+	"github.com/hoaxisr/awg-manager/internal/auth"
 	"github.com/hoaxisr/awg-manager/internal/connections"
 	"github.com/hoaxisr/awg-manager/internal/diagnostics"
 	"github.com/hoaxisr/awg-manager/internal/events"
+	"github.com/hoaxisr/awg-manager/internal/mcp"
+	"github.com/hoaxisr/awg-manager/internal/mcp/localdeps"
 	"github.com/hoaxisr/awg-manager/internal/openapi"
 	"github.com/hoaxisr/awg-manager/internal/response"
+	"github.com/hoaxisr/awg-manager/internal/singbox"
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	sysexec "github.com/hoaxisr/awg-manager/internal/sys/exec"
 	sysports "github.com/hoaxisr/awg-manager/internal/sys/ports"
 	sysservices "github.com/hoaxisr/awg-manager/internal/sys/services"
 	systraffic "github.com/hoaxisr/awg-manager/internal/sys/traffic"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/serverwizard"
 	"github.com/hoaxisr/awg-manager/internal/serverwizard/egress"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
 )
+
+// singboxOperatorWithDelay joins the operator with the latency prober so
+// together they satisfy localdeps.SingboxOperator.
+type singboxOperatorWithDelay struct {
+	*singbox.Operator
+	delay *singbox.DelayChecker
+}
+
+// CheckDelay probes one proxy. Without a checker wired there is nothing to
+// measure with, and saying so beats reporting every proxy as silent.
+func (s singboxOperatorWithDelay) CheckDelay(ctx context.Context, tag string) (int, error) {
+	if s.delay == nil {
+		return 0, fmt.Errorf("sing-box delay checker is not available on this build")
+	}
+	// Probe, not CheckOne: the checker is shared with the periodic sweep,
+	// and CheckOne answers 0 both for "timed out" and "already probing".
+	return s.delay.Probe(ctx, tag)
+}
 
 // routeHandlers держит handlers, разделяемые секциями registerRoutes.
 // Конструирование и перекрёстная проводка — в buildRouteHandlers; секционные
@@ -36,6 +61,7 @@ type routeHandlers struct {
 	appLog               *logging.Service
 	authHandler          *api.AuthHandler
 	tunnelsHandler       *api.TunnelsHandler
+	awgAnalyzeHandler    *api.AwgAnalyzeHandler
 	controlHandler       *api.ControlHandler
 	testingHandler       *api.TestingHandler
 	systemHandler        *api.SystemHandler
@@ -52,6 +78,8 @@ type routeHandlers struct {
 	diagHandler          *api.DiagnosticsHandler
 	aiAssistantHandler   *api.AIAssistantHandler
 	trafficHandler       *systraffic.Handler
+	orphanIfaceHandler   *api.OrphanIfaceHandler
+	foreignIfaceHandler  *api.ForeignIfaceHandler
 	connectionsService   *connections.Service
 	connectionsHandler   *api.ConnectionsHandler
 	signatureHandler     *api.SignatureHandler
@@ -90,12 +118,12 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 	h.authHandler = api.NewAuthHandler(s.keenetic, s.sessions, s.settings, h.appLog)
 	h.tunnelsHandler = api.NewTunnelsHandler(s.tunnelService, s.tunnels, h.appLog)
 	h.tunnelsHandler.SetSettingsStore(s.settings)
-	h.tunnelsHandler.SetOpkgTunOccupancy(s.opkgTunOccupancy)
 	h.tunnelsHandler.SetPingCheckService(s.pingCheckService)
 	h.tunnelsHandler.SetTrafficHistory(s.trafficHistory)
 	h.tunnelsHandler.SetOrchestrator(s.orch)
 	h.tunnelsHandler.SetProxyRecords(s.proxyRecords)
-	h.controlHandler = api.NewControlHandler(s.tunnelService, h.appLog)
+	h.awgAnalyzeHandler = api.NewAwgAnalyzeHandler(s.tunnels, s.kmodLoader)
+	h.controlHandler = api.NewControlHandler(s.tunnelService, s.tunnels, h.appLog)
 	h.controlHandler.SetPingCheckService(s.pingCheckService)
 	h.controlHandler.SetOrchestrator(s.orch)
 	h.controlHandler.SetTunnelsHandler(h.tunnelsHandler)
@@ -161,6 +189,7 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		}
 		return s.singboxOp.ApplyClashPort(port)
 	})
+	h.settingsHandler.SetOnObfuscatorRelayChanged(s.obfuscatorRelayChanged)
 	h.settingsHandler.SetClashPortInspector(sysports.NewScanner())
 	h.settingsHandler.SetApplySingboxLogSettings(func() error {
 		if s.singboxOp == nil || s.settings == nil {
@@ -195,6 +224,19 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 		AppLogger:            s.loggingService,
 	})
 	h.diagHandler = api.NewDiagnosticsHandler(h.diagRunner)
+	// Типизированный nil в интерфейсе не равен nil, поэтому проверка тут, а не
+	// в обработчике: иначе его собственный гейт «зависимость не собрана» не
+	// сработал бы и отказ приехал бы паникой на вызове.
+	var orphanNDMS api.OrphanIfaceNDMS
+	if s.ndmsCommands != nil && s.ndmsCommands.Interfaces != nil {
+		orphanNDMS = s.ndmsCommands.Interfaces
+	}
+	h.orphanIfaceHandler = api.NewOrphanIfaceHandler(s.orphanExclusiveFn, orphanNDMS, s.loggingService)
+	h.orphanIfaceHandler.SetTunnelListPublisher(h.tunnelsHandler.PublishTunnelList)
+	if s.foreignIfaces != nil {
+		h.foreignIfaceHandler = api.NewForeignIfaceHandler(s.foreignIfaces)
+		h.foreignIfaceHandler.SetTunnelListPublisher(h.tunnelsHandler.PublishTunnelList)
+	}
 
 	aiService := aiassistant.NewService(h.diagRunner)
 	if s.settings != nil && s.settings.DataDir() != "" {
@@ -272,7 +314,7 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 
 	h.eventsHandler = api.NewEventsHandler(s.bus, s.instanceID)
 
-	h.controlHandler.SetProxyControl(s.tunnels, s.proxyRuntime)
+	h.controlHandler.SetProxyControl(s.proxyRuntime)
 
 	h.proxyListenerHandler = api.NewProxyListenerHandler(s.proxyRecords)
 
@@ -623,6 +665,12 @@ func (s *Server) registerCoreRoutes(mux *http.ServeMux, h *routeHandlers) {
 	if s.proxyRuntimeNudge != nil {
 		h.hookHandler.SetProxyRuntimeNudge(s.proxyRuntimeNudge)
 	}
+	if s.nwgOp != nil {
+		h.hookHandler.SetEndpointGuardNudge(s.nwgOp.NudgeEndpointGuard)
+	}
+	if s.ipv4RunningHook != nil {
+		h.hookHandler.SetIPv4RunningHook(s.ipv4RunningHook)
+	}
 	mux.HandleFunc("/api/hook/ndms", h.hookHandler.HandleNDMS)
 
 	// WAN status (protected) — event ingress is now /api/hook/ndms.
@@ -636,14 +684,15 @@ func (s *Server) registerTunnelRoutes(mux *http.ServeMux, h *routeHandlers) {
 	mux.HandleFunc("/api/tunnels/list", h.guarded(h.tunnelsHandler.List))
 	mux.HandleFunc("/api/tunnels/all", h.guarded(h.tunnelsHandler.GetAll))
 	mux.HandleFunc("/api/tunnels/get", h.guarded(h.tunnelsHandler.Get))
-	mux.HandleFunc("/api/tunnels/create", h.guarded(h.tunnelsHandler.Create))
 	mux.HandleFunc("/api/tunnels/update", h.guarded(h.tunnelsHandler.Update))
 	mux.HandleFunc("/api/tunnels/delete", h.guarded(h.tunnelsHandler.Delete))
 	mux.HandleFunc("/api/tunnels/toggle-lock", h.guarded(h.tunnelsHandler.ToggleLock))
+	mux.HandleFunc("/api/tunnels/lock", h.guarded(h.tunnelsHandler.SetLock))
 	mux.HandleFunc("/api/tunnels/export", h.guarded(h.tunnelsHandler.Export))
 	mux.HandleFunc("/api/tunnels/export-all", h.guarded(h.tunnelsHandler.ExportAll))
 	mux.HandleFunc("/api/tunnels/replace", h.guarded(h.tunnelsHandler.ReplaceConf))
 	mux.HandleFunc("/api/tunnels/traffic", h.guarded(h.tunnelsHandler.Traffic))
+	mux.HandleFunc("/api/awg/analyze", h.guarded(h.awgAnalyzeHandler.Analyze))
 
 	// Control operations (protected + boot guarded)
 	mux.HandleFunc("/api/control/start", h.guarded(h.controlHandler.Start))
@@ -805,6 +854,7 @@ func (s *Server) registerSettingsRoutes(mux *http.ServeMux, h *routeHandlers) {
 	// Settings (protected + boot guarded)
 	mux.HandleFunc("/api/settings/get", h.guarded(h.settingsHandler.Get))
 	mux.HandleFunc("/api/settings/update", h.guarded(h.settingsHandler.Update))
+	mux.HandleFunc("/api/settings/obfuscator-relay", h.guarded(h.settingsHandler.SetObfuscatorRelay))
 	mux.HandleFunc("/api/settings/regenerate-api-key", h.guarded(h.settingsHandler.RegenerateApiKey))
 
 	// Ping check (protected + boot guarded)
@@ -825,7 +875,7 @@ func (s *Server) registerSettingsRoutes(mux *http.ServeMux, h *routeHandlers) {
 		case http.MethodPost:
 			h.pingCheckHandler.ConfigureTunnelPingCheck(w, r)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			response.MethodNotAllowed(w)
 		}
 	}))
 	mux.HandleFunc("/api/tunnels/pingcheck/remove", h.guarded(h.pingCheckHandler.RemoveTunnelPingCheck))
@@ -847,7 +897,7 @@ func (s *Server) registerDeviceProxyRoutes(mux *http.ServeMux, h *routeHandlers)
 		case http.MethodPut:
 			deviceProxyHandler.SaveConfig(w, r)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			response.MethodNotAllowed(w)
 		}
 	}))
 	mux.HandleFunc("/api/proxy/runtime", h.guarded(deviceProxyHandler.GetRuntime))
@@ -867,7 +917,7 @@ func (s *Server) registerDeviceProxyRoutes(mux *http.ServeMux, h *routeHandlers)
 		case http.MethodDelete:
 			deviceProxyHandler.DeleteInstance(w, r)
 		default:
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			response.MethodNotAllowed(w)
 		}
 	}))
 	mux.HandleFunc("/api/proxy/instances/apply", h.guarded(deviceProxyHandler.ApplyInstances))
@@ -887,11 +937,28 @@ func (s *Server) registerLogsImportRoutes(mux *http.ServeMux, h *routeHandlers) 
 	// Import (protected + boot guarded)
 	mux.HandleFunc("/api/import/conf", h.guarded(h.importHandler.ImportConf))
 
-	amneziaCPHandler := api.NewAmneziaCPHandler(h.appLog)
-	amneziaCPHandler.SetDownloader(s.downloadSvc)
-	mux.HandleFunc("/api/amnezia-premium/login", h.guarded(amneziaCPHandler.Login))
-	mux.HandleFunc("/api/amnezia-premium/account-info", h.guarded(amneziaCPHandler.AccountInfo))
-	mux.HandleFunc("/api/amnezia-premium/download-config", h.guarded(amneziaCPHandler.DownloadConfig))
+	// Ключ подписки Amnezia Premium: проверка и сохранение (POST), состояние
+	// (GET), удаление (DELETE). Одна ручка на три метода — состояние у них
+	// одно, и разводить его по трём путям нечем.
+	amneziaPremiumHandler := api.NewAmneziaPremiumHandler(s.settings, h.appLog)
+	amneziaPremiumHandler.SetEventBus(s.bus)
+	mux.HandleFunc("/api/amnezia/premium/key", h.guarded(amneziaPremiumHandler.Key))
+	// Каталог подписки (GET) и выдача конфигурации страны (POST). Пути
+	// разные, потому что операции разные: первая читает, вторая ТРАТИТ слот
+	// устройств подписки.
+	mux.HandleFunc("/api/amnezia/premium/catalog", h.guarded(amneziaPremiumHandler.Catalog))
+	mux.HandleFunc("/api/amnezia/premium/config", h.guarded(amneziaPremiumHandler.Config))
+	// Отзыв конфигурации страны (POST) — обратная выдаче операция, ВОЗВРАЩАЕТ
+	// слот. Отдельный путь по той же причине, по какой выдача отделена от
+	// каталога: разные последствия для подписки.
+	mux.HandleFunc("/api/amnezia/premium/revoke", h.guarded(amneziaPremiumHandler.Revoke))
+	// Адрес зеркала: действующий (GET) и запись (POST). Живёт здесь, а не в
+	// настройках, — поле принадлежит мастеру premium.
+	mux.HandleFunc("/api/amnezia/premium/mirror", h.guarded(amneziaPremiumHandler.Mirror))
+	// Страна подключения: сохранённая (GET) и запись (POST). Портал требует
+	// её в каждой выдаче конфигурации, и живёт она там же, где зеркало,  —
+	// у мастера premium, а не в общих настройках.
+	mux.HandleFunc("/api/amnezia/premium/declared-country", h.guarded(amneziaPremiumHandler.DeclaredCountry))
 
 	// External tunnels (protected + boot guarded)
 	mux.HandleFunc("/api/external-tunnels", h.guarded(h.externalHandler.List))
@@ -946,7 +1013,7 @@ func (s *Server) registerServerRoutes(mux *http.ServeMux, h *routeHandlers) {
 	// Managed WireGuard Servers (protected + boot guarded). The new
 	// route table is id-keyed: see ManagedServerHandler.Subtree for the
 	// full sub-path dispatch (peers, conf, asc, etc).
-	h.managedHandler = api.NewManagedServerHandler(s.managedService)
+	h.managedHandler = api.NewManagedServerHandler(s.managedService, h.appLog)
 	h.managedHandler.SetServersHandler(h.serverHandler)
 	h.serverHandler.SetManagedHandler(h.managedHandler)
 	if s.managedServiceImpl != nil {
@@ -1089,6 +1156,12 @@ func (s *Server) registerDiagnosticsRoutes(mux *http.ServeMux, h *routeHandlers)
 	mux.HandleFunc("/api/diagnostics/status", h.guarded(h.diagHandler.Status))
 	mux.HandleFunc("/api/diagnostics/result", h.guarded(h.diagHandler.Result))
 	mux.HandleFunc("/api/diagnostics/stream", h.guarded(h.diagHandler.Stream))
+	mux.HandleFunc("/api/tunnels/orphans/delete", h.guarded(h.orphanIfaceHandler.Delete))
+	if h.foreignIfaceHandler != nil {
+		mux.HandleFunc("/api/interfaces/foreign/candidates", h.guarded(h.foreignIfaceHandler.Candidates))
+		mux.HandleFunc("/api/interfaces/foreign/mark", h.guarded(h.foreignIfaceHandler.Mark))
+		mux.HandleFunc("/api/interfaces/foreign/unmark", h.guarded(h.foreignIfaceHandler.Unmark))
+	}
 
 	// DNS proxy info (read-only ndnproxy state). ndmsQueries may be nil on
 	// platforms without NDMS wiring — guard the construction.
@@ -1177,6 +1250,11 @@ func (s *Server) wireCrossHandlers(mux *http.ServeMux, h *routeHandlers) {
 		}
 		tsb.InvalidateCaches()
 		s.bus.PublishInvalidated(events.ResourceTunnels, "ndms-hook")
+		// Серверы живут в том же кэше WGServers и в том же дереве
+		// интерфейсов. Появление и исчезновение интерфейса меняет и их
+		// список — без этой публикации страница «Серверы» узнавала бы о
+		// сервере, заведённом мимо панели, только по таймеру опроса (F364).
+		s.bus.PublishInvalidated(events.ResourceServers, "ndms-hook")
 	}
 	h.hookHandler.SetTunnelRefresher(invalidateTunnelsOnHook)
 	// Injects the composite {tunnels, external, system} builder used by
@@ -1235,7 +1313,7 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 			case http.MethodDelete:
 				s.singboxHandler.DeleteTunnel(w, r)
 			default:
-				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+				response.MethodNotAllowed(w)
 			}
 		}))
 	}
@@ -1318,7 +1396,6 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 		mux.HandleFunc("/api/singbox/router/policies", h.guarded(rh.PoliciesCollection))
 		mux.HandleFunc("/api/singbox/router/wan-interfaces", h.guarded(rh.ListWANInterfaces))
 		mux.HandleFunc("/api/singbox/router/bindable-interfaces", h.guarded(rh.ListBindableInterfaces))
-		mux.HandleFunc("/api/singbox/router/ingress-eligible-interfaces", h.guarded(rh.ListIngressEligibleInterfaces))
 		mux.HandleFunc("/api/singbox/router/policy-tun/nat-preview", h.guarded(rh.PolicyTunNATPreview))
 		mux.HandleFunc("/api/singbox/router/policy-devices", h.guarded(rh.ListPolicyDevices))
 		mux.HandleFunc("/api/singbox/router/policy-devices/bind", h.guarded(rh.BindDevice))
@@ -1503,6 +1580,231 @@ func (s *Server) registerProxyRtRoutes(mux *http.ServeMux, h *routeHandlers) {
 	}
 }
 
+// mcpToolTimeout — потолок одного вызова инструмента. Самые долгие —
+// test_connectivity (HTTP-проба через туннель) и запуск/остановка
+// туннеля через оркестратор; обоим хватает с запасом, а хост MCP всё
+// равно сдаётся раньше.
+const mcpToolTimeout = 60 * time.Second
+
+// registerMcpRoutes монтирует MCP-эндпоинт /mcp (ключевая авторизация,
+// независимая от AuthEnabled) и управление ключами /api/mcp/keys*.
+//
+// Ряд полей localdeps.Config — интерфейсы, а сервисы демона хранятся
+// указателями на конкретные типы. Нулевой указатель, положенный в
+// интерфейс, даёт НЕнулевой интерфейс, и проверки `l.c.X != nil` внутри
+// localdeps пропустили бы его до вызова. Поэтому каждый опциональный
+// сервис кладётся через явную проверку — интерфейс остаётся нулевым.
+func (s *Server) registerMcpRoutes(mux *http.ServeMux, h *routeHandlers) {
+	if s.mcpKeys == nil {
+		return
+	}
+	// h.appLog is a *logging.Service: a nil pointer put into the AppLogger
+	// interface would be non-nil, and ScopedLogger's own nil-guard would
+	// not fire. Same typed-nil hazard as the localdeps fields below.
+	var appLog logging.AppLogger
+	if h.appLog != nil {
+		appLog = h.appLog
+	}
+	mcpLog := logging.NewScopedLogger(appLog, logging.GroupSystem, logging.SubMcp)
+
+	var orch localdeps.Orchestrator
+	if s.orch != nil {
+		orch = s.orch
+	}
+	var trafficStats localdeps.TrafficStats
+	if s.trafficHistory != nil {
+		trafficStats = s.trafficHistory
+	}
+	var logs localdeps.LogReader
+	if s.loggingService != nil {
+		logs = s.loggingService
+	}
+	// explain_route sweeps the routing lists for a domain, so it needs the
+	// domain's addresses; the same IPv4-only lookup /routing/resolve does.
+	resolveHost := func(ctx context.Context, host string) ([]string, error) {
+		return (&net.Resolver{}).LookupHost(ctx, host)
+	}
+	var connTester localdeps.ConnectivityTester
+	if s.testingService != nil {
+		connTester = s.testingService
+	}
+	var mon localdeps.MonitoringSnapshotter
+	if s.monitoringService != nil {
+		mon = s.monitoringService
+	}
+	// Конкретные типы, а не интерфейсы: интерфейс с nil-указателем внутри
+	// сравнение с nil проходит, и первый же вызов уронил бы демон.
+	// Тот же экземпляр службы, что и у HTTP-обработчиков: у второго был бы
+	// свой взгляд на черновик, и «применить» применяло бы не то.
+	var routerForMcp localdeps.SingboxRouter
+	if s.singboxRouterHandler != nil {
+		if svc := s.singboxRouterHandler.Service(); svc != nil {
+			routerForMcp = svc
+		}
+	}
+	var connsForMcp localdeps.ConnectionLister
+	if h.connectionsService != nil {
+		connsForMcp = h.connectionsService
+	}
+	var diagForMcp localdeps.DiagnosticsRunner
+	if h.diagRunner != nil {
+		diagForMcp = h.diagRunner
+	}
+	// Пиры через MCP ведёт служба управляемых серверов: только её серверы
+	// заведены целиком нами, и только у них есть подсеть, из которой можно
+	// выдать адрес.
+	// Конкретный тип, а не интерфейс службы: интерфейс с nil-указателем
+	// внутри сравнение с nil проходит, и первый же вызов уронил бы демон.
+	var managedForMcp localdeps.ManagedServers
+	if s.managedServiceImpl != nil {
+		managedForMcp = s.managedServiceImpl
+	}
+	var singboxOp localdeps.SingboxOperator
+	if s.singboxOp != nil {
+		// The operator alone cannot probe latency; the delay checker owns
+		// that, and it lives on the sing-box handler. Compose the two so
+		// MCP reuses the running checker instead of starting its own.
+		var delay *singbox.DelayChecker
+		if s.singboxHandler != nil {
+			delay = s.singboxHandler.DelayChecker()
+		}
+		singboxOp = singboxOperatorWithDelay{Operator: s.singboxOp, delay: delay}
+	}
+	var bus localdeps.Publisher
+	if s.bus != nil {
+		bus = s.bus
+	}
+	var pingSnapshot func()
+	if h.pingCheckHandler != nil {
+		pingSnapshot = h.pingCheckHandler.PublishSnapshot
+	}
+
+	local := localdeps.New(localdeps.Config{
+		Version:        s.config.Version,
+		InstanceID:     s.instanceID,
+		BootInProgress: s.bootStatusFn,
+		AuthEnabled:    s.settings.IsAuthEnabled,
+		Tunnels:        s.tunnelService,
+		TunnelStore:    s.tunnels,
+		Orch:           orch,
+		Traffic:        trafficStats,
+		DNSRoutes:      s.dnsRouteService,
+		StaticRoutes:   s.staticRouteService,
+		ClientRoutes:   s.clientRouteService,
+		Policies:       s.accessPolicyService,
+		Logs:           logs,
+		Testing:        connTester,
+		Monitoring:     mon,
+		PingCheck:      s.pingCheckService,
+		ListServers:    h.serverHandler.ListServers,
+		Managed:        managedForMcp,
+		Connections:    connsForMcp,
+		Router:         routerForMcp,
+		Diagnostics:    diagForMcp,
+		Singbox:        singboxOp,
+		SystemInfo:     h.systemHandler.InfoData,
+		Resolve:        resolveHost,
+		Bus:            bus,
+
+		PingCheckSnapshot: pingSnapshot,
+		AppLog:            appLog,
+	})
+	// Контекст вызовов создаётся здесь, а не в конструкторе Server: до
+	// регистрации маршрутов MCP нет. И не в сборке сервера ниже — Shutdown
+	// читает mcpCallsCancel без блокировки.
+	s.mcpCalls, s.mcpCallsCancel = context.WithCancel(context.Background())
+	// Сервер со схемами всех инструментов стоит ~0,6 МБ живой кучи на
+	// 32-битной сборке (F541), а MCP по умолчанию выключен. Собираем его при
+	// первом запросе, прошедшем KeyMiddleware (включён + верный ключ), и
+	// держим до перезапуска демона — выключение MCP его не освобождает.
+	mcpHTTP := &lazyHandler{build: func() http.Handler {
+		mcpServer := mcp.NewServer(local, s.config.Version)
+		// Каждый вызов инструмента ограничен по времени и отменяется при
+		// остановке демона (см. mcp.CallDeadline).
+		mcpServer.AddReceivingMiddleware(mcp.CallDeadline(mcpToolTimeout, s.mcpCalls))
+		// Ключ только для чтения не должен доходить до записи. Проверка стоит
+		// перед обработчиком инструмента: «нельзя» после применения изменения
+		// было бы худшим из исходов.
+		mcpServer.AddReceivingMiddleware(mcp.RequireWriteScope())
+		// Один info-лог на вызов инструмента: имя инструмента + имя ключа
+		// (никогда сам ключ), длительность и исход — спека §8.
+		mcpServer.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+			return func(ctx context.Context, method string, req sdk.Request) (sdk.Result, error) {
+				if method != "tools/call" {
+					return next(ctx, method, req)
+				}
+				toolName := ""
+				if p, ok := req.GetParams().(*sdk.CallToolParamsRaw); ok && p != nil {
+					toolName = p.Name
+				}
+				keyName := "-"
+				if k, ok := mcp.KeyFromContext(ctx); ok {
+					keyName = k.Name
+				}
+				start := time.Now()
+				res, err := next(ctx, method, req)
+				outcome := "ok"
+				if err != nil {
+					outcome = "error"
+				} else if r, ok := res.(*sdk.CallToolResult); ok && r.IsError {
+					outcome = "tool-error"
+				}
+				scope := ""
+				if k, ok := mcp.KeyFromContext(ctx); ok && k.ReadOnly {
+					scope = " scope=read-only"
+				}
+				mcpLog.Info("call", toolName, fmt.Sprintf("key=%s%s %s %dms", keyName, scope, outcome, time.Since(start).Milliseconds()))
+				return res, err
+			}
+		})
+		return mcp.NewHTTPHandler(mcpServer)
+	}}
+	// Собственный throttle: web-login throttle делит ключ (IP клиента) со
+	// всеми пользователями за реверс-прокси KeenDNS, и общий инстанс дал бы
+	// перекрёстную блокировку веб-входа и MCP.
+	throttle := auth.NewLoginThrottle()
+	mcpHandler := mcp.KeyMiddleware(mcp.AuthConfig{
+		Enabled: s.settings.IsMcpEnabled,
+		Verify: func(tok string) (mcp.KeyInfo, bool) {
+			k, ok := s.mcpKeys.Verify(tok)
+			return mcp.KeyInfo{ID: k.ID, Name: k.Name, ReadOnly: k.ReadOnly}, ok
+		},
+		Touch:    s.mcpKeys.Touch,
+		Throttle: throttle,
+		Log:      func(f string, a ...any) { mcpLog.Warn("auth", "", fmt.Sprintf(f, a...)) },
+	}, mcpHTTP)
+	mux.Handle("/mcp", mcpHandler)
+	// Без этого «/mcp/» (и любой подпуть) проваливается в catch-all SPA и
+	// отдаёт HTML без авторизации вместо честного 401/404: клиент, который
+	// нормализовал URL со слэшем, получал бы страницу вместо ответа MCP.
+	mux.Handle("/mcp/", mcpHandler)
+
+	// The 401 above advertises this URL in WWW-Authenticate. OAuth resource
+	// metadata is deliberately NOT served in v1 (bearer keys only), so the
+	// path must answer an honest JSON 404 instead of falling through to the
+	// catch-all SPA, which would hand a client 200 text/html and no way to
+	// tell that the document is not the metadata it asked for.
+	//
+	// With MCP switched off the body is the same anonymous "not found" the
+	// /mcp mount returns: the hint about bearer keys would otherwise reveal
+	// that an MCP endpoint exists on a router whose owner turned it off.
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		if !s.settings.IsMcpEnabled() {
+			_, _ = w.Write([]byte(`{"error":true,"message":"not found","code":"NOT_FOUND"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"error":true,"message":"OAuth is not supported; use a bearer MCP key","code":"NOT_FOUND"}`))
+	})
+
+	keysHandler := api.NewMcpKeysHandler(s.mcpKeys, appLog)
+	keysHandler.SetEventBus(s.bus)
+	mux.HandleFunc("/api/mcp/keys", h.guarded(keysHandler.List))
+	mux.HandleFunc("/api/mcp/keys/create", h.guarded(keysHandler.Create))
+	mux.HandleFunc("/api/mcp/keys/revoke", h.guarded(keysHandler.Revoke))
+}
+
 // registerStaticRoutes — preset catalog and the SPA static handler (must stay last).
 func (s *Server) registerStaticRoutes(mux *http.ServeMux, h *routeHandlers) {
 	// Unified preset catalog (protected, read-only in U0)
@@ -1515,4 +1817,28 @@ func (s *Server) registerStaticRoutes(mux *http.ServeMux, h *routeHandlers) {
 	if s.config.FrontendFS != nil {
 		mux.Handle("/", spaHandler(s.config.FrontendFS))
 	}
+}
+
+// lazyHandler строит обработчик при первом запросе: то, что дорого держать
+// в памяти, но чаще всего не нужно, не собирается на старте демона.
+// Не sync.Once: тот считает сборку выполненной и после паники, и обработчик
+// остался бы nil до перезапуска. Здесь запоминается только удачная сборка —
+// следующий запрос попробует снова.
+type lazyHandler struct {
+	mu    sync.Mutex
+	build func() http.Handler
+	h     http.Handler
+}
+
+func (l *lazyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	l.handler().ServeHTTP(w, r)
+}
+
+func (l *lazyHandler) handler() http.Handler {
+	l.mu.Lock()
+	defer l.mu.Unlock() // defer: паника в build не должна оставить мьютекс занятым
+	if l.h == nil {
+		l.h = l.build()
+	}
+	return l.h
 }

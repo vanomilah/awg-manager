@@ -10,6 +10,7 @@ import type {
 	DnsProxyInfo,
 	DownloadOutbound,
 	DownloadRoute,
+	ForeignIfaceCandidate,
 	GeoFileEntry,
 	GeoTag,
 	HydraRouteConfig,
@@ -18,8 +19,11 @@ import type {
 	IPCheckService,
 	IPResult,
 	IpsetUsage,
+	LoginMethod,
 	LoginResult,
 	LogsResponse,
+	McpKey,
+	McpKeyCreated,
 	MonitoringSnapshot,
 	RouterInterface,
 	ServerListenChangeResult,
@@ -320,6 +324,33 @@ export class SystemClient extends TunnelsClient {
 		return this.request('/settings/regenerate-api-key', { method: 'POST' });
 	}
 
+	// Выключатель ядро/процесс Phobos-релея — отдельной ручкой: общий
+	// /settings/update поле не пишет (устаревшее тело с другой вкладки
+	// снимало бы срабатывание сторожа).
+	async setObfuscatorRelay(process: boolean): Promise<Settings> {
+		return this.request('/settings/obfuscator-relay', { method: 'POST', body: JSON.stringify({ process }) });
+	}
+
+	// #endregion
+
+
+	// ─────────────────────────────────────────────
+	// #region MCP keys
+	// ─────────────────────────────────────────────
+
+	async getMcpKeys(): Promise<McpKey[]> {
+		const data = await this.request<{ keys: McpKey[] }>('/mcp/keys');
+		return data.keys ?? [];
+	}
+
+	async createMcpKey(name: string, readOnly = false): Promise<McpKeyCreated> {
+		return this.request('/mcp/keys/create', { method: 'POST', body: JSON.stringify({ name, readOnly }) });
+	}
+
+	async revokeMcpKey(id: string): Promise<void> {
+		await this.request('/mcp/keys/revoke', { method: 'POST', body: JSON.stringify({ id }) });
+	}
+
 	// #endregion
 
 
@@ -327,13 +358,13 @@ export class SystemClient extends TunnelsClient {
 	// #region Auth — login, logout, status
 	// ─────────────────────────────────────────────
 
-	async login(login: string, password: string): Promise<LoginResult> {
+	async login(login: string, password: string, method: LoginMethod): Promise<LoginResult> {
 		const url = `${this.baseUrl}/auth/login`;
 		const response = await fetch(url, {
 			method: 'POST',
 			credentials: 'same-origin',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ login, password })
+			body: JSON.stringify({ login, password, method })
 		});
 
 		let data: (LoginResult & { error?: unknown; message?: string }) | null = null;
@@ -467,10 +498,10 @@ export class SystemClient extends TunnelsClient {
 		return this.request(`/signature/capture?domain=${encodeURIComponent(domain)}`);
 	}
 
-	async generateSignature(protocol: string, mtu?: number): Promise<SignatureGenerateResult> {
+	async generateSignature(protocol: string): Promise<SignatureGenerateResult> {
 		return this.request('/signature/generate', {
 			method: 'POST',
-			body: JSON.stringify(mtu ? { protocol, mtu } : { protocol }),
+			body: JSON.stringify({ protocol }),
 		});
 	}
 
@@ -560,6 +591,33 @@ export class SystemClient extends TunnelsClient {
 
 	async getDiagnosticsStatus(): Promise<DiagnosticsStatus> {
 		return this.request('/diagnostics/status');
+	}
+
+	/**
+	 * Удаляет осиротевший интерфейс OpkgTun (проверка orphan_iface_check).
+	 * Сиротство перепроверяется на сервере: отчёт мог устареть, и номер к
+	 * этому моменту мог достаться новому туннелю.
+	 */
+	async deleteOrphanIface(iface: string): Promise<{ ok: boolean }> {
+		return this.request<{ ok: boolean }>('/tunnels/orphans/delete', {
+			method: 'POST',
+			body: JSON.stringify({ iface })
+		});
+	}
+
+	/** Кандидаты в сторонние интерфейсы (issue #935). */
+	async listForeignIfaceCandidates(): Promise<ForeignIfaceCandidate[]> {
+		return this.request<ForeignIfaceCandidate[]>('/interfaces/foreign/candidates');
+	}
+
+	/** Отметить интерфейс другой программы как сторонний. Граница — на сервере;
+	 * name в ответе — записанное (каноническое) имя. */
+	async markForeignIface(name: string): Promise<{ ok: boolean; name: string }> {
+		return this.request<{ ok: boolean; name: string }>('/interfaces/foreign/mark', { method: 'POST', body: JSON.stringify({ name }) });
+	}
+
+	async unmarkForeignIface(name: string): Promise<{ ok: boolean }> {
+		return this.request<{ ok: boolean }>('/interfaces/foreign/unmark', { method: 'POST', body: JSON.stringify({ name }) });
 	}
 
 	async downloadDiagnosticsReport(environment?: unknown): Promise<void> {

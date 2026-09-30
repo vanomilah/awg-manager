@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -35,9 +36,8 @@ type Batcher struct {
 	// useFastPath: если включён, single-unique-path flush'и идут через
 	// direct GET (cli.getRawDirect), не batch POST. POST в реальном NDMS
 	// значимо дороже GET — выгода батчинга проявляется только когда
-	// есть multi-path coalesce. Default false: production включает
-	// через EnableFastPath() после конструкции; тесты не вызывают
-	// чтобы их mock-handlers (POST-only) продолжали работать.
+	// есть multi-path coalesce. Default false: включается проводкой при
+	// старте; в тестах — batcher_fastpath_test.go.
 	useFastPath bool
 
 	// Lifecycle
@@ -70,9 +70,7 @@ func (b *Batcher) SetAppLogger(log *logging.ScopedLogger) {
 }
 
 // EnableFastPath включает direct-GET для single-unique-path flush'ей.
-// Вызывается из production transport.New() после конструкции. Tests
-// его не вызывают, чтобы остаться на POST batch (mock handlers только
-// POST поддерживают).
+// Включается проводкой при старте; в тестах — batcher_fastpath_test.go.
 func (b *Batcher) EnableFastPath() {
 	b.useFastPath = true
 }
@@ -240,7 +238,7 @@ func (b *Batcher) flush(ctx context.Context, pending []readReq) {
 	// и для одного запроса batching выгод не даёт. Coalescing N
 	// callers одного path всё равно работает — все они получают
 	// результат одного GET. Multi-path batches идут через POST.
-	if b.useFastPath && len(validPaths) == 1 {
+	if b.useFastPath && len(validPaths) == 1 && !isInterfaceDetail(validPaths[0]) {
 		path := validPaths[0]
 		body, err := b.cli.getRawDirect(ctx, path)
 		var itemErr error
@@ -343,4 +341,17 @@ func (b *Batcher) distributeAll(byPath map[string][]readReq, paths []string, bod
 			close(r.reply)
 		}
 	}
+}
+
+// isInterfaceDetail — одиночный `/show/interface/<name>`. Прямым GET его
+// слать нельзя: форму ПУТИ NDMS обрабатывает как полный список и фильтрует —
+// ответ тот же, а цена как у всего дерева интерфейсов (стенд 5.02.A.11:
+// 11.9 тика ndm против 3.0 у POST, F470). Идёт тем же batch-POST, каким
+// уходит всегда, когда склеились два и больше интерфейса; там же отсутствующий
+// интерфейс приходит конвертом `unable to find`, а не 404. Форма `?name=`
+// стоит столько же, но на OS4 не проверена.
+func isInterfaceDetail(path string) bool {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	return len(segs) == 3 && segs[0] == "show" && segs[1] == "interface" &&
+		segs[2] != "" && !strings.Contains(segs[2], "?")
 }

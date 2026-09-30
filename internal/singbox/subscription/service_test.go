@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hoaxisr/awg-manager/internal/singbox/vlink"
+	sysfiles "github.com/hoaxisr/awg-manager/internal/sys/files"
 )
 
 func withLegacySetupNoop(svc *Service) {
@@ -860,7 +861,7 @@ func TestService_Create_RejectsNoSource(t *testing.T) {
 	svc := NewService(store, &fakeMutator{})
 	withLegacySetupNoop(svc)
 	_, err := svc.Create(context.Background(), CreateInput{Label: "empty", Enabled: true})
-	if err == nil || !strings.Contains(err.Error(), "either URL or inline") {
+	if err == nil || !strings.Contains(err.Error(), "URL, inline content or file path is required") {
 		t.Errorf("expected source-required error, got %v", err)
 	}
 }
@@ -2320,5 +2321,375 @@ func TestService_Update_BindAndMode_SingleReload(t *testing.T) {
 	}
 	if got := mut.reloads - before; got != 1 {
 		t.Fatalf("reloads=%d, want exactly 1 (bind and mode must share one transaction)", got)
+	}
+}
+
+// fileSandbox ограничивает файловый источник сервиса свежим TempDir и
+// возвращает этот каталог. Всё, что снаружи, отбивается ErrPathDenied.
+func fileSandbox(t *testing.T, svc *Service) string {
+	t.Helper()
+	dir := t.TempDir()
+	svc.SetFileSandbox(sysfiles.NewSandbox([]sysfiles.Root{{Path: dir, Label: "t"}}))
+	return dir
+}
+
+const twoLinks = "vless://3a3b1c2e-9999-4321-aaaa-1234567890ab@example.com:443?security=tls&sni=h\n" +
+	"trojan://p@example.com:444?security=tls&sni=h\n"
+
+// thirdLink дописывается в файл-источник между созданием и refresh —
+// свой UUID и хост, иначе StableTag схлопнул бы его с первым участником.
+const thirdLink = "vless://3a3b1c2e-9999-4321-aaaa-1234567890ac@example.net:445?security=tls&sni=h2\n"
+
+func writeFileSource(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(twoLinks), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	return p
+}
+
+func TestService_Create_FromFile_Materializes(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "f", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !sub.IsFile() || len(sub.MemberTags) != 2 {
+		t.Fatalf("IsFile=%v members=%d", sub.IsFile(), len(sub.MemberTags))
+	}
+}
+
+// Пустой label у файловой подписки заменяется именем файла: карточки рисуют
+// label || url, а url у файлового источника пуст — иначе заголовок пустой.
+func TestService_Create_FromFile_EmptyLabelDefaultsToBasename(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "  ", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if want := filepath.Base(p); sub.Label != want {
+		t.Fatalf("Label=%q, want %q", sub.Label, want)
+	}
+}
+
+func TestService_Create_FromFile_KeepsExplicitLabel(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "мой список", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sub.Label != "мой список" {
+		t.Fatalf("Label=%q, want %q", sub.Label, "мой список")
+	}
+}
+
+func TestService_Create_FileOutsideSandbox_NoSideEffects(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+	withLegacySetupNoop(svc)
+	fileSandbox(t, svc)
+	outside := writeFileSource(t, t.TempDir(), "x.txt")
+
+	_, err := svc.Create(context.Background(), CreateInput{Label: "f", Path: outside, Enabled: true})
+	if !errors.Is(err, sysfiles.ErrPathDenied) {
+		t.Fatalf("want ErrPathDenied, got %v", err)
+	}
+	if n := len(store.List()); n != 0 {
+		t.Fatalf("store row leaked: %d", n)
+	}
+	if len(mutator.ensuredProxies) != 0 {
+		t.Fatalf("ProxyN allocated for rejected path")
+	}
+}
+
+func TestService_Refresh_FileMissing_KeepsMembers(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	mutator := &fakeMutator{}
+	svc := NewService(store, mutator)
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "f", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := svc.Refresh(context.Background(), sub.ID); err == nil {
+		t.Fatal("want read error")
+	}
+	got, err := store.Get(sub.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.MemberTags) != 2 || got.LastError == "" {
+		t.Fatalf("members=%d lastError=%q", len(got.MemberTags), got.LastError)
+	}
+}
+
+func TestService_Create_RejectsTwoSources(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	svc := NewService(store, &fakeMutator{})
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	_, err := svc.Create(context.Background(), CreateInput{Label: "f", URL: "https://x", Path: p, Enabled: true})
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("want mutual-exclusion error, got %v", err)
+	}
+	if n := len(store.List()); n != 0 {
+		t.Fatalf("store row leaked: %d", n)
+	}
+}
+
+func TestService_Update_RejectsURLOnFileSub(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	svc := NewService(store, &fakeMutator{})
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "f", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	u := "https://x"
+	_, err = svc.Update(sub.ID, UpdatePatch{URL: &u})
+	if err == nil || !strings.Contains(err.Error(), "cannot add URL to a file subscription") {
+		t.Fatalf("want URL-on-file-subscription error, got %v", err)
+	}
+}
+
+// TestService_SourceErrors_WrapErrInvalidInput: отказы по источнику —
+// ошибки ввода пользователя, а не внутренний сбой. API маппит их на 400
+// по sentinel'у (F425), поэтому каждая обязана оборачиваться через %w:
+// потеря обёртки у одной строки возвращает её в 500 INTERNAL_ERROR.
+func TestService_SourceErrors_WrapErrInvalidInput(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	svc := NewService(store, &fakeMutator{})
+	withLegacySetupNoop(svc)
+	// Строки в store заводятся напрямую: все проверяемые отказы Update
+	// срабатывают до материализации, сервис до неё не доходит.
+	fileSub, _ := store.Create(CreateInput{Label: "f", Path: "/opt/etc/sub.txt", Enabled: true})
+	inlineSub, _ := store.Create(CreateInput{Label: "i", Inline: twoLinks, Enabled: true})
+	urlSub, _ := store.Create(CreateInput{Label: "u", URL: "http://x", Enabled: true})
+	newURL, empty := "https://x", ""
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"create without source", func() error {
+			_, err := svc.Create(context.Background(), CreateInput{Label: "n"})
+			return err
+		}},
+		{"create with two sources", func() error {
+			_, err := svc.Create(context.Background(), CreateInput{Label: "n", URL: newURL, Inline: twoLinks})
+			return err
+		}},
+		{"url on file sub", func() error {
+			_, err := svc.Update(fileSub.ID, UpdatePatch{URL: &newURL})
+			return err
+		}},
+		{"url on inline sub", func() error {
+			_, err := svc.Update(inlineSub.ID, UpdatePatch{URL: &newURL})
+			return err
+		}},
+		{"clear url", func() error {
+			_, err := svc.Update(urlSub.ID, UpdatePatch{URL: &empty})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.call(); !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("err=%v, want ErrInvalidInput", err)
+			}
+		})
+	}
+}
+
+// Стирание label у файловой подписки повторяет дефолт Create: карточки
+// рисуют label || url, а url у файлового источника пуст — иначе после
+// сохранения с пустым полем заголовок снова пропадает.
+func TestService_Update_FromFile_EmptyLabelDefaultsToBasename(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	svc := NewService(store, &fakeMutator{})
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "мой список", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	blank := "  "
+	if _, err := svc.Update(sub.ID, UpdatePatch{Label: &blank}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := store.Get(sub.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if want := filepath.Base(p); got.Label != want {
+		t.Fatalf("Label=%q, want %q", got.Label, want)
+	}
+}
+
+// TestService_Refresh_FileChanged_PicksUpNewMembers: файловый источник —
+// не inline. Файл на роутере живёт своей жизнью, поэтому refresh обязан
+// перечитывать его каждый раз, а не коротить по уже заполненным
+// MemberTags, как это делает inline-ветка.
+func TestService_Refresh_FileChanged_PicksUpNewMembers(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	svc := NewService(store, &fakeMutator{})
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "f", Path: p, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := os.WriteFile(p, []byte(twoLinks+thirdLink), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := svc.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	got, err := store.Get(sub.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(got.MemberTags) != 3 {
+		t.Fatalf("members=%d want 3", len(got.MemberTags))
+	}
+}
+
+func TestService_PreviewPath(t *testing.T) {
+	store, _ := NewStore(filepath.Join(t.TempDir(), "sub.json"))
+	svc := NewService(store, &fakeMutator{})
+	withLegacySetupNoop(svc)
+	dir := fileSandbox(t, svc)
+	p := writeFileSource(t, dir, "sub.txt")
+
+	members, err := svc.PreviewPath(context.Background(), p)
+	if err != nil {
+		t.Fatalf("PreviewPath: %v", err)
+	}
+	if len(members) != 2 {
+		t.Fatalf("members=%d want 2", len(members))
+	}
+	outside := writeFileSource(t, t.TempDir(), "x.txt")
+	if _, err := svc.PreviewPath(context.Background(), outside); !errors.Is(err, sysfiles.ErrPathDenied) {
+		t.Fatalf("want ErrPathDenied, got %v", err)
+	}
+}
+
+// selectorDefault парсит сохранённый body селектора и возвращает пару
+// (default, outbounds) — то, с чего движок стартует после Reload.
+func selectorDefault(t *testing.T, m *fakeMutator, selectorTag string) (string, []string) {
+	t.Helper()
+	var ob struct {
+		Default   string   `json:"default"`
+		Outbounds []string `json:"outbounds"`
+	}
+	if err := json.Unmarshal(m.bodies[selectorTag], &ob); err != nil {
+		t.Fatalf("selector body: %v", err)
+	}
+	return ob.Default, ob.Outbounds
+}
+
+// Фид собирается из фиксированных ссылок, а не через namedLinks: там host и
+// uuid выводятся из индекса в списке, поэтому вставка нового сервера первым
+// переименовала бы и остальных — а тесту нужна стабильная личность члена.
+const (
+	feedLinkA = "vless://3a3b1c2e-9999-4321-aaaa-1234567890a1@a.example:443?security=tls&sni=h#A\n"
+	feedLinkB = "vless://3a3b1c2e-9999-4321-aaaa-1234567890a2@b.example:443?security=tls&sni=h#B\n"
+	feedLinkC = "vless://3a3b1c2e-9999-4321-aaaa-1234567890a3@c.example:443?security=tls&sni=h#C\n"
+)
+
+// TestService_Refresh_KeepsActiveMemberAsSelectorDefault: refresh, добавивший
+// члена, не имеет права переключить пользователя на другой сервер (F424).
+// Новый член идёт первым в memberTags, поэтому selector с пустым default
+// стартовал бы именно с него, а сохранённый активный член игнорировался.
+func TestService_Refresh_KeepsActiveMemberAsSelectorDefault(t *testing.T) {
+	svc, mutator := newTestService(t)
+	body := feedLinkA + feedLinkB
+	srv := serveLinks(t, &body)
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "x", URL: srv.URL, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	active := tagOf(sub, 1)
+	if err := svc.SetActiveMember(context.Background(), sub.ID, active); err != nil {
+		t.Fatalf("SetActiveMember: %v", err)
+	}
+
+	body = feedLinkC + feedLinkA + feedLinkB // новый сервер приходит первым
+	if _, err := svc.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	def, members := selectorDefault(t, mutator, sub.SelectorTag)
+	if len(members) != 3 {
+		t.Fatalf("selector members=%d want 3", len(members))
+	}
+	if def != active {
+		t.Errorf("selector default=%q want %q (сохранённый активный член)", def, active)
+	}
+}
+
+// TestService_Refresh_DropsStaleActiveMemberFromSelectorDefault: активный
+// член пропал из выдачи — selector обязан стартовать с первого члена
+// (прежнее поведение), а не ссылаться на несуществующий outbound.
+func TestService_Refresh_DropsStaleActiveMemberFromSelectorDefault(t *testing.T) {
+	svc, mutator := newTestService(t)
+	body := feedLinkA + feedLinkB
+	srv := serveLinks(t, &body)
+
+	sub, err := svc.Create(context.Background(), CreateInput{Label: "x", URL: srv.URL, Enabled: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := svc.SetActiveMember(context.Background(), sub.ID, tagOf(sub, 1)); err != nil {
+		t.Fatalf("SetActiveMember: %v", err)
+	}
+
+	body = feedLinkA + feedLinkC // B (активный) выпал из фида
+	if _, err := svc.Refresh(context.Background(), sub.ID); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+
+	def, members := selectorDefault(t, mutator, sub.SelectorTag)
+	if len(members) != 2 {
+		t.Fatalf("selector members=%d want 2", len(members))
+	}
+	if def != members[0] {
+		t.Errorf("selector default=%q want %q (первый член)", def, members[0])
 	}
 }

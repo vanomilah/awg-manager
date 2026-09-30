@@ -8,7 +8,7 @@ import (
 )
 
 // shareSchemeCore matches supported share-link scheme names (no ://).
-const shareSchemeCore = `(?:vless|trojan|ss|hysteria2|hy2|naive\+\w+|vpn|mieru|mierus)`
+const shareSchemeCore = `(?:vless|trojan|ss|hysteria2|hy2|naive\+\w+|vpn|mieru|mierus|tt)`
 
 // shareURLStartPlain finds share URLs in plain text: after line start or ASCII whitespace.
 // Used so fragments may contain spaces (e.g. "#📆 Осталось: 28 дней") and space-separated
@@ -105,8 +105,7 @@ func splitLines(b []byte) []string {
 		if len(links) == 0 {
 			lower := strings.ToLower(p)
 			if vlink.IsTrustTunnelConnectURL(p) ||
-				strings.HasPrefix(lower, "tt://") ||
-				vlink.IsTrustTunnelRawPayload(p) {
+				strings.HasPrefix(lower, "tt://") {
 				out = append(out, p)
 			}
 			continue

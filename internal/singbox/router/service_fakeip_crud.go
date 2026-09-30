@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,16 +74,16 @@ func (s *ServiceImpl) FakeIPMoveDNSRule(ctx context.Context, from, to int) error
 
 // --- DNS globals ---
 
-func (s *ServiceImpl) FakeIPGetDNSGlobals(ctx context.Context) (string, string, error) {
+func (s *ServiceImpl) FakeIPGetDNSGlobals(ctx context.Context) (string, string, string, error) {
 	cfg, err := s.loadFakeIPConfig()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
-	return cfg.DNS.Final, cfg.DNS.Strategy, nil
+	return cfg.DNS.Final, cfg.DNS.Strategy, cfg.DNS.Timeout, nil
 }
 
-func (s *ServiceImpl) FakeIPSetDNSGlobals(ctx context.Context, final, strategy string) error {
-	if err := s.fakeipWithConfig(ctx, "dns-globals", func(c *RouterConfig) error { return c.SetDNSGlobals(final, strategy) }); err != nil {
+func (s *ServiceImpl) FakeIPSetDNSGlobals(ctx context.Context, final, strategy, timeout string) error {
+	if err := s.fakeipWithConfig(ctx, "dns-globals", func(c *RouterConfig) error { return c.SetDNSGlobals(final, strategy, timeout) }); err != nil {
 		return err
 	}
 	// Примирять base здесь больше не нужно: дефолт strategy лежит в
@@ -195,7 +197,7 @@ func (s *ServiceImpl) FakeIPDeleteRuleSet(ctx context.Context, tag string, force
 			return err
 		}
 		if s.deps.Orch == nil {
-			s.ruleSetMaterializer().removeInlineArtifacts(inlineTag)
+			s.ruleSetMaterializer().removeInlineArtifacts(orchestrator.SlotFakeIP, inlineTag)
 		}
 		return nil
 	})
@@ -236,12 +238,11 @@ func (s *ServiceImpl) FakeIPAddCompositeOutbound(ctx context.Context, o Outbound
 }
 
 func (s *ServiceImpl) FakeIPUpdateCompositeOutbound(ctx context.Context, tag string, o Outbound) error {
-	if strings.EqualFold(o.Type, "direct") {
-		if err := s.validateBindInterface(ctx, o.BindInterface); err != nil {
-			return err
-		}
-	}
+	bindErr := s.directBindErr(ctx, o)
 	return s.fakeipWithConfig(ctx, "outbounds", func(c *RouterConfig) error {
+		if bindErr != nil && !keepsBind(c, tag, o) {
+			return bindErr
+		}
 		if err := s.validateCompositeMembers(ctx, o, c); err != nil {
 			return err
 		}
@@ -300,8 +301,8 @@ type FakeIPConfigService interface {
 	FakeIPMoveDNSRule(ctx context.Context, from, to int) error
 
 	// DNS globals
-	FakeIPGetDNSGlobals(ctx context.Context) (final, strategy string, err error)
-	FakeIPSetDNSGlobals(ctx context.Context, final, strategy string) error
+	FakeIPGetDNSGlobals(ctx context.Context) (final, strategy, timeout string, err error)
+	FakeIPSetDNSGlobals(ctx context.Context, final, strategy, timeout string) error
 
 	// Route rules
 	FakeIPListRules(ctx context.Context) ([]Rule, error)

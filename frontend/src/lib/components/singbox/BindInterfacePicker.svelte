@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { Dropdown, type DropdownOption } from '$lib/components/ui';
 	import type { SingboxRouterWANInterface } from '$lib/types';
+	import { bindInterfaceLabel } from '$lib/utils/bindInterface';
 
 	interface Props {
 		id?: string;
@@ -28,7 +29,7 @@
 
 	onMount(() => {
 		void api
-			.singboxRouterListBindableInterfaces('all')
+			.singboxRouterListBindableInterfaces()
 			.then((list) => {
 				bindables = list;
 			})
@@ -45,7 +46,7 @@
 		{ value: '', label: '— по умолчанию (auto) —' },
 		...bindables.map((i) => ({
 			value: i.name,
-			label: `${i.label} · ${i.name}${i.up ? '' : ' (down)'}`
+			label: bindInterfaceLabel(i)
 		}))
 	]);
 </script>

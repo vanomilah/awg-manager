@@ -122,7 +122,7 @@ func outboundFingerprint(ob map[string]any) string {
 		secret, _ = ob["uuid"].(string)
 	case "trojan", "hysteria2", "shadowsocks":
 		secret, _ = ob["password"].(string)
-	case "naive":
+	case "naive", "trusttunnel":
 		u, _ := ob["username"].(string)
 		p, _ := ob["password"].(string)
 		secret = u + ":" + p
@@ -193,8 +193,12 @@ func nextFreeListenPortSlot(cfg *Config, reserved map[int]bool) int {
 // тело целиком. Экспортирована ради валидации bind_interface в API-хендлере
 // до вызова AddTunnels (#709).
 func ParseTunnelLinksInput(linksText string) vlink.BatchResult {
-	if body := []byte(linksText); vlink.IsMieruClientJSON(body) {
+	body := []byte(linksText)
+	if vlink.IsMieruClientJSON(body) {
 		return vlink.ParseMieruClientJSON(body)
+	}
+	if vlink.IsTrustTunnelTOML(body) {
+		return vlink.ParseTrustTunnelTOML(body)
 	}
 	return vlink.ParseBatch(strings.Split(linksText, "\n"))
 }
@@ -587,8 +591,8 @@ func (o *Operator) ApplyConfig(ctx context.Context, cfg *Config) error {
 // checkTunnelFeatures — тот же гейт, что в AddTunnels, но по готовому
 // конфигу: он покрывает и UpdateTunnel/RenameTunnel, у которых своего нет.
 func (o *Operator) checkTunnelFeatures(cfg *Config) error {
-	// Пустой список = проба не удалась (бинарь ещё не установлен), а не
-	// «фич нет»: резать конфиг по такой догадке нельзя.
+	// Пустой список = теги неизвестны (бинаря нет или версия не pinned),
+	// а не «фич нет»: резать конфиг по такой догадке нельзя.
 	features := o.singboxFeaturesCached()
 	if len(features) == 0 {
 		return nil

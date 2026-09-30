@@ -157,7 +157,9 @@
 		!subscription.enabled ? 'Выключена' : subscription.lastError ? 'Ошибка' : 'OK',
 	);
 	const modeLabel = $derived(subscription.mode === 'urltest' ? 'URLTest' : 'Selector');
-	const isInlineGroup = $derived(subscription.isInline || !subscription.url?.trim());
+	const isInlineGroup = $derived(
+		subscription.isInline || (!subscription.isFile && !subscription.url?.trim()),
+	);
 	const sourceKindLabel = $derived(isInlineGroup ? 'группа' : 'подписка');
 	const lastFetchedHuman = $derived(
 		subscription.lastFetched ? formatRelative(subscription.lastFetched) : '—',
@@ -720,29 +722,16 @@
 		outline-offset: -2px;
 	}
 	.lc {
-		display: flex;
-		align-items: center;
 		min-width: 0;
 		font-size: var(--sbx-card-value);
 		color: var(--color-text-secondary);
 		vertical-align: middle;
 	}
 	.lc-delay {
-		gap: 0.35rem;
 		min-width: 0;
-	}
-	.lc-name {
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 0.15rem;
 	}
 	.mono {
 		font-family: var(--font-mono, ui-monospace, monospace);
-	}
-	.lc-endpoint {
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
 	}
 	.lc-endpoint-stack {
 		display: flex;
@@ -765,10 +754,6 @@
 		color: var(--color-text-muted);
 	}
 	.lc-actions {
-		flex-wrap: nowrap;
-		gap: 0.375rem;
-		justify-content: center;
-		align-items: center;
 		white-space: nowrap;
 	}
 	.delay-inline-err {

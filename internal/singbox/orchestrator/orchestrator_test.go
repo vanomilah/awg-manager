@@ -13,9 +13,32 @@ import (
 
 func newTestOrch(t *testing.T) (*Orchestrator, string) {
 	t.Helper()
+	old := appliedStatePath
+	appliedStatePath = filepath.Join(t.TempDir(), "singbox-applied.json")
+	t.Cleanup(func() { appliedStatePath = old })
 	dir := t.TempDir()
 	o := New(dir, nil) // nil ProcessController — Save/SetEnabled don't use it
+	t.Cleanup(o.Close)
 	return o, dir
+}
+
+// Дефолт шва: New берёт package-var appliedStatePath (в проде — /var/run/...),
+// иначе adopt после рестарта демона перестаёт работать молча. Пин доказывает
+// «New читает package-var», а не сам прод-путь: переменная здесь перенаправлена
+// в TempDir, чтобы тест не читал /var/run хоста.
+func TestNew_UsesDefaultAppliedStatePath(t *testing.T) {
+	old := appliedStatePath
+	appliedStatePath = filepath.Join(t.TempDir(), "singbox-applied.json")
+	t.Cleanup(func() { appliedStatePath = old })
+
+	o := New(t.TempDir(), nil)
+	if o.appliedPath != appliedStatePath {
+		t.Fatalf("appliedPath = %q, want package default %q", o.appliedPath, appliedStatePath)
+	}
+	o2 := NewWithAppliedPath(t.TempDir(), nil, "/nonexistent/x.json")
+	if o2.appliedPath != "/nonexistent/x.json" {
+		t.Fatalf("NewWithAppliedPath ignored its argument: %q", o2.appliedPath)
+	}
 }
 
 // newFakeOrch constructs an Orchestrator wired to a fakeProc, first
@@ -28,8 +51,77 @@ func newTestOrch(t *testing.T) (*Orchestrator, string) {
 // the Start/Reload/Stop call the test asserts on.
 func newFakeOrch(t *testing.T, dir string, fp *fakeProc) *Orchestrator {
 	t.Helper()
+	old := appliedStatePath
 	appliedStatePath = filepath.Join(t.TempDir(), "singbox-applied.json")
-	return New(dir, fp)
+	t.Cleanup(func() { appliedStatePath = old })
+	o := New(dir, fp)
+	t.Cleanup(o.Close)
+	return o
+}
+
+// Close обязан снять невыстреливший debounce-таймер: иначе он стреляет после
+// конца теста и гонит Reload по чужому состоянию (race-job CI 08.09).
+func TestClose_StopsPendingTimer(t *testing.T) {
+	fp := &fakeProc{}
+	o := newFakeOrch(t, t.TempDir(), fp)
+	_ = o.Register(SlotMeta{Slot: SlotRouter, Filename: "20-router.json"})
+	if err := o.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Save(SlotRouter, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.SetEnabled(SlotRouter, true); err != nil {
+		t.Fatal(err)
+	}
+	o.Close()
+	time.Sleep(3 * reloadDebounce)
+	if got := fp.calls(); len(got) != 0 {
+		t.Fatalf("таймер выстрелил после Close: %v", got)
+	}
+}
+
+// Уже выстреливший callback Close отменить не может — значит обязан его
+// дождаться, иначе владелец уходит, а Reload ещё пишет в его логгер.
+func TestClose_WaitsForInflightCallback(t *testing.T) {
+	fp := &fakeProc{}
+	o := newFakeOrch(t, t.TempDir(), fp)
+	_ = o.Register(SlotMeta{Slot: SlotRouter, Filename: "20-router.json"})
+	if err := o.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Save(SlotRouter, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.SetEnabled(SlotRouter, true); err != nil {
+		t.Fatal(err)
+	}
+	// Логгер — после Save/SetEnabled: блокирующий логгер должен ловить только
+	// callback таймера, а не синхронную строку из самого теста.
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	o.SetLogger(func(_, _ string) {
+		once.Do(func() { close(entered) })
+		<-release
+	})
+	<-entered // таймер выстрелил, callback стоит в логгере
+	closed := make(chan struct{})
+	go func() { o.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close вернулся, пока callback ещё работает")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close не дождался callback")
+	}
+	if got := fp.calls(); !equalStrs(got, []string{"start"}) {
+		t.Fatalf("callback обязан был доработать до конца: %v", got)
+	}
 }
 
 func TestRegisterAndBootstrap(t *testing.T) {
@@ -967,6 +1059,43 @@ func TestReload_RestartsWhenTunRemoved(t *testing.T) {
 	}
 	if o.prevHasTun {
 		t.Errorf("prevHasTun must be false after applying a tun-less config")
+	}
+}
+
+// TestReload_TunToggleHotReload: пиннутый бинарь добавляет и убирает
+// tun-инбаунд по SIGHUP (стенд 25.09.2026) — рестарт не нужен ни на добавлении,
+// ни на снятии, и журнал называет SIGHUP.
+func TestReload_TunToggleHotReload(t *testing.T) {
+	fp := &fakeProc{running: true}
+	dir := t.TempDir()
+	o := newFakeOrch(t, dir, fp)
+	o.SetTunHotReload(func() bool { return true })
+	var lines []string
+	o.SetLogger(func(_, msg string) { lines = append(lines, msg) })
+	_ = o.Register(SlotMeta{Slot: SlotRouter, Filename: "20-router.json"})
+	if err := o.Bootstrap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Save(SlotRouter, []byte(tunInboundConfig)); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.SetEnabled(SlotRouter, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Reload(); err != nil { // добавление tun
+		t.Fatalf("reload: %v", err)
+	}
+	if err := o.Save(SlotRouter, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Reload(); err != nil { // снятие tun
+		t.Fatalf("reload: %v", err)
+	}
+	if got := fp.calls(); !equalStrs(got, []string{"reload", "reload"}) {
+		t.Errorf("ожидался SIGHUP на оба переключения, получено %v", got)
+	}
+	if joined := strings.Join(lines, "\n"); strings.Contains(joined, "restarting") {
+		t.Errorf("журнал не должен называть рестарт; строки: %v", lines)
 	}
 }
 

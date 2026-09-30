@@ -50,6 +50,7 @@
 			onToggleOnOff={() => ctx.handleToggleOnOff(item.tunnel.id)}
 			ondelete={() => ctx.requestDelete(item.tunnel.id)}
 			ondetail={(id) => ctx.openDetail(id)}
+			onLockClick={() => ctx.handleLockClick(item.tunnel.id)}
 		/>
 	{:else if item.kind === 'awg-system'}
 		<SystemTunnelCard
@@ -64,6 +65,8 @@
 			tunnel={item.tunnel}
 			view={ctx.effectiveAwgRenderMode === 'list-card' ? 'list' : ctx.effectiveAwgCardViewMode}
 			onadopt={(name) => ctx.handleAdoptClick(name)}
+			ondelete={(name) => ctx.handleExternalDelete(name)}
+			onunmark={(name) => ctx.handleForeignUnmark(name)}
 		/>
 	{:else if item.kind === 'awg3'}
 		<Awg3TunnelCard

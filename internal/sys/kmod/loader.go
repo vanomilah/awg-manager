@@ -26,9 +26,11 @@ const (
 // It is a var (not const) to allow overriding in tests.
 var ModulesDir = "/opt/etc/awg-manager/modules"
 
-// BundledDir is the directory containing bundled per-model .ko files from IPK.
-// After selecting the correct module, this directory is removed.
-var BundledDir = filepath.Join(ModulesDir, "bundled")
+// BundledDir — каталог с .ko из IPK под конкретную модель. После выбора
+// нужного модуля каталог УДАЛЯЕТСЯ, поэтому он обязан считаться от текущего
+// ModulesDir, а не запоминаться при инициализации пакета: демон с другим
+// -data-dir иначе сносил бы боевой каталог (F168).
+func BundledDir() string { return filepath.Join(ModulesDir, "bundled") }
 
 const (
 	// ModuleName is the name of the kernel module.
@@ -77,6 +79,16 @@ func New() *Loader {
 	return l
 }
 
+// moduleGroup — модель, чей .ko грузит model: сама она или цель алиаса. Метка
+// сверяется по группе: перенос /opt между моделями с одним модулем
+// (KN-1810 → KN-1010) — не чужой модуль.
+func moduleGroup(model string) string {
+	if a, ok := modelAlias[model]; ok {
+		return a
+	}
+	return model
+}
+
 // modelAlias maps hw_id to the model whose .ko file should be used.
 // This allows models with compatible kernels to share a single .ko file.
 //
@@ -97,6 +109,10 @@ var modelAlias = map[string]string{
 	"KN-4110": "KN-3811",
 	// aarch64: mt7622
 	"KN-2710": "KN-1811",
+	// aarch64: mt7988. Titan SE появился в SDK 5.01: amneziawg.ko и
+	// awg_proxy.ko под KN-4210 и KN-1812 совпадают во всех секциях, кроме
+	// путей сборки в строках (#953).
+	"KN-4210": "KN-1812",
 	// mipsel: mt7621 SMP
 	"KN-1010": "KN-1810",
 	"KN-1910": "KN-1810",
@@ -186,9 +202,12 @@ func (l *Loader) ModuleExists() bool {
 	return err == nil
 }
 
+// runCmd — точка подмены для тестов: lsmod/insmod хоста в юнит-тестах не зовём.
+var runCmd = exec.Run
+
 // IsLoaded checks if the kernel module is currently loaded.
 func (l *Loader) IsLoaded() bool {
-	result, err := exec.Run(context.Background(), "lsmod")
+	result, err := runCmd(context.Background(), "lsmod")
 	if err != nil {
 		return false
 	}
@@ -210,7 +229,7 @@ func (l *Loader) Load(ctx context.Context) error {
 	if !l.ModuleExists() {
 		return fmt.Errorf("module not found: %s", l.modulePath)
 	}
-	if _, err := exec.Run(ctx, "insmod", l.modulePath); err != nil {
+	if _, err := runCmd(ctx, "insmod", l.modulePath); err != nil {
 		return err
 	}
 	// Wait for sysfs entry to appear — insmod returns before sysfs is registered
@@ -281,8 +300,21 @@ func (l *Loader) EnsureModule(ctx context.Context) error {
 		return nil
 	}
 
-	// Module on disk — load it
+	// Module on disk — load it, но не выбранный под ДРУГУЮ модель. Файл на
+	// диске мог приехать с другого роутера (перенос /opt, бэкап прежних
+	// версий): vermagic у ядер одной архитектуры одинаков, а MODVERSIONS
+	// выключен — insmod молча принимает модуль чужой конфигурации ядра, и тот
+	// вешает роутер (#953: модуль KN-1811 на NC-4210).
+	//
+	// Модуль БЕЗ метки грузится, как раньше: это установки прежних версий,
+	// и у моделей вне поставки (своего .ko в пакете нет) метке взяться
+	// неоткуда — отказ отключил бы им рабочий kernel-режим. Такой модуль
+	// получает метку при ближайшем обновлении пакета (selectBundledModule).
+	// Модель не определилась (NDMS не ответил) — сверять не с чем.
 	if l.ModuleExists() {
+		if owner := readModel(); owner != "" && l.model != "" && moduleGroup(owner) != moduleGroup(l.model) {
+			return fmt.Errorf("kernel module on disk was not selected for model %s (marker: %q) — refusing to load it: the file came from another router; delete %s or reinstall the awg-manager package", l.model, owner, l.modulePath)
+		}
 		return l.Load(ctx)
 	}
 
@@ -297,7 +329,7 @@ func (l *Loader) EnsureModule(ctx context.Context) error {
 // copies it to ModulesDir/amneziawg.ko, writes the version file, and removes BundledDir.
 // This is a one-shot operation after IPK install/upgrade.
 func (l *Loader) selectBundledModule() {
-	entries, err := os.ReadDir(BundledDir)
+	entries, err := os.ReadDir(BundledDir())
 	if err != nil {
 		return // no bundled dir — normal restart
 	}
@@ -313,7 +345,7 @@ func (l *Loader) selectBundledModule() {
 	var found string
 	for _, e := range entries {
 		if e.Name() == koName {
-			found = filepath.Join(BundledDir, koName)
+			found = filepath.Join(BundledDir(), koName)
 			break
 		}
 	}
@@ -322,7 +354,7 @@ func (l *Loader) selectBundledModule() {
 			aliasName := fmt.Sprintf("amneziawg-%s.ko", alias)
 			for _, e := range entries {
 				if e.Name() == aliasName {
-					found = filepath.Join(BundledDir, aliasName)
+					found = filepath.Join(BundledDir(), aliasName)
 					break
 				}
 			}
@@ -334,30 +366,44 @@ func (l *Loader) selectBundledModule() {
 		// Worth a line in the journal: the models dropped from the shipped set
 		// land here, and without it the router silently keeps whatever module
 		// it already has (or none at all on a fresh install).
+		//
+		// Модуль, что уже стоит без метки, остаётся в работе — отмечаем его
+		// этой моделью: дальнейший перенос /opt на другую модель он не пройдёт.
+		if l.ModuleExists() && readModel() == "" {
+			_ = writeModel(l.model)
+		}
 		if l.Warn != nil {
 			l.Warn(fmt.Sprintf("no bundled kernel module for model %s — kernel mode works only if a module is already installed", l.model))
 		}
-		os.RemoveAll(BundledDir)
+		os.RemoveAll(BundledDir())
 		return
 	}
 
-	// Copy bundled .ko → active module
+	// Copy bundled .ko → active module. Метка трогается только после удачного
+	// копирования: упади копия — прежняя (возможно, чужая) метка обязана
+	// остаться при прежнем модуле, иначе EnsureModule загрузил бы его (#953).
 	targetPath := filepath.Join(ModulesDir, "amneziawg.ko")
 	if err := copyFile(found, targetPath); err != nil {
 		return
 	}
 
 	// Write version from bundled/version file
-	versionPath := filepath.Join(BundledDir, "version")
+	versionPath := filepath.Join(BundledDir(), "version")
 	if data, err := os.ReadFile(versionPath); err == nil {
 		_ = writeVersion(strings.TrimSpace(string(data)))
+	}
+	// Метка модели: по ней EnsureModule отказывает модулю другой группы. Не
+	// записалась — снимаем прежнюю: модуль уже свой, а чужая метка при нём
+	// запретила бы загрузку. Без метки модуль грузится как прежде.
+	if err := writeModel(l.model); err != nil {
+		_ = os.Remove(filepath.Join(ModulesDir, modelFile))
 	}
 
 	// Update module path
 	l.modulePath = targetPath
 
 	// Clean up — bundled dir no longer needed
-	os.RemoveAll(BundledDir)
+	os.RemoveAll(BundledDir())
 }
 
 // copyFile copies src to dst atomically (write to .tmp, fsync, then rename).
@@ -365,6 +411,12 @@ func (l *Loader) selectBundledModule() {
 // after, so a power loss before writeback would otherwise leave a torn .ko
 // with no way to recover short of reinstalling the package.
 func copyFile(src, dst string) error {
+	// Каталог назначения может не существовать: с нестандартным -data-dir его
+	// никто не создаёт заранее, и без этого установка модуля молча не
+	// срабатывала (F168).
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err

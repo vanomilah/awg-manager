@@ -90,10 +90,26 @@
 	<SettingsSectionLabel label="Резервное копирование" icon={Database} tone="blue" header />
 
 	<p class="backup-lead">
-		Полная копия каталога данных awg-manager: туннели, WDTT/FreeTurn, sing-box, маршруты и настройки.
-		Кэш sing-box, pid-файлы и служебный каталог run/ не включаются.
+		Копия данных awg-manager: туннели, WDTT/FreeTurn, конфигурация sing-box, маршруты и настройки.
+		Не включаются файлы, собранные под этот роутер (модули ядра, бинарь sing-box), кэш sing-box,
+		pid-файлы и служебный каталог run/: при восстановлении остаются свои, а на новом роутере
+		sing-box нужно поставить заново кнопкой.
 		Перед созданием или восстановлением кратковременно останавливаются связанные процессы;
 		после восстановления выполняется холодный перезапуск с синхронизацией портов linked-туннелей.
+	</p>
+
+	<!-- Архив несёт секреты ОТКРЫТЫМ текстом, и пользователь обязан знать это
+	     ДО выгрузки: его пересылают в поддержку и кладут в облако. Шифруется
+	     только ключ подписки Amnezia, и это создаёт ложное впечатление, будто
+	     защищён весь архив. Зашифровать остальное тем же секретом устройства
+	     нельзя: секрет в архив не кладётся намеренно, и такой бэкап,
+	     восстановленный на ДРУГОМ роутере, потерял бы приватные ключи
+	     туннелей — то есть перестал бы быть бэкапом. -->
+	<p class="backup-secrets">
+		<strong>Архив содержит секреты в открытом виде:</strong> ключ API панели, приватные и
+		preshared-ключи туннелей и пиров. Кто получил файл — получил доступ к панели и к VPN.
+		Храните и пересылайте его как пароль. Отдельно зашифрован только ключ подписки
+		Amnezia Premium — он привязан к этому роутеру и на другом не прочитается.
 	</p>
 
 	<div class="setting-row">
@@ -110,8 +126,8 @@
 		<div class="flex flex-col gap-1">
 			<span class="font-medium">Восстановление</span>
 			<span class="setting-description">
-				Заменит текущие данные; перед применением старый каталог сохранится как
-				<code>awg-manager.pre-restore-*</code>
+				Заменит текущие данные. Чтобы можно было вернуться, сначала сохраните резервную
+				копию.
 			</span>
 		</div>
 		<Button variant="danger" size="sm" loading={restoring} onclick={openRestorePicker}>
@@ -149,6 +165,17 @@
 		position: relative;
 	}
 
+	.backup-secrets {
+		margin: 0.875rem 0 0;
+		padding: 8px 12px;
+		font-size: 0.8125rem;
+		line-height: 1.45;
+		color: var(--warning, var(--color-warning));
+		background: var(--color-warning-tint);
+		border: 1px solid var(--color-warning-border);
+		border-radius: 8px;
+	}
+
 	.backup-lead {
 		margin: 0;
 		padding-bottom: 0.875rem;
@@ -161,11 +188,6 @@
 	/* File input is the last child — keep row padding like other cards. */
 	.backup-card > .setting-row:last-of-type {
 		padding-bottom: 0;
-	}
-
-	.setting-description code {
-		font-family: var(--font-mono);
-		font-size: 0.6875rem;
 	}
 
 	.sr-only {

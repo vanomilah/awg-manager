@@ -86,7 +86,7 @@ func TestBuildLink_Defaults(t *testing.T) {
 
 	want := LinkPayload{
 		V: 1, Provider: "vk", Peer: "203.0.113.7:56000", Transport: "tcp", Mode: "udp",
-		N: 10, StreamsPerCred: 10, MTU: 1280,
+		N: 12, StreamsPerCred: 12, MTU: 1280,
 	}
 	if !reflect.DeepEqual(p, want) {
 		t.Fatalf("дефолты:\n got %+v\nwant %+v", p, want)
@@ -109,6 +109,50 @@ func TestBuildLink_ObfNoneDropsKey(t *testing.T) {
 	_, p := buildLink(t, b, rec, wdttlink.LinkRequest{Peer: "1.1.1.1:1"})
 	if p.Obf != "" || p.Key != "" {
 		t.Fatalf("obf=%q key=%q", p.Obf, p.Key)
+	}
+}
+
+// Настройка адреса сервера (#933): среднее звено цепочки «запрос → настройка →
+// внешний IP». Оно и было дырой — поле ввода пропало при переезде UI (#814), и
+// каждая ссылка получала внешний IP, а DNS-имя вписать было негде.
+func TestBuildLink_PeerFromServerConfig(t *testing.T) {
+	ext := &fakeExternalIP{ip: "не должен спрашиваться"}
+	b := NewBuilder(BuilderDeps{ExternalIP: ext.get})
+	rec := ftServerRecord("")
+	rec.FreeTurnServer.Listen = "0.0.0.0:56123"
+	rec.FreeTurnServer.LinkPeer = "vpn.example.org"
+
+	body, p := buildLink(t, b, rec, wdttlink.LinkRequest{})
+
+	if body["peer"] != "vpn.example.org:56123" || p.Peer != "vpn.example.org:56123" {
+		t.Fatalf("адрес из настройки не доехал: peer=%q payload=%q", body["peer"], p.Peer)
+	}
+	if ext.calls != 0 {
+		t.Fatalf("при заданной настройке внешний адрес спрашивать незачем, спрошен %d раз", ext.calls)
+	}
+}
+
+// Порядок звеньев: запрос перебивает настройку. Иначе разовый адрес «для этого
+// абонента» молча проигрывал бы сохранённому.
+func TestBuildLink_RequestPeerBeatsConfig(t *testing.T) {
+	b := NewBuilder(BuilderDeps{ExternalIP: (&fakeExternalIP{ip: "9.9.9.9"}).get})
+	rec := ftServerRecord("")
+	rec.FreeTurnServer.LinkPeer = "config.example.org:1"
+	body, _ := buildLink(t, b, rec, wdttlink.LinkRequest{Peer: "request.example.org:2"})
+	if body["peer"] != "request.example.org:2" {
+		t.Fatalf("запрос обязан перебивать настройку: peer=%q", body["peer"])
+	}
+}
+
+// Настройка пуста — прежнее поведение: спрашиваем внешний IP.
+func TestBuildLink_EmptyConfigFallsBackToExternalIP(t *testing.T) {
+	ext := &fakeExternalIP{ip: "203.0.113.7"}
+	b := NewBuilder(BuilderDeps{ExternalIP: ext.get})
+	rec := ftServerRecord("")
+	rec.FreeTurnServer.LinkPeer = "   " // пробелы — та же пустота
+	body, _ := buildLink(t, b, rec, wdttlink.LinkRequest{})
+	if body["peer"] != "203.0.113.7:56000" || ext.calls != 1 {
+		t.Fatalf("peer=%q calls=%d", body["peer"], ext.calls)
 	}
 }
 
@@ -146,7 +190,9 @@ func TestBuildLink_Rejections(t *testing.T) {
 		if !errors.As(err, &le) || le.Code != "FREETURN_EXTERNAL_IP_FAILED" {
 			t.Fatalf("err=%v", err)
 		}
-		if le.Msg != "Не удалось определить внешний IP: нет WAN. Укажите peer вручную." {
+		// Текст отказа обязан вести туда, где проблему можно решить: поля
+		// «peer» в окне выдачи нет с #814, зато есть настройка адреса (#933).
+		if le.Msg != "Не удалось определить внешний IP: нет WAN. Укажите адрес сервера в настройках раздачи." {
 			t.Fatalf("текст отказа=%q", le.Msg)
 		}
 	})
@@ -162,4 +208,26 @@ func TestBuildLink_Rejections(t *testing.T) {
 			t.Fatalf("текст отказа=%q", le.Msg)
 		}
 	})
+}
+
+// Порт дописывается по разбору адреса, а не по наличию двоеточия: у голого и
+// скобочного IPv6 двоеточий много, и проверка по символу оставляла бы ссылку
+// без порта (F390). Форма без скобок до сборщика не доходит — её отбивает
+// валидация настройки (validateLinkPeer), — но сборщик обязан быть верным сам.
+func TestBuildLink_PortAppendedForIPv6(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"[2001:db8::1]", "[2001:db8::1]:56123"},
+		{"[2001:db8::1]:56000", "[2001:db8::1]:56000"},
+		{"vpn.example.org", "vpn.example.org:56123"},
+		{"vpn.example.org:1", "vpn.example.org:1"},
+	} {
+		b := NewBuilder(BuilderDeps{ExternalIP: (&fakeExternalIP{ip: "1.1.1.1"}).get})
+		rec := ftServerRecord("")
+		rec.FreeTurnServer.Listen = "0.0.0.0:56123"
+		rec.FreeTurnServer.LinkPeer = tc.in
+		body, p := buildLink(t, b, rec, wdttlink.LinkRequest{})
+		if body["peer"] != tc.want || p.Peer != tc.want {
+			t.Errorf("%q → peer=%q payload=%q, want %q", tc.in, body["peer"], p.Peer, tc.want)
+		}
+	}
 }

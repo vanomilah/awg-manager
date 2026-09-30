@@ -15,14 +15,14 @@ import (
 // but a half-removed teardown can leave a DOWN orphan opkgtunN behind that would
 // collide with the index allocator on the next Enable. `ip link show dev <iface>`
 // exits non-zero when the device is absent → we treat any error as "absent" (no
-// delete attempted). Seam var for tests. Mirrors fakeIPAddrFlush's sysexec seam.
+// delete attempted). Seam var for tests.
 var fakeIPLinkPresent = func(ctx context.Context, iface string) bool {
 	_, err := sysexec.Run(ctx, ipBinary, "link", "show", "dev", iface)
 	return err == nil
 }
 
 // fakeIPLinkDelete removes a lingering kernel netdev (`ip link delete <iface>`).
-// Seam var for tests. Mirrors fakeIPAddrFlush's sysexec seam.
+// Seam var for tests.
 var fakeIPLinkDelete = func(ctx context.Context, iface string) error {
 	_, err := sysexec.Run(ctx, ipBinary, "link", "delete", iface)
 	return err
@@ -170,8 +170,14 @@ func (s *ServiceImpl) disableFakeIPTun(ctx context.Context, settings *storage.Se
 	// v4 needs NO auto-route removal here — step 2 renewed the single pool route in
 	// place; the async drain (step 7) removes it after the window.
 	// TODO(fakeip-v6-drain): v6 is fail-open on dual-stack routers with a v6 default
-	// route (no reject equivalent). Closing it needs the v6 route form to support a
-	// reject/blackhole route (ndms work + stand verification) — not done in v1.
+	// route. Форма больше не препятствие: стенд 5.01 принял v6-reject
+	// (`ipv6 route <prefix> <iface> auto reject`), и AddStaticRoute его
+	// доставляет. Осталась работа в самом drain — обновить маршрут пула как
+	// reject вместо снятия, симметрично шагу 2 у v4. Ловушка на этом пути:
+	// снятие v6-маршрута идёт через mutateTolerant(isNoSuchInterface), а к
+	// моменту уборки интерфейс tun уже удалён — отказ будет проглочен, и
+	// reject-маршрут останется резать префикс навсегда. У v4 от этого есть
+	// стартовый sweep, у v6 его нет.
 	if haveV6 {
 		if err := s.deps.StaticRoutes.RemoveStaticRoute(ctx, StaticRouteSpec{
 			V6: true, Network: inet6Range, Interface: ndmsName,
@@ -209,7 +215,11 @@ func (s *ServiceImpl) disableFakeIPTun(ctx context.Context, settings *storage.Se
 	// выполнив второе, мы убили бы посторонний туннель наполовину. Цена гейта
 	// честная: kernel-сироту без NDMS-объекта скан тоже не видит, поэтому её
 	// уборка здесь пропускается (индекс не течёт — аллокатор live-sourced).
-	if !s.skipForeignTeardown(ctx, ndmsName, fakeIPTunDescription, "fakeip-disable") {
+	// Скан упал — тоже пропуск (F493): запись всё равно снимается на шаге (5),
+	// а интерфейс с нашим описанием добирает reapOrphansByDescription, когда
+	// скан заработает. Ошибку гейта не возвращаем: выключение обязано дойти
+	// до персиста.
+	if proceed, _ := s.teardownGate(ctx, ndmsName, fakeIPTunDescription, "fakeip-disable"); proceed {
 		// (4c) Уборку осиротевшего kernel-netdev делает сам teardownOpkgTun —
 		// он же нужен откатам и реап-ретраям, которые ходят туда напрямую.
 		_ = s.teardownOpkgTun(ctx, ndmsName, "fakeip-disable")
@@ -321,9 +331,8 @@ func (s *ServiceImpl) holdOpkgTun(ctx context.Context, ndmsName, scope string) e
 	// отличие от teardown, за ними НЕТ delete, который бы такую пустышку
 	// подобрал: hold интерфейс намеренно сохраняет. Пустышка же не несёт
 	// нашего описания, реап по описанию её не видит, и индекс занят навсегда.
-	// Вызывающий зовёт hold только при подтверждённом владении, но подтверждение
-	// даёт скан по описанию, а он «не знаю» трактует как «наш» (fail-closed для
-	// reuse) — то есть на недоступном скане сюда можно прийти и без интерфейса.
+	// Вызывающий зовёт hold при вердикте «наш» либо «скана нет» (обвязка без
+	// NDMS): во втором случае интерфейса может и не быть.
 	if !fakeIPLinkPresent(ctx, strings.ToLower(ndmsName)) {
 		s.appLog.Debug(scope, ndmsName, "hold: интерфейса нет, мутации пропущены")
 		return nil
@@ -371,7 +380,7 @@ func (s *ServiceImpl) teardownOpkgTun(ctx context.Context, ndmsName, scope strin
 	// отсутствующем отвечает «interface created»), а teardown штатно зовут и на
 	// уже снесённом — из откатов и реап-ретраев. Рождённая так пустышка не
 	// несёт нашего описания, поэтому reapOrphansByDescription её не видит, и
-	// она занимает индекс НАВСЕГДА: пул 0..9 вычерпывался за десяток переходов
+	// она занимает индекс НАВСЕГДА: прежний пул 0..9 вычерпывался за десяток переходов
 	// до «нет свободного OpkgTun-индекса». Удаление в предварительном down не
 	// нуждается — стенд-проверено на живом интерфейсе с адресом, — а на
 	// отсутствующем `no:true` отвечает «unable to find» и ничего не создаёт.
@@ -382,7 +391,7 @@ func (s *ServiceImpl) teardownOpkgTun(ctx context.Context, ndmsName, scope strin
 		// открытым sing-box (обычный порядок: движок останавливают уже после
 		// сноса интерфейса). NDMS про него больше не знает, а /sys — знает, и
 		// аллокатор индексов (union kernel+NDMS) считает номер занятым НАВСЕГДА:
-		// стенд 2026-08-24, пул 0..9 вычерпан за десяток переходов до «нет
+		// стенд 2026-08-24, прежний пул 0..9 вычерпан за десяток переходов до «нет
 		// свободного OpkgTun-индекса». disableFakeIPTun это уже делал у себя —
 		// здесь тот же приём для откатов и реап-ретраев, которые ходят сюда.
 		iface := strings.ToLower(ndmsName)

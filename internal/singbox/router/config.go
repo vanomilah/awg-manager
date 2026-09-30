@@ -3,10 +3,12 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -314,10 +316,10 @@ func (c *RouterConfig) rulesReferencingRuleSets(tags []string) ruleSetRefIndices
 // in destinationIPCIDRItems (fork route/rule/rule_default.go:154), so it is
 // OR-ed with the addresses, not AND-ed against them.
 //
-// Narrowing matchers (port, network, protocol, inbound, source_ip_cidr) keep
-// their AND meaning: they move into a sibling branch of an outer
-// `logical(and)`. Action/outbound stay on the outer rule — nested branches
-// carry matchers only.
+// Narrowing matchers (port, network, protocol, inbound, source_ip_cidr,
+// source_mac_address) keep their AND meaning: they move into a sibling
+// branch of an outer `logical(and)`. Action/outbound stay on the outer
+// rule — nested branches carry matchers only.
 //
 // Idempotent: an already-logical rule is returned untouched.
 func normalizeAddressOrRule(r Rule) Rule {
@@ -343,16 +345,18 @@ func normalizeAddressOrRule(r Rule) Rule {
 	}}
 
 	narrowing := Rule{
-		SourceIPCIDR: r.SourceIPCIDR,
-		Port:         r.Port,
-		Protocol:     r.Protocol,
-		Inbound:      r.Inbound,
-		Network:      r.Network,
+		SourceIPCIDR:     r.SourceIPCIDR,
+		SourceMACAddress: r.SourceMACAddress,
+		Port:             r.Port,
+		Protocol:         r.Protocol,
+		Inbound:          r.Inbound,
+		Network:          r.Network,
 	}
 
 	out := r
 	out.RuleSet, out.Domain, out.DomainSuffix, out.IPCIDR = nil, nil, nil, nil
 	out.SourceIPCIDR, out.Port, out.Protocol, out.Inbound = nil, nil, "", nil
+	out.SourceMACAddress = nil
 	out.Network, out.IPIsPrivate = "", nil
 	out.Type, out.Mode = "logical", "or"
 	out.Rules = addressOr.Rules
@@ -777,6 +781,14 @@ func (c *RouterConfig) renameOutboundReferences(oldTag, newTag string) {
 		if c.Route.RuleSet[i].DownloadDetour == oldTag {
 			c.Route.RuleSet[i].DownloadDetour = newTag
 		}
+		if hc := c.Route.RuleSet[i].HTTPClient; hc != nil && hc.Detour == oldTag {
+			hc.Detour = newTag
+		}
+	}
+	for i := range c.HTTPClients {
+		if c.HTTPClients[i].Detour == oldTag {
+			c.HTTPClients[i].Detour = newTag
+		}
 	}
 }
 
@@ -807,6 +819,14 @@ func (c *RouterConfig) removeOutboundReferences(tag string) {
 	for i := range c.Route.RuleSet {
 		if c.Route.RuleSet[i].DownloadDetour == tag {
 			c.Route.RuleSet[i].DownloadDetour = ""
+		}
+		if hc := c.Route.RuleSet[i].HTTPClient; hc != nil && hc.Detour == tag {
+			hc.Detour = ""
+		}
+	}
+	for i := range c.HTTPClients {
+		if c.HTTPClients[i].Detour == tag {
+			c.HTTPClients[i].Detour = ""
 		}
 	}
 }
@@ -840,6 +860,14 @@ func (c *RouterConfig) outboundReferences(tag string) []string {
 		if rs.DownloadDetour == tag {
 			refs = append(refs, fmt.Sprintf("route.rule_set[%d=%q].download_detour", i, rs.Tag))
 		}
+		if rs.HTTPClient != nil && rs.HTTPClient.Detour == tag {
+			refs = append(refs, fmt.Sprintf("route.rule_set[%d=%q].http_client.detour", i, rs.Tag))
+		}
+	}
+	for i, hc := range c.HTTPClients {
+		if hc.Detour == tag {
+			refs = append(refs, fmt.Sprintf("http_clients[%d=%q].detour", i, hc.Tag))
+		}
 	}
 	return refs
 }
@@ -848,8 +876,9 @@ func (c *RouterConfig) outboundReferences(tag string) []string {
 // route.rules[...] entries — those are reported separately as rule
 // indices by rulesReferencingOutbound (for UI deeplinking). Covers
 // route.final, composite members, composite default, dns.servers detour,
-// and rule_set download_detour — all the locations validateLocked flags
-// as unknown-outbound but that rulesReferencingOutbound does not see.
+// rule_set download_detour / http_client.detour, and top-level
+// http_clients[].detour — all the locations validateLocked flags as
+// unknown-outbound but that rulesReferencingOutbound does not see.
 func (c *RouterConfig) outboundReferencesExcludingRules(tag string) []string {
 	all := c.outboundReferences(tag)
 	out := make([]string, 0, len(all))
@@ -956,11 +985,15 @@ func IsAutoManagedIface(name string) bool {
 // user bind. Keeping them unconditionally avoids a runtime NDMS lookup in the
 // Enable path — a transient lookup error must never silently delete a user's
 // persisted outbound.
-func stripAutoManagedDirect(in []Outbound) []Outbound {
+//
+// foreign — отметки «Сторонний интерфейс» (issue #935, SettingsStore.
+// GetForeignInterfaces); ifaces из этого набора не стрипаются, даже если
+// подпадают под auto-managed префикс.
+func stripAutoManagedDirect(in []Outbound, foreign []string) []Outbound {
 	out := make([]Outbound, 0, len(in))
 	for _, o := range in {
 		if o.Type == "direct" && o.BindInterface != "" &&
-			IsStrippedDirectBind(o.BindInterface) {
+			IsStrippedDirectBind(o.BindInterface, foreign) {
 			continue
 		}
 		out = append(out, o)
@@ -972,8 +1005,11 @@ func stripAutoManagedDirect(in []Outbound) []Outbound {
 // removed from the effective config by stripAutoManagedDirect (auto-managed
 // AWG/WG/NWG ifaces, excluding proxy t2sN/proxyN which are kept). Exported so
 // the device-proxy outbound catalog can hide non-selectable router directs.
-func IsStrippedDirectBind(iface string) bool {
-	return IsAutoManagedIface(iface) && !isProxyIface(iface)
+//
+// Отмеченные пользователем сторонние интерфейсы (issue #935) не вырезаются —
+// это его выбор, как #323.
+func IsStrippedDirectBind(iface string, foreign []string) bool {
+	return IsAutoManagedIface(iface) && !isProxyIface(iface) && !slices.Contains(foreign, iface)
 }
 
 // isProxyIface reports a Keenetic proxy kernel interface name (tun2socks
@@ -993,7 +1029,7 @@ func isProxyIface(name string) bool {
 // rule survive force-delete as an unconditional catch-all.
 func (r Rule) hasAnyMatcher() bool {
 	return len(r.Domain) > 0 || len(r.DomainSuffix) > 0 || len(r.IPCIDR) > 0 ||
-		len(r.SourceIPCIDR) > 0 ||
+		len(r.SourceIPCIDR) > 0 || len(r.SourceMACAddress) > 0 ||
 		len(r.Port) > 0 || len(r.RuleSet) > 0 || r.Protocol != "" || len(r.Rules) > 0 ||
 		(r.IPIsPrivate != nil && *r.IPIsPrivate) || len(r.Inbound) > 0 || r.Network != ""
 }
@@ -1103,6 +1139,11 @@ func validateRule(r Rule) error {
 			return err
 		}
 	}
+	for _, mac := range r.SourceMACAddress {
+		if _, err := net.ParseMAC(mac); err != nil {
+			return fmt.Errorf("source_mac_address %q: %w", mac, err)
+		}
+	}
 	for _, p := range r.Port {
 		if p < 1 || p > 65535 {
 			return fmt.Errorf("port %d out of range [1,65535]", p)
@@ -1135,6 +1176,31 @@ func validateRuleSet(rs RuleSet) error {
 	}
 	switch rs.Type {
 	case "inline":
+		// F434 (#941): имя файла артефакта — это сам тег, пропущенный через
+		// safeRuleSetFilename (ruleset_materializer.go). Санитайзинг лоссовый:
+		// «Моё» и «Второй» дают один базис "ruleset", "-foo" и "foo" — один
+		// "foo", а файл хранит ПРАВИЛА набора (конфиг держит только путь), так
+		// что второй набор молча затирал первый. Требуем тег, равный своему
+		// имени файла, — тогда разные теги = разные файлы по построению.
+		//
+		// Только для inline: у remote тег файл не именует (у dat-наборов базис
+		// считается из kind+tags URL, у обычных remote артефакта нет вовсе), а
+		// в каталоге SagerNet теги со спецсимволами штатные — geolocation-!cn,
+		// category-ai-!cn лежат и в наших пресетах (internal/presets).
+		// UpdateRuleSet валидирует next, поэтому смена типа на inline тоже
+		// упирается в эту проверку.
+		if rs.Tag == fallbackRuleSetFilename {
+			return fmt.Errorf(
+				"%w: %q: reserved as the artifact file name of inline rule sets created before this check",
+				ErrRuleSetTagUnsafe, rs.Tag,
+			)
+		}
+		if safeRuleSetFilename(rs.Tag) != rs.Tag {
+			return fmt.Errorf(
+				"%w: %q: latin letters, digits, dot, underscore, dash, no leading or trailing dash",
+				ErrRuleSetTagUnsafe, rs.Tag,
+			)
+		}
 		if len(rs.Rules) == 0 {
 			return fmt.Errorf("rule_set %q: rules required for type=inline", rs.Tag)
 		}

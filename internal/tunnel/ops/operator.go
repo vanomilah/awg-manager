@@ -13,18 +13,15 @@ import (
 // Operator is the interface for tunnel lifecycle operations.
 // All operations use direct ip commands for kernel interface management.
 type Operator interface {
-	// Create creates system resources for a tunnel without starting it.
-	// No-op for kernel tunnels (interface created by process).
-	Create(ctx context.Context, cfg tunnel.Config) error
-
 	// ColdStart creates a tunnel from scratch: ip link add + ip addr add +
 	// wg setconf + ip link set up + firewall.
 	// Used for: NotCreated, Broken, boot.
 	ColdStart(ctx context.Context, cfg tunnel.Config) error
 
 	// Stop brings down a tunnel: kills backend process + removes firewall rules.
-	// Used for: user Stop, PingCheck dead.
-	Stop(ctx context.Context, tunnelID string) error
+	// Used for: user Stop, PingCheck dead. name — имя туннеля из карточки
+	// (пусто, если её нет): по нему OS5 узнаёт свою запись OpkgTun (F517).
+	Stop(ctx context.Context, tunnelID, name string) error
 
 	// Delete completely removes a tunnel.
 	// Receives the full stored tunnel for reliable cleanup (persisted endpoint IP, etc.).
@@ -79,8 +76,14 @@ type Operator interface {
 	// prefix — длина префикса IPv4 (0 = не задана, оператор ставит /32).
 	SyncAddress(ctx context.Context, tunnelID string, address string, prefix int, ipv6 string) error
 
-	// UpdateDescription updates the tunnel description in RCI.
-	UpdateDescription(ctx context.Context, tunnelID, description string) error
+	// UpdateDescription updates the tunnel description in RCI — only on a
+	// record that is ours by the F517 rule, checked against prevName (the
+	// tunnel's name before the rename).
+	UpdateDescription(ctx context.Context, tunnelID, prevName, description string) error
+
+	// CaptureDescription sets the description without the ownership check:
+	// adopting an external tunnel takes its record deliberately. Adopt only.
+	CaptureDescription(ctx context.Context, tunnelID, description string) error
 
 	// GetDefaultGatewayInterface returns the current default gateway interface name.
 	// Used by resolveWAN for auto-mode tunnels.

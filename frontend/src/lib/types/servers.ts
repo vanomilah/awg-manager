@@ -45,6 +45,22 @@ export interface WireguardServerPeer {
 	online: boolean;
 	enabled: boolean;
 	confAvailable?: boolean;
+	// Сигнатура пира (I1-I5) и профиль имитации, которым она сгенерирована.
+	// Есть только у пиров с локальным ключом (confAvailable).
+	i1?: string;
+	i2?: string;
+	i3?: string;
+	i4?: string;
+	i5?: string;
+	signatureProfile?: string;
+	/** Резолвер пира для .conf (#933). Пусто — бэкенд подставит DNS роутера. */
+	dns?: string;
+	/** AllowedIPs в .conf клиента (#713); пусто — весь трафик. Только у пиров с записью. */
+	clientAllowedIPs?: string;
+	/** Сети за клиентом (IPv4 CIDR) — allow-ips пира и маршруты на роутере. */
+	remoteSubnets?: string[];
+	/** Адрес из записи; у чужих пиров пусто — тогда эвристика по allowedIPs. */
+	tunnelIP?: string;
 }
 
 export interface WireguardServerConfig {
@@ -75,6 +91,7 @@ export interface ManagedServer {
 	natEnabled?: boolean;
 	natMode?: 'full' | 'internet-only' | 'none';
 	lanSegments?: string[];
+	foreignAcls?: string[];
 	policy: string;
 	peers: ManagedPeer[];
 }
@@ -86,7 +103,19 @@ export interface ManagedPeer {
 	description: string;
 	tunnelIP: string;
 	dns?: string;
+	/** AllowedIPs в .conf клиента (#713); пусто — весь трафик. */
+	clientAllowedIPs?: string;
+	/** Сети за клиентом (IPv4 CIDR) — allow-ips пира и маршруты на роутере. */
+	remoteSubnets?: string[];
 	enabled: boolean;
+	// Сигнатура пира (I1-I5) и профиль имитации, которым она сгенерирована.
+	// Профиль пуст у сигнатур, набранных руками или перенесённых с сервера.
+	i1?: string;
+	i2?: string;
+	i3?: string;
+	i4?: string;
+	i5?: string;
+	signatureProfile?: string;
 }
 
 export interface ManagedServerStats {
@@ -133,12 +162,24 @@ export interface AddManagedPeerRequest {
 	description: string;
 	tunnelIP: string;
 	dns?: string;
+	clientAllowedIPs?: string;
+	remoteSubnets?: string[];
 }
 
 export interface UpdateManagedPeerRequest {
 	description: string;
 	tunnelIP: string;
 	dns?: string;
+	// Омитим — сигнатура не трогается; прислали — заменяет все пять полей и профиль.
+	signature?: { profile: string; i1: string; i2: string; i3: string; i4: string; i5: string };
+	clientAllowedIPs?: string;
+	remoteSubnets?: string[];
+}
+
+/** Пресеты поля «AllowedIPs клиента» (#713). */
+export interface PeerPresets {
+	routerOnly: string;
+	exceptRouter: string;
 }
 
 // #endregion

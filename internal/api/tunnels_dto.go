@@ -1,8 +1,6 @@
 package api
 
-import (
-	"regexp"
-)
+import "github.com/hoaxisr/awg-manager/internal/tunnelid"
 
 // TunnelPingCheckStatus is the ping-check status embedded in TunnelListItem.
 type TunnelPingCheckStatus struct {
@@ -39,6 +37,19 @@ type TunnelListItemDTO struct {
 	PingCheck                 TunnelPingCheckStatus `json:"pingCheck"`
 	WdttClientID              string                `json:"wdttClientId,omitempty" example:"default"`
 	FreeTurnClientID          string                `json:"freeTurnClientId,omitempty" example:"default"`
+	Locked                    bool                  `json:"locked,omitempty" example:"false"`
+	StatusDetails             string                `json:"statusDetails,omitempty" example:"обфускатор не запущен"`
+	Obfuscator                *ObfuscatorItemDTO    `json:"obfuscator,omitempty"`
+}
+
+// ObfuscatorItemDTO mirrors the obfuscator field in TunnelListItem: что
+// список показывает о релее (ключ наружу не отдаётся).
+type ObfuscatorItemDTO struct {
+	Flavor    string `json:"flavor" example:"phobos" enums:"phobos,clusterm"`
+	Target    string `json:"target" example:"1.2.3.4:51824"`
+	LocalPort int    `json:"localPort" example:"39000"`
+	// Relay — бэкенд релея: "kernel" (awgm_relay.ko) или "process".
+	Relay string `json:"relay,omitempty" example:"kernel" enums:"kernel,process"`
 }
 
 // TunnelListResponse is the envelope for GET /tunnels/list.
@@ -114,6 +125,21 @@ type AWGTunnelDTO struct {
 	Interface     AWGInterfaceDTO     `json:"interface"`
 	Peer          AWGPeerDTO          `json:"peer"`
 	StateInfo     *TunnelStateInfoDTO `json:"stateInfo,omitempty"`
+	Obfuscator    *ObfuscatorDTO      `json:"obfuscator,omitempty"`
+}
+
+// ObfuscatorDTO mirrors storage.Obfuscator — параметры релея wg-obfuscator,
+// как их отдаёт карточка туннеля. Ключ здесь есть: это XOR-ключ релея, а не
+// приватный ключ WG, и вкладка «Обфускатор» его показывает и правит.
+type ObfuscatorDTO struct {
+	Flavor         string `json:"flavor" example:"phobos" enums:"phobos,clusterm"`
+	Target         string `json:"target" example:"1.2.3.4:51824"`
+	Key            string `json:"key" example:"secret"`
+	Masking        string `json:"masking" example:"STUN" enums:"STUN,MEDIA,AUTO,NONE"`
+	MaxDummy       int    `json:"maxDummy" example:"4"`
+	IdleTimeout    int    `json:"idleTimeout,omitempty" example:"120"`
+	ObfuscateBytes int    `json:"obfuscateBytes,omitempty" example:"16"`
+	LocalPort      int    `json:"localPort" example:"39000"`
 }
 
 // TunnelDetailResponse is the envelope for GET /tunnels/get.
@@ -168,6 +194,18 @@ type TunnelDeleteResponse struct {
 	Data    TunnelDeleteResultData `json:"data"`
 }
 
+// TunnelLockResultData is the data payload for TunnelLockResponse.
+type TunnelLockResultData struct {
+	ID     string `json:"id" example:"tun_abc123"`
+	Locked bool   `json:"locked" example:"true"`
+}
+
+// TunnelLockResponse is the envelope for POST /tunnels/lock.
+type TunnelLockResponse struct {
+	Success bool                 `json:"success" example:"true"`
+	Data    TunnelLockResultData `json:"data"`
+}
+
 // TunnelReferencedDetails describes where a tunnel is still referenced
 // when deletion is refused (HTTP 409).
 type TunnelReferencedDetails struct {
@@ -186,11 +224,9 @@ type TunnelReferencedResponse struct {
 	Details TunnelReferencedDetails `json:"details"`
 }
 
-// validTunnelID matches safe tunnel identifiers: starts with a letter,
-// followed by up to 31 alphanumeric characters, hyphens, or underscores.
-var validTunnelID = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
-
-// isValidTunnelID reports whether id is a safe tunnel identifier.
+// isValidTunnelID reports whether id is a safe tunnel identifier. The
+// rule itself lives in internal/tunnelid so the MCP layer and the store
+// enforce the same one.
 func isValidTunnelID(id string) bool {
-	return validTunnelID.MatchString(id)
+	return tunnelid.Valid(id)
 }

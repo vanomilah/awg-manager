@@ -15,11 +15,6 @@ import (
 type Service interface {
 	// CRUD operations
 
-	// Create creates a new tunnel and saves it to storage.
-	// For NativeWG tunnels, pass stored with Backend="nativewg"; Create will
-	// call nwgOperator and set stored.NWGIndex before returning.
-	Create(ctx context.Context, stored *storage.AWGTunnel) error
-
 	// Get returns a tunnel with its current state.
 	Get(ctx context.Context, tunnelID string) (*TunnelWithStatus, error)
 
@@ -65,12 +60,26 @@ type Service interface {
 
 	// Import parses a WireGuard .conf file and creates a tunnel.
 	// backend selects the tunnel backend: "nativewg" or "kernel" (default).
-	Import(ctx context.Context, confContent, name, backend string) (*TunnelWithStatus, error)
+	//
+	// link — поля владения прокси-подсистемы. Едут в ЗАПИСЬ, а не дописываются
+	// вторым шагом: вызывающий, создававший туннель импортом и проставлявший
+	// связь отдельным Update, оставлял окно, в котором туннель уже есть, а
+	// связи нет. Такой туннель не видит уборка связанных, и осиротевшую
+	// карточку снять автоматически уже нечем. Нулевое значение — связи нет.
+	Import(ctx context.Context, confContent, name, backend string, link ImportLink) (*TunnelWithStatus, error)
 
 	// ReplaceConfig replaces a tunnel's Interface and Peer from a new .conf,
 	// preserving all metadata (ID, Backend, NWGIndex, routing, PingCheck, etc.).
 	// Does NOT handle stop/start — caller is responsible for lifecycle.
-	ReplaceConfig(ctx context.Context, tunnelID, confContent, newName string) error
+	//
+	// opts — поля записи, которые меняются ВМЕСТЕ с конфигурацией и тем же
+	// мутатором (см. ReplaceOptions).
+	ReplaceConfig(ctx context.Context, tunnelID, confContent, newName string, opts ReplaceOptions) error
+
+	// CaptureDescription ставит описание записи kernel-туннеля = name БЕЗ
+	// проверки владения — только для взятия стороннего туннеля (Adopt).
+	// Провал — только Warn в журнале.
+	CaptureDescription(ctx context.Context, tunnelID, name string)
 
 	// Validation
 
@@ -106,6 +115,41 @@ type Service interface {
 	// that occasionally persisted NDMS logical labels (e.g. "ISP") instead
 	// of kernel names. Called once at startup.
 	HealStaleActiveWAN()
+}
+
+// ImportLink — поля владения прокси-подсистем, которые обязаны появиться
+// ВМЕСТЕ с записью туннеля.
+//
+// Отдельный тип, а не два строковых параметра: связей две, они
+// взаимоисключающие по смыслу (туннель принадлежит одной подсистеме), и
+// перепутанные местами литералы не дали бы ни ошибки, ни отказа — только
+// пустой список связанных туннелей и вечное молчание уборки.
+type ImportLink struct {
+	// WdttClientID — storage.AWGTunnel.WdttClientID.
+	WdttClientID string
+	// AmneziaCountry — страна подписки Amnezia Premium, из которой получена
+	// импортируемая конфигурация (storage.AWGTunnel.AmneziaCountry).
+	// Нормализуется импортом; пусто — импорт не из мастера.
+	AmneziaCountry string
+	// FreeTurnClientID — storage.AWGTunnel.FreeTurnClientID.
+	FreeTurnClientID string
+	// Obfuscator — туннель через wg-obfuscator (Phobos/ClusterM). LocalPort
+	// выбирает Import; бэкенд принудительно nativewg.
+	Obfuscator *storage.Obfuscator
+}
+
+// ReplaceOptions — поля записи, которые описывают ИМЕННО заменяемую
+// конфигурацию и потому едут в тот же мутатор, что и она.
+//
+// Указатель, а не строка: шестым позиционным string соседние вызовы, которым
+// страна безразлична (импорт связанного прокси-клиента, инструмент MCP),
+// передали бы "" — и молча стёрли бы чужое поле. nil читается компилятором
+// как «не трогать», пустая строка — как осознанная очистка.
+type ReplaceOptions struct {
+	// AmneziaCountry — storage.AWGTunnel.AmneziaCountry. nil — поле не
+	// трогать; непустое значение — поставить (нормализуется); пустая строка —
+	// очистить (конфигурация пришла не из мастера Amnezia Premium).
+	AmneziaCountry *string
 }
 
 // TunnelWithStatus combines stored tunnel data with live status.

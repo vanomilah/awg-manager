@@ -11,6 +11,21 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/sys/exec"
 )
 
+// clientRulePriority — фиксированный приоритет `ip rule` клиентских
+// правил. Ниже fwmark-правил NDMS (100+: hotspot-политики по MAC,
+// dns-proxy route, HR Neo), иначе адрес из DNS-маршрута другого туннеля
+// уводит трафик устройства туда (#931, F411). Выше `local` (0) и
+// `10: fwmark … lookup main` на 4.x; чужой zapret стоит на 90.
+// Один приоритет на все правила — ядро это допускает, а
+// `ip rule del from <ip> lookup <t>` приоритета не требует.
+const clientRulePriority = "50"
+
+// killSwitchMetric — метрика страховочного `unreachable default` в
+// таблице клиента: любой рабочий `default dev <tun>` его перекрывает,
+// а при down/del интерфейса ядро чистит только маршруты через интерфейс,
+// и в таблице остаётся unreachable → drop вместо провала в main (F412).
+const killSwitchMetric = "4294967295"
+
 // clientRouteOps implements the per-client policy-routing operations:
 // setting up a dedicated routing table with a default-via-tunnel route,
 // adding/removing `ip rule` policy entries that steer a client IP into
@@ -20,30 +35,37 @@ import (
 // networking operations, not NDMS-managed ones, so the concrete
 // operator type (kernel amneziawg vs NDMS OpkgTun) is irrelevant at
 // this layer. The only per-operator variability is how `ip` is run:
-// OS5 uses a mockable ipRunFunc, OS4 uses exec.Run directly. Both plug
-// into the `run` field below.
+// both OS4 and OS5 give clientRouteOps a closure over their own ipRun
+// field — mockable in tests, defaulting to exec.Run in production.
 type clientRouteOps struct {
 	run     ipRunFunc
 	logWarn func(action, target, msg string)
 }
 
 // newClientRouteOps constructs a clientRouteOps with the given `ip`
-// runner and warn-logger. Both must be non-nil — callers pass the
-// operator's ipRun field (OS5) or a thin adapter over exec.Run (OS4),
-// and the operator's logWarn method value.
+// runner and warn-logger. Both must be non-nil — callers pass a closure
+// over the operator's own ipRun field (OS4 and OS5 alike) and the
+// operator's logWarn method value.
 func newClientRouteOps(run ipRunFunc, logWarn func(string, string, string)) *clientRouteOps {
 	return &clientRouteOps{run: run, logWarn: logWarn}
 }
 
 // SetupClientRouteTable sets up a routing table with a default route
-// through the tunnel and a LAN bypass route so local traffic is not
-// affected.
+// through the tunnel, an unreachable fallback below it (kill switch)
+// and a LAN bypass route so local traffic is not affected.
 func (c *clientRouteOps) SetupClientRouteTable(ctx context.Context, kernelIface string, tableNum int) error {
 	tableStr := strconv.Itoa(tableNum)
 
 	result, err := c.run(ctx, "/opt/sbin/ip", "route", "replace", "default", "dev", kernelIface, "table", tableStr)
 	if err != nil {
 		return fmt.Errorf("setup route table %d: default route: %w", tableNum, exec.FormatError(result, err))
+	}
+
+	// ponytail: страховка стоит всегда, таблица общая на туннель; bypass-клиенты
+	// теряют правило в OnTunnelStop и до таблицы не доходят.
+	result, err = c.run(ctx, "/opt/sbin/ip", "route", "replace", "unreachable", "default", "metric", killSwitchMetric, "table", tableStr)
+	if err != nil {
+		return fmt.Errorf("setup route table %d: kill-switch route: %w", tableNum, exec.FormatError(result, err))
 	}
 
 	lanSubnet := c.detectLANSubnet(ctx)
@@ -66,7 +88,7 @@ func (c *clientRouteOps) AddClientRule(ctx context.Context, clientIP string, tab
 	// Best-effort idempotent teardown — ignore error.
 	c.run(ctx, "/opt/sbin/ip", "rule", "del", "from", clientIP, "lookup", tableStr)
 
-	result, err := c.run(ctx, "/opt/sbin/ip", "rule", "add", "from", clientIP, "lookup", tableStr, "priority", tableStr)
+	result, err := c.run(ctx, "/opt/sbin/ip", "rule", "add", "from", clientIP, "lookup", tableStr, "priority", clientRulePriority)
 	if err != nil {
 		return fmt.Errorf("add client rule from %s lookup %d: %w", clientIP, tableNum, exec.FormatError(result, err))
 	}

@@ -415,6 +415,62 @@ var eqScenarios = []eqScenario{
 		amnezia: true,
 	},
 	{
+		// #904: tcp + обфускация заголовком http. У всех форматов своя запись
+		// одного и того же — headerType=http у ссылки, network: http у Clash,
+		// tcpSettings.header у Xray — и все обязаны дать транспорт http.
+		name: "vless-tcp-http-header",
+		canonical: `{
+			"type": "vless",
+			"server": "s8.example.com",
+			"server_port": 80,
+			"uuid": "11111111-2222-3333-4444-555555555555",
+			"transport": {
+				"type": "http",
+				"method": "GET",
+				"host": ["h8.example.com"],
+				"path": "/p8"
+			}
+		}`,
+		link: "vless://11111111-2222-3333-4444-555555555555@s8.example.com:80" +
+			"?type=tcp&headerType=http&host=h8.example.com&path=%2Fp8&security=none#s8",
+		clash: `proxies:
+  - name: s8
+    type: vless
+    server: s8.example.com
+    port: 80
+    uuid: 11111111-2222-3333-4444-555555555555
+    network: http
+    http-opts:
+      path:
+        - /p8
+      headers:
+        Host:
+          - h8.example.com
+`,
+		xray: `{"outbounds":[{
+			"protocol": "vless",
+			"tag": "s8",
+			"settings": {"vnext": [{
+				"address": "s8.example.com",
+				"port": 80,
+				"users": [{"id": "11111111-2222-3333-4444-555555555555", "encryption": "none"}]
+			}]},
+			"streamSettings": {
+				"network": "tcp",
+				"tcpSettings": {
+					"header": {
+						"type": "http",
+						"request": {
+							"path": ["/p8"],
+							"headers": {"Host": ["h8.example.com"]}
+						}
+					}
+				}
+			}
+		}]}`,
+		amnezia: true,
+	},
+	{
 		name: "trojan-ws-tls",
 		canonical: `{
 			"type": "trojan",
@@ -539,6 +595,18 @@ var eqScenarios = []eqScenario{
     obfs: salamander
     obfs-password: obfs-pass
 `,
+		xray: `{"outbounds":[{
+			"tag": "h1",
+			"protocol": "hysteria",
+			"settings": {"address": "h1.example.com", "port": 443, "version": 2},
+			"streamSettings": {
+				"network": "hysteria",
+				"security": "tls",
+				"hysteriaSettings": {"version": 2, "auth": "hy2-secret"},
+				"tlsSettings": {"serverName": "sni.example.com", "alpn": ["h3"]},
+				"finalmask": {"udp": [{"type": "salamander", "settings": {"password": "obfs-pass"}}]}
+			}
+		}]}`,
 	},
 	{
 		name: "hy2-ports",
@@ -564,6 +632,20 @@ var eqScenarios = []eqScenario{
     password: hy2-secret2
     ports: 20000-30000
 `,
+		xray: `{"outbounds":[{
+			"tag": "h2",
+			"protocol": "hysteria",
+			"settings": {"address": "h2host.example.com", "port": 443, "version": 2},
+			"streamSettings": {
+				"network": "hysteria",
+				"security": "tls",
+				"hysteriaSettings": {"version": 2, "auth": "hy2-secret2"},
+				"tlsSettings": {"serverName": "h2host.example.com", "alpn": ["h3"]},
+				"finalmask": {"udp": [{"type": "udphop", "settings": {
+					"mode": "intervalRemote", "interval": 10, "remotePorts": "20000-30000"
+				}}]}
+			}
+		}]}`,
 	},
 	{
 		name: "mieru-tcp",
@@ -733,7 +815,7 @@ func parseVia(t *testing.T, format, input string) map[string]any {
 
 // TestPathEquivalence — см. комментарий пакета в шапке файла.
 func TestPathEquivalence(t *testing.T) {
-	doc, root := loadSchema(t)
+	doc, root, _ := loadSchema(t)
 	outboundsNode, _ := root["properties"].(map[string]any)
 	arrayNode, _ := outboundsNode["outbounds"].(map[string]any)
 	itemsNode, _ := arrayNode["items"].(map[string]any)

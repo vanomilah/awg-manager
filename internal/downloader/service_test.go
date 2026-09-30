@@ -687,3 +687,53 @@ func TestResolveClient_ConcurrentNoDeadlock(t *testing.T) {
 		}
 	}
 }
+
+// F312: у клиента загрузчика есть политика редиректов — спуск https→http
+// отклоняется (в адресе списка может жить токен), предел хопов общий.
+func TestResolveClient_RejectsSchemeDowngrade(t *testing.T) {
+	lease, err := NewService(Deps{}).ResolveClient(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ResolveClient: %v", err)
+	}
+	defer lease.Close()
+	if lease.Client.CheckRedirect == nil {
+		t.Fatal("политики редиректов нет: 10 хопов и спуск на http по умолчанию net/http")
+	}
+	mk := func(raw string) *http.Request {
+		req, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	if err := lease.Client.CheckRedirect(mk("http://203.0.113.34/list"), []*http.Request{mk("https://203.0.113.34/list")}); err == nil {
+		t.Fatal("спуск https→http принят")
+	}
+	if err := lease.Client.CheckRedirect(mk("https://203.0.113.35/list"), []*http.Request{mk("https://203.0.113.34/list")}); err != nil {
+		t.Fatalf("переход внутри https отклонён: %v", err)
+	}
+}
+
+// RedirectGuard из запроса ставится на клиента: редирект на адрес, который
+// страж отклоняет, обрывает загрузку.
+func TestReadAll_RedirectGuardApplied(t *testing.T) {
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("final-body"))
+	}))
+	defer final.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL, http.StatusFound)
+	}))
+	defer redirect.Close()
+
+	svc := NewService(Deps{})
+	_, _, err := svc.ReadAll(context.Background(), Request{
+		Purpose:       "test-redirect-guard",
+		URL:           redirect.URL,
+		MaxBodyBytes:  128,
+		RedirectGuard: func(string) error { return errors.New("страж хопа отклонил") },
+	})
+	if err == nil || !strings.Contains(err.Error(), "страж хопа отклонил") {
+		t.Fatalf("expected guard rejection, got %v", err)
+	}
+}

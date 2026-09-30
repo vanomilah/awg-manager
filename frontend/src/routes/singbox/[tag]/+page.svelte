@@ -323,6 +323,15 @@
 								oninput={(e) => setField(['tls', 'reality', 'short_id'], (e.target as HTMLInputElement).value)}
 							/>
 						</div>
+
+						<label class="checkbox-label">
+							<input
+								type="checkbox"
+								checked={getFieldBool(['tls', 'reality', 'support_x25519mlkem768'])}
+								onchange={(e) => setField(['tls', 'reality', 'support_x25519mlkem768'], (e.target as HTMLInputElement).checked)}
+							/>
+							<span>X25519MLKEM768 (нужен серверам Xray 26.9.8+, только fingerprint chrome)</span>
+						</label>
 					</section>
 				{/if}
 
@@ -674,6 +683,63 @@
 							oninput={(e) => setField(['traffic_pattern'], (e.target as HTMLTextAreaElement).value)}
 						></textarea>
 					</div>
+				</section>
+			{:else if protocol === 'trusttunnel'}
+				<section class="card tunnel-section">
+					<SettingsSectionLabel label="TrustTunnel" icon={UserRound} tone="green" header />
+
+					<div class="form-group">
+						<label class="label" for="tt_username">Пользователь</label>
+						<input
+							id="tt_username"
+							class="input"
+							value={getFieldString(['username'])}
+							oninput={(e) => setField(['username'], (e.target as HTMLInputElement).value)}
+						/>
+					</div>
+
+					<div class="form-group">
+						<label class="label" for="tt_password">Пароль</label>
+						<input
+							id="tt_password"
+							class="input"
+							type="password"
+							value={getFieldString(['password'])}
+							oninput={(e) => setField(['password'], (e.target as HTMLInputElement).value)}
+						/>
+					</div>
+				</section>
+
+				<section class="card tunnel-section">
+					<SettingsSectionLabel label="TLS" icon={Lock} tone="blue" header />
+
+					<div class="form-group">
+						<label class="label" for="tt_sni">SNI</label>
+						<input
+							id="tt_sni"
+							class="input"
+							value={getFieldString(['tls', 'server_name'])}
+							oninput={(e) => setField(['tls', 'server_name'], (e.target as HTMLInputElement).value)}
+						/>
+					</div>
+
+					<label class="checkbox-label">
+						<input
+							type="checkbox"
+							checked={getFieldBool(['tls', 'insecure'])}
+							onchange={(e) => setField(['tls', 'insecure'], (e.target as HTMLInputElement).checked)}
+						/>
+						<span>Insecure (пропустить проверку сертификата)</span>
+					</label>
+
+					<label class="checkbox-label">
+						<input
+							type="checkbox"
+							checked={getFieldBool(['tls', 'fragment'])}
+							onchange={(e) => setField(['tls', 'fragment'], (e.target as HTMLInputElement).checked)}
+						/>
+						<span>Anti-DPI (фрагментация ClientHello)</span>
+					</label>
 				</section>
 			{/if}
 

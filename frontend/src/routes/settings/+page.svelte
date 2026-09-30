@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import { startVisiblePoll } from '$lib/utils/visiblePoll';
 	import { get } from "svelte/store";
 	import { afterNavigate } from "$app/navigation";
 	import { page } from "$app/stores";
@@ -7,6 +8,8 @@
 	import { notifications } from "$lib/stores/notifications";
 	import { singboxStatus } from "$lib/stores/singbox";
 	import { hydrarouteStatus } from "$lib/stores/hydraroute";
+	import { mcpKeys } from "$lib/stores/mcpKeys";
+	import type { PollingState } from "$lib/stores/polling";
 	import { PageContainer, PageHeader, LoadingSpinner } from "$lib/components/layout";
 	import { Toggle, Modal, Button, ConfirmModal, SegmentedControl } from "$lib/components/ui";
 	import {
@@ -25,6 +28,8 @@
 		ExperimentalSettingsCard,
 		PukhososPatrol,
 		SettingsSectionLabel,
+		McpCard,
+		ObfuscatorRelayCard,
 	} from "$lib/components/settings";
 	import HappKeysModal from "$lib/components/subscriptions/HappKeysModal.svelte";
 	import { setSettings as setGlobalSettings } from "$lib/stores/settings";
@@ -40,7 +45,10 @@
 		Settings,
 		UpdateInfo,
 		DownloadRoute,
+		McpKey,
+		McpKeyCreated,
 	} from "$lib/types";
+	import { proxyInstallStatus, type ProxySubsystem } from "$lib/stores/proxyInstall";
 	import {
 		USAGE_LEVEL_LABELS,
 		isAppearanceSettingsVisible,
@@ -97,10 +105,14 @@
 	let restartConfirmOpen = $state(false);
 	let hydraBusy = $state(false);
 	let singboxInstalling = $state(false);
+	let singboxUninstalling = $state(false);
 	let singboxInstallError = $state<string | null>(null);
 	let singboxUpdating = $state(false);
 	let singboxUpdateError = $state<string | null>(null);
 	let singboxBusy = $state(false);
+	let savingBootstrapDNS = $state(false);
+	let savingClashPort = $state(false);
+	let clashPortError = $state<string | null>(null);
 	let mihomoStatusValue = $state<import('$lib/types').MihomoStatus | null>(null);
 	let mihomoStatusLoading = $state(false);
 	let mihomoInstalling = $state(false);
@@ -251,6 +263,60 @@
 			singboxUpdateError = e instanceof Error ? e.message : String(e);
 		} finally {
 			singboxUpdating = false;
+		}
+	}
+
+	async function uninstallSingbox() {
+		singboxUninstalling = true;
+		try {
+			const fresh = await api.singboxUninstall();
+			singboxStatus.applyMutationResponse(fresh);
+			notifications.success('Sing-box удалён');
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : 'Не удалось удалить sing-box');
+		} finally {
+			singboxUninstalling = false;
+		}
+	}
+
+	// Bootstrap-DNS применяется бэкендом сразу: он переписывает адрес в
+	// 00-base.json и перечитывает конфиг sing-box без перезапуска.
+	async function saveBootstrapDNS(value: string) {
+		if (!settings) return;
+		savingBootstrapDNS = true;
+		try {
+			settings = await api.updateSettings({ ...settings, singboxBootstrapDNS: value });
+			setGlobalSettings(settings);
+			notifications.success(
+				value
+					? `Bootstrap-DNS: ${value}`
+					: "Bootstrap-DNS больше не навязывается — адрес в конфигурации остаётся прежним",
+			);
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Ошибка сохранения bootstrap-DNS");
+		} finally {
+			savingBootstrapDNS = false;
+		}
+	}
+
+	// Порт Clash API применяется бэкендом сразу: он переписывает
+	// external_controller в 00-base.json, перечитывает конфиг sing-box и
+	// переставляет собственного клиента. Отказ по занятости порта приходит
+	// текстом ошибки и показывается прямо под полем.
+	async function saveClashPort(value: number) {
+		if (!settings) return;
+		savingClashPort = true;
+		clashPortError = null;
+		try {
+			settings = await api.updateSettings({ ...settings, singboxClashPort: value });
+			setGlobalSettings(settings);
+			notifications.success(`Порт Clash API: ${value}`);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : "Ошибка сохранения порта Clash API";
+			clashPortError = msg;
+			notifications.error(msg);
+		} finally {
+			savingClashPort = false;
 		}
 	}
 
@@ -539,8 +605,84 @@
 		});
 	}
 
+	// ── подсистемы прокси (WDTT, FreeTurn, обфускаторы) ─────────────
+	// Бинари ставятся и снимаются целиком подсистемой: version-файл у половин
+	// общий, а раздельный снос сделал бы статус неоднозначным.
+	//
+	// Статус живёт в polling-store, подписанном на `proxyrt.instances`: удаление
+	// инстанса в другой вкладке иначе оставило бы кнопку «Удалить» запертой до
+	// перезагрузки страницы.
+	const PROXY_SUBSYSTEMS = [
+		{ key: 'wdtt' as const, label: 'WDTT' },
+		{ key: 'freeturn' as const, label: 'FreeTurn' },
+		{ key: 'obf-phobos' as const, label: 'wg-obfuscator (Phobos)' },
+		{ key: 'obf-clusterm' as const, label: 'wg-obfuscator (ClusterM)' },
+	];
+	let proxyBusy = $state<Record<string, boolean>>({});
+
+	// Автоподписка `$store` работает только с идентификатором, поэтому
+	// store'ы разложены по переменным.
+	const wdttInstallStore = proxyInstallStatus.wdtt;
+	const freeturnInstallStore = proxyInstallStatus.freeturn;
+	const obfPhobosInstallStore = proxyInstallStatus['obf-phobos'];
+	const obfClusterMInstallStore = proxyInstallStatus['obf-clusterm'];
+	const proxyStatuses = $derived({
+		wdtt: $wdttInstallStore.data,
+		freeturn: $freeturnInstallStore.data,
+		'obf-phobos': $obfPhobosInstallStore.data,
+		'obf-clusterm': $obfClusterMInstallStore.data,
+	});
+
+	async function runProxyBinaries(
+		subsystem: ProxySubsystem,
+		action: () => Promise<void>,
+		okMessage: string,
+		failMessage: string,
+	) {
+		proxyBusy = { ...proxyBusy, [subsystem]: true };
+		try {
+			await action();
+			notifications.success(okMessage);
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : failMessage);
+		} finally {
+			proxyBusy = { ...proxyBusy, [subsystem]: false };
+			await proxyInstallStatus[subsystem].refetch();
+		}
+	}
+
+	const proxyBinaryRows = $derived(
+		PROXY_SUBSYSTEMS.map(({ key, label }) => {
+			const st = proxyStatuses[key];
+			return {
+				key,
+				label,
+				present: st?.binariesPresent === true,
+				installAvailable: st?.installAvailable === true,
+				updateAvailable: st?.updateAvailable === true,
+				installedVersion: st?.installedVersion,
+				installVersion: st?.installVersion,
+				instances: st?.instances ?? 0,
+				busy: proxyBusy[key] === true,
+				oninstall: () =>
+					void runProxyBinaries(key, () => api.proxyInstall(key),
+						`${label}: бинари установлены`, `Не удалось установить ${label}`),
+				onuninstall: () =>
+					void runProxyBinaries(key, () => api.proxyUninstall(key),
+						`${label}: бинари удалены`, `Не удалось удалить ${label}`),
+			};
+		// Подсистема без статуса и без возможности установки — не наша арка:
+		// строка была бы мёртвой.
+		}).filter((row) => row.present || row.installAvailable),
+	);
+
 onMount(() => {
-	const timer = setInterval(() => {
+	// Свой таймер мимо стора sysInfo. Данные тут почти статичные: версии,
+	// возможности прошивки, состояние kernel-модуля. Всё, что меняется,
+	// меняет сам пользователь с этой же страницы, и те пути перечитывают
+	// сами — поэтому это страховка, а не источник, и 30 с ей ни к чему.
+	// Фоновая вкладка не спрашивает вовсе.
+	const stopSystemInfoPoll = startVisiblePoll(() => {
 		void fetchSystemInfo(true);
 		void fetchMihomoStatus();
 		void fetchSusaninStatus();
@@ -580,7 +722,7 @@ onMount(() => {
 	})();
 
 	return () => {
-		clearInterval(timer);
+		stopSystemInfoPoll();
 	};
 });
 
@@ -632,21 +774,63 @@ $effect(() => {
 		}
 	}
 
-	async function toggleEntwareAuth(enabled: boolean) {
+	// Ключи запрашиваются только пока MCP включён; SSE «mcpKeys» обновляет
+	// список через стор, поэтому после create/revoke руками ничего не грузим.
+	let mcpKeysState = $state<PollingState<McpKey[]> | null>(null);
+	$effect(() => {
+		if (!settings?.mcpEnabled) {
+			mcpKeysState = null;
+			return;
+		}
+		return mcpKeys.subscribe((s) => {
+			if (s.status === "error" && mcpKeysState?.status !== "error") {
+				notifications.error(s.error ?? "Не удалось загрузить ключи MCP");
+			}
+			mcpKeysState = s;
+		});
+	});
+
+	async function toggleMcp(enabled: boolean) {
 		if (!settings) return;
 		saving = true;
 		try {
-			settings = await api.updateSettings({ ...settings, entwareAuthEnabled: enabled });
+			settings = await api.updateSettings({ ...settings, mcpEnabled: enabled });
 			setGlobalSettings(settings);
-			notifications.success(
-				enabled
-					? "Вход по учётным данным Entware включён"
-					: "Вход по учётным данным Entware отключён",
-			);
+			notifications.success(enabled ? "MCP-сервер включён" : "MCP-сервер выключен");
 		} catch (e) {
 			notifications.error(e instanceof Error ? e.message : "Ошибка сохранения настроек");
 		} finally {
 			saving = false;
+		}
+	}
+
+	async function toggleObfuscatorRelay(process: boolean) {
+		if (!settings) return;
+		saving = true;
+		try {
+			settings = await api.setObfuscatorRelay(process);
+			setGlobalSettings(settings);
+			notifications.success(process ? "Phobos: userspace-процесс" : "Phobos: модуль ядра");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Ошибка сохранения настроек");
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function createMcpKey(name: string, readOnly: boolean): Promise<McpKeyCreated> {
+		const created = await api.createMcpKey(name, readOnly);
+		await mcpKeys.refetch();
+		return created;
+	}
+
+	async function revokeMcpKey(id: string) {
+		try {
+			await api.revokeMcpKey(id);
+			notifications.success("Ключ отозван");
+			await mcpKeys.refetch();
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось отозвать ключ");
 		}
 	}
 
@@ -971,7 +1155,6 @@ $effect(() => {
 					onrefresh={refreshSystemInfo}
 					refreshing={systemInfoRefreshing}
 					lastUpdated={systemInfoUpdatedAt}
-					autoRefreshMs={30000}
 				/>
 
 				<div id="awgm-update" class="settings-block">
@@ -993,8 +1176,18 @@ $effect(() => {
 					{singboxUpdateError}
 					oninstallSingbox={installSingbox}
 					onupdateSingbox={updateSingbox}
+					onuninstallSingbox={uninstallSingbox}
+					{singboxUninstalling}
 					showSingbox={showSingboxIntegration}
 					showHydra={showHydraIntegration}
+					bootstrapDNS={settings.singboxBootstrapDNS ?? ''}
+					bootstrapSaving={savingBootstrapDNS}
+					onsaveBootstrapDNS={saveBootstrapDNS}
+					clashPort={settings.singboxClashPort ?? 0}
+					clashPortSaving={savingClashPort}
+					{clashPortError}
+					onsaveClashPort={saveClashPort}
+					proxyBinaries={proxyBinaryRows}
 					mihomoStatus={mihomoStatusValue}
 					{mihomoStatusLoading}
 					{mihomoInstalling}
@@ -1090,19 +1283,6 @@ $effect(() => {
 									</Button>
 								{/if}
 							</div>
-						</div>
-						<div class="setting-row toggle-inline-row">
-							<div class="flex flex-col gap-1">
-								<span class="font-medium">Вход по учётным данным Entware</span>
-								<span class="setting-description">
-									Проверять логин и пароль по /opt/etc/shadow. Вход без обращения к роутеру — не создаёт уведомлений в журнале Keenetic.
-								</span>
-							</div>
-							<Toggle
-								checked={settings.entwareAuthEnabled ?? false}
-								onchange={toggleEntwareAuth}
-								disabled={saving}
-							/>
 						</div>
 					{/if}
 					<HttpServerCard />
@@ -1312,6 +1492,24 @@ $effect(() => {
 					{/if}
 					</div>
 				</div>
+
+				<McpCard
+					enabled={settings.mcpEnabled ?? false}
+					{saving}
+					keys={mcpKeysState?.data ?? []}
+					keysLoading={mcpKeysState?.status === "loading"}
+					{origin}
+					ontoggle={toggleMcp}
+					oncreate={createMcpKey}
+					onrevoke={revokeMcpKey}
+				/>
+
+				<ObfuscatorRelayCard
+					process={settings.obfuscatorRelayProcess ?? false}
+					tripped={settings.obfuscatorKmodTripped ?? ''}
+					{saving}
+					ontoggle={toggleObfuscatorRelay}
+				/>
 
 				{#if $experimentalSettingsUnlocked}
 					<ExperimentalSettingsCard />
@@ -1663,8 +1861,7 @@ $effect(() => {
 		min-width: 0;
 	}
 
-	.settings-text-input,
-	.api-key-input {
+	.settings-text-input {
 		width: 100%;
 		max-width: none;
 	}

@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +13,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hoaxisr/awg-manager/internal/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
 	"github.com/hoaxisr/awg-manager/internal/tunnel/service"
@@ -276,36 +278,39 @@ func TestMergePeerWhitelist_EmptyPSKKeepsExisting(t *testing.T) {
 // stubTunnelSvc — минимальный TunnelService для тестов Update-хэндлера.
 // Get возвращает ошибку: BuildTunnelResponse тогда отдаёт UPDATE_FAILED,
 // но это ПОСЛЕ записи в стор — ассерты идут по стору, код ответа не важен.
+// toggleCall — зафиксированный аргумент вызова SetEnabled/SetDefaultRoute:
+// id туннеля и значение, с которым его позвали.
+type toggleCall struct {
+	id string
+	v  bool
+}
+
 type stubTunnelSvc struct {
 	updateFn func(ctx context.Context, oldStored, newStored *storage.AWGTunnel) error
 	deleteFn func(ctx context.Context, tunnelID string) error
 	stopFn   func(ctx context.Context, tunnelID string) error
 	stateFn  func(tunnelID string) tunnel.StateInfo
+	getFn    func(ctx context.Context, id string) (*service.TunnelWithStatus, error)
 
 	replaceCalls int
+	replaceErr   error
+	// replaceOpts — опции ПОСЛЕДНЕЙ замены: по ним видно, какую семантику
+	// страны handler передал сервису (nil = «не трогать»).
+	replaceOpts  service.ReplaceOptions
+	replaceNames []string
 
-	// createdCfg — конфиг, с которым хендлер позвал Create: по нему видно,
-	// что уехало в NDMS.
-	createdCfg *tunnel.Config
-	// createdRecord — запись, которую хендлер отдал сервису: по ней видно,
-	// что успело проставиться до передачи владения.
-	createdRecord *storage.AWGTunnel
-	createErr     error
+	setEnabledCalls      []toggleCall
+	setDefaultRouteCalls []toggleCall
+	setEnabledErr        error
+	setDefaultRouteErr   error
 }
 
 func (s *stubTunnelSvc) List(context.Context) ([]service.TunnelWithStatus, error) { return nil, nil }
-func (s *stubTunnelSvc) Get(context.Context, string) (*service.TunnelWithStatus, error) {
-	return nil, fmt.Errorf("stub")
-}
-func (s *stubTunnelSvc) Create(_ context.Context, stored *storage.AWGTunnel) error {
-	cfg := orchestrator.StoredToConfig(stored)
-	s.createdCfg = &cfg
-	rec := *stored
-	s.createdRecord = &rec
-	if s.createErr != nil {
-		return s.createErr
+func (s *stubTunnelSvc) Get(ctx context.Context, id string) (*service.TunnelWithStatus, error) {
+	if s.getFn != nil {
+		return s.getFn(ctx, id)
 	}
-	return nil
+	return nil, fmt.Errorf("stub")
 }
 func (s *stubTunnelSvc) Update(ctx context.Context, oldStored, newStored *storage.AWGTunnel) error {
 	if s.updateFn != nil {
@@ -334,15 +339,25 @@ func (s *stubTunnelSvc) GetState(_ context.Context, tunnelID string) tunnel.Stat
 	}
 	return tunnel.StateInfo{}
 }
-func (s *stubTunnelSvc) SetEnabled(context.Context, string, bool) error      { return nil }
-func (s *stubTunnelSvc) SetDefaultRoute(context.Context, string, bool) error { return nil }
-func (s *stubTunnelSvc) Import(context.Context, string, string, string) (*service.TunnelWithStatus, error) {
+func (s *stubTunnelSvc) SetEnabled(_ context.Context, id string, v bool) error {
+	s.setEnabledCalls = append(s.setEnabledCalls, toggleCall{id, v})
+	return s.setEnabledErr
+}
+func (s *stubTunnelSvc) SetDefaultRoute(_ context.Context, id string, v bool) error {
+	s.setDefaultRouteCalls = append(s.setDefaultRouteCalls, toggleCall{id, v})
+	return s.setDefaultRouteErr
+}
+func (s *stubTunnelSvc) Import(context.Context, string, string, string, service.ImportLink) (*service.TunnelWithStatus, error) {
 	return nil, fmt.Errorf("stub")
 }
-func (s *stubTunnelSvc) ReplaceConfig(context.Context, string, string, string) error {
+func (s *stubTunnelSvc) ReplaceConfig(_ context.Context, _, _, newName string, opts service.ReplaceOptions) error {
 	s.replaceCalls++
-	return nil
+	s.replaceOpts = opts
+	s.replaceNames = append(s.replaceNames, newName)
+	return s.replaceErr
 }
+func (s *stubTunnelSvc) SyncDescription(context.Context, string, string, string) {}
+
 func (s *stubTunnelSvc) WANModel() *wan.Model                     { return nil }
 func (s *stubTunnelSvc) GetResolvedISP(string) string             { return "" }
 func (s *stubTunnelSvc) SetSelfCreateGate(tunnel.SelfCreateGater) {}
@@ -353,6 +368,102 @@ func newTunnelsUpdateHarness(t *testing.T, stub *stubTunnelSvc) (*TunnelsHandler
 	store := storage.NewAWGTunnelStoreWithLockDir(dir, filepath.Join(dir, "locks"))
 	// nil AppLogger безопасен — см. комментарий в settings_test.go.
 	return NewTunnelsHandler(stub, store, nil), store
+}
+
+// RT12: частичный PATCH не имеет права выключить туннель.
+//
+// Фронт шлёт `Partial<AWGTunnel>` — тело без ключа `enabled`. В Go его
+// отсутствие неотличимо от `false`, поэтому присваивание `t.Enabled =
+// req.Enabled` в applyTunnelUpdate выключало бы туннель на КАЖДОМ
+// переименовании. Инвентарь полей такое не ловит по построению: он краснеет
+// на УДАЛЕНИИ присваивания, а здесь беда в его ПОЯВЛЕНИИ.
+func TestTunnelUpdate_PartialPatchKeepsEnabled(t *testing.T) {
+	h, store := newTunnelsUpdateHarness(t, &stubTunnelSvc{})
+	if err := store.Create(&storage.AWGTunnel{
+		ID: "awg10", Name: "прежнее", Enabled: true,
+		Interface: storage.AWGInterface{Address: "10.0.0.2/32"},
+		Peer:      storage.AWGPeer{Endpoint: "1.2.3.4:51820"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Тело без ключа enabled — ровно то, что шлёт карточка при переименовании.
+	h.Update(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost,
+		"/tunnels/update?id=awg10", strings.NewReader(`{"name":"новое"}`)))
+
+	saved, err := store.Get("awg10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !saved.Enabled {
+		t.Fatal("частичный PATCH выключил туннель: ключа enabled в теле не было")
+	}
+	if saved.Name != "новое" {
+		t.Fatalf("имя не сохранено: %q", saved.Name)
+	}
+}
+
+// RT1: fail-closed на пути правки. Инвариант из CLAUDE.md и комментария в
+// tunnels_crud.go: если служба не смогла применить правку к ЖИВОМУ
+// интерфейсу, на диск её класть нельзя — иначе запись разойдётся с тем, что
+// реально работает на роутере, и разойдётся МОЛЧА.
+//
+// У Create такой пин есть (`TestCreate_HandlerDoesNotPersistOnServiceError`),
+// у Update не было: мутация «проглотить отказ и персистить всегда» оставляла
+// весь пакет зелёным.
+func TestTunnelUpdate_DoesNotPersistOnServiceError(t *testing.T) {
+	stub := &stubTunnelSvc{updateFn: func(context.Context, *storage.AWGTunnel, *storage.AWGTunnel) error {
+		return errors.New("RCI отказал")
+	}}
+	h, store := newTunnelsUpdateHarness(t, stub)
+	if err := store.Create(&storage.AWGTunnel{
+		ID: "awg10", Name: "прежнее", Enabled: true,
+		Interface: storage.AWGInterface{Address: "10.0.0.2/32"},
+		Peer:      storage.AWGPeer{Endpoint: "1.2.3.4:51820"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10",
+		strings.NewReader(`{"name":"новое"}`)))
+
+	if rr.Code == http.StatusOK {
+		t.Fatalf("отказ службы обязан быть отказом ручки, код %d", rr.Code)
+	}
+	if body := rr.Body.String(); !strings.Contains(body, "RCI отказал") {
+		t.Errorf("причина отказа не дошла до клиента: %s", body)
+	}
+	// Главное: диск не тронут. Иначе запись говорит «новое», а на роутере
+	// живёт «прежнее», и узнать об этом неоткуда.
+	saved, err := store.Get("awg10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if saved.Name != "прежнее" {
+		t.Fatalf("правка сохранена вопреки отказу службы: имя %q", saved.Name)
+	}
+}
+
+// F151/Q32: негабаритная сигнатура отличается от прочих отказов AWG3
+// отдельным кодом — карточка показывает её на поле I1-I5, а не общей ошибкой.
+func TestTunnelUpdate_OversizedSignatureIsSignatureTooLarge(t *testing.T) {
+	h, store := newTunnelsUpdateHarness(t, &stubTunnelSvc{})
+	if err := store.Create(&storage.AWGTunnel{
+		ID: "awg10", Name: "t1", Enabled: true,
+		Interface: storage.AWGInterface{Address: "10.0.0.2/32"},
+		Peer:      storage.AWGPeer{Endpoint: "1.2.3.4:51820"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	body := `{"interface":{"address":"10.0.0.2/32","i1":"` + strings.Repeat("y", 9000) + `"}}`
+	rr := httptest.NewRecorder()
+	h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10", strings.NewReader(body)))
+
+	if !strings.Contains(rr.Body.String(), "SIGNATURE_TOO_LARGE") {
+		t.Fatalf("нет кода SIGNATURE_TOO_LARGE в теле: %.200s", rr.Body.String())
+	}
 }
 
 func TestTunnelUpdate_PreservesStartedAt(t *testing.T) {
@@ -478,6 +589,30 @@ func TestTunnelReplaceConf_OperationInProgressIs409(t *testing.T) {
 	// работающего туннеля молча заменяется под чужой операцией.
 	if stub.replaceCalls != 0 {
 		t.Fatalf("конфиг заменён вопреки занятому замку: вызовов ReplaceConfig = %d", stub.replaceCalls)
+	}
+}
+
+// ReplaceConfig возвращает fmt.Errorf("validate conf: %w", err), когда
+// config.ValidateObfuscation отвергает конфиг. Хендлер обязан вернуть 400
+// INVALID_AWG3, а не 500 InternalError.
+func TestTunnelReplaceConf_ValidateConfIs400InvalidAWG3(t *testing.T) {
+	stub := &stubTunnelSvc{
+		replaceErr: fmt.Errorf("validate conf: %s", "H1 и H2 пересекаются"),
+	}
+	h, store := newTunnelsUpdateHarness(t, stub)
+	if err := store.Create(&storage.AWGTunnel{ID: "awg11", Name: "NL_CHIS"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ReplaceConf(rec, httptest.NewRequest(http.MethodPost, "/tunnels/replace?id=awg11",
+		strings.NewReader(`{"content":"[Interface]\nAddress = 10.0.0.2/32\n"}`)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("код ответа = %d, ожидался 400; тело: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "INVALID_AWG3") {
+		t.Fatalf("нет кода INVALID_AWG3 в теле: %s", rec.Body.String())
 	}
 }
 
@@ -703,6 +838,7 @@ func TestTunnelUpdate_FieldInventoryComplete(t *testing.T) {
 		"DefaultRouteSet":   true,
 		"ISPInterface":      true,
 		"ISPInterfaceLabel": true,
+		"Obfuscator":        true,
 	}
 	// Неправимые через этот handler: владелец поля — другая подсистема
 	// (оркестратор, wdttlink/import, зеркало WDTT) либо оно неизменяемо.
@@ -719,9 +855,13 @@ func TestTunnelUpdate_FieldInventoryComplete(t *testing.T) {
 		"ResolvedEndpointIP": true,
 		"WdttClientID":       true,
 		"FreeTurnClientID":   true,
-		"RawKernelIface":     true,
-		"RawNdmsIface":       true,
-		"ToggleLocked":       true,
+		// AmneziaCountry владеют импорт и замена конфигурации: метка обязана
+		// жить ровно столько, сколько конфигурация, которую она описывает.
+		// Правка карточкой развязала бы её с конфигом.
+		"AmneziaCountry": true,
+		"RawKernelIface": true,
+		"RawNdmsIface":   true,
+		"Locked":         true,
 	}
 
 	rt := reflect.TypeOf(storage.AWGTunnel{})
@@ -787,5 +927,214 @@ func TestTunnelUpdate_KeepsServiceResolvedEndpointIP(t *testing.T) {
 	}
 	if saved.ResolvedEndpointIP != "203.0.113.7" {
 		t.Fatalf("резолв сервиса не доехал до записи: ResolvedEndpointIP=%q", saved.ResolvedEndpointIP)
+	}
+}
+
+// F186: диапазон keepalive (AWG 3.0) на nativewg больше не отвергается —
+// в NDMS уходит его нижняя граница, а в записи диапазон остаётся целиком.
+// Краснеет, если хендлер снова начнёт отвергать диапазон на nativewg —
+// неважно, какой именно проверкой.
+func TestTunnelUpdate_NativeWGAcceptsKeepaliveRange(t *testing.T) {
+	h, store := newTunnelsUpdateHarness(t, &stubTunnelSvc{})
+	if err := store.Create(&storage.AWGTunnel{
+		ID: "awg10", Name: "t1", Backend: "nativewg",
+		Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420},
+		Peer:      storage.AWGPeer{PublicKey: "pk", Endpoint: "1.2.3.4:51820", PersistentKeepalive: "25"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10",
+		strings.NewReader(`{"peer":{"publicKey":"pk","endpoint":"1.2.3.4:51820","persistentKeepalive":"25-35"}}`)))
+
+	// stubTunnelSvc.Get отвечает ошибкой, поэтому даже принятая правка
+	// заканчивается 400 с UPDATE_FAILED из BuildTunnelResponse — уже ПОСЛЕ
+	// записи в стор. Код проверяем явно: «в теле нет INVALID_KEEPALIVE»
+	// читалось бы как «запрос прошёл», хотя тело в любом случае ошибка.
+	if got := decodeJSONBody(t, rr)["code"]; got != "UPDATE_FAILED" {
+		t.Fatalf("code = %v, ждали UPDATE_FAILED (диапазон отвергнут валидацией?): %.200s", got, rr.Body.String())
+	}
+	saved, err := store.Get("awg10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if saved.Peer.PersistentKeepalive != "25-35" {
+		t.Fatalf("диапазон не сохранён: %q", saved.Peer.PersistentKeepalive)
+	}
+}
+
+// Запрет нулевой нижней границы не запирает уже сохранённый туннель. В записи
+// "0-80" оказаться могло: до запрета его принимала валидация, а импорт
+// keepalive не проверяет вовсе. Правка, которая keepalive не присылает, обязана
+// проходить — иначе такой туннель нельзя ни переименовать, ни починить, потому
+// что чинят его той же правкой карточки. Тот же довод у валидаторов настроек
+// (internal/api/settings_derive.go): они трогают только присланное.
+func TestTunnelUpdate_StoredZeroRangeKeepaliveDoesNotBlockOtherEdits(t *testing.T) {
+	h, store := newTunnelsUpdateHarness(t, &stubTunnelSvc{})
+	if err := store.Create(&storage.AWGTunnel{
+		ID: "awg10", Name: "прежнее", Backend: "kernel",
+		Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420},
+		Peer:      storage.AWGPeer{PublicKey: "pk", Endpoint: "1.2.3.4:51820", PersistentKeepalive: "0-80"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Тело без блока пира — ровно то, что шлёт переименование.
+	rr := httptest.NewRecorder()
+	h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10",
+		strings.NewReader(`{"name":"новое"}`)))
+
+	if got := decodeJSONBody(t, rr)["code"]; got == "INVALID_KEEPALIVE" {
+		t.Fatalf("сохранённый \"0-80\" запер правку туннеля: %.200s", rr.Body.String())
+	}
+	saved, err := store.Get("awg10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if saved.Name != "новое" {
+		t.Fatalf("имя не сохранено: %q", saved.Name)
+	}
+	if saved.Peer.PersistentKeepalive != "0-80" {
+		t.Fatalf("keepalive изменён правкой имени: %q", saved.Peer.PersistentKeepalive)
+	}
+}
+
+// А присланное значение отвергается всегда — в том числе когда в записи лежит
+// такое же: критерий здесь «поле прислали», а не «значение изменилось».
+func TestTunnelUpdate_RejectsSubmittedZeroRangeKeepalive(t *testing.T) {
+	h, store := newTunnelsUpdateHarness(t, &stubTunnelSvc{})
+	if err := store.Create(&storage.AWGTunnel{
+		ID: "awg10", Name: "t1", Backend: "kernel",
+		Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420},
+		Peer:      storage.AWGPeer{PublicKey: "pk", Endpoint: "1.2.3.4:51820", PersistentKeepalive: "0-80"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10",
+		strings.NewReader(`{"name":"новое","peer":{"publicKey":"pk","endpoint":"1.2.3.4:51820","persistentKeepalive":"0-80"}}`)))
+
+	if got := decodeJSONBody(t, rr)["code"]; got != "INVALID_KEEPALIVE" {
+		t.Fatalf("code = %v, ждали INVALID_KEEPALIVE: %.200s", got, rr.Body.String())
+	}
+	saved, err := store.Get("awg10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if saved.Name != "t1" {
+		t.Fatalf("правка применена вопреки отказу: имя %q", saved.Name)
+	}
+}
+
+// Формат по-прежнему проверяется: мусор в записи означает keepalive, который
+// не применится нигде, и молча уехать на диск он не должен. "0-80" в этом же
+// списке: нулевая нижняя граница означает выключенный keepalive, диапазон —
+// случайное значение из отрезка, вместе они противоречат друг другу.
+func TestTunnelUpdate_RejectsMalformedKeepalive(t *testing.T) {
+	for _, bad := range []string{"30-22", "70000", "abc", "22-", "0-80"} {
+		t.Run(bad, func(t *testing.T) {
+			h, store := newTunnelsUpdateHarness(t, &stubTunnelSvc{})
+			if err := store.Create(&storage.AWGTunnel{
+				ID: "awg10", Name: "t1", Backend: "nativewg",
+				Interface: storage.AWGInterface{Address: "10.0.0.2/32", MTU: 1420},
+				Peer:      storage.AWGPeer{PublicKey: "pk", Endpoint: "1.2.3.4:51820", PersistentKeepalive: "25"},
+			}); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			rr := httptest.NewRecorder()
+			h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10",
+				strings.NewReader(`{"peer":{"publicKey":"pk","endpoint":"1.2.3.4:51820","persistentKeepalive":"`+bad+`"}}`)))
+
+			if !strings.Contains(rr.Body.String(), "INVALID_KEEPALIVE") {
+				t.Fatalf("%q принят: %.200s", bad, rr.Body.String())
+			}
+			saved, err := store.Get("awg10")
+			if err != nil {
+				t.Fatalf("get: %v", err)
+			}
+			if saved.Peer.PersistentKeepalive != "25" {
+				t.Fatalf("%q сохранён вопреки отказу: %q", bad, saved.Peer.PersistentKeepalive)
+			}
+		})
+	}
+}
+
+// Занятый per-tunnel замок — ретраибельный конфликт, а не отказ правки:
+// карточка цела, туннель просто занят своим действием (WAN-up, рестарт по
+// ping-check). Контракт тот же, что у delete и у start/stop/restart: 409 и
+// код OPERATION_IN_PROGRESS, по которому фронт покажет «попробуйте ещё раз»,
+// а не «сохранение не удалось».
+func TestUpdate_BusyTunnelAnswersConflict(t *testing.T) {
+	stub := &stubTunnelSvc{updateFn: func(context.Context, *storage.AWGTunnel, *storage.AWGTunnel) error {
+		return tunnel.ErrOperationInProgress
+	}}
+	h, store := newTunnelsUpdateHarness(t, stub)
+	seedTunnel(t, store, &storage.AWGTunnel{ID: "awg10", Name: "t", Enabled: true})
+
+	rr := httptest.NewRecorder()
+	h.Update(rr, httptest.NewRequest(http.MethodPost, "/tunnels/update?id=awg10",
+		strings.NewReader(`{"name":"новое"}`)))
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("код %d, ждали 409; тело %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "OPERATION_IN_PROGRESS") {
+		t.Fatalf("в ответе нет кода OPERATION_IN_PROGRESS: %s", rr.Body.String())
+	}
+	// Fail-closed остаётся в силе: на отказе службы запись не переписывается.
+	saved, err := store.Get("awg10")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if saved.Name != "t" {
+		t.Fatalf("карточка переписана вопреки отказу: %q", saved.Name)
+	}
+}
+
+// Имя длиннее предела описания NDMS (256 байт) отвергается ДО Stop: отказ
+// сервиса после остановки оставил бы работающий туннель выключенным.
+func TestTunnelReplaceConf_NameOverByteLimitRefusedBeforeStop(t *testing.T) {
+	stopped := 0
+	stub := &stubTunnelSvc{
+		stateFn: func(string) tunnel.StateInfo { return tunnel.StateInfo{State: tunnel.StateRunning} },
+		stopFn:  func(context.Context, string) error { stopped++; return nil },
+	}
+	h, store := newTunnelsUpdateHarness(t, stub)
+	if err := store.Create(&storage.AWGTunnel{ID: "awg11", Name: "NL_CHIS"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{"content": "[Interface]\nAddress = 10.0.0.2/32\n",
+		"name": strings.Repeat("ж", 128) + "a"})
+
+	rec := httptest.NewRecorder()
+	h.ReplaceConf(rec, httptest.NewRequest(http.MethodPost, "/tunnels/replace?id=awg11", bytes.NewReader(body)))
+
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "длиннее 256 байт") {
+		t.Fatalf("код = %d, тело: %s", rec.Code, rec.Body.String())
+	}
+	if stopped != 0 || stub.replaceCalls != 0 {
+		t.Fatalf("туннель тронут: stop=%d replace=%d", stopped, stub.replaceCalls)
+	}
+}
+
+// Предел — только при смене имени: прислали прежнее (заведённое до предела)
+// имя — замена конфигурации идёт.
+func TestTunnelReplaceConf_SameLongNameNotRefused(t *testing.T) {
+	long := strings.Repeat("ж", 128) + "a"
+	stub := &stubTunnelSvc{}
+	h, store := newTunnelsUpdateHarness(t, stub)
+	if err := store.Create(&storage.AWGTunnel{ID: "awg11", Name: long}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	body, _ := json.Marshal(map[string]string{"content": "[Interface]\nAddress = 10.0.0.2/32\n", "name": long})
+
+	rec := httptest.NewRecorder()
+	h.ReplaceConf(rec, httptest.NewRequest(http.MethodPost, "/tunnels/replace?id=awg11", bytes.NewReader(body)))
+
+	if stub.replaceCalls != 1 || strings.Contains(rec.Body.String(), "длиннее 256 байт") {
+		t.Fatalf("замена с прежним именем отвергнута: replace=%d, тело: %s", stub.replaceCalls, rec.Body.String())
 	}
 }

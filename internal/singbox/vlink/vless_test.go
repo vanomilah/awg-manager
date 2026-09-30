@@ -248,3 +248,94 @@ func TestParseVless_RealEncryptionRejected(t *testing.T) {
 		t.Fatalf("error must name the culprit, got: %v", err)
 	}
 }
+
+// F324-класс: комбинации, которые sing-box примет конфигом, но не сможет
+// набрать. Чужой flow валит создание аутбаунда, то есть и `sing-box check`,
+// то есть применение всей конфигурации; vision без TLS и vision поверх
+// транспорта падают на каждом dial (см. checkVlessFlow).
+func TestParseVless_FlowCombinations(t *testing.T) {
+	base := "vless://00000000-1111-2222-3333-444444444444@example.com:443?"
+	rejected := map[string]string{
+		"чужой flow":         "type=tcp&security=tls&sni=h&flow=xtls-rprx-direct",
+		"vision без TLS":     "type=tcp&security=none&flow=xtls-rprx-vision",
+		"vision поверх ws":   "type=ws&security=tls&sni=h&path=/p&flow=xtls-rprx-vision",
+		"vision поверх grpc": "type=grpc&security=tls&sni=h&serviceName=s&flow=xtls-rprx-vision",
+	}
+	for name, q := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseLink(base + q + "#x"); err == nil {
+				t.Error("принято")
+			}
+		})
+	}
+
+	// Единственная рабочая форма: голый tcp под TLS/Reality.
+	got, err := ParseLink(base + "type=tcp&security=tls&sni=h&flow=xtls-rprx-vision#x")
+	if err != nil {
+		t.Fatalf("tcp+tls+vision: %v", err)
+	}
+	var ob map[string]any
+	json.Unmarshal(got.Outbound, &ob)
+	if ob["flow"] != "xtls-rprx-vision" {
+		t.Errorf("flow=%v", ob["flow"])
+	}
+}
+
+// realityMLKEM достаёт tls.reality.support_x25519mlkem768 из outbound: nil —
+// ключа нет вовсе.
+func realityMLKEM(t *testing.T, raw json.RawMessage) any {
+	t.Helper()
+	var ob struct {
+		TLS struct {
+			Reality map[string]any `json:"reality"`
+		} `json:"tls"`
+	}
+	if err := json.Unmarshal(raw, &ob); err != nil {
+		t.Fatal(err)
+	}
+	if ob.TLS.Reality == nil {
+		t.Fatal("expected reality block")
+	}
+	return ob.TLS.Reality["support_x25519mlkem768"]
+}
+
+// Флаг mihomo support-x25519mlkem768 доходит до outbound из ссылки и из
+// Clash и не появляется, когда его не просили: без него форк вырезает
+// X25519MLKEM768 (#944), с ним — пускает Xray v26.9.8+.
+func TestReality_SupportMLKEM_LinkAndClash(t *testing.T) {
+	const base = "vless://3a3b1c2e-9999-4321-aaaa-1234567890ab@example.com:443?security=reality&type=tcp&pbk=PBK&sid=ab12&fp=chrome&sni=foo.com"
+	clash := func(flag any) map[string]any {
+		opts := map[string]any{"public-key": "PBK", "short-id": "ab12"}
+		if flag != nil {
+			opts["support-x25519mlkem768"] = flag
+		}
+		return map[string]any{
+			"name": "n", "type": "vless", "server": "example.com", "port": 443,
+			"uuid": "3a3b1c2e-9999-4321-aaaa-1234567890ab", "tls": true,
+			"servername": "foo.com", "client-fingerprint": "chrome",
+			"reality-opts": opts,
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		want any
+		run  func() (*ParsedOutbound, error)
+	}{
+		{"link on", true, func() (*ParsedOutbound, error) { return ParseLink(base + "&support-x25519mlkem768=true#n") }},
+		{"link off", nil, func() (*ParsedOutbound, error) { return ParseLink(base + "#n") }},
+		{"link false", nil, func() (*ParsedOutbound, error) { return ParseLink(base + "&support-x25519mlkem768=false#n") }},
+		{"clash on", true, func() (*ParsedOutbound, error) { return mapClashVless(clash(true)) }},
+		{"clash off", nil, func() (*ParsedOutbound, error) { return mapClashVless(clash(nil)) }},
+		{"clash false", nil, func() (*ParsedOutbound, error) { return mapClashVless(clash(false)) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.run()
+			if err != nil {
+				t.Fatalf("err: %v", err)
+			}
+			if v := realityMLKEM(t, got.Outbound); v != tc.want {
+				t.Errorf("support_x25519mlkem768=%v, want %v", v, tc.want)
+			}
+		})
+	}
+}

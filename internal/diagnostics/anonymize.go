@@ -325,6 +325,7 @@ func (a *anonymizer) registerFromReport(report *Report) {
 		a.registerPublicIPsFromOutput(t.Routes.EndpointRoute)
 		a.registerPublicIPsFromOutput(t.Routes.DefaultRoute)
 		a.registerPublicIPsFromOutput(t.Settings.DNS)
+		a.registerPublicIPsFromOutput(strings.Join(t.Settings.AllowedIPs, " "))
 
 		a.registerHostsFromOutput(t.Interface.KernelAddr)
 		a.registerHostsFromOutput(t.Interface.KernelIPv6)
@@ -386,6 +387,12 @@ func (a *anonymizer) registerFromReport(report *Report) {
 		a.registerMACsFromOutput(line)
 		a.registerWGKeysFromOutput(line)
 	}
+
+	// AWGMRelay.RawList is free-text and may contain endpoint IPs (§4.10).
+	a.registerPublicIPsFromOutput(report.AWGMRelay.RawList)
+	a.registerHostsFromOutput(report.AWGMRelay.RawList)
+	a.registerMACsFromOutput(report.AWGMRelay.RawList)
+	a.registerWGKeysFromOutput(report.AWGMRelay.RawList)
 
 	// Sing-box config may contain server UUIDs, REALITY keys, short IDs, hostnames.
 	if report.SingboxConfig != nil && report.SingboxConfig.Config != nil {

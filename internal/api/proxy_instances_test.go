@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,11 +39,21 @@ type proxyRestartCall struct {
 
 // fakeProxyManager повторяет КОМПОЗИЦИЮ настоящего manager, а не только его
 // сигнатуры: Update гоняет мутатор по хранимой записи, возвращает его ошибку
-// БЕЗ обёртки (manager.mutateStore отдаёт её как есть — на этом стоит разбор
+// БЕЗ обёртки (manager.mutateStoreLocked отдаёт её как есть — на этом стоит разбор
 // гейтов через errors.As) и будит воркер; SetEnabled ходит через тот же
 // Update. Иначе тест «PATCH будит воркер» проверял бы факт вызова, а не то,
 // что после него инстанс действительно разбужен.
 type fakeProxyManager struct {
+	// mu зеркалит m.mu настоящего менеджера: manager.update держит его на ВСЁ
+	// время мутатора (manager.go:770), а прочие методы берут тот же
+	// нереентерабельный замок. ПРАВИЛО ФОРМЫ: каждый метод интерфейса
+	// ProxyManager, берущий m.mu в проде, обязан иметь пробу notInMutator
+	// здесь — фейк не строже прода, а его зеркало. Значит вызов любого из них
+	// ИЗ-ПОД мутатора — гарантированный дедлок всей поверхности в проде. Фейк
+	// без замка такой код пропускал бы зелёным, что и случилось с гейтом
+	// единственности.
+	mu sync.Mutex
+
 	records []instancestore.Record
 	seed    manager.SeedInfo
 
@@ -62,13 +73,28 @@ type fakeProxyManager struct {
 	posts    []proxyPostCall
 }
 
+// notInMutator — проба того же замка. Под мутатором Update он уже взят, и
+// TryLock не проходит: в проде на этом месте встал бы m.mu.
+func (f *fakeProxyManager) notInMutator(method string) {
+	if !f.mu.TryLock() {
+		panic("fakeProxyManager." + method +
+			": вызов из-под мутатора Update — в проде дедлок на m.mu")
+	}
+	f.mu.Unlock()
+}
+
 func (f *fakeProxyManager) Records() []instancestore.Record {
+	f.notInMutator("Records")
 	return append([]instancestore.Record(nil), f.records...)
 }
 
-func (f *fakeProxyManager) SeedInfo() manager.SeedInfo { return f.seed }
+func (f *fakeProxyManager) SeedInfo() manager.SeedInfo {
+	f.notInMutator("SeedInfo")
+	return f.seed
+}
 
 func (f *fakeProxyManager) AckListenMoves() error {
+	f.notInMutator("AckListenMoves")
 	if f.ackErr != nil {
 		return f.ackErr
 	}
@@ -78,6 +104,7 @@ func (f *fakeProxyManager) AckListenMoves() error {
 }
 
 func (f *fakeProxyManager) Create(_ context.Context, rec instancestore.Record) error {
+	f.notInMutator("Create")
 	if f.createErr != nil {
 		return f.createErr
 	}
@@ -90,6 +117,11 @@ func (f *fakeProxyManager) Update(_ context.Context, key string, mutate func(*in
 	if f.updateErr != nil {
 		return f.updateErr
 	}
+	// Замок держится на всё время мутатора — как m.mu в manager.update.
+	if !f.mu.TryLock() {
+		panic("fakeProxyManager.Update: вложенный вызов из-под мутатора — в проде дедлок на m.mu")
+	}
+	defer f.mu.Unlock()
 	for i := range f.records {
 		if f.records[i].Key() != key {
 			continue
@@ -106,7 +138,11 @@ func (f *fakeProxyManager) Update(_ context.Context, key string, mutate func(*in
 	return fmt.Errorf("инстанс %s не найден", key)
 }
 
+// SetEnabled замок НЕ держит: настоящий тоже не держит — он делегирует Update
+// (manager.go:897), а тот берёт m.mu сам. Проба здесь ровно поэтому разовая:
+// удержание до конца повесило бы вложенный Update уже в самом фейке.
 func (f *fakeProxyManager) SetEnabled(ctx context.Context, key string, on bool) error {
+	f.notInMutator("SetEnabled")
 	f.enabled = append(f.enabled, proxyEnabledCall{Key: key, On: on})
 	return f.Update(ctx, key, func(r *instancestore.Record) error {
 		r.Enabled = on
@@ -115,6 +151,7 @@ func (f *fakeProxyManager) SetEnabled(ctx context.Context, key string, on bool) 
 }
 
 func (f *fakeProxyManager) Delete(_ context.Context, key string) error {
+	f.notInMutator("Delete")
 	if f.deleteErr != nil {
 		return f.deleteErr
 	}
@@ -130,6 +167,7 @@ func (f *fakeProxyManager) Delete(_ context.Context, key string) error {
 }
 
 func (f *fakeProxyManager) Post(key string, k proxyrt.EventKind) bool {
+	f.notInMutator("Post")
 	f.posts = append(f.posts, proxyPostCall{Key: key, Kind: k})
 	return f.postOK
 }
@@ -224,9 +262,35 @@ func fullClientRecord() instancestore.Record {
 
 func newProxyHandler(t *testing.T, mgr *fakeProxyManager, states fakeProxyStates) *ProxyInstancesHandler {
 	t.Helper()
+	return newProxyHandlerWithCleaners(t, mgr, states, nil)
+}
+
+// fakeLinkedCleaner — уборщик связанных туннелей. Запоминает не только вызов,
+// но и СОСТОЯНИЕ удаления инстанса в момент вызова: связи обязаны сниматься по
+// ещё существующей записи, и порядок здесь несущий, а не косметический.
+type fakeLinkedCleaner struct {
+	calls         []string
+	deletedAtCall []int
+	deleted       []string
+	errs          []string
+	mgr           *fakeProxyManager
+}
+
+func (c *fakeLinkedCleaner) DeleteLinked(_ context.Context, clientID string) ([]string, []string) {
+	c.calls = append(c.calls, clientID)
+	if c.mgr != nil {
+		c.deletedAtCall = append(c.deletedAtCall, len(c.mgr.deleted))
+	}
+	return c.deleted, c.errs
+}
+
+func newProxyHandlerWithCleaners(t *testing.T, mgr *fakeProxyManager, states fakeProxyStates,
+	cleaners map[instancestore.Kind]LinkedTunnelCleaner) *ProxyInstancesHandler {
+	t.Helper()
 	return NewProxyInstancesHandler(ProxyInstancesDeps{
-		Manager: mgr,
-		States:  states,
+		Manager:  mgr,
+		States:   states,
+		Cleaners: cleaners,
 		Snapshot: func(key string) (awgmproto.State, bool) {
 			if key != "wdtt-server:default" {
 				return awgmproto.State{}, false
@@ -309,6 +373,8 @@ func TestProxyInstancesList_RecordStateAndProcess(t *testing.T) {
 			Resources: []proxyrt.ResourceState{
 				{ID: "process", Status: proxyrt.StatusOK, Detail: "pid 4321"},
 				{ID: "ndms_iface", Status: proxyrt.StatusDrift, Detail: "нет", Error: "занят"},
+				{ID: "ndms_access", Status: proxyrt.StatusOK,
+					Attrs: map[string]string{"foreign-acl": "OpkgTun17:GUEST_ACL"}},
 			},
 			LastPlan: []proxyrt.Step{
 				{Resource: "ndms_iface", Op: "create", Args: map[string]string{"name": "OpkgTun18"}, Reason: "нет интерфейса"},
@@ -343,6 +409,7 @@ func TestProxyInstancesList_RecordStateAndProcess(t *testing.T) {
 		Resources: []ProxyRtResourceView{
 			{ID: "process", Status: "ok", Detail: "pid 4321"},
 			{ID: "ndms_iface", Status: "drift", Detail: "нет", Error: "занят"},
+			{ID: "ndms_access", Status: "ok", Attrs: map[string]string{"foreign-acl": "OpkgTun17:GUEST_ACL"}},
 		},
 		LastPlan: []ProxyRtStepView{
 			{Resource: "ndms_iface", Op: "create", Args: map[string]string{"name": "OpkgTun18"}, Reason: "нет интерфейса"},
@@ -351,6 +418,11 @@ func TestProxyInstancesList_RecordStateAndProcess(t *testing.T) {
 	}
 	if !reflect.DeepEqual(*got.State, wantState) {
 		t.Fatalf("state = %+v,\nждали %+v", *got.State, wantState)
+	}
+	// Имя ключа в JSON пинится литералом: DeepEqual идёт по РАЗОБРАННОЙ
+	// структуре и переживёт любой тег, лишь бы он совпал на обеих сторонах.
+	if !strings.Contains(rr.Body.String(), `"attrs":{"foreign-acl":"OpkgTun17:GUEST_ACL"}`) {
+		t.Fatalf("чужие привязки не ушли в JSON: %s", rr.Body.String())
 	}
 
 	clients := 3
@@ -671,6 +743,42 @@ func TestProxyInstancesCreate_WgClientPassesOpkgGate(t *testing.T) {
 	}
 }
 
+// Сервер один на роутер: обе половины делят адреса шлюзов и метку правил
+// AWGM_WDTT, и второй инстанс (даже выключенный) через усыновление по метке
+// сносил бы маскарад первого. Второй POST вида wdtt-server отбивается гейтом.
+func TestProxyInstancesCreate_SecondServerRejected(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullServerRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	h := newProxyHandler(t, mgr, fakeProxyStates{})
+	rr := doProxy(t, h, http.MethodPost, "/api/proxyrt/instances",
+		`{"kind":"wdtt-server","name":"второй","config":{}}`)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("код = %d, ждали 422: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"PROXY_KIND_SINGLETON"`) {
+		t.Fatalf("код отказа не про единственность: %s", rr.Body.String())
+	}
+	if n := len(mgr.Records()); n != 1 {
+		t.Fatalf("записей %d, вторая не должна была лечь", n)
+	}
+}
+
+// PATCH существующего сервера гейт единственности не задевает.
+func TestProxyInstancesPatch_ExistingServerPassesSingletonGate(t *testing.T) {
+	rec := fullServerRecord()
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{rec},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	h := newProxyHandler(t, mgr, fakeProxyStates{})
+	rr := doProxy(t, h, http.MethodPatch, "/api/proxyrt/instances/"+rec.Key(), `{"name":"переименован"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("код = %d, ждали 200: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // ── правка ───────────────────────────────────────────────────────
 
 func TestProxyInstancesPatch_EnabledWakesWorker(t *testing.T) {
@@ -868,6 +976,184 @@ func TestProxyInstancesDelete_Failed(t *testing.T) {
 	}
 	if code, msg := decodeProxyErr(t, rr); code != "PROXY_DECLARE_FAILED" || !strings.Contains(msg, "реестр отверг") {
 		t.Fatalf("ошибка = %q / %q", code, msg)
+	}
+}
+
+// PF20: удаление клиентского инстанса уносит его связанные AWG-туннели, и
+// держит это БЭКЕНД. Пока инвариант жил на фронте двумя вызовами подряд,
+// удаление мимо панели оставляло карточку туннеля навсегда: уборка ищет
+// туннели по id инстанса, а инстанса уже нет.
+func TestProxyInstancesDelete_ClearsLinkedTunnels(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullClientRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	cleaner := &fakeLinkedCleaner{deleted: []string{"awg10"}, mgr: mgr}
+	h := newProxyHandlerWithCleaners(t, mgr, fakeProxyStates{},
+		map[instancestore.Kind]LinkedTunnelCleaner{instancestore.KindWdttClient: cleaner})
+
+	rr := doProxy(t, h, http.MethodDelete, "/api/proxyrt/instances/wdtt-client:nl", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("код = %d: %s", rr.Code, rr.Body.String())
+	}
+	// Уборщик зовётся по id ЗАПИСИ, а не по ключу: на id ссылается поле связи.
+	if !reflect.DeepEqual(cleaner.calls, []string{"nl"}) {
+		t.Fatalf("уборщик позван %v, ждали [nl]", cleaner.calls)
+	}
+	// Порядок несущий: связи снимаются ПО ЕЩЁ ЖИВОЙ записи — на этом стоит
+	// пропуск зеркальной записи raw-клиента внутри уборщика.
+	if len(cleaner.deletedAtCall) != 1 || cleaner.deletedAtCall[0] != 0 {
+		t.Fatalf("уборщик позван ПОСЛЕ удаления записи: %v", cleaner.deletedAtCall)
+	}
+	var body struct {
+		Data ProxyDeleteData `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(body.Data.DeletedTunnels, []string{"awg10"}) {
+		t.Fatalf("снесённые туннели не названы в ответе: %+v", body.Data)
+	}
+}
+
+// Ревью ветки: отсутствие уборщика у КЛИЕНТСКОЙ роли — дефект проводки, а не
+// «убирать нечего». Молчаливый успех тут — худший исход: инстанс удалён,
+// туннель осиротел навсегда, и никто об этом не узнал.
+func TestProxyInstancesDelete_MissingCleanerForClientIsLoud(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullClientRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	h := newProxyHandlerWithCleaners(t, mgr, fakeProxyStates{},
+		map[instancestore.Kind]LinkedTunnelCleaner{}) // уборщиков нет вовсе
+
+	rr := doProxy(t, h, http.MethodDelete, "/api/proxyrt/instances/wdtt-client:nl", "")
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("код = %d, ждали 500: %s", rr.Code, rr.Body.String())
+	}
+	if len(mgr.deleted) != 0 {
+		t.Fatalf("инстанс удалён без уборки связей: %v", mgr.deleted)
+	}
+}
+
+// У серверных ролей связанных туннелей не бывает: ключа в карте нет, и это
+// штатное «убирать нечего», а не дефект проводки.
+func TestProxyInstancesDelete_ServerHasNoLinkedTunnels(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullServerRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	cleaner := &fakeLinkedCleaner{mgr: mgr}
+	h := newProxyHandlerWithCleaners(t, mgr, fakeProxyStates{},
+		map[instancestore.Kind]LinkedTunnelCleaner{instancestore.KindWdttClient: cleaner})
+
+	rr := doProxy(t, h, http.MethodDelete, "/api/proxyrt/instances/wdtt-server:default", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("код = %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(cleaner.calls) != 0 {
+		t.Fatalf("уборщик позван для сервера: %v", cleaner.calls)
+	}
+}
+
+// Уборщик выбирается ПО РОЛИ записи: id уникален только внутри роли, и
+// «default» есть у всех четырёх. Кросс-ролевой пин — вместо снесённого вместе
+// с ручкой очистки: без него «freeturn-клиент default» мог бы снести туннели
+// «wdtt-клиента default», и ни один тест бы этого не заметил.
+func TestProxyInstancesDelete_CleanerPickedByKind(t *testing.T) {
+	ft := fullClientRecord()
+	ft.Kind = instancestore.KindFreeTurnClient
+	ft.FreeTurnClient = &roles.FreeTurnClientConfig{Listen: "127.0.0.1:9100"}
+	ft.WdttClient = nil
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{ft},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	wdttCleaner := &fakeLinkedCleaner{deleted: []string{"awg-wdtt"}, mgr: mgr}
+	ftCleaner := &fakeLinkedCleaner{deleted: []string{"awg-ft"}, mgr: mgr}
+	h := newProxyHandlerWithCleaners(t, mgr, fakeProxyStates{},
+		map[instancestore.Kind]LinkedTunnelCleaner{
+			instancestore.KindWdttClient:     wdttCleaner,
+			instancestore.KindFreeTurnClient: ftCleaner,
+		})
+
+	rr := doProxy(t, h, http.MethodDelete, "/api/proxyrt/instances/freeturn-client:nl", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("код = %d: %s", rr.Code, rr.Body.String())
+	}
+	if len(ftCleaner.calls) != 1 {
+		t.Fatalf("уборщик своей роли не позван: %v", ftCleaner.calls)
+	}
+	if len(wdttCleaner.calls) != 0 {
+		t.Fatalf("позван уборщик ЧУЖОЙ роли: %v — туннели соседа с тем же id снесены", wdttCleaner.calls)
+	}
+}
+
+// Отказ уборки НЕ отменяет удаление инстанса (решение прежнее — запирать
+// удаление из-за туннелей пользователь не просил), но и молча не теряется:
+// иначе рассинхрон «инстанса нет, карточка есть» остался бы необъяснённым.
+func TestProxyInstancesDelete_TunnelErrorsDoNotBlock(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records: []instancestore.Record{fullClientRecord()},
+		seed:    manager.SeedInfo{Booted: true, Certified: true},
+	}
+	cleaner := &fakeLinkedCleaner{errs: []string{"awg10: занят"}, mgr: mgr}
+	h := newProxyHandlerWithCleaners(t, mgr, fakeProxyStates{},
+		map[instancestore.Kind]LinkedTunnelCleaner{instancestore.KindWdttClient: cleaner})
+
+	rr := doProxy(t, h, http.MethodDelete, "/api/proxyrt/instances/wdtt-client:nl", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("код = %d: %s", rr.Code, rr.Body.String())
+	}
+	if !reflect.DeepEqual(mgr.deleted, []string{"wdtt-client:nl"}) {
+		t.Fatalf("инстанс не удалён из-за отказа уборки: %v", mgr.deleted)
+	}
+	var body struct {
+		Data ProxyDeleteData `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(body.Data.TunnelErrors, []string{"awg10: занят"}) {
+		t.Fatalf("ошибки уборки потеряны: %+v", body.Data)
+	}
+}
+
+// PF23: отказ ПОСЛЕ уборки обязан рассказать, что уже снято. Иначе
+// пользователь видит «не удалилось» и исчезнувшую карточку туннеля, и
+// объяснить расхождение ему нечем.
+func TestProxyInstancesDelete_FailureStillReportsDeletedTunnels(t *testing.T) {
+	mgr := &fakeProxyManager{
+		records:   []instancestore.Record{fullClientRecord()},
+		seed:      manager.SeedInfo{Booted: true, Certified: true},
+		deleteErr: errors.New("реестр отверг ведомость"),
+	}
+	cleaner := &fakeLinkedCleaner{deleted: []string{"awg10"}, mgr: mgr}
+	h := newProxyHandlerWithCleaners(t, mgr, fakeProxyStates{},
+		map[instancestore.Kind]LinkedTunnelCleaner{instancestore.KindWdttClient: cleaner})
+
+	rr := doProxy(t, h, http.MethodDelete, "/api/proxyrt/instances/wdtt-client:nl", "")
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("код = %d, ждали 422: %s", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		Error   bool            `json:"error"`
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Data    ProxyDeleteData `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	// Форма отказа прежняя — конверт тот же, добавилось только data.
+	if !body.Error || body.Code != "PROXY_DECLARE_FAILED" || !strings.Contains(body.Message, "реестр отверг") {
+		t.Fatalf("конверт отказа изменился: %+v", body)
+	}
+	if !reflect.DeepEqual(body.Data.DeletedTunnels, []string{"awg10"}) {
+		t.Fatalf("снятые туннели не названы в отказе: %+v", body.Data)
+	}
+	if body.Data.Ok {
+		t.Fatalf("отказ отмечен как успех: %+v", body.Data)
 	}
 }
 
@@ -1411,5 +1697,135 @@ func TestProxyInstancesPatch_SingularStaticWANReplacesList(t *testing.T) {
 	got := mgr.mutated[len(mgr.mutated)-1].WdttServer
 	if list := got.StaticNATList(); len(list) != 1 || list[0] != "ISP3" {
 		t.Fatalf("выбор WAN не вступил в силу: StaticNATList=%v (NatStaticWANs=%v)", list, got.NatStaticWANs)
+	}
+}
+
+// Каждый метод интерфейса ProxyManager, кроме самого Update, обязан стоять в списке
+// probed — и иметь пробу notInMutator в фейке (правило формы в докстроке fakeProxyManager).
+// Новый метод интерфейса без записи здесь роняет тест; запись без пробы — ревью.
+func TestFakeProxyManager_EveryMethodProbed(t *testing.T) {
+	probed := map[string]bool{
+		"Records": true, "SeedInfo": true, "AckListenMoves": true, "Create": true,
+		"SetEnabled": true, "Delete": true, "Post": true,
+	}
+	typ := reflect.TypeOf((*ProxyManager)(nil)).Elem()
+	for i := 0; i < typ.NumMethod(); i++ {
+		name := typ.Method(i).Name
+		if name == "Update" {
+			continue
+		}
+		if !probed[name] {
+			t.Errorf("метод %s интерфейса ProxyManager без пробы notInMutator в fakeProxyManager", name)
+		}
+		delete(probed, name)
+	}
+	for name := range probed {
+		t.Errorf("в списке probed лишний метод %s — его нет в интерфейсе", name)
+	}
+}
+
+// Адрес для ссылки абонентам (#933). Проверка живёт в gateCheck, а НЕ в
+// roles.Validate: ошибка оттуда становится cfgErr процесса, то есть «раздачу не
+// запускать», и косметическое поле валило бы работающий сервер после
+// перезапуска — с ответом 200 на сохранение.
+func TestValidateLinkPeer(t *testing.T) {
+	for _, ok := range []string{
+		"", "   ",
+		"vpn.example.org",
+		"vpn.example.org:56000",
+		"203.0.113.7",
+		"203.0.113.7:56000",
+		"[2001:db8::1]",
+		"[2001:db8::1]:56000",
+	} {
+		if err := validateLinkPeer(ok); err != nil {
+			t.Errorf("%q обязан приниматься: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"https://vpn.example.org",    // схема
+		"vpn.example.org:",           // пустой порт
+		"vpn.example.org:99999",      // порт вне диапазона
+		"vpn.example.org:abc",        // порт не число
+		"vpn.example.org (основной)", // пробел: имя с пояснением
+		"1.2.3.4, 5.6.7.8",           // две записи
+		"2001:db8::1",                // голый IPv6 без скобок (F390)
+		"не хост",                    // мусор
+	} {
+		if err := validateLinkPeer(bad); err == nil {
+			t.Errorf("%q обязан быть отвергнут", bad)
+		}
+	}
+}
+
+// F494: пины интерфейсов — поля сервера. Присланная половина пары ушла бы в
+// ensurePins пином номера, которого пул (он видит только NDMS-имена) не
+// учитывает. Клиентские значения пинов игнорируются на создании и правке.
+func TestProxyInstancesCreate_IgnoresClientPins(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"client", `{"id":"nl","kind":"wdtt-client","name":"x",
+			"config":{"connMode":"raw","peer":"1.2.3.4:56000","password":"pw","vkHashes":"vk","ndmsIface":"OpkgTun7"}}`},
+		{"server", `{"kind":"wdtt-server","name":"x",
+			"config":{"ndmsIface":"OpkgTun7","wgIface":"opkgtun8","rawNdmsIface":"OpkgTun9","rawIface":"opkgtun9"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := &fakeProxyManager{seed: manager.SeedInfo{Booted: true, Certified: true}}
+			h := newProxyHandler(t, mgr, fakeProxyStates{})
+			rr := doProxy(t, h, http.MethodPost, "/api/proxyrt/instances", tc.body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("код = %d, ждали 200: %s", rr.Code, rr.Body.String())
+			}
+			if len(mgr.created) != 1 {
+				t.Fatalf("Create вызван %d раз", len(mgr.created))
+			}
+			rec := mgr.created[0]
+			if c := rec.WdttClient; c != nil && (c.NdmsIface != "" || c.RawIface != "") {
+				t.Fatalf("пины клиента приняты от клиента: %+v", c)
+			}
+			if c := rec.WdttServer; c != nil && (c.NdmsIface != "" || c.WgIface != "" ||
+				c.RawNdmsIface != "" || c.RawIface != "") {
+				t.Fatalf("пины сервера приняты от клиента: %+v", c)
+			}
+		})
+	}
+}
+
+func TestProxyInstancesPatch_IgnoresClientPins(t *testing.T) {
+	// Фабрика, а не значение: конфиг лежит за указателем, и запись, отданная
+	// фейку, делила бы его с эталоном — сравнение прошло бы на любой правке.
+	rawClient := func() instancestore.Record {
+		r := fullClientRecord()
+		r.WdttClient.Mode = "raw"
+		r.WdttClient.NdmsIface, r.WdttClient.RawIface = "OpkgTun3", "opkgtun3"
+		return r
+	}
+	for _, tc := range []struct {
+		name string
+		rec  func() instancestore.Record
+		body string
+	}{
+		{"client", rawClient, `{"config":{"connMode":"raw","ndmsIface":"OpkgTun7","rawIface":""}}`},
+		{"server", fullServerRecord, `{"config":{"ndmsIface":"OpkgTun7","wgIface":"","rawNdmsIface":"OpkgTun9","rawIface":"opkgtun9"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.rec()
+			mgr := &fakeProxyManager{
+				records: []instancestore.Record{tc.rec()},
+				seed:    manager.SeedInfo{Booted: true, Certified: true},
+			}
+			h := newProxyHandler(t, mgr, fakeProxyStates{})
+			rr := doProxy(t, h, http.MethodPatch, "/api/proxyrt/instances/"+want.Key(), tc.body)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("код = %d, ждали 200: %s", rr.Code, rr.Body.String())
+			}
+			if len(mgr.mutated) == 0 {
+				t.Fatal("запись не сохранена")
+			}
+			got := mgr.mutated[len(mgr.mutated)-1]
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("пины изменены клиентом:\n%+v %+v\nждали\n%+v %+v",
+					got.WdttClient, got.WdttServer, want.WdttClient, want.WdttServer)
+			}
+		})
 	}
 }

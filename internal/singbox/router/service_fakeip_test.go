@@ -39,6 +39,18 @@ func (l *callLog) idxOf(want string) int {
 
 func (l *callLog) has(want string) bool { return l.idxOf(want) >= 0 }
 
+// count — сколько раз вызов встретился: нужен там, где сторожится не факт
+// мутации, а её ЧИСЛО (ограничитель повторов).
+func (l *callLog) count(want string) int {
+	n := 0
+	for _, c := range l.calls {
+		if c == want {
+			n++
+		}
+	}
+	return n
+}
+
 // failAt names a single call (by its recorded label) that should return an
 // injected error; "" disables injection.
 type recOpkgTun struct {
@@ -159,9 +171,13 @@ func (r *recStaticRoutes) RemoveStaticRoute(_ context.Context, route StaticRoute
 
 type recIndices struct {
 	live map[int]bool
+	err  error
 }
 
 func (r *recIndices) LiveOpkgTunIndices(context.Context) (map[int]bool, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
 	return r.live, nil
 }
 
@@ -184,6 +200,7 @@ type fakeIPEnableHarness struct {
 func newFakeIPEnableHarness(t *testing.T, failAt string) *fakeIPEnableHarness {
 	t.Helper()
 	svc, dir := newOrchedTestService(t)
+	stubLinkAbsent(t)
 
 	// RoutingMode=fakeip-tun in settings.
 	store := svc.deps.Settings
@@ -217,21 +234,13 @@ func newFakeIPEnableHarness(t *testing.T, failAt string) *fakeIPEnableHarness {
 	svc.deps.StaticRoutes = routes
 	svc.deps.OpkgTunIndices = &recIndices{live: map[int]bool{}}
 	svc.deps.FakeIPTun = DefaultFakeIPTunParams()
-	svc.deps.FakeIPTun.CachePath = filepath.Join(dir, "cache.db")
+	svc.deps.CacheDBPath = func() string { return filepath.Join(dir, "cache.db") }
 
-	// fakeip readiness probes → ready; flush records into the log.
+	// fakeip readiness probes → ready.
 	stubTunReadyProbe(t, func(string) bool { return true })
 	stubFakeIPDNSProbe(t, func(context.Context, string, netip.Prefix) bool { return true })
-	old := fakeIPAddrFlush
-	fakeIPAddrFlush = func(_ context.Context, iface string) error {
-		log.add("Flush:" + iface)
-		if failAt == "Flush" {
-			return errors.New("injected: Flush")
-		}
-		return nil
-	}
-	t.Cleanup(func() { fakeIPAddrFlush = old })
-
+	// Pool-route presence read is host-only (/proc/net/route); default absent.
+	stubFakeIPPoolRoutePresent(t, func(string, netip.Prefix) bool { return false })
 	return &fakeIPEnableHarness{
 		svc: svc, log: log, opkg: opkg, routes: routes, store: store, dir: dir,
 	}
@@ -295,10 +304,6 @@ func TestEnable_DispatchesFakeIPTun(t *testing.T) {
 	if h.log.has("Create:" + iface + ":private") {
 		t.Fatalf("Create used the lowercase kernel name (NDMS would reject it): %v", h.log.calls)
 	}
-	// sing-box / kernel sites use the lowercase kernel name (flush).
-	if !h.log.has("Flush:" + iface) {
-		t.Fatalf("Flush must use the lowercase kernel name %q: %v", iface, h.log.calls)
-	}
 	// The pool route Interface is the NDMS name.
 	if !h.log.has("AddRoute:198.18.0.0:255.254.0.0:" + ndmsName) {
 		t.Fatalf("pool route Interface must be the NDMS name %q: %v", ndmsName, h.log.calls)
@@ -317,13 +322,10 @@ func TestEnable_DispatchesFakeIPTun(t *testing.T) {
 	// v6 pool route is added (defaults carry Inet6Range) after the v4 pool route.
 	mustOrder("AddRoute:198.18.0.0:255.254.0.0:"+ndmsName, "AddRoute6:fc00::/18:"+ndmsName)
 	mustOrder("SetMTU:"+ndmsName+":1500", "InterfaceUp:"+ndmsName)
-	// Flush runs PRE-start (right after iface up + config build), clearing stale
-	// addrs before sing-box attaches the gvisor tun.
-	mustOrder("InterfaceUp:"+ndmsName, "Flush:"+iface)
-	// The pool route is installed POST-readiness (after the flush and the stubbed
+	// The pool route is installed POST-readiness (after the stubbed
 	// waitForSingbox). No tun default route is installed — pool/CIDR traffic reaches
 	// the tun via specific routes; everything else egresses the normal WAN default.
-	mustOrder("Flush:"+iface, "AddRoute:198.18.0.0:255.254.0.0:"+ndmsName)
+	mustOrder("InterfaceUp:"+ndmsName, "AddRoute:198.18.0.0:255.254.0.0:"+ndmsName)
 	mustOrder("AddRoute:198.18.0.0:255.254.0.0:"+ndmsName, "AddRoute6:fc00::/18:"+ndmsName)
 
 	// The v6 pool route must be the LAST provisioning call (no DHCP advertise).
@@ -507,7 +509,8 @@ func TestEnableFakeIPTun_UsesPersistedEngineSettings(t *testing.T) {
 	}
 
 	// The persisted fakeip sing-box config (21-fakeip.json) reflects
-	// stack=system + gso:false + the overridden pools.
+	// stack=system + the overridden pools. gso and endpoint_independent_nat
+	// are gone from sing-box ≥1.13/1.14 respectively and must not be persisted.
 	data, err := os.ReadFile(filepath.Join(h.dir, "21-fakeip.json"))
 	if err != nil {
 		t.Fatalf("read persisted fakeip config: %v", err)
@@ -523,14 +526,14 @@ func TestEnableFakeIPTun_UsesPersistedEngineSettings(t *testing.T) {
 	if in.Stack != "system" {
 		t.Errorf("persisted Stack = %q, want system", in.Stack)
 	}
-	if in.GSO == nil || *in.GSO != false {
-		t.Errorf("persisted GSO = %v, want false for system stack", in.GSO)
-	}
 	if in.MTU != 1280 {
 		t.Errorf("persisted MTU = %d, want 1280", in.MTU)
 	}
-	if !strings.Contains(string(data), `"gso": false`) {
-		t.Errorf("persisted fakeip config must carry \"gso\": false: %s", data)
+	if strings.Contains(string(data), `"gso"`) {
+		t.Errorf("persisted fakeip config must not carry gso: %s", data)
+	}
+	if strings.Contains(string(data), `"endpoint_independent_nat"`) {
+		t.Errorf("persisted fakeip config must not carry endpoint_independent_nat: %s", data)
 	}
 	// Find the fakeip DNS server (by type) for pool range assertions.
 	var fakeipSrv *DNSServer
@@ -557,9 +560,8 @@ func TestEnableFakeIPTun_UsesPersistedEngineSettings(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnableFakeIPTun_RollbackOnFailure(t *testing.T) {
-	// Execution order: provision → Flush (pre-start) → [waitForSingbox] →
-	// AddRoute → AddRoute6.
-	steps := []string{"Create", "SetAddress", "SetIPv6Address", "SetMTU", "InterfaceUp", "Flush", "AddRoute", "AddRoute6"}
+	// Execution order: provision → [waitForSingbox] → AddRoute → AddRoute6.
+	steps := []string{"Create", "SetAddress", "SetIPv6Address", "SetMTU", "InterfaceUp", "AddRoute", "AddRoute6"}
 	for _, step := range steps {
 		t.Run(step, func(t *testing.T) {
 			h := newFakeIPEnableHarness(t, step)
@@ -598,10 +600,10 @@ func TestEnableFakeIPTun_RollbackOnFailure(t *testing.T) {
 					t.Errorf("Create-fail must not run iface teardown: %v", h.log.calls)
 				}
 			}
-			// Order: Flush (pre-start) → [waitForSingbox] → AddRoute → AddRoute6.
+			// Order: [waitForSingbox] → AddRoute → AddRoute6.
 			// A failure rolls back exactly what landed before it (LIFO).
 			switch step {
-			case "Create", "SetAddress", "SetIPv6Address", "SetMTU", "InterfaceUp", "Flush":
+			case "Create", "SetAddress", "SetIPv6Address", "SetMTU", "InterfaceUp":
 				// Failure at/before the v4 pool route: no pool route added.
 				if h.log.has("AddRoute:198.18.0.0:255.254.0.0:" + ndmsName) {
 					t.Errorf("%s: pool route should not have been added", step)
@@ -1044,6 +1046,35 @@ func provisionForDisable(t *testing.T, h *fakeIPEnableHarness) {
 	h.log.calls = nil
 }
 
+// stubLinkAbsent — умолчание обвязок: ТОЛЬКО шов присутствия netdev, без
+// подмены удаления. Без него `ip link show dev opkgtunN` уходит на ХОСТ.
+// stubIngressLinks подменяет чтение /sys/class/net, от которого зависит отсев
+// ingress-ссылок на исчезнувшие устройства (F381). Без имён — «не знаем»: набор
+// не читается, ссылки не отсеиваются, то есть поведение как до отсева. С
+// именами — ровно этот набор существует.
+func stubIngressLinks(t *testing.T, names ...string) {
+	t.Helper()
+	old := ingressLinkNames
+	ingressLinkNames = func() (map[string]bool, error) {
+		if names == nil {
+			return nil, errors.New("stub: /sys/class/net недоступен")
+		}
+		m := make(map[string]bool, len(names))
+		for _, n := range names {
+			m[n] = true
+		}
+		return m, nil
+	}
+	t.Cleanup(func() { ingressLinkNames = old })
+}
+
+func stubLinkAbsent(t *testing.T) {
+	t.Helper()
+	old := fakeIPLinkPresent
+	fakeIPLinkPresent = func(context.Context, string) bool { return false }
+	t.Cleanup(func() { fakeIPLinkPresent = old })
+}
+
 // stubOrphanNetdev overrides the orphan-netdev seams (PE-E). present controls
 // whether the kernel netdev is reported as lingering after DeleteOpkgTun; the
 // returned getter reports how many times fakeIPLinkDelete was called.
@@ -1192,7 +1223,7 @@ func TestDisableFakeIPTun_NoAddressClearsOnHappyPath(t *testing.T) {
 	// И НЕ гасит интерфейс до удаления: NDMS создаёт интерфейс по любой мутации
 	// его имени, а teardown штатно зовут на уже снесённом (откаты, реап-ретраи).
 	// Рождённая так пустышка без нашего описания невидима для реапа и занимает
-	// индекс навсегда — пул 0..9 вычерпывался за десяток переходов.
+	// индекс навсегда — прежний пул 0..9 вычерпывался за десяток переходов.
 	if h.log.has("InterfaceDown:" + ndmsName) {
 		t.Errorf("happy path must not touch the iface before delete (create-on-reference): %v", h.log.calls)
 	}
@@ -1573,8 +1604,9 @@ func TestEnableFakeIPTun_NilDepsFailFast(t *testing.T) {
 
 func TestReconcileFakeIPTun_NoReprovision(t *testing.T) {
 	h := newFakeIPEnableHarness(t, "")
-	// Wire an IPTables whose probes always error → IsInstalled/HasAnyInstalled
-	// both false, exactly like the real fakeip-tun path (no chains installed).
+	// Wire an IPTables whose probes always error: диспетчер по режиму стоит
+	// РАНЬШЕ снятия состояния, поэтому до него путь fakeip-tun не доходит
+	// вовсе — ровно как на живом роутере, где цепочек нет.
 	h.svc.deps.IPTables = errProbeIPTables()
 
 	// First Reconcile: Enabled=false initially → nothing. We must first Enable so
@@ -1742,7 +1774,8 @@ func TestEnableFakeIPTun_RefreshesAWGOutbounds(t *testing.T) {
 func TestEnableFakeIPTun_RollbackOnSlotRouterFlipFailure(t *testing.T) {
 	h := newFakeIPEnableHarness(t, "")
 
-	orch := orchestrator.New(h.dir, nil)
+	orch := orchestrator.NewWithAppliedPath(h.dir, nil, filepath.Join(t.TempDir(), "singbox-applied.json"))
+	t.Cleanup(orch.Close)
 	if err := orch.Register(orchestrator.SlotMeta{
 		Slot:     orchestrator.SlotFakeIP,
 		Filename: "21-fakeip.json",
@@ -1766,5 +1799,104 @@ func TestEnableFakeIPTun_RollbackOnSlotRouterFlipFailure(t *testing.T) {
 	}
 	if !h.log.has("Delete:OpkgTun0") {
 		t.Errorf("откат обязан снести интерфейс: %v", h.log.calls)
+	}
+}
+
+// Смена стека через PUT настроек на РАБОТАЮЩЕМ fakeip обязана дойти до
+// 21-fakeip.json: tun-инбаунд строится на enable, и без отдельного шва селектор
+// в UI сохранял бы значение в стор и молчал до перевключения режима. Швов тут
+// ДВА и они независимы — reapplyFakeIPOverlay в хвосте UpdateSettings и
+// healTunSettings в реконсиляции; проверено глушением: по отдельности каждый
+// держит тест зелёным, вместе выключённые — роняют. Обратный переход проверяет
+// вторую половину контракта: пустое значение обязано СНЯТЬ ключ, а не оставить
+// прежний — именно отсутствие ключа включает собственный стек sing-tun.
+func TestUpdateSettings_StackReachesOverlay(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	ctx := context.Background()
+	if err := h.svc.Enable(ctx); err != nil {
+		t.Fatalf("Enable(fakeip): %v", err)
+	}
+	h.svc.deps.OpkgTunIndices = &recIndices{live: map[int]bool{h.loadFakeIP(t).Index: true}}
+
+	overlayStack := func() (string, string) {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(h.dir, "21-fakeip.json"))
+		if err != nil {
+			t.Fatalf("read 21-fakeip.json: %v", err)
+		}
+		var cfg RouterConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			t.Fatalf("unmarshal 21-fakeip.json: %v", err)
+		}
+		if len(cfg.Inbounds) == 0 {
+			t.Fatalf("нет инбаундов в overlay: %s", data)
+		}
+		return cfg.Inbounds[0].Stack, string(data)
+	}
+
+	if got, data := overlayStack(); got != "" {
+		t.Fatalf("после Enable stack = %q, want пустой: %s", got, data)
+	}
+
+	sr, err := h.svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	sr.FakeIPStack = "system"
+	if err := h.svc.UpdateSettings(ctx, sr); err != nil {
+		t.Fatalf("UpdateSettings(system): %v", err)
+	}
+	if got, data := overlayStack(); got != "system" {
+		t.Errorf("stack в overlay = %q, want system: %s", got, data)
+	}
+
+	sr.FakeIPStack = ""
+	if err := h.svc.UpdateSettings(ctx, sr); err != nil {
+		t.Fatalf("UpdateSettings(пустой): %v", err)
+	}
+	got, data := overlayStack()
+	if got != "" || strings.Contains(data, `"stack"`) {
+		t.Errorf("stack = %q и ключ в файле = %v, want пустой и без ключа: %s",
+			got, strings.Contains(data, `"stack"`), data)
+	}
+}
+
+// PUT с cacheFileLocation=tmp в том же вызове дёргает шов применения к
+// 00-base.json и через reapplyFakeIPOverlay переводит overlay 21-fakeip.json на
+// эффективный путь оператора (issue #842). Живой индекс засеян, чтобы Reconcile в хвосте
+// UpdateSettings не перепровиженил overlay сам и не замаскировал пропуск reapply.
+func TestUpdateSettings_CacheFileLocationReachesOverlayAndBase(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	ctx := context.Background()
+	if err := h.svc.Enable(ctx); err != nil {
+		t.Fatalf("Enable(fakeip): %v", err)
+	}
+	h.svc.deps.OpkgTunIndices = &recIndices{live: map[int]bool{h.loadFakeIP(t).Index: true}}
+	h.svc.deps.CacheDBPath = func() string { return "/tmp/test-cache.db" }
+	applied, calls := "", 0
+	h.svc.deps.ApplyCacheFileLocation = func(location string) error { applied = location; calls++; return nil }
+
+	sr, err := h.svc.GetSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSettings: %v", err)
+	}
+	sr.CacheFileLocation = "tmp"
+	if err := h.svc.UpdateSettings(ctx, sr); err != nil {
+		t.Fatalf("UpdateSettings: %v", err)
+	}
+
+	if applied != "tmp" || calls != 1 {
+		t.Errorf("ApplyCacheFileLocation получил %q (%d вызовов), want \"tmp\" один раз", applied, calls)
+	}
+	data, err := os.ReadFile(filepath.Join(h.dir, "21-fakeip.json"))
+	if err != nil {
+		t.Fatalf("read 21-fakeip.json: %v", err)
+	}
+	var cfg RouterConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal 21-fakeip.json: %v", err)
+	}
+	if cfg.Experimental == nil || cfg.Experimental.CacheFile == nil || cfg.Experimental.CacheFile.Path != "/tmp/test-cache.db" {
+		t.Errorf("overlay cache_file.path не переехал в RAM: %s", data)
 	}
 }

@@ -133,6 +133,9 @@ type StateInfo struct {
 	// PeerVia is the NDMS WAN name the peer routes through (e.g. "PPPoE0").
 	// Populated for NativeWG tunnels from RCI show interface peer "via" field.
 	PeerVia string `json:"peerVia,omitempty"`
+	// RelayBackend — где работает релей обфускатора: "kernel" (awgm_relay.ko)
+	// или "process"; пусто — туннель без обфускатора или релей не запущен.
+	RelayBackend string `json:"relayBackend,omitempty"`
 
 	// Diagnostics
 	Error   error  `json:"error"`             // Error encountered during state detection
@@ -219,7 +222,7 @@ var ConfDir = "/opt/etc/awg-manager"
 
 // NewNames creates a Names struct from a tunnel ID.
 // Handles different naming conventions:
-// - OS 5.x: awg10 -> OpkgTun10/opkgtun10 (valid indices: 10-16)
+// - OS 5.x: awg10 -> OpkgTun10/opkgtun10 (номер из пула, см. opkgtun.Ceiling)
 // - OS 4.x: awgm0 -> awgm0 (direct, no NDMS)
 // - Legacy: awg0 -> OpkgTun0/opkgtun0
 func NewNames(tunnelID string) Names {

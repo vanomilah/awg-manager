@@ -1,6 +1,7 @@
 package vlink
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -20,7 +21,7 @@ type schemaDoc struct {
 	defs map[string]any
 }
 
-func loadSchema(t *testing.T) (*schemaDoc, map[string]any) {
+func loadSchema(t *testing.T) (*schemaDoc, map[string]any, []byte) {
 	t.Helper()
 	raw, err := os.ReadFile(schemaPath)
 	if err != nil {
@@ -42,7 +43,7 @@ func loadSchema(t *testing.T) (*schemaDoc, map[string]any) {
 	if len(defs) == 0 {
 		t.Fatal("schema has no $defs")
 	}
-	return &schemaDoc{defs: defs}, doc
+	return &schemaDoc{defs: defs}, doc, raw
 }
 
 // resolve follows a $ref chain to the node it names.
@@ -90,6 +91,24 @@ func (d *schemaDoc) pickVariant(node map[string]any, value map[string]any) map[s
 			return v
 		}
 	}
+	// Отсутствие "type" в значении — это sing-box'овский вариант "default", а
+	// не произвольная первая ветка с properties.
+	if _, hasType := value["type"]; !hasType {
+		for _, v := range all {
+			props, _ := v["properties"].(map[string]any)
+			typeNode, _ := props["type"].(map[string]any)
+			if konst, ok := typeNode["const"]; ok && konst == "default" {
+				return v
+			}
+			if enum, ok := typeNode["enum"].([]any); ok {
+				for _, e := range enum {
+					if e == "default" {
+						return v
+					}
+				}
+			}
+		}
+	}
 	for _, v := range all {
 		if _, ok := v["properties"]; ok {
 			return v
@@ -98,9 +117,53 @@ func (d *schemaDoc) pickVariant(node map[string]any, value map[string]any) map[s
 	return nil
 }
 
+// scalarJSONType maps a decoded JSON scalar to its JSON Schema type name.
+// Returns "" for values checkKeys does not scalar-check (nil/JSON null).
+func scalarJSONType(value any) string {
+	switch value.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case float64:
+		return "number"
+	}
+	return ""
+}
+
+// schemaTypeMatches reports whether a schema "type" accepts a decoded value of
+// jsonType. "integer" accepts a float64 too — encoding/json has no separate
+// integer kind, every JSON number decodes to float64.
+func schemaTypeMatches(schemaType, jsonType string) bool {
+	return schemaType == jsonType || (jsonType == "number" && schemaType == "integer")
+}
+
+// scalarAllowed reports whether node's schema (directly, or via one branch of
+// its oneOf/anyOf) accepts a scalar of jsonType. A branch with no "type" and
+// no "properties" is untyped/free-form and accepts any scalar; a branch with
+// "properties" but no "type" is an implicit object and does not.
+func (d *schemaDoc) scalarAllowed(node map[string]any, jsonType string) bool {
+	for _, variant := range d.variants(node) {
+		if schemaType, ok := variant["type"].(string); ok {
+			if schemaTypeMatches(schemaType, jsonType) {
+				return true
+			}
+			continue
+		}
+		if _, isObject := variant["properties"]; !isObject {
+			return true
+		}
+	}
+	return false
+}
+
 // checkKeys walks the value against the schema and reports keys the schema does
 // not declare. Types and enums are deliberately not checked: those the option
-// layer enforces, and sing-box check catches them on the device.
+// layer enforces, and sing-box check catches them on the device. The one
+// exception is a scalar checked against an object-only schema node (see the
+// default case below) — that mismatch means the value landed in the wrong
+// slot entirely (e.g. a plain string where the schema requires an object),
+// not a fine-grained type/enum nuance.
 func (d *schemaDoc) checkKeys(t *testing.T, path string, node map[string]any, value any) {
 	t.Helper()
 	switch v := value.(type) {
@@ -135,6 +198,14 @@ func (d *schemaDoc) checkKeys(t *testing.T, path string, node map[string]any, va
 		for i, item := range v {
 			d.checkKeys(t, fmt.Sprintf("%s[%d]", path, i), items, item)
 		}
+	default:
+		jsonType := scalarJSONType(v)
+		if jsonType == "" {
+			return // null, or a Go type json.Unmarshal never produces here
+		}
+		if !d.scalarAllowed(node, jsonType) {
+			t.Errorf("%s: schema expects %v, got %T", path, node, value)
+		}
 	}
 }
 
@@ -142,7 +213,7 @@ func (d *schemaDoc) checkKeys(t *testing.T, path string, node map[string]any, va
 // declares. A key we invent, or one the fork renamed under us, fails here
 // instead of on the router.
 func TestParsedOutboundsMatchSchema(t *testing.T) {
-	doc, root := loadSchema(t)
+	doc, root, rawSchema := loadSchema(t)
 	outboundsNode, _ := root["properties"].(map[string]any)
 	arrayNode, _ := outboundsNode["outbounds"].(map[string]any)
 	itemsNode, _ := arrayNode["items"].(map[string]any)
@@ -154,17 +225,27 @@ func TestParsedOutboundsMatchSchema(t *testing.T) {
 		"vless reality xhttp + extra": issue797Link,
 		"vless xhttp no extra":        "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=xhttp&mode=stream-up&path=/x&host=h.example.com#h",
 		"vless ws tls":                "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=ws&security=tls&path=/p&host=cdn.example.com&sni=foo.com&fp=chrome&bind_interface=nwg0#a",
-		"vless grpc reality":          "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=grpc&security=reality&serviceName=svc&pbk=jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0&sid=ab12&fp=chrome&flow=xtls-rprx-vision#b",
-		"vless httpupgrade":           "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=httpupgrade&path=/u&host=h.example.com#c",
-		"trojan ws tls":               "trojan://secret@example.com:443?type=ws&security=tls&path=/t&sni=foo.com#d",
-		"shadowsocks":                 "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388#e",
-		"hysteria2":                   "hysteria2://secret@example.com:443?sni=foo.com&obfs=salamander&obfs-password=p#f",
-		"socks5":                      "socks://user:pass@example.com:1080#g",
-		"mieru":                       "mierus://user:pass@example.com?port=2999&port=3000-3010&protocol=TCP&multiplexing=MULTIPLEXING_LOW&profile=p#i",
-		"naive":                       "naive+https://user:pass@example.com:443#j",
+		"vless grpc reality":          "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=grpc&security=reality&serviceName=svc&pbk=jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0&sid=ab12&fp=chrome#b",
+		// flow живёт только на голом tcp с TLS/Reality — ключ покрывается здесь.
+		"vless tcp reality vision": "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=tcp&security=reality&pbk=jNXHt1yRo0vDuchQlIP6Z0ZvjT3KtzVI-T4E7RoLJS0&sid=ab12&fp=chrome&flow=xtls-rprx-vision#b2",
+		"vless httpupgrade":        "vless://00000000-1111-2222-3333-444444444444@example.com:443?type=httpupgrade&path=/u&host=h.example.com#c",
+		"trojan ws tls":            "trojan://secret@example.com:443?type=ws&security=tls&path=/t&sni=foo.com#d",
+		"shadowsocks":              "ss://YWVzLTI1Ni1nY206c2VjcmV0@example.com:8388#e",
+		"hysteria2":                "hysteria2://secret@example.com:443?sni=foo.com&obfs=salamander&obfs-password=p#f",
+		// Пропускная способность, gecko и прыжки по портам — ключи, которых
+		// прежняя выборка не касалась, а ошибка в любом из них роняет разбор
+		// ВСЕЙ конфигурации движка (F360).
+		"hysteria2 brutal + gecko + hop": "hysteria2://secret@example.com:443?sni=foo.com&congestion=brutal&brutal_up=50&brutal_down=100&obfs=gecko&obfs-password=p&obfs-min-packet-size=100&obfs-max-packet-size=1200&mport=20000-30000#f2",
+		"socks5":                         "socks://user:pass@example.com:1080#g",
+		"mieru":                          "mierus://user:pass@example.com?port=2999&port=3000-3010&protocol=TCP&multiplexing=MULTIPLEXING_LOW&profile=p#i",
+		"naive":                          "naive+https://user:pass@example.com:443#j",
+		"trusttunnel":                    "tt://?AQ92cG4uZXhhbXBsZS5jb20CCzEuMi4zLjQ6NDQzBQdwcmVtaXVtBgpzM2NyZXRQYXNzDAZCZXJsaW4",
 	}
 	for name, link := range links {
 		t.Run(name, func(t *testing.T) {
+			if name == "trusttunnel" && !bytes.Contains(rawSchema, []byte(`"trusttunnel"`)) {
+				t.Skip("схема пина без trusttunnel — включится при пине релиза форка с with_trusttunnel")
+			}
 			p, err := ParseLink(link)
 			if err != nil {
 				t.Fatalf("ParseLink: %v", err)
@@ -175,5 +256,25 @@ func TestParsedOutboundsMatchSchema(t *testing.T) {
 			}
 			doc.checkKeys(t, "outbound", itemsNode, ob)
 		})
+	}
+}
+
+// F115(a): checkKeys раньше проверял только map/slice-узлы — скаляр молча
+// проходил ЛЮБУЮ схему, даже объектную. HTTPClientReference — anyOf со
+// string-веткой (`rs-direct:<X>` из ruleset_materializer.go), поэтому строка
+// обязана пройти; HTTPClient — чистый объект без anyOf, и строка на его месте
+// обязана быть отклонена. checkKeys репортит через t.Errorf, поэтому
+// негативный случай проверяется через тот же предикат (scalarAllowed),
+// который checkKeys вызывает перед Errorf, — так тест не зависит от
+// намеренно проваленного sub-теста.
+func TestCheckKeys_ScalarAgainstAnyOf(t *testing.T) {
+	doc, _, _ := loadSchema(t)
+
+	ref := map[string]any{"$ref": "#/$defs/HTTPClientReference"}
+	doc.checkKeys(t, "http_client", ref, "rs-direct:direct") // не должен звать t.Errorf
+
+	obj := map[string]any{"$ref": "#/$defs/HTTPClient"}
+	if doc.scalarAllowed(obj, "string") {
+		t.Error("HTTPClient — объект без anyOf, строка на его месте обязана быть отклонена")
 	}
 }

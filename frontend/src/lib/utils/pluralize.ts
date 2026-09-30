@@ -36,3 +36,4 @@ export const AVAILABLE_WORDS = ['доступный', 'доступных', 'д�
 export const MINUTE_WORDS = ['минуту', 'минуты', 'минут'] as const satisfies PluralWords;
 export const HOUR_WORDS = ['час', 'часа', 'часов'] as const satisfies PluralWords;
 export const DAY_WORDS = ['день', 'дня', 'дней'] as const satisfies PluralWords;
+export const CORE_WORDS = ['ядро', 'ядра', 'ядер'] as const satisfies PluralWords;

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hoaxisr/awg-manager/internal/accesspolicy"
 	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
@@ -27,6 +28,8 @@ import (
 	ndmsmetrics "github.com/hoaxisr/awg-manager/internal/ndms/metrics"
 	ndmsquery "github.com/hoaxisr/awg-manager/internal/ndms/query"
 	ndmstransport "github.com/hoaxisr/awg-manager/internal/ndms/transport"
+	"github.com/hoaxisr/awg-manager/internal/obfuscator"
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/pingcheck"
 	"github.com/hoaxisr/awg-manager/internal/presets"
@@ -78,8 +81,11 @@ type app struct {
 	dataDir     string
 	forceBoot   bool
 	pprofListen string
-	pprofOnMain bool
 	slowReqMS   int
+
+	// prunedRestoreDirs — сколько остатков восстановлений удалено до
+	// setupCore (пишется в журнал, когда он появится).
+	prunedRestoreDirs int
 
 	// process state
 	uptime   float64
@@ -91,6 +97,7 @@ type app struct {
 
 	// storage / settings / logging
 	settingsStore *storage.SettingsStore
+	mcpKeys       *storage.McpKeyStore
 	settings      *storage.Settings
 	awgStore      *storage.AWGTunnelStore
 
@@ -119,12 +126,20 @@ type app struct {
 	nwgOp         *nwg.OperatorNativeWG
 	wanModel      *wan.Model
 	tunnelService *service.ServiceImpl
-	// opkgTunOccupancy — занятость номеров OpkgTun: живые интерфейсы плюс пины
-	// владельцев. Собирается один раз и раздаётся всем, кто выдаёт номера.
-	opkgTunOccupancy storage.OpkgTunPins
-	// opkgNDMSPins — пины по записям NDMS: номер занят записью, устройства
-	// может уже не быть.
-	opkgNDMSPins storage.OpkgTunPins
+
+	// obfDispatcher — выбор бэкенда релея обфускатора (ядро/процесс); ставит
+	// wireProxyrt, читает хук выключателя (только после srv.Start).
+	obfDispatcher *obfuscator.Dispatcher
+	// obfKmodTripped — сторож выключил kernel-релей в этой жизни демона
+	// (§4.9); снимается только явным возвратом пользователя к ядру.
+	obfKmodTripped atomic.Bool
+
+	// opkgTunOwners — пять поставщиков занятости пула OpkgTun. Состав общий на
+	// всех, кто выдаёт номера, и потому собирается один раз (opkgTunOwners).
+	opkgTunOwners opkgTunOwners
+	// opkgPool — общий пул номеров OpkgTun, ОДИН на процесс: второй экземпляр
+	// означал бы две очереди на выбор, то есть отсутствие атомарности.
+	opkgPool     *opkgtun.Pool
 	catalog      *routing.CatalogImpl
 	exitRegistry *exitreg.Registry
 	// exitMirror — зеркальные записи tunnel-store реестра выходов. Держится
@@ -213,6 +228,11 @@ type app struct {
 	// сериализацию записи по разным замкам.
 	proxyStore *instancestore.Store
 	proxyMgr   *manager.Manager
+
+	// binariesRetryOnce — цикл повтора бута после ErrBinariesPending (F98)
+	// заводится один раз на процесс: нуджей много (проводка, фазы бута,
+	// WAN-хук), а ждущий загрузки цикл нужен один.
+	binariesRetryOnce sync.Once
 
 	// HTTP
 	srv *server.Server

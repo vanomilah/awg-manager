@@ -33,6 +33,7 @@ type OperatorOS4Impl struct {
 	wg       wg.Client
 	backend  Backend
 	firewall firewall.Manager
+	ipRun    ipRunFunc // ip command runner (mockable in tests)
 	appLog   *logging.ScopedLogger
 
 	// DNS tracking (tunnelID -> DNS servers applied via NDMS)
@@ -54,18 +55,18 @@ func NewOperatorOS4(
 		wg:         wgClient,
 		backend:    backendImpl,
 		firewall:   firewallMgr,
+		ipRun:      exec.Run,
 		appliedDNS: make(map[string][]string),
 	}
-	// OS4 has no mockable ipRun field of its own — client-route uses
-	// exec.Run directly. The warn-logger is bound to o.
-	o.clientRouteOps = newClientRouteOps(exec.Run, o.logWarn)
+	// Wire clientRouteOps after o is built — it captures o.ipRun and
+	// o.logWarn (bound to o) as the runner and warn-logger.
+	o.clientRouteOps = newClientRouteOps(
+		func(ctx context.Context, name string, args ...string) (*exec.Result, error) {
+			return o.ipRun(ctx, name, args...)
+		},
+		o.logWarn,
+	)
 	return o
-}
-
-// Create is a no-op on OS4 (interface created by process).
-func (o *OperatorOS4Impl) Create(ctx context.Context, cfg tunnel.Config) error {
-	// On OS4, interface is created when process starts
-	return nil
 }
 
 // ColdStart on OS4 is the same as Start — no NDMS/OpkgTun lifecycle.
@@ -123,18 +124,18 @@ func (o *OperatorOS4Impl) Start(ctx context.Context, cfg tunnel.Config) error {
 	o.logInfo("start", cfg.ID, "WireGuard config applied")
 
 	// === Phase 4: Bring interface up and set MTU ===
-	if result, err := exec.Run(ctx, "/opt/sbin/ip", "link", "set", "up", "dev", ifaceName); err != nil {
+	if result, err := o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "up", "dev", ifaceName); err != nil {
 		o.backend.Stop(ctx, ifaceName)
 		o.deleteInterface(ctx, ifaceName)
 		return tunnel.NewOpError("start", cfg.ID, "ip", fmt.Errorf("bring up: %w", exec.FormatError(result, err)))
 	}
 
-	if result, err := exec.Run(ctx, "/opt/sbin/ip", "link", "set", "dev", ifaceName, "mtu", fmt.Sprintf("%d", cfg.MTU)); err != nil {
+	if result, err := o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "dev", ifaceName, "mtu", fmt.Sprintf("%d", cfg.MTU)); err != nil {
 		o.logWarn("start", cfg.ID, "Failed to set MTU: "+exec.FormatError(result, err).Error())
 	}
 
 	// Set txqueuelen
-	if result, err := exec.Run(ctx, "/opt/sbin/ip", "link", "set", "dev", ifaceName, "txqueuelen", "1000"); err != nil {
+	if result, err := o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "dev", ifaceName, "txqueuelen", "1000"); err != nil {
 		o.logWarn("start", cfg.ID, "Failed to set txqueuelen: "+exec.FormatError(result, err).Error())
 	}
 
@@ -164,7 +165,7 @@ func (o *OperatorOS4Impl) Start(ctx context.Context, cfg tunnel.Config) error {
 }
 
 // Stop stops a tunnel on OS 4.x.
-func (o *OperatorOS4Impl) Stop(ctx context.Context, tunnelID string) error {
+func (o *OperatorOS4Impl) Stop(ctx context.Context, tunnelID, _ string) error {
 	ifaceName := tunnelID
 
 	// Remove firewall rules
@@ -204,7 +205,7 @@ func (o *OperatorOS4Impl) RemoveDefaultRoute(ctx context.Context, tunnelID strin
 // Delete completely removes a tunnel.
 func (o *OperatorOS4Impl) Delete(ctx context.Context, stored *storage.AWGTunnel) error {
 	// On OS4, stop and delete are the same
-	return o.Stop(ctx, stored.ID)
+	return o.Stop(ctx, stored.ID, stored.Name)
 }
 
 // Suspend on OS4 is a no-op — OS4 has no NDMS layer.
@@ -231,12 +232,12 @@ func (o *OperatorOS4Impl) Reconcile(ctx context.Context, cfg tunnel.Config) erro
 	}
 
 	// Bring interface up
-	if result, err := exec.Run(ctx, "/opt/sbin/ip", "link", "set", "up", "dev", ifaceName); err != nil {
+	if result, err := o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "up", "dev", ifaceName); err != nil {
 		return tunnel.NewOpError("reconcile", cfg.ID, "ip", fmt.Errorf("bring up: %w", exec.FormatError(result, err)))
 	}
 
 	// Set MTU
-	if result, err := exec.Run(ctx, "/opt/sbin/ip", "link", "set", "dev", ifaceName, "mtu", fmt.Sprintf("%d", cfg.MTU)); err != nil {
+	if result, err := o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "dev", ifaceName, "mtu", fmt.Sprintf("%d", cfg.MTU)); err != nil {
 		o.logWarn("reconcile", cfg.ID, "Failed to set MTU: "+exec.FormatError(result, err).Error())
 	}
 
@@ -291,7 +292,7 @@ func (o *OperatorOS4Impl) GetTrackedEndpointIP(tunnelID string) string {
 
 // GetDefaultGatewayInterface returns the current default gateway interface via ip route.
 func (o *OperatorOS4Impl) GetDefaultGatewayInterface(ctx context.Context) (string, error) {
-	result, err := exec.Run(ctx, "/opt/sbin/ip", "route", "show", "default")
+	result, err := o.ipRun(ctx, "/opt/sbin/ip", "route", "show", "default")
 	if err != nil {
 		return "", fmt.Errorf("ip route show default: %w", err)
 	}
@@ -307,7 +308,7 @@ func (o *OperatorOS4Impl) GetDefaultGatewayInterface(ctx context.Context) (strin
 
 // SetMTU sets MTU on a running tunnel interface via ip link.
 func (o *OperatorOS4Impl) SetMTU(ctx context.Context, tunnelID string, mtu int) error {
-	if _, err := exec.Run(ctx, "/opt/sbin/ip", "link", "set", "dev", tunnelID, "mtu", fmt.Sprintf("%d", mtu)); err != nil {
+	if _, err := o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "dev", tunnelID, "mtu", fmt.Sprintf("%d", mtu)); err != nil {
 		return tunnel.NewOpError("set_mtu", tunnelID, "ip", err)
 	}
 	o.logInfo("set_mtu", tunnelID, fmt.Sprintf("MTU set to %d", mtu))
@@ -325,26 +326,30 @@ func (o *OperatorOS4Impl) SyncAddress(ctx context.Context, tunnelID string, addr
 }
 
 // UpdateDescription is a no-op on OS4 (no NDMS interface descriptions).
-func (o *OperatorOS4Impl) UpdateDescription(ctx context.Context, tunnelID, description string) error {
+func (o *OperatorOS4Impl) UpdateDescription(ctx context.Context, tunnelID, prevName, description string) error {
+	return nil
+}
+
+func (o *OperatorOS4Impl) CaptureDescription(ctx context.Context, tunnelID, description string) error {
 	return nil
 }
 
 // configureIP configures IPv4 address on the interface.
 func (o *OperatorOS4Impl) configureIP(ctx context.Context, iface, address string) error {
-	result, err := exec.Run(ctx, "/opt/sbin/ip", "address", "add", "dev", iface, address+"/32")
+	result, err := o.ipRun(ctx, "/opt/sbin/ip", "address", "add", "dev", iface, address+"/32")
 	return exec.FormatError(result, err)
 }
 
 // configureIPv6 configures IPv6 address on the interface.
 func (o *OperatorOS4Impl) configureIPv6(ctx context.Context, iface, address string) error {
-	result, err := exec.Run(ctx, "/opt/sbin/ip", "-6", "address", "add", "dev", iface, address+"/128")
+	result, err := o.ipRun(ctx, "/opt/sbin/ip", "-6", "address", "add", "dev", iface, address+"/128")
 	return exec.FormatError(result, err)
 }
 
 // deleteInterface force-deletes a network interface.
 func (o *OperatorOS4Impl) deleteInterface(ctx context.Context, iface string) {
-	exec.Run(ctx, "/opt/sbin/ip", "link", "set", "down", "dev", iface)
-	exec.Run(ctx, "/opt/sbin/ip", "link", "del", iface)
+	o.ipRun(ctx, "/opt/sbin/ip", "link", "set", "down", "dev", iface)
+	o.ipRun(ctx, "/opt/sbin/ip", "link", "del", iface)
 }
 
 // waitForInterfaceRemoval waits for interface to be removed.
@@ -371,7 +376,7 @@ func (o *OperatorOS4Impl) waitForInterfaceRemoval(ctx context.Context, iface str
 
 // interfaceExists checks if interface exists.
 func (o *OperatorOS4Impl) interfaceExists(iface string) bool {
-	result, err := exec.Run(context.Background(), "/opt/sbin/ip", "link", "show", iface)
+	result, err := o.ipRun(context.Background(), "/opt/sbin/ip", "link", "show", iface)
 	return err == nil && result != nil && result.ExitCode == 0
 }
 

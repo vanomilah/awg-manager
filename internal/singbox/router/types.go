@@ -44,6 +44,10 @@ type Status struct {
 	// FakeIPTunAddr is the fakeip-tun gateway address (the tun /30 host, e.g.
 	// "172.18.0.1"); "" when not in fakeip-tun mode. Read-only, for display.
 	FakeIPTunAddr string `json:"fakeipTunAddr,omitempty"`
+	// CacheDBPath — эффективный путь cache.db (issue #842): по настройке, а при
+	// пустой — из 00-base.json. Показывает рукописный путь, который селектор
+	// «flash | tmp» выразить не может. "" без шва Deps.CacheDBPath.
+	CacheDBPath string `json:"cacheDbPath,omitempty"`
 	// PolicyTunIface / PolicyTunNDMSName — kernel- и NDMS-имена policy-tun
 	// интерфейса ("opkgtun0" / "OpkgTun0"). Заполняются при Enabled+Provisioned,
 	// ДО того как режим стал active: имя OpkgTun нужно пользователю, чтобы
@@ -94,9 +98,14 @@ type Rule struct {
 	Domain       []string `json:"domain,omitempty"`
 	IPCIDR       []string `json:"ip_cidr,omitempty"`
 	SourceIPCIDR []string `json:"source_ip_cidr,omitempty"`
-	Port         []int    `json:"port,omitempty"`
-	RuleSet      []string `json:"rule_set,omitempty"`
-	Protocol     string   `json:"protocol,omitempty"`
+	// SourceMACAddress — MAC LAN-устройства (sing-box 1.14, через таблицу
+	// соседей ядра). Сужающий матчер, как source_ip_cidr. Hostname-матчер не
+	// выносим: sing-box читает имена из lease-файлов dnsmasq/odhcpd/Kea, формат
+	// NDMS не проверен.
+	SourceMACAddress []string `json:"source_mac_address,omitempty"`
+	Port             []int    `json:"port,omitempty"`
+	RuleSet          []string `json:"rule_set,omitempty"`
+	Protocol         string   `json:"protocol,omitempty"`
 	// Inbound matches the sing-box listener tag the connection entered
 	// through (native sing-box route-rule field). Managed QoS-DSCP rules use
 	// it to bind a per-class inbound pair (tproxy-qos-N / redirect-qos-N) to
@@ -180,15 +189,62 @@ func (r *Rule) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// RuleSetHTTPClient — http_client remote-набора в форме sing-box 1.14
+// (замена deprecated download_detour). Только в материализованном слоте:
+// restoreHTTPClients возвращает DownloadDetour, API/UI его не видят.
+//
+// sing-box допускает http_client в двух формах: объект {"detour":"X"} и
+// строковая ссылка на тег из http_clients. Ref хранит вторую форму — её
+// применяет applyHTTPClients, когда X — пустой direct (detour на такой
+// outbound sing-box отвергает при старте): вместо объекта пишется ссылка
+// на клиент без detour. Detour и Ref взаимоисключающи.
+type RuleSetHTTPClient struct {
+	Detour string `json:"detour,omitempty"`
+	Ref    string `json:"-"`
+}
+
+func (c RuleSetHTTPClient) MarshalJSON() ([]byte, error) {
+	if c.Ref != "" {
+		return json.Marshal(c.Ref)
+	}
+	return json.Marshal(struct {
+		Detour string `json:"detour,omitempty"`
+	}{c.Detour})
+}
+
+func (c *RuleSetHTTPClient) UnmarshalJSON(data []byte) error {
+	var ref string
+	if err := json.Unmarshal(data, &ref); err == nil {
+		*c = RuleSetHTTPClient{Ref: ref}
+		return nil
+	}
+	var obj struct {
+		Detour string `json:"detour,omitempty"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	*c = RuleSetHTTPClient{Detour: obj.Detour}
+	return nil
+}
+
+// HTTPClient — запись верхнеуровневого http_clients (sing-box 1.14). Один
+// общий клиент rs-download для загрузки наборов, detour = route.final.
+type HTTPClient struct {
+	Tag    string `json:"tag"`
+	Detour string `json:"detour,omitempty"`
+}
+
 type RuleSet struct {
-	Tag            string           `json:"tag"`
-	Type           string           `json:"type"`
-	Format         string           `json:"format,omitempty"`
-	URL            string           `json:"url,omitempty"`
-	UpdateInterval string           `json:"update_interval,omitempty"`
-	DownloadDetour string           `json:"download_detour,omitempty"`
-	Path           string           `json:"path,omitempty"`
-	Rules          []map[string]any `json:"rules,omitempty"`
+	Tag            string             `json:"tag"`
+	Type           string             `json:"type"`
+	Format         string             `json:"format,omitempty"`
+	URL            string             `json:"url,omitempty"`
+	UpdateInterval string             `json:"update_interval,omitempty"`
+	DownloadDetour string             `json:"download_detour,omitempty"`
+	HTTPClient     *RuleSetHTTPClient `json:"http_client,omitempty"`
+	Path           string             `json:"path,omitempty"`
+	Rules          []map[string]any   `json:"rules,omitempty"`
 	// MaterializedSRS is set by ListRuleSets when a compiled .srs sibling
 	// exists for an inline ruleset. Not persisted in router JSON.
 	MaterializedSRS bool `json:"materialized_srs,omitempty"`
@@ -225,31 +281,29 @@ type CompositeOutboundView struct {
 }
 
 type Inbound struct {
-	Type        string `json:"type"`
-	Tag         string `json:"tag"`
-	Listen      string `json:"listen,omitempty"`
-	ListenPort  int    `json:"listen_port,omitempty"`
-	Network     string `json:"network,omitempty"`
-	UDPTimeout  string `json:"udp_timeout,omitempty"`
-	UDPFragment bool   `json:"udp_fragment,omitempty"`
-	TCPFastOpen bool   `json:"tcp_fast_open,omitempty"`
-	RoutingMark int    `json:"routing_mark,omitempty"`
+	Type       string `json:"type"`
+	Tag        string `json:"tag"`
+	Listen     string `json:"listen,omitempty"`
+	ListenPort int    `json:"listen_port,omitempty"`
+	Network    string `json:"network,omitempty"`
+	UDPTimeout string `json:"udp_timeout,omitempty"`
+	// UDPNATMax — потолок UDP-NAT-сессий inbound'а (sing-box 1.14, LRU). 0 =
+	// авто (4096-16384 по памяти) и ключ не пишется.
+	UDPNATMax   int  `json:"udp_nat_max,omitempty"`
+	UDPFragment bool `json:"udp_fragment,omitempty"`
+	TCPFastOpen bool `json:"tcp_fast_open,omitempty"`
+	RoutingMark int  `json:"routing_mark,omitempty"`
 	// tun inbound (fakeip-tun mode)
-	InterfaceName          string   `json:"interface_name,omitempty"`
-	Address                []string `json:"address,omitempty"`
-	MTU                    int      `json:"mtu,omitempty"`
-	AutoRoute              *bool    `json:"auto_route,omitempty"`
-	AutoRedirect           *bool    `json:"auto_redirect,omitempty"`
-	StrictRoute            *bool    `json:"strict_route,omitempty"`
-	Stack                  string   `json:"stack,omitempty"`
-	EndpointIndependentNAT *bool    `json:"endpoint_independent_nat,omitempty"`
-	// GSO controls sing-tun's generic-segmentation-offload on the tun device.
-	// Pointer + omitempty so it's emitted ONLY when explicitly set: the gvisor
-	// stack leaves it nil (omitted), while the system stack MUST set it false —
-	// on this router's kernel (4.9) system+GSO panics sing-tun under load, and
-	// system+gso:false is the only stable system-stack combo (PoC-proven
-	// 2026-06-13; the project's sing-box alpha accepts "gso": false on tun).
-	GSO *bool `json:"gso,omitempty"`
+	InterfaceName string   `json:"interface_name,omitempty"`
+	Address       []string `json:"address,omitempty"`
+	MTU           int      `json:"mtu,omitempty"`
+	AutoRoute     *bool    `json:"auto_route,omitempty"`
+	AutoRedirect  *bool    `json:"auto_redirect,omitempty"`
+	StrictRoute   *bool    `json:"strict_route,omitempty"`
+	Stack         string   `json:"stack,omitempty"`
+	// ExternalConfiguration (форк sing-box): адрес tun'а ставит и держит
+	// NDMS, sing-tun его не добавляет и не снимает при Close/SIGHUP.
+	ExternalConfiguration bool `json:"external_configuration,omitempty"`
 }
 
 type Route struct {
@@ -272,6 +326,9 @@ type Route struct {
 	// hostnames that no rule pins elsewhere (fakeip-tun: a "real" resolver
 	// so proxy server hostnames don't get fakeip addresses).
 	DefaultDomainResolver *DomainResolver `json:"default_domain_resolver,omitempty"`
+	// DefaultHTTPClient — тег клиента для загрузки наборов без http_client.
+	// Ставится материализацией (applyHTTPClients), в хранимой форме пуст.
+	DefaultHTTPClient string `json:"default_http_client,omitempty"`
 }
 
 type DomainResolver struct {
@@ -343,7 +400,15 @@ func (m DNSMatchResponse) MarshalJSON() ([]byte, error) {
 func (m *DNSMatchResponse) IsEnabled() bool { return m != nil && m.Enabled }
 
 type DNSRule struct {
-	RuleSet       []string `json:"rule_set,omitempty"`
+	RuleSet []string `json:"rule_set,omitempty"`
+	// RuleSetIPCIDRMatchSource переводит ip_cidr-правила ВНУТРИ набора на
+	// матч по адресу источника. Форму поля определяет
+	// applyDNSRuleSetMatchSource при каждой материализации — присланное
+	// значение она перезаписывает. В хранимом конфиге поле остаётся
+	// (restoreConfig его не снимает), так что читать его как намерение
+	// пользователя нельзя.
+	RuleSetIPCIDRMatchSource bool `json:"rule_set_ip_cidr_match_source,omitempty"`
+
 	SourceIPCIDR  []string `json:"source_ip_cidr,omitempty"`
 	DomainSuffix  []string `json:"domain_suffix,omitempty"`
 	Domain        []string `json:"domain,omitempty"`
@@ -371,11 +436,15 @@ type DNS struct {
 	Rules    []DNSRule   `json:"rules,omitempty"`
 	Final    string      `json:"final,omitempty"`
 	Strategy string      `json:"strategy,omitempty"`
+	// Timeout — таймаут DNS-запроса (sing-box 1.14, Go duration). Пусто = 10s
+	// движка. Перекрывается timeout у DNS-правила и domain_resolver.
+	Timeout string `json:"timeout,omitempty"`
 }
 
 type CacheFile struct {
 	Enabled     bool   `json:"enabled"`
 	StoreFakeIP bool   `json:"store_fakeip,omitempty"`
+	StoreDNS    bool   `json:"store_dns,omitempty"`
 	Path        string `json:"path,omitempty"`
 }
 
@@ -388,6 +457,7 @@ type RouterConfig struct {
 	Outbounds    []Outbound    `json:"outbounds"`
 	DNS          DNS           `json:"dns,omitempty"`
 	Route        Route         `json:"route"`
+	HTTPClients  []HTTPClient  `json:"http_clients,omitempty"`
 	Experimental *Experimental `json:"experimental,omitempty"`
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/sys/httpclient"
 	"github.com/hoaxisr/awg-manager/internal/sys/ndmsinfo"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
+	"github.com/hoaxisr/awg-manager/internal/tunnel"
 	"github.com/hoaxisr/awg-manager/internal/tunnel/netutil"
 )
 
@@ -157,6 +159,20 @@ func (r *Runner) testNDMSHealth(ctx context.Context) TestResult {
 	if err != nil {
 		res.Status = StatusFail
 		res.Detail = "NDMS не отвечает: " + err.Error()
+		return res
+	}
+
+	// У версии теперь два источника, и наполненный store больше НЕ означает,
+	// что отвечал RCI: запасной канал ndmc ходит через unix-сокет и наполнит
+	// его ровно тогда, когда HTTP-морда молчит. Без этой ветки проверка «NDMS
+	// отвечает» давала бы Pass именно в тот момент, когда она обязана
+	// предупреждать.
+	// Источник называем поимённо. Раньше здесь стояло «получено через ndmc»
+	// для ЛЮБОГО запасного канала, и с появлением файлового (components.xml)
+	// эта строка начала врать пользователю прямо в диагностике.
+	if src := r.deps.NDMSQueries.SystemInfo.Source(); src != "rci" {
+		res.Status = StatusWarn
+		res.Detail = "RCI (HTTP :79) не ответил при старте — версия получена каналом " + src + ": " + v.Title
 		return res
 	}
 
@@ -663,8 +679,12 @@ func (r *Runner) testEndpointReachable(ctx context.Context, t TunnelInfo) TestRe
 
 	result, err := exec.Run(ctx, "ping", "-c", "3", ip)
 	if err != nil {
-		res.Status = StatusFail
-		res.Detail = fmt.Sprintf("Ping %s: недоступен", ip)
+		// Warn, а не fail: молчание на ICMP — норма для VPS, большинство их
+		// режет. Живость пира доказывает awg_handshake, и он рядом; красный
+		// здесь означает отказ на исправном туннеле — в дампе с роутера так
+		// падали все четыре, включая тот, через который прошло 751 MiB.
+		res.Status = StatusWarn
+		res.Detail = fmt.Sprintf("Ping %s: нет ответа (ICMP часто закрыт на VPS — см. awg_handshake)", ip)
 		return res
 	}
 
@@ -761,26 +781,48 @@ func (r *Runner) testTunnelConnectivity(ctx context.Context, t TunnelInfo) TestR
 		return res
 	}
 
-	// Try multiple IP check services. Egress uses default route (WAN).
+	// Bound to the tunnel device (SO_BINDTODEVICE), names resolved through the
+	// tunnel DNS: a handshake with a dead data path must show up here as fail.
+	// Unbound, the request followed the system route and passed with a foreign
+	// address (F128, #867). A peer whose AllowedIPs do not cover the internet
+	// drops the probe in wg_xmit — that is not a broken tunnel.
+	if !slices.Contains(t.Settings.AllowedIPs, "0.0.0.0/0") {
+		res.Status = StatusSkip
+		res.Detail = "AllowedIPs не покрывают интернет — проверка неинформативна"
+		return res
+	}
+	dns := tunnel.ParseDNSList(t.Settings.DNS)
 	urls := []string{"https://ifconfig.me", "https://icanhazip.com", "https://ip.me"}
+	var lastErr error
 	for _, url := range urls {
-		result, err := httpclient.DefaultClient.Do(ctx, httpclient.CallConfig{
-			URL:     url,
-			MaxTime: 5 * time.Second,
+		result, err := httpDo(ctx, httpclient.CallConfig{
+			URL:        url,
+			Interface:  t.InterfaceName,
+			DNSServers: dns,
+			MaxTime:    5 * time.Second,
 		})
-		if err == nil {
-			ip := strings.TrimSpace(result.Body)
-			if ip != "" {
-				res.Status = StatusPass
-				res.Detail = fmt.Sprintf("IP: %s (via %s)", ip, url)
-				return res
-			}
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if ip := strings.TrimSpace(result.Body); ip != "" {
+			res.Status = StatusPass
+			res.Detail = fmt.Sprintf("IP: %s (via %s)", ip, url)
+			return res
 		}
 	}
 
-	res.Status = StatusSkip
-	res.Detail = "Все IP-сервисы недоступны"
+	res.Status = StatusFail
+	res.Detail = "Нет ответа через " + t.InterfaceName
+	if lastErr != nil {
+		res.Detail += ": " + lastErr.Error()
+	}
 	return res
+}
+
+// httpDo — шов для тестов вместо httpclient.DefaultClient.Do.
+var httpDo = func(ctx context.Context, cfg httpclient.CallConfig) (*httpclient.Result, error) {
+	return httpclient.DefaultClient.Do(ctx, cfg)
 }
 
 func (r *Runner) testFirewallRules(t TunnelInfo) TestResult {

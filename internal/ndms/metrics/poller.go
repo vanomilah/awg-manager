@@ -6,6 +6,7 @@ package metrics
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,7 +30,8 @@ func (nopLogger) Warnf(string, ...any) {}
 func NopLogger() Logger { return nopLogger{} }
 
 // Poller is a ticker that fetches peer metrics for non-managed system
-// WG tunnels and server interfaces at a fixed cadence. Peers come from
+// WG tunnels and server interfaces. Шаг ДВА: interval при открытой панели и
+// idleInterval, когда её не открыл никто (см. run). Peers come from
 // the .wireguard.peer field of /show/interface/<name>; it publishes
 // tunnel:traffic (non-managed system tunnels) and triggers
 // server:updated snapshots (server interfaces).
@@ -43,7 +45,9 @@ type Poller struct {
 	running     RunningInterfacesProvider
 	subscribers SubscriberCounter
 	interval    time.Duration
-	log         Logger
+	// idleInterval — шаг, когда панель не открыта ни у кого.
+	idleInterval time.Duration
+	log          Logger
 
 	mu   sync.Mutex
 	prev map[string]peerDigest
@@ -91,10 +95,17 @@ type Publisher interface {
 	Publish(eventType string, data any)
 }
 
-// SubscriberCounter reports the current number of SSE subscribers.
-// MetricsPoller skips work when zero.
+// SubscriberCounter reports the current number of CLIENT (SSE) subscriptions.
+// На нуле поллер РАЗРЕЖАЕТСЯ, а не останавливается: он единственный кормилец
+// истории трафика не управляемых системных туннелей, и полный гейт оставлял в
+// графике дыру во всю длину простоя (F352). Останавливать его нельзя.
+//
+// Именно клиентских: events.Bus.SubscriberCount() считает ещё и внутренних
+// подписчиков (failover, statecache, connectivity, awgoutbounds, deviceproxy),
+// которые живут всё время работы процесса, — на нём гейт не срабатывал никогда
+// и поллер ходил в NDMS раз в 5 с круглосуточно (F340).
 type SubscriberCounter interface {
-	SubscriberCount() int
+	ClientCount() int
 }
 
 // ServerSnapshotPublisher publishes a full server:updated snapshot. The
@@ -130,11 +141,18 @@ func NewWithInterval(peers *query.PeerStore, pub Publisher, running RunningInter
 		running:     running,
 		subscribers: subs,
 		interval:    interval,
-		log:         log,
-		prev:        make(map[string]peerDigest),
-		emptyUntil:  make(map[string]time.Time),
-		stopCh:      make(chan struct{}),
-		doneCh:      make(chan struct{}),
+		// Гейта «никто не смотрит» здесь быть не может: этот же поллер —
+		// единственный кормилец истории трафика для НЕ управляемых системных
+		// туннелей (SetHistoryFeeder в wiring_routing.go). Выключив его, мы
+		// оставляли в графике дыру во всю длину простоя. Разрежаем, как
+		// traffic.SysfsPoller: разрешение часового окна — точка в минуту,
+		// поэтому минутный шаг сохраняет график верным.
+		idleInterval: 12 * interval,
+		log:          log,
+		prev:         make(map[string]peerDigest),
+		emptyUntil:   make(map[string]time.Time),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
 }
 
@@ -176,28 +194,63 @@ func (p *Poller) Stop() {
 	}
 }
 
+// nobodyWatching сообщает, что открытых панелей нет. nil-счётчик считаем
+// «смотрят»: не настроили — не разрежаем.
+func (p *Poller) nobodyWatching() bool {
+	return p.subscribers != nil && p.subscribers.ClientCount() == 0
+}
+
 func (p *Poller) run() {
 	defer close(p.doneCh)
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
+	lastRun := time.Now()
 	for {
 		select {
 		case <-p.stopCh:
 			return
 		case <-ticker.C:
+			if p.nobodyWatching() && time.Since(lastRun) < p.idleInterval {
+				continue
+			}
+			// Отметка ДО тика: тик ограничен контекстом в interval и ждёт
+			// свои горутины, поэтому отметка после него растягивала шаг
+			// простоя на длительность тика — часовой график недобирал точки.
+			//
+			// Сторожа на это НЕТ и дёшево не получается: тик не может стать
+			// длиннее interval (свой же контекст), поэтому в тесте разница
+			// между порядками не наблюдаема без подмены часов. Регресс обратно
+			// красным не станет — держать глазами.
+			lastRun = time.Now()
 			p.tick()
 		}
 	}
 }
 
-func (p *Poller) tick() {
-	if p.subscribers != nil && p.subscribers.SubscriberCount() == 0 {
-		return
+// tunnelsOnly отбрасывает серверные интерфейсы, сохраняя порядок остальных.
+func tunnelsOnly(refs []InterfaceRef) []InterfaceRef {
+	out := refs[:0:0]
+	for _, r := range refs {
+		if !r.IsServer {
+			out = append(out, r)
+		}
 	}
+	return out
+}
+
+func (p *Poller) tick() {
 	ctx, cancel := context.WithTimeout(context.Background(), p.interval)
 	defer cancel()
 
 	refs := p.running.RunningInterfaces(ctx)
+	if p.nobodyWatching() {
+		// В простое серверная половина работает вхолостую: историю трафика
+		// кормит только publishTunnel, и только для НЕ серверных ref, а
+		// единственный выход серверной — PublishServerSnapshot, то есть
+		// подсказка в шину, где зрителей нет. Туннельную половину оставляем:
+		// ради неё поллер в простое и не выключен (F352).
+		refs = tunnelsOnly(refs)
+	}
 	if len(refs) == 0 {
 		return
 	}
@@ -259,17 +312,24 @@ func (p *Poller) tick() {
 		} else {
 			delete(p.emptyUntil, r.ref.ID)
 		}
-		digest := digestPeers(r.peers)
+		// Туннель публикуется КАЖДЫЙ тик, без дедупа: событие — часы графика.
+		// Фронт (stores/traffic.ts) кладёт точку на каждое событие и считает
+		// скорость по соседним, история — так же; без события у простаивающего
+		// туннеля график встаёт, а скорость залипает на последнем ненулевом
+		// значении (F469).
+		if !r.ref.IsServer {
+			changedTunnels = append(changedTunnels, r)
+			continue
+		}
+		// Сервер — только на настоящем изменении: подсказка заставляет фронт
+		// перечитать /api/servers/all, а графиков скорости у серверов нет.
+		digest := digestPeers(r.peers, now)
 		prev, hadPrev := p.prev[r.ref.ID]
 		if hadPrev && digest.equal(prev) {
 			continue
 		}
 		p.prev[r.ref.ID] = digest
-		if r.ref.IsServer {
-			serverChanged = true
-		} else {
-			changedTunnels = append(changedTunnels, r)
-		}
+		serverChanged = true
 	}
 	snapshotPub := p.snapshotPub
 	history := p.history
@@ -314,25 +374,53 @@ func (p *Poller) publishTunnel(ref InterfaceRef, peers []ndms.Peer, history Hist
 }
 
 type peerDigest struct {
-	rxSum        int64
-	txSum        int64
-	minHandshake int64
-	peerCount    int
+	rxSum     int64
+	txSum     int64
+	lastShake int64 // unix-время самого свежего рукопожатия; -1 — не было
+	peerCount int
+	// online — сколько пиров онлайн. NDMS снимает online по возрасту
+	// рукопожатия, не трогая байты и само рукопожатие: без этого поля
+	// ушедший пир висел бы на странице серверов «онлайн» бессрочно.
+	online int
 }
 
-func digestPeers(peers []ndms.Peer) peerDigest {
-	d := peerDigest{minHandshake: -1, peerCount: len(peers)}
+// handshakeJitter — допуск сравнения времени рукопожатия. Одно и то же
+// рукопожатие, пересчитанное от now тика, гуляет на сумму: возраст кэша
+// PeerStore (peerTTL 8 с, тик 5 с — на тике из кэша «секунды назад» те же,
+// что при чтении), задержка ответа RCI (now берётся до чтения) и целые
+// секунды NDMS — до ~14 с на нагруженном роутере (стенд: при допуске меньше
+// возраста кэша подсказка servers уходила каждый тик). WireGuard
+// перерукопожимается раз в ~2 мин, так что 20 с новое рукопожатие не прячут.
+// Поднимая peerTTL, пересчитать и это значение.
+const handshakeJitter = 20
+
+// digestPeers — отпечаток пиров для дедупа. Рукопожатие хранится
+// абсолютным временем, а не «секундами назад»: те растут на каждом тике, и
+// сравнение по ним считало изменившимся любой интерфейс с рукопожатием (F469).
+func digestPeers(peers []ndms.Peer, now time.Time) peerDigest {
+	d := peerDigest{lastShake: -1, peerCount: len(peers)}
 	for _, p := range peers {
 		d.rxSum += p.RxBytes
 		d.txSum += p.TxBytes
-		if d.minHandshake < 0 || p.LastHandshakeSecondsAgo < d.minHandshake {
-			d.minHandshake = p.LastHandshakeSecondsAgo
+		if p.Online {
+			d.online++
+		}
+		if p.LastHandshakeSecondsAgo < 0 || p.LastHandshakeSecondsAgo >= math.MaxInt32 {
+			continue
+		}
+		if at := now.Unix() - p.LastHandshakeSecondsAgo; at > d.lastShake {
+			d.lastShake = at
 		}
 	}
 	return d
 }
 
 func (d peerDigest) equal(other peerDigest) bool {
+	shake := d.lastShake - other.lastShake
+	if shake < 0 {
+		shake = -shake
+	}
 	return d.rxSum == other.rxSum && d.txSum == other.txSum &&
-		d.minHandshake == other.minHandshake && d.peerCount == other.peerCount
+		shake <= handshakeJitter && d.peerCount == other.peerCount &&
+		d.online == other.online
 }

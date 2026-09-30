@@ -348,6 +348,57 @@ var nonPatchableSettings = map[string]struct{}{
 	// fakeip/policyTun (легаси-ключи остаются в списке: PATCH не должен уметь
 	// подсунуть их и после миграции).
 	"opkgTun": {},
+	// amneziaPremiumKeyCipher — шифротекст ключа подписки Amnezia Premium,
+	// пишется ТОЛЬКО ручками premium. На общем PATCH он дал бы аутентифи-
+	// цированному клиенту подменить чужой ключ подписки (и затереть свой)
+	// мимо шифрования DeviceCipher — та же логика, что у serverPeerSecrets.
+	"amneziaPremiumKeyCipher": {},
+	// amneziaPremiumMirrorUrl — адрес зеркала Amnezia CP. Секретом он не
+	// является, причина исключения другая: поле принадлежит мастеру premium,
+	// а не странице настроек (решение владельца), и пишется ТОЛЬКО его
+	// ручкой — она же валидирует присланное и лечит испорченное хранимое.
+	// Оставь поле в патче — и появятся ДВЕ записи одного значения с разными
+	// правилами: у второй (общий PATCH) валидации больше нет вовсе, то есть
+	// мусор снова попадал бы в settings.json мимо всякой проверки.
+	"amneziaPremiumMirrorUrl": {},
+	// amneziaPremiumDeclaredCountry — страна подключения для выдачи
+	// конфигурации. Исключено по той же причине, что зеркало: поле
+	// принадлежит мастеру premium и пишется ТОЛЬКО его ручкой, которая
+	// сверяет значение со словарём портала. На общем PATCH появилась бы
+	// вторая запись того же значения без всякой проверки — и выдача уходила
+	// бы в портал с мусором, тратя попытку расходной ручки.
+	"amneziaPremiumDeclaredCountry": {},
+	// managedServers (и легаси-одиночка managedServer) несут приватные ключи
+	// самих серверов и их пиров — тот же ключевой материал, что и
+	// serverPeerSecrets, и хранит его только settings.json. Пишутся они
+	// ТОЛЬКО своими атомарными методами (AddManagedServer,
+	// UpdateManagedServer, DeleteManagedServer, SaveManagedServers) с
+	// собственных ручек серверов. На общем PATCH они дали бы аутентифи-
+	// цированному вызывающему переписать или стереть ключи — и стирали бы
+	// их САМИ, без всякого злого умысла: ответ настроек ключи снимает
+	// (белый список settingsResponse их не содержит), а страница настроек шлёт
+	// тело ответа целиком.
+	"managedServers": {},
+	"managedServer":  {},
+	// obfuscatorKmodTripped/obfuscatorKmodOopsHash — состояние сторожа ядро/
+	// процесс Phobos (§4.9), пишется ТОЛЬКО TripObfuscatorKmod/
+	// ClearObfuscatorKmodTripped/SetObfuscatorKmodOopsHash — та же
+	// single-writer логика, что у fakeip/opkgTun: общий PATCH не должен
+	// уметь подделать причину срабатывания или сбить дедуп по hash.
+	// obfuscatorRelayProcess (сам выключатель) — тоже вне патча: страница шлёт
+	// тело настроек целиком, и устаревшее false с другой вкладки через общий
+	// PATCH снимало бы срабатывание сторожа и возвращало ядро. Пишется ТОЛЬКО
+	// ручкой POST /settings/obfuscator-relay (SetObfuscatorRelayProcess) и
+	// сторожем (TripObfuscatorKmod).
+	"obfuscatorRelayProcess": {},
+	"obfuscatorKmodTripped":  {},
+	"obfuscatorKmodOopsHash": {},
+	// foreignInterfaces (#935) пишется ТОЛЬКО MarkForeignInterface/
+	// UnmarkForeignInterface под семафором пула OpkgTun (spec §4): ручка
+	// проверяет, что номер не занят туннелем, прежде чем отметить его как
+	// сторонний. Общий PATCH дал бы аутентифицированному клиенту обойти эту
+	// проверку границы — та же single-writer логика, что у fakeip/opkgTun.
+	"foreignInterfaces": {},
 }
 
 // TestSettingsPatch_ExcludesServerSecrets pins the intentional exclusion: a

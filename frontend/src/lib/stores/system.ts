@@ -1,5 +1,7 @@
 /**
- * systemInfo — polling store for /api/system/info (cold tier, 30s).
+ * systemInfo — store for /api/system/info. Таймера нет: страница настроек
+ * обновляет телеметрию своим шагом 120 с (startVisiblePoll), а остальным
+ * хватает выборки при подписке и события.
  *
  * Exposes `PollingState<SystemInfo>` via `.subscribe` so callers read
  * `$systemInfo.data?.routerIP` etc. Subscribed globally in +layout.svelte
@@ -21,7 +23,7 @@ async function fetchSysInfo(): Promise<SystemInfo> {
 
 export const systemInfo: PollingStore<SystemInfo> = createPollingStore<SystemInfo>(fetchSysInfo, {
 	staleTime: 30_000,
-	pollInterval: 30_000,
+	pollInterval: 0,
 });
 
 registerStore('sysInfo', systemInfo);

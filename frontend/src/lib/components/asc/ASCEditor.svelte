@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { protocols, getSignaturePackets, calcByteSize, type ProtocolKey, type SignaturePackets } from '$lib/utils/protocols';
+	import { protocols, MAX_SIGNATURE_CHARS, type ProtocolKey, type SignaturePackets } from '$lib/utils/protocols';
 	import { api } from '$lib/api/client';
 	import type { ASCParams, ASCParamsExtended } from '$lib/types';
 	import { isExtendedASCParams } from '$lib/utils/asc-validation';
@@ -9,10 +9,8 @@
 	import { Badge, Button, Dropdown, FieldHint, type DropdownOption } from '$lib/components/ui';
 	import { Fingerprint, Hash, MoveHorizontal, Shredder, ShieldCheck, Shuffle } from 'lucide-svelte';
 
-	const MAX_SIGNATURE_BYTES = 4096;
-
 	type GenerateMode = 'protocol' | 'domain';
-	type SignatureModes = 'both' | 'domain';
+	type SignatureModes = 'both' | 'domain' | 'none';
 
 	type ASCErrorFields = Partial<Record<keyof ASCParamsExtended, string[]>>;
 
@@ -20,6 +18,7 @@
 		params = $bindable(),
 		extended = undefined,
 		awg3 = false,
+		awg3Limited = false,
 		mtu = 1280,
 		errors = {},
 		hints = AWG_PARAM_HINTS,
@@ -30,6 +29,9 @@
 		params: ASCParams;
 		extended?: boolean;
 		awg3?: boolean;
+		// NativeWG through awg_proxy (firmware before 5.02.A.11) can only do header
+		// protection + random trailers — not timers / content padding. Hide those when true.
+		awg3Limited?: boolean;
 		mtu?: number;
 		errors?: ASCErrorFields;
 		hints?: Record<string, string>;
@@ -76,30 +78,22 @@
 	let captureError = $state('');
 	let captureSource = $state('');
 
-	let totalBytes = $derived.by(() => {
+	let totalChars = $derived.by(() => {
 		if (!showExtended) return 0;
 		const ext = params as ASCParamsExtended;
 		return (
-			calcByteSize(String(ext.i1 || '')) +
-			calcByteSize(String(ext.i2 || '')) +
-			calcByteSize(String(ext.i3 || '')) +
-			calcByteSize(String(ext.i4 || '')) +
-			calcByteSize(String(ext.i5 || ''))
-		);
+			String(ext.i1 || '') +
+			String(ext.i2 || '') +
+			String(ext.i3 || '') +
+			String(ext.i4 || '') +
+			String(ext.i5 || '')
+		).length;
 	});
 
-	let overLimit = $derived(totalBytes > MAX_SIGNATURE_BYTES);
+	let overLimit = $derived(totalChars > MAX_SIGNATURE_CHARS);
 
 	function fieldId(name: string): string {
 		return `${idPrefix}${name}`;
-	}
-
-	function generationErrorMessage(e: unknown): string {
-		const msg = e instanceof Error ? e.message : String(e);
-		if (/getRandomValues|crypto/i.test(msg)) {
-			return 'Генерация недоступна: откройте интерфейс по HTTPS или через localhost';
-		}
-		return msg || 'Ошибка генерации пакетов';
 	}
 
 	function applySignaturePackets(packets: SignaturePackets) {
@@ -113,33 +107,15 @@
 		} as ASCParams;
 	}
 
-	function handleGenerate() {
-		if (!showExtended) {
-			notifications.error('Signature-пакеты (I1–I5) недоступны на этом устройстве');
-			return;
-		}
-
+	async function handleGenerate() {
+		if (!showExtended) return;
 		generating = true;
 		try {
-			const packets = getSignaturePackets(selectedProtocol, mtu);
-			const size =
-				calcByteSize(packets.i1) +
-				calcByteSize(packets.i2) +
-				calcByteSize(packets.i3) +
-				calcByteSize(packets.i4) +
-				calcByteSize(packets.i5);
-			if (size > MAX_SIGNATURE_BYTES) {
-				notifications.error(
-					`Суммарный размер (${size} байт) превышает лимит ${MAX_SIGNATURE_BYTES}`,
-				);
-				return;
-			}
-
-			applySignaturePackets(packets);
-			const protoName = protocols[selectedProtocol]?.name ?? selectedProtocol;
-			notifications.success(`Signature-пакеты сгенерированы (${protoName})`);
-		} catch (e: unknown) {
-			notifications.error(generationErrorMessage(e));
+			const res = await api.generateSignature(selectedProtocol);
+			applySignaturePackets(res.packets);
+			notifications.success(`Сигнатура сгенерирована (${protocols[selectedProtocol].name})`);
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : 'Ошибка генерации');
 		} finally {
 			generating = false;
 		}
@@ -240,7 +216,7 @@
 		</div>
 	</section>
 
-	{#if showExtended}
+	{#if showExtended && signatureModes !== 'none'}
 		{@const ext = params as ASCParamsExtended}
 		<section class="card param-section">
 			<SettingsSectionLabel label="Signature пакеты (I1-I5)" icon={Fingerprint} tone="green" header />
@@ -339,7 +315,7 @@
 			</div>
 
 			<div class="size-indicator" class:over-limit={overLimit}>
-				{totalBytes} / {MAX_SIGNATURE_BYTES} байт
+				{totalChars} / {MAX_SIGNATURE_CHARS} символов
 				{#if overLimit}
 					<span class="size-error">— превышен лимит!</span>
 				{/if}
@@ -352,8 +328,13 @@
 		<section class="card param-section">
 			<SettingsSectionLabel label="AmneziaWG 3.0" icon={ShieldCheck} tone="purple" header />
 			<p class="group-desc">
-				Параметры ядра AWG 3.0 (только режим kernel). Таймеры — число или диапазон
-				<code>min-max</code> в секундах; пусто = значение по умолчанию.
+				{#if awg3Limited}
+					Через NativeWG (awg_proxy) работает защита заголовков — её ключ задаётся здесь.
+					Таймеры и content-padding доступны лишь в режиме kernel.
+				{:else}
+					Параметры AWG 3.0. Таймеры — число или диапазон
+					<code>min-max</code> в секундах; пусто = значение по умолчанию.
+				{/if}
 			</p>
 
 			<div class="form-group">
@@ -395,7 +376,7 @@
 			<SettingsSectionLabel label="AmneziaWG 3.1" icon={Shuffle} tone="purple" header />
 			<p class="group-desc">
 				Параметры версии 3.1 включены в конфигурационном файле туннеля. Отсюда их не
-				поменять: они требуют модуля ядра 3.1 и на этом роутере, и на стороне сервера,
+				поменять: они требуют поддержки 3.1 и на этом роутере, и на стороне сервера,
 				а снятие RandomTrailers на одной стороне рвёт туннель.
 			</p>
 

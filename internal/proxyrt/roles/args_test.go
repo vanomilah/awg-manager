@@ -82,23 +82,81 @@ func TestWdttServerArgsDNSIsRouterRegardlessOfRelayMode(t *testing.T) {
 	}
 }
 
+// Строка запуска сверяется ЦЕЛИКОМ, а не тремя флагами. Причина не в
+// аккуратности: argv — это отпечаток конфигурации процесса
+// (`Proc.SetDesired` → `awgmproto.ConfigHash(forkArgs)`), по которому движок
+// решает, надо ли перезапускать. Потерянный флаг означает сразу две беды:
+// процесс работает без настройки, и его отпечаток молча совпадает с чужим.
+// Прежняя редакция смотрела три подстроки из семнадцати аргументов —
+// удаление `-transport` и `-mode` проходило зелёным.
+//
+// Ожидание — рукописная строка, а не рендер тем же построителем.
 func TestFreeTurnArgs(t *testing.T) {
 	cl := FreeTurnClientConfig{
-		Listen: "127.0.0.1:9001", Peer: "relay.example:3478", Streams: 2,
-		Transport: "udp", Mode: "turn", ObfProfile: "none",
+		Listen: "127.0.0.1:9001", Peer: "relay.example:3478", Provider: "prov",
+		Links: "l1,l2", Streams: 2, Transport: "udp", Mode: "turn",
+		ObfProfile: "xor", ObfKey: "k", StreamsPerCred: 3, Platform: "mobile",
+		DNSMode: "doh", DNSServers: "1.1.1.1", ClientID: "cid",
+		Sub: "https://sub", Debug: true,
 	}
-	got := strings.Join(FreeTurnClientArgs(cl), " ")
-	for _, want := range []string{"-listen 127.0.0.1:9001", "-peer relay.example:3478", "-n 2"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("клиент: нет %q в %q", want, got)
+	wantClient := "-listen 127.0.0.1:9001 -peer relay.example:3478 -provider prov " +
+		"-links l1,l2 -n 2 -transport udp -mode turn -obf-profile xor -obf-key k " +
+		"-streams-per-cred 3 -platform mobile -dns-mode doh -dns-servers 1.1.1.1 " +
+		"-client-id cid -sub https://sub -debug"
+	if got := strings.Join(FreeTurnClientArgs(cl), " "); got != wantClient {
+		t.Fatalf("argv клиента:\n%s\nждали:\n%s", got, wantClient)
+	}
+
+	// -kcp-* уезжают только в tcp-режиме и только когда профиль задан: в udp
+	// клиент 3.x отвергает любое отклонение KCP от дефолта на старте.
+	cl.KCP = &FreeTurnKCP{NoDelay: 1, Interval: 40, Resend: 2, NC: 1, SndWnd: 256, RcvWnd: 256, MTU: 1200, ACKNoDelay: false}
+	for _, mode := range []string{"udp", "turn", ""} {
+		cl.Mode = mode
+		if got := strings.Join(FreeTurnClientArgs(cl), " "); strings.Contains(got, "-kcp-") {
+			t.Errorf("mode %q не должен получать -kcp-*: %q", mode, got)
 		}
 	}
-	srv := FreeTurnServerConfig{Listen: "0.0.0.0:3478", Mode: "udp", ClientsFile: "/opt/etc/ft/clients"}
-	gs := strings.Join(FreeTurnServerArgs(srv), " ")
-	for _, want := range []string{"-listen 0.0.0.0:3478", "-mode udp", "-clients-file /opt/etc/ft/clients"} {
-		if !strings.Contains(gs, want) {
-			t.Fatalf("сервер: нет %q в %q", want, gs)
-		}
+	cl.Mode = "tcp"
+	wantKCP := "-mode tcp -kcp-nodelay 1 -kcp-interval 40 -kcp-resend 2 -kcp-nc 1 " +
+		"-kcp-sndwnd 256 -kcp-rcvwnd 256 -kcp-mtu 1200 -kcp-acknodelay=false -obf-profile xor"
+	if got := strings.Join(FreeTurnClientArgs(cl), " "); !strings.Contains(got, wantKCP) {
+		t.Errorf("argv tcp с KCP:\n%s\nждали фрагмент:\n%s", got, wantKCP)
+	}
+	cl.Mode = "turn"
+	cl.KCP = nil
+
+	// -bond только в tcp, -obf-timing только с профилем: иначе клиент 4.x
+	// отвергает запуск (config/validate.go апстрима).
+	cl.Bond, cl.ObfTimingMs = true, 20
+	if got := strings.Join(FreeTurnClientArgs(cl), " "); strings.Contains(got, "-bond") ||
+		!strings.Contains(got, "-obf-key k -obf-timing 20ms ") {
+		t.Errorf("argv turn с bond и timing: %q", got)
+	}
+	cl.Mode = "tcp"
+	if got := strings.Join(FreeTurnClientArgs(cl), " "); !strings.Contains(got, "-mode tcp -bond -obf-profile") {
+		t.Errorf("tcp обязан получить -bond: %q", got)
+	}
+	cl.Mode, cl.ObfProfile = "turn", "none"
+	if got := strings.Join(FreeTurnClientArgs(cl), " "); strings.Contains(got, "-obf-timing") {
+		t.Errorf("без профиля -obf-timing не передаётся: %q", got)
+	}
+	cl.ObfProfile, cl.Bond, cl.ObfTimingMs = "xor", false, 0
+
+	// -platform уезжает ТОЛЬКО для mobile: у desktop его нет вовсе, и это не
+	// косметика — лишний флаг сдвинул бы отпечаток всем настольным клиентам.
+	cl.Platform = "desktop"
+	if got := strings.Join(FreeTurnClientArgs(cl), " "); strings.Contains(got, "-platform") {
+		t.Errorf("desktop не должен получать -platform: %q", got)
+	}
+
+	srv := FreeTurnServerConfig{
+		Listen: "0.0.0.0:3478", Connect: "up:1", Mode: "udp",
+		ObfProfile: "xor", ObfKey: "k", ClientsFile: "/opt/etc/ft/clients", Debug: true,
+	}
+	wantServer := "-listen 0.0.0.0:3478 -connect up:1 -mode udp -obf-profile xor " +
+		"-obf-key k -clients-file /opt/etc/ft/clients -debug"
+	if got := strings.Join(FreeTurnServerArgs(srv), " "); got != wantServer {
+		t.Fatalf("argv сервера:\n%s\nждали:\n%s", got, wantServer)
 	}
 }
 

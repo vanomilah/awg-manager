@@ -1,5 +1,11 @@
 package managed
 
+import (
+	"errors"
+
+	"github.com/hoaxisr/awg-manager/internal/signature"
+)
+
 // DefaultMTU is applied when the server has no explicit MTU. The same value
 // is set on the router interface and written into generated peer configs.
 const DefaultMTU = 1376
@@ -52,16 +58,66 @@ type UpdateServerRequest struct {
 // AddPeerRequest contains parameters for adding a peer to the managed server.
 type AddPeerRequest struct {
 	Description string `json:"description"`
-	TunnelIP    string `json:"tunnelIP"` // e.g. "10.0.0.2/32"
+	TunnelIP    string `json:"tunnelIP"` // e.g. "10.0.0.2/32"; empty — AddPeer allocates the first free one
 	DNS         string `json:"dns,omitempty"`
+	// ClientAllowedIPs — строка AllowedIPs в .conf клиента, CIDR через запятую;
+	// пусто — весь трафик (#713). RemoteSubnets — сети за клиентом (IPv4 CIDR):
+	// allow-ips пира и маршруты на роутере; отсутствие поля = пусто = снять все.
+	ClientAllowedIPs string   `json:"clientAllowedIPs,omitempty"`
+	RemoteSubnets    []string `json:"remoteSubnets,omitempty"`
 }
 
 // UpdatePeerRequest contains parameters for updating a peer.
+// Signature: nil — сигнатуру пира не трогать; объект — заменить все пять
+// полей и профиль целиком (пустые поля объекта стирают старые байты).
 type UpdatePeerRequest struct {
-	Description string `json:"description"`
-	TunnelIP    string `json:"tunnelIP"`
-	DNS         string `json:"dns,omitempty"`
+	Description string         `json:"description"`
+	TunnelIP    string         `json:"tunnelIP"`
+	DNS         string         `json:"dns,omitempty"`
+	Signature   *PeerSignature `json:"signature,omitempty"`
+	// ClientAllowedIPs — строка AllowedIPs в .conf клиента, CIDR через запятую;
+	// пусто — весь трафик (#713). RemoteSubnets — сети за клиентом (IPv4 CIDR):
+	// allow-ips пира и маршруты на роутере. Оба поля: nil (поле отсутствует
+	// или null) — значение пира не менять; ""/[] — очистить (снять все сети).
+	ClientAllowedIPs *string   `json:"clientAllowedIPs,omitempty"`
+	RemoteSubnets    *[]string `json:"remoteSubnets,omitempty"`
 }
+
+// PeerSignature — сигнатура имитации пира: пять пакетов и профиль, по
+// которому они сгенерированы ("" — введены руками).
+type PeerSignature struct {
+	Profile string `json:"profile"`
+	I1      string `json:"i1"`
+	I2      string `json:"i2"`
+	I3      string `json:"i3"`
+	I4      string `json:"i4"`
+	I5      string `json:"i5"`
+}
+
+func (p PeerSignature) packets() signature.GeneratedPackets {
+	return signature.GeneratedPackets{I1: p.I1, I2: p.I2, I3: p.I3, I4: p.I4, I5: p.I5}
+}
+
+// ErrSignatureTooLarge — суммарная длина строк I1–I5 больше
+// signature.MaxSignatureChars.
+var ErrSignatureTooLarge = errors.New("signature exceeds size limit")
+
+// ErrInvalidSignatureTag — тег <r>/<rc>/<rd> с аргументом, который нельзя
+// отдавать модулю ядра (см. signature.CheckTags).
+var ErrInvalidSignatureTag = errors.New("invalid signature packet tag")
+
+// ErrUnknownSignatureProfile — профиль имитации не из signature.Profiles.
+var ErrUnknownSignatureProfile = errors.New("unknown signature profile")
+
+// ErrSignatureGenerate — генератор сигнатуры отказал при добавлении пира.
+// AddPeer фейлится закрыто: пир без имитации выдавать молча нельзя.
+var ErrSignatureGenerate = errors.New("signature generation failed")
+
+// ErrUnknownLANSegment — сегмента из LANSegments сервера нет среди бриджей
+// роутера (бридж удалён или переименован): ошибка конфигурации сервера.
+// segmentRules добавляет имя сегмента; подсказку пересохранить сегменты
+// добавляют только пути правки пира.
+var ErrUnknownLANSegment = errors.New("LAN-сегмент не найден на роутере")
 
 // TogglePeerRequest contains parameters for enabling/disabling a peer.
 type TogglePeerRequest struct {

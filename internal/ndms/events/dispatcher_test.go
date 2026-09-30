@@ -42,8 +42,12 @@ func TestDispatcher_IfCreated_FetchesOnlyNewID(t *testing.T) {
 
 	d.Enqueue(Event{Type: EventIfCreated, ID: "Wireguard1"})
 
+	// Ждём ИСХОД (запись видна), а не POST в фейке: счётчик растёт до того,
+	// как OnCreated положит ответ в стор, и под нагрузкой Get ниже видел nil.
+	// Get при промахе HTTP не делает — счётчик fetch'ей не искажает.
 	waitFor(t, 200*time.Millisecond, func() bool {
-		return fg.PostInterfaceCalls("Wireguard1") > 0
+		got, _ := q.Interfaces.Get(context.Background(), "Wireguard1")
+		return got != nil
 	})
 
 	if got := fg.PostInterfaceCalls("Wireguard1"); got != 1 {
@@ -125,15 +129,15 @@ func TestDispatcher_IfDestroyed_InvalidatesWGServers(t *testing.T) {
 	defer d.Stop()
 
 	_, _ = q.WGServers.List(context.Background())
-	primed := fg.Calls(ifaceListPath)
+	primed := fg.Calls(peersPath)
 
 	d.Enqueue(Event{Type: EventIfDestroyed, ID: "Wireguard1"})
 	waitFor(t, 200*time.Millisecond, func() bool {
 		_, _ = q.WGServers.List(context.Background())
-		return fg.Calls(ifaceListPath) > primed
+		return fg.Calls(peersPath) > primed
 	})
 
-	if fg.Calls(ifaceListPath) <= primed {
+	if fg.Calls(peersPath) <= primed {
 		t.Errorf("WGServer list not re-fetched after IfDestroyed")
 	}
 }
@@ -145,15 +149,15 @@ func TestDispatcher_IfCreated_InvalidatesWGServers(t *testing.T) {
 	defer d.Stop()
 
 	_, _ = q.WGServers.List(context.Background())
-	primed := fg.Calls(ifaceListPath)
+	primed := fg.Calls(peersPath)
 
 	d.Enqueue(Event{Type: EventIfCreated, ID: "Wireguard5"})
 	waitFor(t, 200*time.Millisecond, func() bool {
 		_, _ = q.WGServers.List(context.Background())
-		return fg.Calls(ifaceListPath) > primed
+		return fg.Calls(peersPath) > primed
 	})
 
-	if fg.Calls(ifaceListPath) <= primed {
+	if fg.Calls(peersPath) <= primed {
 		t.Errorf("WGServer list not re-fetched after IfCreated")
 	}
 }
@@ -200,6 +204,160 @@ func TestDispatcher_Stop_WithoutStart_ReturnsImmediately(t *testing.T) {
 	}
 }
 
+// === Порядок пакета, слушатель маршрутизации, соседние кэши ===
+
+// peersPath — точечное чтение WG-интерфейса. Им же читают пиров и списки
+// серверов/системных туннелей (состав — из InterfaceStore), поэтому сброс их
+// кэша виден по этому пути, а не по полному списку.
+const peersPath = ifaceListPath + "Wireguard0"
+
+const samplePeers = `{"wireguard":{"peer":[{"public-key":"KEY","online":true}]}}`
+
+// Пакет применяется В ПОРЯДКЕ ПРИХОДА — то самое, что обещает докстрока
+// Dispatcher («ifcreated → conf=running → link=running»). Все прежние тесты
+// слали ОДНО событие, поэтому итерация пакета задом наперёд проходила
+// зелёной. Здесь пара «создан → снесён» приходит одним пакетом: события
+// кладутся в очередь ДО Start, поэтому воркер разгребает их одним проходом.
+// В обратном порядке снос применился бы к ещё отсутствующей записи, и
+// интерфейс остался бы в кэше живым.
+func TestDispatcher_BatchAppliesInArrivalOrder(t *testing.T) {
+	q, fg := primedQueries(t)
+	d := NewDispatcher(q, NopLogger())
+	drained := drainBarrier(d)
+
+	if _, err := q.Interfaces.List(context.Background()); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	d.Enqueue(Event{Type: EventIfCreated, ID: "Wireguard1"})
+	d.Enqueue(Event{Type: EventIfDestroyed, ID: "Wireguard1"})
+
+	d.Start()
+	defer d.Stop()
+	waitDrain(t, drained)
+
+	// Создание действительно применилось: за новым id сходили в NDMS. Без
+	// этой проверки тест был бы зелёным и на «пакет вовсе не разобран».
+	if got := fg.PostInterfaceCalls("Wireguard1"); got != 1 {
+		t.Fatalf("создание не применилось: запросов за Wireguard1 %d, ждали 1", got)
+	}
+	if got, _ := q.Interfaces.Get(context.Background(), "Wireguard1"); got != nil {
+		t.Errorf("после пары «создан → снесён» записи быть не должно, получили %#v", got)
+	}
+}
+
+// RoutingChangedListener — единственный способ, которым SSE-снимок
+// «Маршрутизации» узнаёт о хуке; ни один тест его не проверял, снос вызова
+// (dispatcher.go:146-148) проходил зелёным. Слушатель взводится ПОСЛЕ разбора
+// пакета, поэтому к моменту вызова состояние уже применено — это и проверяем.
+func TestDispatcher_RoutingListenerFiresAfterDrain(t *testing.T) {
+	q, _ := primedQueries(t)
+	d := NewDispatcher(q, NopLogger())
+
+	seen := make(chan bool, 4)
+	d.SetRoutingChanged(func() {
+		got, _ := q.Interfaces.Get(context.Background(), "Wireguard1")
+		seen <- got != nil
+	})
+	d.Start()
+	defer d.Stop()
+
+	if _, err := q.Interfaces.List(context.Background()); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+	d.Enqueue(Event{Type: EventIfCreated, ID: "Wireguard1"})
+
+	select {
+	case applied := <-seen:
+		if !applied {
+			t.Errorf("слушатель вызван до применения события: Wireguard1 ещё не в кэше")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("слушатель маршрутизации не вызван после прохода с событием")
+	}
+}
+
+// Обе ветки EventIfIPChanged удалялись целиком зелёными. Смена адреса — это
+// сразу два протухших кэша: адрес в кэше интерфейсов и таблица маршрутов.
+func TestDispatcher_IfIPChanged_PatchesAddressAndDropsRoutes(t *testing.T) {
+	q, fg := primedQueries(t)
+	d := NewDispatcher(q, NopLogger())
+	drained := drainBarrier(d)
+	d.Start()
+	defer d.Stop()
+
+	if _, err := q.Interfaces.List(context.Background()); err != nil {
+		t.Fatalf("prime interfaces: %v", err)
+	}
+	if _, err := q.Routes.List(context.Background()); err != nil {
+		t.Fatalf("prime routes: %v", err)
+	}
+	primedRoutes := fg.Calls("/show/ip/route")
+
+	d.Enqueue(Event{Type: EventIfIPChanged, ID: "Wireguard0", Address: "10.77.0.5"})
+	waitDrain(t, drained)
+
+	got, err := q.Interfaces.Get(context.Background(), "Wireguard0")
+	if err != nil {
+		t.Fatalf("get interface: %v", err)
+	}
+	if got == nil || got.Address != "10.77.0.5" {
+		t.Errorf("адрес в кэше интерфейсов не обновлён: %#v", got)
+	}
+	if _, err := q.Routes.List(context.Background()); err != nil {
+		t.Fatalf("routes after event: %v", err)
+	}
+	if after := fg.Calls("/show/ip/route"); after <= primedRoutes {
+		t.Errorf("кэш маршрутов не сброшен: запросов было %d, стало %d", primedRoutes, after)
+	}
+}
+
+// Peers.Invalidate в ветках destroy и layer-change удалялся зелёным. Пиры
+// живут в отдельном кэше с TTL 8 с: без сброса выдача переживает и снос
+// интерфейса, и смену уровня.
+func TestDispatcher_InvalidatesPeersOnDestroyAndLayerChange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ev   Event
+	}{
+		{"снос интерфейса", Event{Type: EventIfDestroyed, ID: "Wireguard0"}},
+		{"смена уровня", Event{Type: EventIfLayerChanged, ID: "Wireguard0",
+			Layer: "link", Level: "running"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q, fg := primedQueries(t)
+			fg.SetJSON(peersPath, samplePeers)
+			d := NewDispatcher(q, NopLogger())
+			drained := drainBarrier(d)
+			d.Start()
+			defer d.Stop()
+
+			if _, err := q.Peers.GetPeers(context.Background(), "Wireguard0"); err != nil {
+				t.Fatalf("prime peers: %v", err)
+			}
+			primed := fg.Calls(peersPath)
+
+			d.Enqueue(tc.ev)
+			waitDrain(t, drained)
+
+			peers, err := q.Peers.GetPeers(context.Background(), "Wireguard0")
+			if err != nil {
+				t.Fatalf("peers after event: %v", err)
+			}
+			if tc.ev.Type == EventIfDestroyed {
+				// Снятого интерфейса нет в кэше — пиры пусты и без запроса
+				// (F546); прежние пиры значили бы несброшенный кэш.
+				if len(peers) != 0 {
+					t.Errorf("кэш пиров не сброшен: после сноса %d пиров", len(peers))
+				}
+				return
+			}
+			if after := fg.Calls(peersPath); after <= primed {
+				t.Errorf("кэш пиров не сброшен: запросов было %d, стало %d", primed, after)
+			}
+		})
+	}
+}
+
 // === Helpers ===
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
@@ -210,5 +368,46 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// drainBarrier вешает слушателя маршрутизации как барьер конца прохода: он
+// взводится ПОСЛЕ применения всего пакета, значит по нему можно ждать
+// детерминированно, не опрашивая состояние в цикле.
+func drainBarrier(d *Dispatcher) <-chan struct{} {
+	ch := make(chan struct{}, 8)
+	d.SetRoutingChanged(func() { ch <- struct{}{} })
+	return ch
+}
+
+func waitDrain(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("проход диспетчера не завершился за 2 с")
+	}
+}
+
+// Смена уровня интерфейса меняет его Status, а по нему отбирается состав для
+// поллера метрик. Без сброса поднявшийся или упавший системный туннель не
+// попадал бы в опрос до истечения TTL (F364).
+func TestDispatcher_IfLayerChanged_InvalidatesSystemTunnelList(t *testing.T) {
+	q, fg := primedQueries(t)
+	d := NewDispatcher(q, NopLogger())
+	d.Start()
+	defer d.Stop()
+
+	_, _ = q.WGServers.ListSystemTunnels(context.Background())
+	primed := fg.Calls(peersPath)
+
+	d.Enqueue(Event{Type: EventIfLayerChanged, ID: "Wireguard1", Layer: "link", Level: "running"})
+	waitFor(t, 300*time.Millisecond, func() bool {
+		_, _ = q.WGServers.ListSystemTunnels(context.Background())
+		return fg.Calls(peersPath) > primed
+	})
+
+	if fg.Calls(peersPath) <= primed {
+		t.Errorf("состав системных туннелей не перечитан после iflayerchanged")
 	}
 }

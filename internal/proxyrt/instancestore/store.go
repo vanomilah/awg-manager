@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -43,11 +45,25 @@ type fileFormat struct {
 	// повторного посева не будет никогда, и без записи пользователь после
 	// первого же перезапуска не узнал бы, что его инстансы не перенеслись.
 	SkippedSources []SkippedSource `json:"skippedSources,omitempty"`
-	// MovedListen — переезды listen-порта, сделанные посевом при разведении
-	// конфликта. Лежат на диске по той же причине, что и SkippedSources:
-	// повторного посева не будет, а у человека снаружи мог быть настроен
-	// клиент на прежний порт — узнать о переезде он обязан и после
-	// перезапуска.
+	// DroppedDuplicates — инстансы, схлопнутые на посеве как дубликаты ключа:
+	// два клиента с одним id дают один ключ хранилища, и записать оба нельзя.
+	// Выигрывает первый; второй пропадает НАВСЕГДА — повторного посева не
+	// будет. Поэтому запись лежит на диске рядом со SkippedSources и по той же
+	// причине: без неё пользователь после первого же перезапуска не узнал бы,
+	// что его инстанс не перенёсся.
+	//
+	// В гейт сертификации НЕ входит: гейт монотонен, и заперев им уборку, мы
+	// оставили бы осиротевшие интерфейсы навсегда. Схлопнутый дубль — потеря
+	// инстанса, а не неполнота ведомости.
+	DroppedDuplicates []string `json:"droppedDuplicates,omitempty"`
+	// MovedListen — переезды listen-порта при разведении конфликта за порт.
+	// Пишут ЧЕТЫРЕ пути: посев, боот, `Manager.Create` и `Manager.update` —
+	// это первоисточник поля, поэтому перечень здесь обязан быть полным.
+	// Первая редакция перечня назвала три и забыла создание — ровно тот класс
+	// промаха, ради которого перечень и держат в одном месте. Лежат на диске
+	// по той же причине, что и SkippedSources: у человека снаружи мог быть
+	// настроен клиент на прежний порт — узнать о переезде он обязан и после
+	// перезапуска, а признание (AckListenMoves) стирает их только по прочтении.
 	MovedListen []ListenMove `json:"movedListen,omitempty"`
 	Instances   []Record     `json:"instances"`
 }
@@ -89,9 +105,15 @@ type State struct {
 	// не удалось, чинить файл некому, а ретрая посева нет. Непустой список
 	// запирает сертификацию посева (manager.Boot).
 	SkippedSources []SkippedSource
-	// MovedListen — инстансы, которым посев сменил listen-адрес, разводя
-	// конфликт за порт (амендмент G2). Молчать об этом нельзя: снаружи мог
-	// быть настроен клиент на прежний порт.
+	// DroppedDuplicates — инстансы, схлопнутые на посеве как дубликаты ключа.
+	// Молчать нельзя по той же причине, что и о SkippedSources: инстанс
+	// пропал НАВСЕГДА, повторного посева не будет. В гейт сертификации НЕ
+	// входит: гейт монотонен, и заперев им уборку, мы оставили бы
+	// осиротевшие интерфейсы навсегда.
+	DroppedDuplicates []string
+	// MovedListen — инстансы, которым СМЕНИЛИ listen-адрес, разводя конфликт
+	// за порт (амендмент G2 — посев; позже добавились боот, создание и правка).
+	// Молчать об этом нельзя: снаружи мог быть настроен клиент на прежний порт.
 	MovedListen []ListenMove
 	Records     []Record
 }
@@ -144,7 +166,7 @@ func (s *Store) loadLocked() (State, error) {
 	st := State{Seeded: len(f.SeededFrom) > 0, SeededFrom: f.SeededFrom,
 		CleanupPending: f.CleanupPending, LegacyKernelIfaces: f.LegacyKernelIfaces,
 		OldGenProcs: f.OldGenProcs, SkippedSources: f.SkippedSources,
-		MovedListen: f.MovedListen, Records: f.Instances}
+		MovedListen: f.MovedListen, DroppedDuplicates: f.DroppedDuplicates, Records: f.Instances}
 	for i := range st.Records {
 		normalizeRecord(&st.Records[i], s.dir)
 	}
@@ -205,7 +227,7 @@ func (s *Store) ReplaceChecked(mutate func(*State) error, beforeWrite func(State
 	f := fileFormat{Version: fileVersion, SeededFrom: st.SeededFrom,
 		CleanupPending: st.CleanupPending, LegacyKernelIfaces: st.LegacyKernelIfaces,
 		OldGenProcs: st.OldGenProcs, SkippedSources: st.SkippedSources,
-		MovedListen: st.MovedListen, Instances: st.Records}
+		MovedListen: st.MovedListen, DroppedDuplicates: st.DroppedDuplicates, Instances: st.Records}
 	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return State{}, err
@@ -329,6 +351,7 @@ func normalizeRecord(r *Record, dataDir string) {
 		}
 		d.RawListen = strings.TrimSpace(d.RawListen)
 		d.DirectListen = strings.TrimSpace(d.DirectListen)
+		resolveRawPortCollision(d)
 		d.NdmsIface = strings.TrimSpace(d.NdmsIface)
 		d.WgIface = strings.TrimSpace(d.WgIface)
 		d.RawNdmsIface = strings.TrimSpace(d.RawNdmsIface)
@@ -347,13 +370,14 @@ func normalizeRecord(r *Record, dataDir string) {
 		} else {
 			d.RelayMode = "wg"
 		}
-		// Дефолт и приведение неизвестного — ПАРИТЕТ со старым миром
-		// (wdtt.normalizeNatMode, access.go:30-37: всё, кроме трёх известных
-		// значений, становится full). Разойдись они — мастер раздачи, который
-		// создаёт сервер без конфига, получал бы уже заполненное "none" и
-		// сохранял его: абоненты подключаются, интернета нет. Тот же дефолт
-		// держит и посев: у пользователя, не трогавшего NAT, поле пустое, и
-		// "none" здесь снял бы NAT с работавшей раздачи после обновления.
+		// Пустое и неизвестное значат «пользователь не выбирал», и трактовать
+		// их надо как рабочую раздачу: "none" — это «без подмены адреса
+		// источника», то есть абонент остаётся с приватным адресом, который
+		// провайдер обратно не маршрутизирует. Мастер раздачи создаёт сервер
+		// без конфига и сохраняет уже заполненное поле обратно, поэтому
+		// решение принимается здесь, а не на фронте. Тот же дефолт держит и
+		// посев — но там довод другой: обновление не имеет права снять NAT с
+		// раздачи, которая у пользователя работает.
 		switch d.NatMode = strings.TrimSpace(d.NatMode); d.NatMode {
 		case "full", "internet-only", "none":
 		default:
@@ -365,8 +389,8 @@ func normalizeRecord(r *Record, dataDir string) {
 		d.Listen = strings.TrimSpace(d.Listen)
 		d.Peer = strings.TrimSpace(d.Peer)
 		d.Sub = strings.TrimSpace(d.Sub)
-		// Дефолты клиента FreeTurn — паритет DefaultClientConfig
-		// (freeturn/types.go:46-58). В старом мире их подставлял CreateClient,
+		// Дефолты клиента FreeTurn — паритет internal/config/defaults.go
+		// апстрима (DefaultStreams, DefaultStreamsPerCred). В старом мире их подставлял CreateClient,
 		// то есть у любого сохранённого клиента поля были заполнены; новая
 		// ручка создания принимает пустой конфиг, и без этих строк инстанс
 		// уезжал бы на встроенных дефолтах бинаря, а форма показывала бы
@@ -375,7 +399,7 @@ func normalizeRecord(r *Record, dataDir string) {
 			d.Provider = "vk"
 		}
 		if d.Streams <= 0 {
-			d.Streams = 10
+			d.Streams = 12
 		}
 		if d.Transport = strings.TrimSpace(d.Transport); d.Transport == "" {
 			d.Transport = "tcp"
@@ -387,7 +411,7 @@ func normalizeRecord(r *Record, dataDir string) {
 			d.ObfProfile = "none"
 		}
 		if d.StreamsPerCred <= 0 {
-			d.StreamsPerCred = 10
+			d.StreamsPerCred = 12
 		}
 		// Паритет migrateClientConfig (freeturn/migrate.go:64-75) —
 		// он приводил и пустое, и неизвестное значение, причём на КАЖДОЙ
@@ -462,4 +486,42 @@ func validateState(st State) error {
 		return fmt.Errorf("wdtt-server может быть только один: правила AWGM_WDTT, CIDR 10.70.0.0/16 и netfilter-хук не несут инстансного дискриминатора (M-7 плана 3)")
 	}
 	return nil
+}
+
+// resolveRawPortCollision разводит неявный raw-порт (пусто = DTLS+1) с
+// WG- и direct-портами той же записи. Сервер, созданный в 2.17 с тогдашним
+// дефолтом DTLS :56000, после 2.18.0 получал raw 56001 = WG 56001: Validate
+// отказывал «порт 56001 занят дважды», и сервер не стартовал, пока
+// пользователь сам не сдвигал порт. Двигаем raw, а не WG: WG-порт зашит в
+// выданные абонентам ссылки, raw абонент получает из ссылки явно. Явный
+// RawListen — выбор пользователя, его коллизию покажет Validate.
+func resolveRawPortCollision(d *roles.WdttServerConfig) {
+	if d.RawListen != "" {
+		return
+	}
+	host, portStr, err := net.SplitHostPort(d.Listen)
+	if err != nil {
+		return
+	}
+	dtls, err := strconv.Atoi(portStr)
+	if err != nil || dtls <= 0 {
+		return
+	}
+	taken := map[int]bool{dtls: true, d.WgPort: true}
+	if d.DirectListen != "" && d.DirectListen != d.Listen {
+		if _, p, err := net.SplitHostPort(d.DirectListen); err == nil {
+			if n, err := strconv.Atoi(p); err == nil {
+				taken[n] = true
+			}
+		}
+	}
+	if !taken[dtls+1] {
+		return // дефолт DTLS+1 свободен — записывать его явно незачем
+	}
+	for raw := dtls + 2; raw < 65535; raw++ {
+		if !taken[raw] {
+			d.RawListen = net.JoinHostPort(host, strconv.Itoa(raw))
+			return
+		}
+	}
 }

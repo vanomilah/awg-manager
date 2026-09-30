@@ -5,7 +5,7 @@ import type { Settings } from './system';
 
 export interface SingboxTunnel {
 	tag: string;
-	protocol: 'vless' | 'hysteria2' | 'naive' | 'trojan' | 'shadowsocks' | 'mieru';
+	protocol: 'vless' | 'hysteria2' | 'naive' | 'trojan' | 'shadowsocks' | 'mieru' | 'trusttunnel';
 	server: string;
 	port: number;
 	security: 'reality' | 'tls' | 'none';
@@ -40,9 +40,9 @@ export interface SingboxStatus {
 	/** Mirrors Settings.CreateNDMSProxyForSingbox. When false, the UI hides ProxyComponent warnings. */
 	ndmsProxyEnabled: boolean;
 	/**
-	 * Build tags of the installed sing-box binary (parsed from
-	 * `sing-box version` Tags: line). Missing when not installed.
-	 * Example: ["with_gvisor","with_quic","with_naive_outbound"].
+	 * Build tags of the installed sing-box binary. Known for the pinned
+	 * version (constant on the backend), missing when not installed or
+	 * when the version is not the pinned one. Diagnostic only.
 	 */
 	features?: string[];
 	/**

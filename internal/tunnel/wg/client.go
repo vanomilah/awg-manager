@@ -13,6 +13,12 @@ type Client interface {
 	// Command: awg setconf <iface> <confPath>
 	SetConf(ctx context.Context, iface, confPath string) error
 
+	// SyncConf reconciles a live interface with a configuration file: peers
+	// and settings already matching are left untouched, so an established
+	// session survives when the file has not changed.
+	// Command: awg syncconf <iface> <confPath>
+	SyncConf(ctx context.Context, iface, confPath string) error
+
 	// Show retrieves the current state of an interface.
 	// Command: awg show <iface>
 	Show(ctx context.Context, iface string) (*ShowResult, error)
@@ -20,6 +26,13 @@ type Client interface {
 	// GetPeerPublicKey extracts the peer public key from interface state.
 	// Uses Show internally.
 	GetPeerPublicKey(ctx context.Context, iface string) (string, error)
+
+	// LatestHandshake отдаёт точный штамп последнего рукопожатия (epoch-секунды
+	// ядра, нулевое время — рукопожатия не было). В отличие от Show, чей штамп
+	// восстановлен из «N seconds ago» относительно time.Now() и дрожит на
+	// доли секунды между вызовами, этот пригоден для сравнения двух чтений.
+	// Command: awg show <iface> latest-handshakes
+	LatestHandshake(ctx context.Context, iface string) (time.Time, error)
 }
 
 // ShowResult contains the parsed output of awg show.

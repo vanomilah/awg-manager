@@ -70,6 +70,8 @@ export interface AwgTabContext {
 	latestRate(id: string): { rx: number; tx: number };
 	sparklineSeries(id: string): { rx: number[]; tx: number[] };
 	handleAdoptClick(interfaceName: string): void;
+	handleExternalDelete(interfaceName: string): void;
+	handleForeignUnmark(interfaceName: string): void;
 	handleAwgSortChange(key: AwgTunnelSortKey): void;
 	handleDragLeave(): void;
 	handleDragOver(event: DragEvent): void;
@@ -79,6 +81,7 @@ export interface AwgTabContext {
 	openConnectivitySettings(tunnel: TunnelListItem): void;
 	openDetail(id: string): void;
 	requestDelete(id: string): void;
+	handleLockClick(id: string): void;
 	markAsServer(id: string): Promise<void>;
 	handleToggleOnOff(id: string): Promise<void>;
 	checkPing(id: string): Promise<void>;

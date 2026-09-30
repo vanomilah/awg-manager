@@ -78,37 +78,51 @@ func normalizeSingboxLogLevel(v string) string {
 	return "info"
 }
 
-// hasFeature reports whether the installed sing-box binary declares the
-// given build tag in its `sing-box version` output. Empty features means
-// probe failed — treat it conservatively as "feature NOT present" so we
-// don't gate soft-fail and leave it for sing-box check.
-func (o *Operator) hasFeature(feature string) bool {
+// SingboxFeatures — теги сборки установленного sing-box (см.
+// featuresForVersion: pinned-версия ⇒ installer.RequiredTags, иначе nil =
+// «неизвестно»). Безопасно для горячих вызовов (flush() Pass 1 адаптера
+// подписок): версия кэширована по отпечатку mtime+size бинаря, обычный
+// путь — один stat (~10 µс). Пустой список: бинаря нет, версия не
+// определена или не pinned.
+func (o *Operator) SingboxFeatures() []string { return o.singboxFeaturesCached() }
+
+// TunExternalConfig — для router: писать ли external_configuration (want) и
+// определилась ли версия бинаря вообще (known). Пустая версия — не «чужой
+// бинарь», а «пока неизвестно»: флаг в этом случае трогать нельзя.
+func (o *Operator) TunExternalConfig() (want, known bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), singboxVersionProbeTimeout)
 	defer cancel()
-	_, features := o.detectVersionAndFeaturesCached(ctx)
-	for _, f := range features {
-		if f == feature {
-			return true
+	if v, _ := o.detectVersionAndFeaturesCached(ctx); v == "" {
+		// «Неизвестно» имеет смысл только пока процесс из этого файла жив, то
+		// есть бинарь конфиг с флагом принял. Не запущен — возможно, как раз
+		// потому, что отверг незнакомый ключ: тогда флаг обязан сняться, иначе
+		// движок так и не поднимется.
+		if running, pid := o.proc.IsRunning(); running && o.exeIs(pid, o.binary) {
+			return false, false
 		}
+		return false, true
 	}
-	return false
+	return o.TunHotReload(), true
 }
 
-// supportsOutbound reports whether the installed sing-box binary supports
-// the given outbound type. Returns true for core types (no feature tag
-// required) and unknown types — sing-box check still catches unknown
-// type strings.
-func (o *Operator) supportsOutbound(obType string) bool {
-	return OutboundSupportedByFeatures(o.singboxFeaturesCached(), obType)
+// TunHotReload: установлен пиннутый бинарь. Он знает `external_configuration`
+// (адрес tun'а держит NDMS) и переживает SIGHUP с tun-инбаундом, в том числе
+// добавление/удаление инбаунда (стенд 25.09.2026). Чужой или старый бинарь —
+// false: для него остаётся Stop+Start (на 1.14 SIGHUP падал в TUNSETIFF busy).
+//
+// Гейт двойной: пиннутый файл на диске И запущенный процесс — из этого же
+// файла. Иначе при подмене файла под живым чужим процессом SIGHUP получил бы
+// процесс, не знающий ключа: он отверг бы конфиг, а оркестратор счёл бы его
+// применённым.
+func (o *Operator) TunHotReload() bool {
+	if len(o.singboxFeaturesCached()) == 0 {
+		return false
+	}
+	if running, pid := o.proc.IsRunning(); running && !o.exeIs(pid, o.binary) {
+		return false
+	}
+	return true
 }
-
-// SingboxFeatures returns the latest cached list of build tags from the
-// installed sing-box binary's `sing-box version` output. Safe for hot
-// callers (e.g. flush() Pass 1 of the subscription adapter): the probe
-// is cached under a mtime+size fingerprint — stat-only check costs ~10µs
-// on a router, no subprocess spawning unless the binary actually changed
-// on disk. Empty slice means probe failed or no binary installed.
-func (o *Operator) SingboxFeatures() []string { return o.singboxFeaturesCached() }
 
 func (o *Operator) singboxFeaturesCached() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), singboxVersionProbeTimeout)
@@ -133,8 +147,10 @@ type Operator struct {
 	// ApplyLogLevel (из аргумента), поэтому пересоздать базу умел лишь он, а
 	// mutateBase на пропавшем файле молча выходил.
 	singboxLogLevel func() string
-	configPath      string
-	pidPath         string
+	// cacheFileLocation — живой доступ к Settings.SingboxRouter.CacheFileLocation (issue #842).
+	cacheFileLocation func() string
+	configPath        string
+	pidPath           string
 
 	proc      *Process
 	validator *Validator
@@ -186,14 +202,19 @@ type Operator struct {
 	// reports are silently dropped (used by unit tests).
 	installProgress InstallProgressFn
 
-	// versionProbeMu guards the in-memory cache of `sing-box version`
-	// output. Cache key is versionProbeFingerprint = "<mtime>_<size>"
-	// of the binary; stat() on every read is ~10µs, so we never re-spawn
-	// when the binary hasn't moved.
+	// versionProbeMu guards the in-memory version cache filled by
+	// resolveVersionLocked. Cache key is versionProbeFingerprint =
+	// "<mtime>_<size>" of the binary; stat() on every read is ~10µs, so
+	// no source is consulted again while the binary hasn't moved.
 	versionProbeMu          sync.Mutex
 	versionProbeValue       string
-	versionProbeFeatures    []string
 	versionProbeFingerprint string
+	// versionProbeRetryAt — пустая версия не кэшируется навсегда (она бывает
+	// временной: Clash ещё не поднялся), но и не перепробуется на каждом
+	// вызове: TunHotReload зовут тик reconcile и каждый Process.Reload.
+	versionProbeRetryAt time.Time
+	// exeMatches — шов для тестов поверх processExeIs (nil = processExeIs).
+	exeMatches func(pid int, binary string) bool
 
 	// manuallyStopped is the sticky-stop intent: true means Control("stop")
 	// was called and Reconcile must skip starting the daemon until
@@ -319,6 +340,11 @@ type OperatorDeps struct {
 	// (Settings.SingboxClashPort). Optional; 0 means DefaultClashPort.
 	// Issue #788, ADR 0001.
 	ClashPort func() int
+	// CacheFileLocation returns the desired cache.db location from settings
+	// ("flash" or "tmp") (issue #842). Optional; empty means "not configured":
+	// an absolute path in 00-base.json stays, a relative or legacy one is
+	// replaced by the flash default (see cacheDBPathFor).
+	CacheFileLocation func() string
 	// Bus is the event bus for publishing resource changes (SSE). Optional:
 	// every call site guards on nil (Bus.Publish itself would panic).
 	Bus *events.Bus
@@ -364,10 +390,15 @@ func NewOperator(d OperatorDeps) *Operator {
 		desiredClashPort = d.ClashPort()
 	}
 
+	desiredCacheLocation := ""
+	if d.CacheFileLocation != nil {
+		desiredCacheLocation = d.CacheFileLocation()
+	}
+
 	configPath := filepath.Join(dir, "config.d")
 	pidPath := filepath.Join(dir, "sing-box.pid")
 
-	for _, s := range reconcileConfigSteps(dir, configPath, desiredSingboxLogLevel, desiredBootstrapDNS, desiredClashPort, log) {
+	for _, s := range reconcileConfigSteps(dir, configPath, desiredSingboxLogLevel, desiredBootstrapDNS, desiredClashPort, desiredCacheLocation, log) {
 		s.run()
 	}
 
@@ -376,6 +407,7 @@ func NewOperator(d OperatorDeps) *Operator {
 		bootstrapDNS:      d.BootstrapDNS,
 		clashPort:         d.ClashPort,
 		singboxLogLevel:   d.SingboxLogLevel,
+		cacheFileLocation: d.CacheFileLocation,
 		dir:               dir,
 		binary:            binary,
 		configPath:        configPath,
@@ -397,12 +429,13 @@ func NewOperator(d OperatorDeps) *Operator {
 	if adopted, pid := op.proc.AttachIfRunning(); adopted {
 		op.log.Info("reconnected to running sing-box", "pid", pid)
 	}
-	// A tun inbound cannot survive SIGHUP — every reload path (scheduler
-	// rule-set refresh, tunnel ApplyConfig, orchestrator) routes through
-	// proc.Reload, which consults this to restart instead. o.orch is wired
-	// later via SetOrch; the closure reads it at reload time, so nil-now is fine.
+	// Не пиннутый бинарь не переживает SIGHUP с tun-инбаундом — every reload
+	// path (scheduler rule-set refresh, tunnel ApplyConfig, orchestrator) routes
+	// through proc.Reload, which consults this to restart instead. o.orch is
+	// wired later via SetOrch; the closure reads it at reload time, so nil-now
+	// is fine.
 	op.proc.ReloadNeedsRestart = func() bool {
-		return op.orch != nil && op.orch.CurrentHasTun()
+		return op.orch != nil && op.orch.CurrentHasTun() && !op.TunHotReload()
 	}
 	return op
 }
@@ -415,7 +448,12 @@ func (o *Operator) Process() *Process { return o.proc }
 // SetOrch wires the config.d orchestrator after construction. ApplyConfig
 // uses it (when non-nil) to write 10-tunnels.json through the slot
 // writer instead of the legacy direct-write path.
-func (o *Operator) SetOrch(orch *orchestrator.Orchestrator) { o.orch = orch }
+func (o *Operator) SetOrch(orch *orchestrator.Orchestrator) {
+	o.orch = orch
+	if orch != nil {
+		orch.SetTunHotReload(o.TunHotReload)
+	}
+}
 
 // SetActiveWorkFn wires the orchestrator's "has active work" predicate
 // (wired in main.go after both Operator and orchestrator exist — the
@@ -534,12 +572,13 @@ func (o *Operator) Cleanup(ctx context.Context) error {
 		}
 	}
 
-	// Remove our managed binary directory entirely — the user explicitly
-	// asked for cleanup, and our singbox subtree carries the binary, pid,
-	// and any UPX-cached state. /opt/etc/awg-manager/singbox/...
-	binDir := filepath.Dir(o.binary)
-	if err := os.RemoveAll(binDir); err != nil {
-		o.log.Warn("cleanup: remove managed binary dir", "path", binDir, "err", err)
+	// Remove our managed directory entirely — the user explicitly asked for
+	// cleanup, and our singbox subtree carries config.d, pid, and (in
+	// production, where o.dir is the binary's directory) the binary and any
+	// UPX-cached state. Our own dir, not filepath.Dir(o.binary): under
+	// -data-dir the binary stays the production one (F487).
+	if err := os.RemoveAll(o.dir); err != nil {
+		o.log.Warn("cleanup: remove managed dir", "path", o.dir, "err", err)
 	}
 	return nil
 }

@@ -11,11 +11,19 @@ import (
 	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 )
 
 const (
 	inlineRuleSetSourceVersion = 5
 	inlineSRSSuffix            = "-srs"
+
+	// fallbackRuleSetFilename — имя файла для тега, от которого после
+	// санитайзинга не осталось ничего (тег целиком из кириллицы и т.п.).
+	// Такие теги validateRuleSet больше не пропускает, но заведённые ДО
+	// запрета живут дальше и держат этот файл, поэтому сам литерал занят:
+	// набор с тегом "ruleset" разделил бы файл с любым из них (F434, #941).
+	fallbackRuleSetFilename = "ruleset"
 )
 
 var safeRuleSetTagRe = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -105,7 +113,7 @@ func ruleSetTagsWithCompanion(tag string) []string {
 	return []string{tag, inlineSRSTag(tag)}
 }
 
-func (m ruleSetMaterializer) materializeConfig(cfg *RouterConfig) (*RouterConfig, error) {
+func (m ruleSetMaterializer) materializeConfig(slot orchestrator.Slot, cfg *RouterConfig) (*RouterConfig, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -126,14 +134,190 @@ func (m ruleSetMaterializer) materializeConfig(cfg *RouterConfig) (*RouterConfig
 		out.Route.RuleSet = append(out.Route.RuleSet, rs)
 	}
 	for _, rs := range inlineSets {
-		local, err := m.materializeRuleSet(rs)
+		// Источник не прочитался (файл потерян, битый JSON) — expandManagedToInline
+		// отдал набор БЕЗ правил, и компиляция такого набора записала бы поверх
+		// живого артефакта пустышку, а GC следом унёс бы последнюю копию правил:
+		// конфиг хранит только путь. Поэтому managed-local запись остаётся как
+		// есть — набор продолжает работать по уже скомпилированному .srs, а пин
+		// GC по rs.Path держит файл. Fail-safe: валидация CRUD пустой inline не
+		// пропускает (validateRuleSet: rules required), значит сюда приходит
+		// только потерянный источник.
+		if len(rs.Rules) == 0 {
+			if prev, ok := m.managedLocalByInlineTag(cfg, rs.Tag); ok {
+				out.Route.RuleSet = append(out.Route.RuleSet, prev)
+				m.rewriteRuleSetRefs(&out, rs.Tag, prev.Tag)
+				if m.log != nil {
+					m.log.Warn("materialize", rs.Tag,
+						fmt.Sprintf("inline rule-set %q has no readable source — keeping the compiled artifact %s", rs.Tag, prev.Path))
+				}
+				continue
+			}
+		}
+		local, err := m.materializeRuleSet(slot, rs)
 		if err != nil {
 			return nil, err
 		}
 		m.rewriteRuleSetRefs(&out, rs.Tag, local.Tag)
 		out.Route.RuleSet = append(out.Route.RuleSet, local)
 	}
+	applyHTTPClients(&out)
+	applyDNSRuleSetMatchSource(&out)
 	return &out, nil
+}
+
+// applyDNSRuleSetMatchSource помечает каждое DNS-правило со ссылкой на
+// rule_set флагом rule_set_ip_cidr_match_source.
+//
+// Зачем: набор, чей .srs несёт хоть одно ip_cidr-правило, включает в
+// sing-box 1.15 legacy DNS mode (форк dns/router.go:1504), а тот при старте
+// движка бьёт FATAL'ом «Legacy Address Filter Fields in DNS rules»
+// (dns/router.go:157 → experimental/deprecated/stderr.go: нота Impending
+// ⇒ Fatal). Проверка живёт в dns.Router.Start, поэтому `sing-box check`
+// её НЕ ловит — тот же класс, что циклы outbound'ов в persistConfig.
+// Смешанные наборы у нас штатные: telegram = домены + 9 CIDR,
+// discord-full = домены + 14 CIDR.
+//
+// Что меняется по смыслу: ip_cidr-правила ВНУТРИ набора начинают матчиться
+// против адреса источника вместо адреса назначения. В обычном DNS-правиле
+// адрес назначения — это адрес из ОТВЕТА, которого на момент матча ещё нет,
+// так что IP-часть набора там не работает ни в одном режиме 1.15; теряется
+// только legacy-фильтрация ответа, которую 1.16 удаляет безусловно.
+// Обратная сторона — набор с подсетью, в которую попадает сам клиент,
+// начнёт матчить ВСЕ его запросы: такие наборы ловит
+// computeDNSRuleSetClientMatchIssues.
+//
+// Правила с match_response не трогаем: там ip_cidr набора матчится по
+// ответу (geoip по ответу — рабочий сценарий 1.14+), и флаг его сломал бы.
+func applyDNSRuleSetMatchSource(cfg *RouterConfig) {
+	if len(cfg.DNS.Rules) == 0 {
+		return
+	}
+	// Копия: materializeConfig отдаёт shallow-копию конфига, и запись
+	// в общий слайс просочилась бы в хранимую запись вызывающего.
+	rules := append([]DNSRule(nil), cfg.DNS.Rules...)
+	for i := range rules {
+		r := &rules[i]
+		// Присваиваем всегда, а не только true: флаг может приехать снаружи
+		// (API декодирует тело прямо в DNSRule, хранимый конфиг переживает
+		// restoreConfig), и на match_response-правиле он ломает geoip по
+		// ответу. Так форма правила определяется кодом, а не тем, что
+		// прислали.
+		r.RuleSetIPCIDRMatchSource = len(r.RuleSet) > 0 && !r.MatchResponse.IsEnabled()
+	}
+	cfg.DNS.Rules = rules
+}
+
+// ruleSetHTTPClientTag — тег общего HTTP-клиента загрузки наборов.
+const ruleSetHTTPClientTag = "rs-download"
+
+// ruleSetDirectClientPrefix — префикс тега клиента без detour, которым
+// заменяется detour на пустой direct-outbound (см. isEmptyDirectTag). Тег
+// несёт исходное имя outbound'а (ruleSetDirectClientTag), чтобы обратная
+// проекция вернула ровно его.
+const ruleSetDirectClientPrefix = "rs-direct:"
+
+func ruleSetDirectClientTag(outbound string) string {
+	return ruleSetDirectClientPrefix + outbound
+}
+
+// isEmptyDirectTag сообщает, ссылается ли tag на direct-outbound без
+// dial-настроек: базовый неявный "direct" или объявленный в cfg.Outbounds
+// direct с пустыми BindInterface и DomainResolver. Detour на такой outbound
+// sing-box 1.14 отвергает при старте отдельно от "check" (форк,
+// common/dialer/detour.go): "detour to an empty direct outbound makes no
+// sense". Любой другой тег (туннели, подписки, composite outbound'ы) —
+// не пустой, даже если не найден в cfg.Outbounds.
+func isEmptyDirectTag(cfg *RouterConfig, tag string) bool {
+	if tag == "direct" {
+		return true
+	}
+	for _, o := range cfg.Outbounds {
+		if o.Tag == tag {
+			return o.Type == "direct" && o.BindInterface == "" && o.DomainResolver == nil
+		}
+	}
+	return false
+}
+
+// applyHTTPClients переводит хранимую форму в форму sing-box 1.14:
+// download_detour → http_client{detour}, плюс общий клиент rs-download с
+// detour на route.final — так раньше вёл себя неявный клиент «через дефолтный
+// outbound» (deprecated, удаление в 1.16). Явно выразить «через дефолтный
+// outbound» в 1.14 нельзя: поле DefaultOutbound у клиента помечено json:"-".
+//
+// Detour на пустой direct-outbound (isEmptyDirectTag) sing-box запрещает —
+// "detour to an empty direct outbound makes no sense", а клиент вовсе без
+// detour эквивалентен такому выходу (системный диалер = прямой выход,
+// common/dialer/dialer.go). Поэтому выбор пользователя не подменяется:
+// пустой direct выражается через ОТСУТСТВИЕ detour, а не через другой
+// outbound (решение владельца 2026-09-06). Для rs-download это просто пустой
+// Detour; для rule_set с DownloadDetour на пустой direct — отдельный клиент
+// без detour, на который набор ссылается СТРОКОЙ (http_client:"rs-direct:X"),
+// чтобы восстановление знало исходный X.
+func applyHTTPClients(cfg *RouterConfig) {
+	finalDetour := cfg.Route.Final
+	if finalDetour == "" || isEmptyDirectTag(cfg, finalDetour) {
+		finalDetour = ""
+	}
+	cfg.HTTPClients = []HTTPClient{{Tag: ruleSetHTTPClientTag, Detour: finalDetour}}
+	cfg.Route.DefaultHTTPClient = ruleSetHTTPClientTag
+
+	directClientSeen := make(map[string]struct{})
+	for i := range cfg.Route.RuleSet {
+		rs := &cfg.Route.RuleSet[i]
+		if rs.DownloadDetour == "" {
+			// Уже материализован (повторный materializeConfig без restore
+			// между вызовами, F115) — cfg.HTTPClients выше пересобран с
+			// нуля, а rs.HTTPClient.Ref на rule_set'е, не прошедшем через
+			// expandManagedToInline (не inline/managed-local), уцелел от
+			// прошлого прохода. Без этого восстановления ссылка повисает:
+			// клиента, на который она указывает, в свежем http_clients нет.
+			if rs.HTTPClient != nil && strings.HasPrefix(rs.HTTPClient.Ref, ruleSetDirectClientPrefix) {
+				if _, ok := directClientSeen[rs.HTTPClient.Ref]; !ok {
+					directClientSeen[rs.HTTPClient.Ref] = struct{}{}
+					cfg.HTTPClients = append(cfg.HTTPClients, HTTPClient{Tag: rs.HTTPClient.Ref})
+				}
+			}
+			continue
+		}
+		x := rs.DownloadDetour
+		if isEmptyDirectTag(cfg, x) {
+			ref := ruleSetDirectClientTag(x)
+			rs.HTTPClient = &RuleSetHTTPClient{Ref: ref}
+			if _, ok := directClientSeen[ref]; !ok {
+				directClientSeen[ref] = struct{}{}
+				cfg.HTTPClients = append(cfg.HTTPClients, HTTPClient{Tag: ref})
+			}
+		} else {
+			rs.HTTPClient = &RuleSetHTTPClient{Detour: x}
+		}
+		rs.DownloadDetour = ""
+	}
+}
+
+// restoreHTTPClients — обратная проекция для читателей слота.
+func restoreHTTPClients(cfg *RouterConfig) {
+	cfg.HTTPClients = nil
+	cfg.Route.DefaultHTTPClient = ""
+	for i := range cfg.Route.RuleSet {
+		rs := &cfg.Route.RuleSet[i]
+		if rs.HTTPClient == nil {
+			continue
+		}
+		if rs.HTTPClient.Ref != "" {
+			if x, ok := strings.CutPrefix(rs.HTTPClient.Ref, ruleSetDirectClientPrefix); ok && rs.DownloadDetour == "" {
+				rs.DownloadDetour = x
+			}
+			rs.HTTPClient = nil
+			continue
+		}
+		// Если в слоте есть оба поля (ручная правка), побеждает уже
+		// выставленный DownloadDetour — намеренно.
+		if rs.DownloadDetour == "" {
+			rs.DownloadDetour = rs.HTTPClient.Detour
+		}
+		rs.HTTPClient = nil
+	}
 }
 
 func (m ruleSetMaterializer) expandManagedToInline(cfg *RouterConfig) *RouterConfig {
@@ -194,6 +378,7 @@ func (m ruleSetMaterializer) restoreConfig(cfg *RouterConfig) *RouterConfig {
 	// no longer contains managed local entries (they were projected to inline).
 	m.rewritePersistedSRSRefsToInline(cfg, &out)
 	m.rewriteSRSSuffixRuleSetRefs(&out)
+	restoreHTTPClients(&out)
 	return &out
 }
 
@@ -280,6 +465,22 @@ func rewriteRuleSetSlice(tags []string, from, to string) []string {
 	})
 }
 
+// managedLocalByInlineTag находит в ИСХОДНОМ конфиге managed-local запись
+// материализованного набора с тегом inlineTag (её компаньон зовётся
+// "<tag>-srs"). Нужна там, где материализация решает не трогать артефакт.
+func (m ruleSetMaterializer) managedLocalByInlineTag(cfg *RouterConfig, inlineTag string) (RuleSet, bool) {
+	if cfg == nil {
+		return RuleSet{}, false
+	}
+	want := inlineSRSTag(inlineTag)
+	for _, rs := range cfg.Route.RuleSet {
+		if rs.Tag == want && m.isManagedLocalRuleSet(rs) {
+			return rs, true
+		}
+	}
+	return RuleSet{}, false
+}
+
 func (m ruleSetMaterializer) hasManagedSRSCompanion(cfg *RouterConfig, inlineTag string) bool {
 	want := inlineSRSTag(inlineTag)
 	for _, rs := range cfg.Route.RuleSet {
@@ -290,7 +491,7 @@ func (m ruleSetMaterializer) hasManagedSRSCompanion(cfg *RouterConfig, inlineTag
 	return false
 }
 
-func (m ruleSetMaterializer) materializeRuleSet(rs RuleSet) (RuleSet, error) {
+func (m ruleSetMaterializer) materializeRuleSet(slot orchestrator.Slot, rs RuleSet) (RuleSet, error) {
 	if m.configDir == "" {
 		return RuleSet{}, fmt.Errorf("rule_set %q: config dir is required to compile inline rules", rs.Tag)
 	}
@@ -301,10 +502,21 @@ func (m ruleSetMaterializer) materializeRuleSet(rs RuleSet) (RuleSet, error) {
 	if err != nil {
 		return RuleSet{}, fmt.Errorf("rule_set %q: %w", rs.Tag, err)
 	}
-	base := safeRuleSetFilename(rs.Tag)
+	base := inlineArtifactBase(slot, rs.Tag)
 	dir := filepath.Join(m.configDir, "rule-sets", "inline")
 	jsonPath := filepath.Join(dir, base+".json")
 	srsPath := filepath.Join(dir, base+".srs")
+
+	// F110: reconcile персистит конфиг на каждый тик, даже когда правила
+	// набора не менялись — без этой проверки каждый тик форкал бы `sing-box
+	// rule-set compile` и переименовывал свежие .json/.srs поверх уже
+	// актуальных. sourceJSON уже несёт inlineRuleSetSourceVersion
+	// (buildInlineRuleSetSource пишет его в поле version), поэтому байт-в-байт
+	// сравнение с уже лежащим .json ловит и бамп версии формата — .json от
+	// прежней версии не совпадёт с пересобранным.
+	if existing, err := os.ReadFile(jsonPath); err == nil && bytes.Equal(existing, sourceJSON) && regularFileExists(srsPath) {
+		return managedLocalRuleSet(inlineSRSTag(rs.Tag), srsPath), nil
+	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return RuleSet{}, fmt.Errorf("mkdir inline rule-set dir: %w", err)
@@ -369,11 +581,11 @@ func (m ruleSetMaterializer) materializeRuleSet(rs RuleSet) (RuleSet, error) {
 	return managedLocalRuleSet(inlineSRSTag(rs.Tag), srsPath), nil
 }
 
-func (m ruleSetMaterializer) removeInlineArtifacts(tag string) {
+func (m ruleSetMaterializer) removeInlineArtifacts(slot orchestrator.Slot, tag string) {
 	if m.configDir == "" || tag == "" {
 		return
 	}
-	base := safeRuleSetFilename(tag)
+	base := inlineArtifactBase(slot, tag)
 	dir := filepath.Join(m.configDir, "rule-sets", "inline")
 	for _, name := range []string{base + ".json", base + ".srs"} {
 		path := filepath.Join(dir, name)
@@ -513,10 +725,21 @@ func buildInlineRuleSetSource(rules []map[string]any) (inlineRuleSetSource, []by
 	return source, append(raw, '\n'), nil
 }
 
+// inlineArtifactBase — имя файлов артефакта inline-набора: префикс слота плюс
+// имя, полученное из тега. Префикс обязателен: оба слота материализуются в
+// ОДИН каталог rule-sets/inline, а уникальность тега проверяется только внутри
+// конфига слота, поэтому набор "custom-1" в router и одноимённый в fakeip
+// делили один файл и затирали правила друг друга (F435, класс #941).
+// Пространство имён остаётся инъективным: ни "router", ни "fakeip" не является
+// префиксом другого, так что <slot>-<base> однозначно разбирается обратно.
+func inlineArtifactBase(slot orchestrator.Slot, tag string) string {
+	return string(slot) + "-" + safeRuleSetFilename(tag)
+}
+
 func safeRuleSetFilename(tag string) string {
 	safe := strings.Trim(safeRuleSetTagRe.ReplaceAllString(tag, "-"), "-")
 	if safe == "" {
-		return "ruleset"
+		return fallbackRuleSetFilename
 	}
 	return safe
 }

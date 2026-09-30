@@ -63,7 +63,7 @@ func TestExtractTrustTunnelTOMLBlocks(t *testing.T) {
 	if len(blocks) != 1 {
 		t.Fatalf("blocks=%d", len(blocks))
 	}
-	if !vlink.IsTrustTunnelClientTOML([]byte(blocks[0])) {
+	if !vlink.IsTrustTunnelTOML([]byte(blocks[0])) {
 		t.Fatal("expected trusttunnel toml block")
 	}
 	if !strings.Contains(rest, deLink) {

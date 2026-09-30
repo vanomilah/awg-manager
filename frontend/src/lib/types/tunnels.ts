@@ -45,6 +45,66 @@ export interface AWGPeer {
 	persistentKeepalive?: number | string;
 }
 
+// Ответ POST /api/awg/analyze — зеркало internal/api/awg_analyze.go.
+export type AwgVersionId = 'wg' | 'awg1.0' | 'awg1.5' | 'awg2.0' | 'awg3' | 'awg3.1';
+
+export interface AwgAnalyzeIssue {
+	code: string;
+	message: string;
+}
+
+export interface AwgAnalyzeInterface {
+	jc: number;
+	jmin: number;
+	jmax: number;
+	s1: number;
+	s2: number;
+	s3: number;
+	s4: number;
+	h1: string;
+	h2: string;
+	h3: string;
+	h4: string;
+	i1: string;
+	i2: string;
+	i3: string;
+	i4: string;
+	i5: string;
+	headerProtection: boolean;
+	contentPaddingAddition: string;
+	rekeyAfterTime: string;
+	rekeyTimeout: string;
+	rejectAfterTime: string;
+	keepaliveTimeout: string;
+	maxHandshakeAttempts: string;
+	randomTrailers: boolean;
+	disableCookies: boolean;
+	mtu: number;
+	/** Ключ MTU есть в тексте; иначе mtu — дефолт парсера 1280. */
+	mtuSet: boolean;
+	address: string;
+	dns: string;
+}
+
+export interface AwgAnalyzePeer {
+	endpoint: string;
+	allowedIPs: string[];
+	allowedIPsSet: boolean;
+	persistentKeepalive: string;
+	keepaliveSet: boolean;
+	hasPresharedKey: boolean;
+	/** PSK подставлен из хранилища по tunnelId, в тексте его не было. */
+	presharedKeyFromStore: boolean;
+}
+
+export interface AwgAnalyzeData {
+	version: AwgVersionId;
+	interface: AwgAnalyzeInterface;
+	peer: AwgAnalyzePeer;
+	errors: AwgAnalyzeIssue[];
+	warnings: AwgAnalyzeIssue[];
+}
+
 export interface ConnectivityCheckConfig {
 	method: 'http' | 'ping' | 'handshake' | 'disabled';
 	pingTarget?: string;
@@ -78,6 +138,32 @@ export interface TunnelStateInfo {
 	details?: string;
 }
 
+export type ObfuscatorFlavor = 'phobos' | 'clusterm';
+export type ObfuscatorMasking = 'STUN' | 'MEDIA' | 'AUTO' | 'NONE';
+
+export interface TunnelObfuscator {
+	flavor: ObfuscatorFlavor;
+	target: string;
+	key: string;
+	masking: ObfuscatorMasking;
+	maxDummy: number;
+	idleTimeout?: number;
+	obfuscateBytes?: number;
+	localPort: number;
+}
+
+export interface ImportConfRequest {
+	content?: string;
+	name?: string;
+	backend?: string;
+	freeTurnClientId?: string;
+	wdttClientId?: string;
+	installUrl?: string;
+	obfuscator?: Omit<TunnelObfuscator, 'localPort' | 'flavor'> & { flavor?: ObfuscatorFlavor };
+	/** Код страны подписки Amnezia Premium; шлёт только мастер. */
+	amneziaCountry?: string;
+}
+
 export interface AWGTunnel {
 	id: string;
 	name: string;
@@ -97,6 +183,9 @@ export interface AWGTunnel {
 	backend?: 'nativewg' | 'kernel' | 'wdtt-raw';
 	freeTurnClientId?: string;
 	wdttClientId?: string;
+	/** Страна подписки Amnezia Premium, из которой получена конфигурация; пусто — не из мастера. */
+	amneziaCountry?: string;
+	obfuscator?: TunnelObfuscator;
 }
 
 export interface TunnelListItem {
@@ -118,15 +207,20 @@ export interface TunnelListItem {
 	rxBytes?: number;
 	txBytes?: number;
 	lastHandshake?: string;
-	awgVersion?: 'wg' | 'awg1.0' | 'awg1.5' | 'awg2.0' | 'awg3' | 'awg3.1';
+	awgVersion?: AwgVersionId;
 	mtu?: number;
 	startedAt?: string;
-	backend?: 'nativewg' | 'kernel';
+	backend?: 'nativewg' | 'kernel' | 'wdtt-raw';
 	connectivityCheck?: ConnectivityCheckConfig;
 	/** id WDTT-клиента, для которого создан туннель (пусто у прочих). */
 	wdttClientId?: string;
 	/** То же для FreeTurn-клиента: пара к wdttClientId. */
 	freeTurnClientId?: string;
+	/**
+	 * Страна подписки Amnezia Premium, из которой получена конфигурация.
+	 * Мастер читает именно список, поэтому метку страны он берёт отсюда.
+	 */
+	amneziaCountry?: string;
 	pingCheck: {
 		status: 'alive' | 'recovering' | 'disabled';
 		restartCount: number;
@@ -135,6 +229,10 @@ export interface TunnelListItem {
 	};
 	/** При true тумблер вкл/выкл заблокирован замком (#818). */
 	toggleLocked?: boolean;
+	/** При true туннель защищён от изменений: выключить, изменить и удалить нельзя (#818). */
+	locked?: boolean;
+	statusDetails?: string;
+	obfuscator?: { flavor: ObfuscatorFlavor; target: string; localPort: number; relay?: 'kernel' | 'process' };
 }
 
 export interface DeleteResult {
@@ -152,12 +250,35 @@ export interface DeleteResult {
 export interface ExternalTunnel {
 	interfaceName: string;
 	tunnelNumber: number;
+	/** Поверх интерфейса работает AWG-туннель — только такой можно принять. */
 	isAWG: boolean;
 	publicKey?: string;
 	endpoint?: string;
 	lastHandshake?: string;
 	rxBytes: number;
 	txBytes: number;
+	/** Описание интерфейса в NDMS: единственное, по чему видно, чей он. */
+	description?: string;
+	addresses?: string[];
+	/** Имя действующего туннеля, чей адрес совпал с адресом этого интерфейса. */
+	conflictsWith?: string;
+	/** Интерфейс можно снести: за номером нет ни одного владельца. Решает
+	 *  сервер — номер может держать владелец, которого список туннелей не
+	 *  видит, и кнопка на такой строке врала бы. */
+	removable?: boolean;
+	/** Из каких половин состоит: запись NDMS и/или устройство в ядре. */
+	ndmsRecord?: boolean;
+	kernelDevice?: boolean;
+	/** Интерфейс сторонней программы, отмеченный вручную (issue #935). */
+	foreign?: boolean;
+}
+
+/** Кандидат в сторонние интерфейсы для ручной отметки (issue #935). */
+export interface ForeignIfaceCandidate {
+	name: string;
+	label: string;
+	kind: 'opkgtun' | 'kernel';
+	up: boolean;
 }
 
 export interface SystemTunnel {
@@ -167,6 +288,7 @@ export interface SystemTunnel {
 	status: 'up' | 'down';
 	connected: boolean;
 	mtu: number;
+	external?: 'phobos';
 	address?: string; // IPv4 e.g. "10.8.1.3"
 	mask?: string;
 	uptime?: number; // seconds since up

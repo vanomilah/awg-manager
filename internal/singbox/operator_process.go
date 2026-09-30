@@ -66,10 +66,10 @@ const (
 	singboxVersionProbeTimeout = 15 * time.Second
 
 	// singboxMetaSidecarSuffix is appended to the binary path to locate
-	// the persisted (version, features) JSON written after every
-	// successful `sing-box version` probe. The sidecar's mtime is
-	// compared against the binary's mtime — fresh sidecar ⇒ no subprocess
-	// on the next read. Survives router reboots and daemon restarts.
+	// the persisted version JSON, written by whichever source of
+	// resolveVersionLocked answered (pinned SHA, Clash API, subprocess).
+	// The sidecar's mtime is compared against the binary's mtime — fresh
+	// sidecar ⇒ no probe on the next read. Survives reboots and restarts.
 	singboxMetaSidecarSuffix = ".meta.json"
 )
 
@@ -222,6 +222,15 @@ func (o *Operator) handleExit(err error, stderrTail string, deliberate bool) {
 		o.restartBackoff.NoteCrash(now)
 	}
 	o.bus.PublishInvalidated(events.ResourceSingboxStatus, "exit")
+	// ResourceSingboxTunnels отсюда НЕ публикуем, хотя карточки туннелей несут
+	// живое `running` и тоже устаревают. Этот ключ слушают не только сторы
+	// фронта: awgoutbounds перезаписывает файл выходов, а deviceproxy гоняет
+	// полный Reconcile с разбором config.d. Выход процесса случается на КАЖДУЮ
+	// смерть, то есть в крэш-лупе (OOM на 256 МБ — рабочий сценарий) эта
+	// публикация умножала бы дорогую работу ровно тогда, когда памяти и так
+	// нет. Карточки обновляет сторож (watchdog.go): он публикует только на
+	// СМЕНЕ живости, поэтому луп даёт одну публикацию, а не по одной на
+	// перезапуск. Цена — задержка до одного тика сторожа.
 }
 
 // exitedBySIGKILL reports whether the cmd.Wait error says the process

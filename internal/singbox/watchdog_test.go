@@ -1,6 +1,7 @@
 package singbox
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -54,14 +55,28 @@ func TestWatchdog_PublishIfFlipped_FiresOnTransition(t *testing.T) {
 	w.publishIfFlipped(false) // same → suppressed
 	w.publishIfFlipped(true)  // flip → publish
 
-	if pub.count() != 2 {
-		t.Fatalf("expected 2 events (2 flips), got %d", pub.count())
+	// Каждый переход публикует ДВА ключа. Снимок туннелей несёт живое
+	// `running`, а публиковался только на наших мутациях — карточки оставались
+	// «работает» после смерти движка, пока пилюля статуса показывала
+	// «остановлен». Событие закрывает дыру мгновенно и не стоит опроса.
+	if pub.count() != 6 {
+		t.Fatalf("expected 6 events (2 flips × 3 resources), got %d", pub.count())
 	}
-	if pub.evts[0].Resource != events.ResourceSingboxStatus {
-		t.Errorf("event[0] resource = %v, want %s", pub.evts[0].Resource, events.ResourceSingboxStatus)
+	seen := map[events.Resource]int{}
+	for _, e := range pub.evts {
+		if e.Reason != "watchdog" {
+			t.Errorf("reason = %v, want watchdog", e.Reason)
+		}
+		seen[e.Resource]++
 	}
-	if pub.evts[0].Reason != "watchdog" {
-		t.Errorf("event[0] reason = %v, want watchdog", pub.evts[0].Reason)
+	for _, want := range []events.Resource{
+		events.ResourceSingboxStatus,
+		events.ResourceSingboxTunnels,
+		events.ResourceDeviceProxyRuntime,
+	} {
+		if seen[want] != 2 {
+			t.Errorf("ключ %s опубликован %d раз, ожидали 2 (по разу на переход)", want, seen[want])
+		}
 	}
 }
 
@@ -71,4 +86,21 @@ func TestWatchdog_PublishIfFlipped_NilPublisherSafe(t *testing.T) {
 	w.publishIfFlipped(true)
 	w.publishIfFlipped(false)
 	w.publishIfFlipped(true)
+}
+
+// Единственный авто-рестарт упавшего sing-box живёт в tick → Reconcile; до сих пор
+// пиновался только publishIfFlipped, и `w.op.Reconcile(ctx)` → nil был зелёным.
+func TestWatchdog_Tick_ReconcilesWhenProcessDown(t *testing.T) {
+	op := newTestOperator(t, nil)
+	op.activeWorkFn = func() bool { return true } // иначе Reconcile вышел бы рано — туннелей в конфиге нет
+	waitStarts, _ := seedStartSeam(op)
+
+	w := NewWatchdog(op, nil, nil)
+	w.swept.Store(true) // орфан-свип ходит по /proc — не наш предмет и не хост-тест
+
+	w.tick(context.Background())
+
+	if *waitStarts != 1 {
+		t.Fatalf("startAndWait через Reconcile = %d, want 1: watchdog не поднял упавший sing-box", *waitStarts)
+	}
 }

@@ -133,6 +133,60 @@ func scanNone() func(context.Context, string) ([]string, error) {
 	return func(context.Context, string) ([]string, error) { return nil, nil }
 }
 
+// scanFails — скан подключён, но упал: «не знаем» (ни наш, ни чужой).
+func scanFails() func(context.Context, string) ([]string, error) {
+	return func(context.Context, string) ([]string, error) { return nil, errors.New("injected: scan") }
+}
+
+// Четыре вердикта скана владения: отсутствие скана и его ошибка — разные
+// состояния, и только ошибка означает «не знаем» (F493).
+func TestOpkgTunOwnership_FourStates(t *testing.T) {
+	cases := []struct {
+		name string
+		scan func(context.Context, string) ([]string, error)
+		want opkgTunOwnership
+	}{
+		{"скана нет", nil, ownershipNoScan},
+		{"скан упал", scanFails(), ownershipUnknown},
+		{"наш", scanOurs(fakeIPTunDescription, "OpkgTun3"), ownershipOurs},
+		{"чужой", scanNone(), ownershipForeign},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService(t, Deps{OpkgTunScan: tc.scan})
+			if got := svc.opkgTunOwnership(context.Background(), "OpkgTun3", fakeIPTunDescription); got != tc.want {
+				t.Fatalf("ownership = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// Гейт сноса: наш и «скана нет» — сносим; чужой — пропуск без ошибки (запись
+// отработана); скан упал — пропуск с errOpkgTunOwnershipUnknown (запись
+// остаётся, повтор следующим тиком).
+func TestTeardownGate_UnknownIsAnError(t *testing.T) {
+	cases := []struct {
+		name    string
+		scan    func(context.Context, string) ([]string, error)
+		proceed bool
+		wantErr error
+	}{
+		{"скана нет", nil, true, nil},
+		{"наш", scanOurs(policyTunDescription, "OpkgTun2"), true, nil},
+		{"чужой", scanNone(), false, nil},
+		{"скан упал", scanFails(), false, errOpkgTunOwnershipUnknown},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService(t, Deps{OpkgTunScan: tc.scan})
+			proceed, err := svc.teardownGate(context.Background(), "OpkgTun2", policyTunDescription, "test")
+			if proceed != tc.proceed || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("gate = (%v, %v), want (%v, %v)", proceed, err, tc.proceed, tc.wantErr)
+			}
+		})
+	}
+}
+
 // Д1: индекс из записи fakeip жив, но интерфейс на нём — ЧУЖОЙ (скан по нашему
 // описанию его не видит). Гард идемпотентности принимал live[Index] за «наш
 // жив» и no-op'ился: чужой интерфейс «усыновлён». Ожидание: доказанно чужой →
@@ -328,8 +382,10 @@ func TestFakeIPEnable_EmptyPool6DisablesV6(t *testing.T) {
 }
 
 // СТРАХОВКА (не красный: на достижимых путях хранимое уже нормализовано):
-// оверлей строится из НОРМАЛИЗОВАННЫХ настроек — сырой пустой FakeIPStack в
-// персисте не должен дать пустой stack в спеке оверлея.
+// оверлей строится из НОРМАЛИЗОВАННЫХ настроек — сырой нулевой FakeIPMTU в
+// персисте не должен уехать в конфиг нулём. Пустой FakeIPStack в той же записи
+// проверяет обратное свойство: его нормализация НЕ заполняет, и ключ `stack`
+// в конфиг не попадает (собственный стек sing-tun).
 func TestFakeIPOverlayFromState_UsesNormalizedSettings(t *testing.T) {
 	h := newFakeIPEnableHarness(t, "")
 	if err := h.svc.Enable(context.Background()); err != nil {
@@ -341,6 +397,7 @@ func TestFakeIPOverlayFromState_UsesNormalizedSettings(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	all.SingboxRouter.FakeIPStack = ""
+	all.SingboxRouter.FakeIPMTU = 0
 	if err := h.store.Update(func(cur *storage.Settings) error { *cur = *all; return nil }); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -357,8 +414,11 @@ func TestFakeIPOverlayFromState_UsesNormalizedSettings(t *testing.T) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("unmarshal 21-fakeip.json: %v", err)
 	}
-	if len(cfg.Inbounds) == 0 || cfg.Inbounds[0].Stack != "gvisor" {
-		t.Errorf("tun-инбаунд stack = %q, want \"gvisor\" (дефолт нормализации): %s", cfg.Inbounds[0].Stack, data)
+	if len(cfg.Inbounds) == 0 || cfg.Inbounds[0].MTU != 1500 {
+		t.Fatalf("tun-инбаунд MTU = %d, want 1500 (дефолт нормализации): %s", cfg.Inbounds[0].MTU, data)
+	}
+	if cfg.Inbounds[0].Stack != "" || strings.Contains(string(data), `"stack"`) {
+		t.Errorf("tun-инбаунд stack = %q, want пустой и без ключа в файле: %s", cfg.Inbounds[0].Stack, data)
 	}
 }
 
@@ -401,6 +461,73 @@ func TestFakeIPEnable_KeepsForeignNATPayloadWhenReleaseFails(t *testing.T) {
 	}
 }
 
+// F493, handover: fakeip включают при живой записи policy-tun, а скан NDMS
+// упал. Прежний интерфейс НЕ сносится (мы не знаем, наш ли он), включение
+// идёт дальше на другом номере — как при провале release. Хвост с описанием
+// policy-tun добирает description-реап, когда скан заработает: у записи теперь
+// режим fakeip, и OpkgTun2 для реапа — persist-less сирота policy-tun.
+func TestFakeIPEnable_HandoverScanUnavailable_LeavesPreviousInterface(t *testing.T) {
+	h := newFakeIPEnableHarness(t, "")
+	h.svc.deps.OpkgTunIndices = &recIndices{live: map[int]bool{2: true}}
+	natState := &fakeNATState{}
+	h.svc.deps.NATState = natState
+	h.svc.deps.SegmentNAT = &recSegmentNAT{log: h.log, state: natState}
+	h.svc.deps.OpkgTunScan = scanFails()
+	if err := h.store.SetOpkgTunState(&storage.OpkgTunState{
+		Mode: storage.OpkgTunModePolicyTun, Provisioned: true, Index: 2,
+	}); err != nil {
+		t.Fatalf("SetOpkgTunState: %v", err)
+	}
+
+	if err := h.svc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable(fakeip) при упавшем скане: %v", err)
+	}
+	if h.log.has("Delete:OpkgTun2") {
+		t.Fatalf("прежний интерфейс снесён при недоступном скане: %v", h.log.calls)
+	}
+	all, err := h.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.OpkgTun == nil || all.OpkgTun.Mode != storage.OpkgTunModeFakeIP || all.OpkgTun.Index == 2 {
+		t.Fatalf("итоговая запись = %+v, want fakeip на номере ≠ 2", all.OpkgTun)
+	}
+
+	// Скан ожил и видит наше policy-описание на OpkgTun2 → реап убирает хвост.
+	h.log.calls = nil
+	h.svc.deps.OpkgTunScan = scanOurs(policyTunDescription, "OpkgTun2")
+	if err := h.svc.ReapOrphanedFakeIPTun(context.Background()); err != nil {
+		t.Fatalf("ReapOrphanedFakeIPTun: %v", err)
+	}
+	if !h.log.has("Delete:OpkgTun2") {
+		t.Fatalf("хвост handover'а не добран description-реапом: %v", h.log.calls)
+	}
+}
+
+// Зеркало для обратного handover'а: policy-tun включают при живой записи
+// fakeip, скан упал. Прежний интерфейс не сносится, включение не падает и
+// уезжает на другой номер (removed=false → пина на отобранный номер нет).
+func TestPolicyTunEnable_HandoverScanUnavailable_LeavesPreviousInterface(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	h.svc.deps.OpkgTunIndices = &recIndices{live: map[int]bool{4: true}}
+	h.svc.deps.OpkgTunScan = scanFails()
+	if err := h.store.SetOpkgTunState(&storage.OpkgTunState{
+		Mode: storage.OpkgTunModeFakeIP, Provisioned: true, Index: 4,
+	}); err != nil {
+		t.Fatalf("SetOpkgTunState: %v", err)
+	}
+
+	if err := h.svc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable(policy-tun) при упавшем скане: %v", err)
+	}
+	if h.log.has("Delete:OpkgTun4") {
+		t.Fatalf("прежний интерфейс снесён при недоступном скане: %v", h.log.calls)
+	}
+	if st := h.loadPolicyTun(t); st == nil || st.Index == 4 {
+		t.Fatalf("запись = %+v, want policy-tun на номере ≠ 4", st)
+	}
+}
+
 // scanOurs — успешный скан, отдающий наше имя по ЗАДАННОМУ описанию: «доказанно
 // наш» (симметрия к scanNone).
 func scanOurs(description, id string) func(context.Context, string) ([]string, error) {
@@ -413,22 +540,25 @@ func scanOurs(description, id string) func(context.Context, string) ([]string, e
 }
 
 // foreignTeardownCases — общая раскладка для всех точек сноса по индексу из
-// записи владения: чужой не сносится, свой сносится, недоступный скан сносится
-// (страховочный подкейс — «не знаем» ≠ «чужой», иначе обвязки без скана
-// перестали бы убирать собственные сироты).
+// записи владения: чужой не сносится, свой сносится, скана нет — сносится
+// (обвязки без скана убирают свои сироты), скан упал — НЕ сносится и запись
+// остаётся (unknown, F493).
 func foreignTeardownCases(description, id string) []struct {
 	name    string
 	scan    func(context.Context, string) ([]string, error)
 	wantDel bool
+	unknown bool
 } {
 	return []struct {
 		name    string
 		scan    func(context.Context, string) ([]string, error)
 		wantDel bool
+		unknown bool
 	}{
-		{"чужой на нашем индексе", scanNone(), false},
-		{"наш", scanOurs(description, id), true},
-		{"скан недоступен", nil, true},
+		{"чужой на нашем индексе", scanNone(), false, false},
+		{"наш", scanOurs(description, id), true, false},
+		{"скана нет", nil, true, false},
+		{"скан упал", scanFails(), false, true},
 	}
 }
 
@@ -460,6 +590,13 @@ func TestFakeIPDisable_SparesForeignInterfaceOnPersistedIndex(t *testing.T) {
 			if got := deletes(); got != wantLink {
 				t.Errorf("ip link delete calls = %d, want %d", got, wantLink)
 			}
+			// Выключение — долговечная правда «режим выключен»: запись снимается
+			// при ЛЮБОМ вердикте, иначе следующий Enable увидел бы
+			// Provisioned+live и no-op'нулся на разобранных маршрутах. Хвост
+			// при упавшем скане добирает description-реап (см. handover-тест).
+			if got := loadFakeIP(t, h.store); got != nil {
+				t.Errorf("запись после Disable = %+v, want nil", got)
+			}
 		})
 	}
 }
@@ -479,9 +616,14 @@ func TestReapOrphaned_SparesForeignInterfaceOnPersistedIndex(t *testing.T) {
 			if got := len(opkg.deleted) == 1 && opkg.deleted[0] == "OpkgTun3"; got != tc.wantDel {
 				t.Errorf("deleted = %v, want снос = %v", opkg.deleted, tc.wantDel)
 			}
-			// Запись снимается в обоих исходах: нашего интерфейса на индексе
-			// доказанно нет, а погоня за чужим индексом каждый тик — churn.
-			if got := loadFakeIP(t, store); got != nil {
+			// Запись снимается, когда вердикт есть (наш снесён / нашего доказанно
+			// нет). Скан упал — запись ОСТАЁТСЯ: следующий тик повторит (F493).
+			got := loadFakeIP(t, store)
+			if tc.unknown {
+				if got == nil || got.Index != 3 {
+					t.Errorf("запись = %+v, want сохранена {Index:3} при недоступном скане", got)
+				}
+			} else if got != nil {
 				t.Errorf("запись = %+v, want nil после реапа", got)
 			}
 		})
@@ -509,6 +651,17 @@ func TestPolicyTunReap_SparesForeignInterfaceOnPersistedIndex(t *testing.T) {
 			if got := len(opkg.deleted) == 1 && opkg.deleted[0] == "OpkgTun2"; got != tc.wantDel {
 				t.Errorf("deleted = %v, want снос = %v", opkg.deleted, tc.wantDel)
 			}
+			all, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.unknown {
+				if all.OpkgTun == nil || all.OpkgTun.Mode != storage.OpkgTunModePolicyTun || all.OpkgTun.Index != 2 {
+					t.Errorf("запись = %+v, want сохранена policy-tun{Index:2} при недоступном скане", all.OpkgTun)
+				}
+			} else if all.OpkgTun != nil {
+				t.Errorf("запись = %+v, want nil после реапа", all.OpkgTun)
+			}
 		})
 	}
 }
@@ -516,6 +669,7 @@ func TestPolicyTunReap_SparesForeignInterfaceOnPersistedIndex(t *testing.T) {
 // Удаление пакета: чужой интерфейс на нашем индексе не сносится и дефолт с него
 // не снимается — `opkg remove` не имеет права разбирать посторонний туннель.
 func TestReleasePolicyTunForRemoval_SparesForeignInterface(t *testing.T) {
+	stubLinkAbsent(t)
 	for _, tc := range foreignTeardownCases(policyTunDescription, "OpkgTun1") {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newTestSettingsStore(t, storage.SingboxRouterSettings{RoutingMode: statePolicyTun})
@@ -527,12 +681,19 @@ func TestReleasePolicyTunForRemoval_SparesForeignInterface(t *testing.T) {
 			opkg := &recordingOpkgTunProvisioner{}
 			log := &callLog{}
 
-			if err := ReleasePolicyTunForRemoval(context.Background(), Deps{
+			err := ReleasePolicyTunForRemoval(context.Background(), Deps{
 				Settings:     store,
 				OpkgTun:      opkg,
 				DefaultRoute: &recDefaultRoute{log: log},
 				OpkgTunScan:  tc.scan,
-			}); err != nil {
+			})
+			// Скан упал — снятие отказывает ошибкой: `--cleanup` печатает её в
+			// stderr (cmd/awg-manager/cleanup.go), а интерфейс не трогается.
+			if tc.unknown {
+				if !errors.Is(err, errOpkgTunOwnershipUnknown) || !strings.HasPrefix(err.Error(), "OpkgTun1: ") {
+					t.Fatalf("err = %v, want «OpkgTun1: » + errOpkgTunOwnershipUnknown", err)
+				}
+			} else if err != nil {
 				t.Fatalf("ReleasePolicyTunForRemoval: %v", err)
 			}
 
@@ -581,8 +742,12 @@ func TestFakeipWithConfig_SparesForeignInterfaceCIDRRoutes(t *testing.T) {
 				t.Fatalf("fakeipWithConfig: %v", err)
 			}
 
-			if got := log.has("AddRoute:149.154.160.0:255.255.240.0:OpkgTun3"); got != tc.wantDel {
-				t.Errorf("правка CIDR-маршрутов = %v, want %v: %v", got, tc.wantDel, log.calls)
+			// Правка маршрутов — гард присвоения (provenForeignOpkgTun), не снос:
+			// «не знаем ≠ чужой», поэтому на упавшем скане правка выполняется,
+			// как и до F493.
+			want := tc.wantDel || tc.unknown
+			if got := log.has("AddRoute:149.154.160.0:255.255.240.0:OpkgTun3"); got != want {
+				t.Errorf("правка CIDR-маршрутов = %v, want %v: %v", got, want, log.calls)
 			}
 		})
 	}
@@ -595,12 +760,12 @@ func TestFakeipWithConfig_SparesForeignInterfaceCIDRRoutes(t *testing.T) {
 // запись владения СНИМАЕТСЯ (удерживать чужой индекс бессмысленно: наш
 // интерфейс мёртв, а permit пользователя NDMS уже стёрла — стенд 2026-08-18).
 func TestPolicyTunDisable_SparesForeignInterfaceOnPersistedIndex(t *testing.T) {
-	// hold мутирует интерфейс (down/clear) и потому гейтится его наличием:
-	// NDMS создаёт интерфейс по любой мутации имени, а delete за ним не идёт.
-	stubOrphanNetdev(t, true)
 	for _, tc := range foreignTeardownCases(policyTunDescription, "OpkgTun0") {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPolicyTunEnableHarness(t, "")
+			// hold мутирует интерфейс (down/clear) и потому гейтится его наличием:
+			// NDMS создаёт интерфейс по любой мутации имени, а delete за ним не идёт.
+			stubOrphanNetdev(t, true)
 			provisionPolicyTunForDisable(t, h)
 			h.svc.deps.OpkgTunScan = tc.scan
 
@@ -614,14 +779,71 @@ func TestPolicyTunDisable_SparesForeignInterfaceOnPersistedIndex(t *testing.T) {
 				}
 			}
 			st := h.loadPolicyTun(t)
-			if tc.wantDel {
+			switch {
+			case tc.unknown:
+				// Скан упал — интерфейс не тронут (проверено выше: wantDel=false),
+				// а запись ОСТАЁТСЯ Provisioned: reconcilePolicyTun при
+				// Enabled=false зовёт Disable снова, тик с ожившим сканом доводит
+				// удержание (F518).
+				if st == nil || !st.Provisioned || st.Index != 0 {
+					t.Errorf("запись = %+v, want сохранена {Provisioned:true, Index:0}", st)
+				}
+			case tc.wantDel:
 				if st == nil || st.Provisioned {
 					t.Errorf("запись = %+v, want удержание {Provisioned:false}", st)
 				}
-			} else if st != nil {
+			case st != nil:
 				t.Errorf("запись = %+v, want nil (удерживать чужой индекс нечем)", st)
 			}
 		})
+	}
+}
+
+// F518: скан упал в момент выключения — интерфейс по номеру из записи не
+// трогаем (чей он — неизвестно): ни дефолт, ни down, ни clear. Запись остаётся
+// Provisioned, Enabled=false персистится. Следующий тик reconcile при ожившем
+// скане зовёт Disable снова и доводит удержание.
+func TestPolicyTunDisable_ScanUnavailable_RetriesNextTick(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	stubOrphanNetdev(t, true)
+	provisionPolicyTunForDisable(t, h)
+	h.svc.deps.OpkgTunScan = scanFails()
+
+	if err := h.svc.Disable(context.Background()); err != nil {
+		t.Fatalf("Disable(policy-tun): %v", err)
+	}
+	holdCalls := []string{"RemoveDefaultRoute:OpkgTun0", "InterfaceDown:OpkgTun0", "ClearAddress:OpkgTun0"}
+	for _, call := range holdCalls {
+		if h.log.has(call) {
+			t.Fatalf("%s при недоступном скане: %v", call, h.log.calls)
+		}
+	}
+	all, err := h.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if all.SingboxRouter.Enabled {
+		t.Fatal("Enabled=true после Disable: durable-истина выключения не записана")
+	}
+	if st := all.OpkgTun; st == nil || !st.Provisioned || st.Index != 0 {
+		t.Fatalf("запись = %+v, want {Provisioned:true, Index:0}: повтор следующим тиком", st)
+	}
+
+	// Скан ожил: тик при Enabled=false и Provisioned=true зовёт Disable снова —
+	// теперь интерфейс наш, удержание доводится до конца.
+	h.log.calls = nil
+	h.svc.deps.OpkgTunScan = scanOurs(policyTunDescription, "OpkgTun0")
+	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	for _, call := range holdCalls {
+		if !h.log.has(call) {
+			t.Fatalf("повтор не довёл удержание, нет %s: %v", call, h.log.calls)
+		}
+	}
+	if st := h.loadPolicyTun(t); st == nil || st.Provisioned {
+		t.Fatalf("запись = %+v, want удержание {Provisioned:false}", st)
 	}
 }
 
@@ -714,5 +936,42 @@ func TestPolicyTunEnable_PersistsBeforeCreate(t *testing.T) {
 	}
 	if probe.atCreate.Mode != storage.OpkgTunModePolicyTun || !probe.atCreate.Provisioned || probe.atCreate.Index != 0 {
 		t.Errorf("запись в момент Create = %+v, want policy-tun provisioned index 0", probe.atCreate)
+	}
+}
+
+// Хелпер отдаёт КОПИЮ записи, а не живой указатель кэша. Довод — на стороне
+// чтения: `Load`/`Get` возвращают объект, который параллельно маршалят
+// читатели без нашего лока, и любая правка возвращённого по месту (а её делают
+// и reconcile, и setPolicyPayload) была бы записью в чужой объект под
+// маршалом. Copy-on-write в `SetOpkgTunState` этого НЕ заменяет: тот изолирует
+// объект ПИСАТЕЛЯ.
+//
+// Пин ДЕТЕРМИНИРОВАННЫЙ и потому пришёл на смену двум тестам-гонкам
+// (`policytun_nat_race_test.go`, снесены): те ловили ту же мутацию только под
+// `-race`, стоили 30 реконсиляций на 8 читателей каждый и молчали про второй
+// регресс, ради которого их писали. Проверено ревью: без этого теста мутация
+// «вернуть сам указатель» проходила зелёной во всём пакете.
+func TestOpkgTunOwned_ReturnsCopy(t *testing.T) {
+	live := &storage.OpkgTunState{
+		Mode: storage.OpkgTunModePolicyTun, Provisioned: true, Index: 7,
+		PolicyTun: &storage.OpkgTunPolicyData{
+			NATSegments: []storage.PolicyTunNATSegment{{Name: "Home", PriorMode: "full"}},
+		},
+	}
+	settings := &storage.Settings{OpkgTun: live}
+
+	got, ok := opkgTunOwned(settings, statePolicyTun)
+	if !ok {
+		t.Fatal("policy-tun запись обязана опознаться")
+	}
+	if got == live {
+		t.Fatal("отдан ЖИВОЙ указатель кэша: правка по месту пойдёт в объект под маршалом")
+	}
+
+	// Правка полученного не имеет права доехать до кэша.
+	got.Index = 99
+	got.Provisioned = false
+	if live.Index != 7 || !live.Provisioned {
+		t.Fatalf("правка копии доехала до записи стора: %+v", live)
 	}
 }

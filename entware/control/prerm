@@ -103,26 +103,45 @@ if [ -f "$POLICYTUN_HOOK" ]; then
     echo "Removing policy-tun DNS hook..."
     rm -f "$POLICYTUN_HOOK"
 fi
+# Тот же перехват режима fakeip (свой тег) — без него у клиентов сегментов с
+# заворотом DNS уходил бы на адрес удалённого туннеля до перезагрузки (F450).
 if [ -x /opt/sbin/iptables ]; then
     /opt/sbin/iptables -w -t nat -S PREROUTING 2>/dev/null \
-        | grep -- 'AWGM-POLICYTUN-DNS' \
+        | grep -E -- 'AWGM-POLICYTUN-DNS|AWGM-FAKEIP-INGRESS' \
         | sed 's/-A PREROUTING/-D PREROUTING/' \
         | tr -d '"' \
         | while IFS= read -r line; do /opt/sbin/iptables -w -t nat $line 2>/dev/null; done
+fi
+
+# Маршрутная половина заворота (ip rule iif … lookup 700, таблица 700) —
+# internal/singbox/router/fakeip_ingress.go, fakeIPIngressTable.
+if [ -x /opt/sbin/ip ]; then
+    i=0
+    while [ $i -lt 64 ] && /opt/sbin/ip rule del table 700 2>/dev/null; do i=$((i+1)); done
+    /opt/sbin/ip route flush table 700 2>/dev/null || true
 fi
 
 # Хук туннельного firewall (static-NAT на все ip global выходы) гейтится
 # файлом-списком, но сам файл переживает удаление пакета — снимаем оба.
 rm -f /opt/etc/ndm/netfilter.d/51-awgm-tunnel-fw.sh /opt/etc/awg-manager/tunnel-fw.list
 
+# Остальные наши хуки (#854): 50-awgm-tproxy.sh код не удаляет никогда (после
+# снятия файла правил он no-op), 61/62 снимает только живая фича. Все они
+# именуются NN-awgm-*.sh — подметаем разом.
+rm -f /opt/etc/ndm/netfilter.d/*-awgm-*.sh
+
+# Каталоги лока и старого PID, логи и недокачанный IPK на накопителе (#854).
+rm -rf /opt/var/lock/awg-manager /opt/var/run/awg-manager
+rm -f /opt/tmp/awg-manager-upgrade.log /opt/tmp/awg-manager-stderr.log /opt/tmp/awg-manager_*.ipk
+
 echo ""
 echo "=============================================="
 echo "  awg-manager has been removed."
 echo ""
-echo "  Settings file preserved at:"
-echo "    /opt/etc/awg-manager/settings.json"
+echo "  Settings and data preserved at:"
+echo "    /opt/etc/awg-manager"
 echo ""
-echo "  To remove all remaining data:"
-echo "    rm -rf /opt/etc/awg-manager"
+echo "  Full removal (data, repo file):"
+echo "    https://hoaxisr.github.io/awg-manager-docs/install/#полное-удаление"
 echo "=============================================="
 echo ""

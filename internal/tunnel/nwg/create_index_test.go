@@ -24,9 +24,10 @@ import (
 // reads the InterfaceStore cache, and the cache must reflect a just-created
 // (or just-deleted) interface for back-to-back allocations to be correct.
 type fakeNDMS struct {
-	srv   *httptest.Server
-	mu    sync.Mutex
-	known map[string]bool // interface id -> exists
+	srv    *httptest.Server
+	mu     sync.Mutex
+	known  map[string]bool // interface id -> exists
+	bodies []string        // каждое присланное тело: по нему проверяют команды
 }
 
 func newFakeNDMS(t *testing.T, seed ...string) *fakeNDMS {
@@ -42,6 +43,9 @@ func newFakeNDMS(t *testing.T, seed ...string) *fakeNDMS {
 
 func (f *fakeNDMS) handle(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
+	f.mu.Lock()
+	f.bodies = append(f.bodies, string(body))
+	f.mu.Unlock()
 
 	// fetchListMap: GET /show/interface/ -> { id: {iface}, ... }
 	if r.Method == http.MethodGet {
@@ -126,7 +130,7 @@ func newCreateTestOperator(t *testing.T, f *fakeNDMS) *OperatorNativeWG {
 	ndmsinfo.Reset() // Get()==nil -> Supports{HRanges,WireguardASC}() == false
 	sem := transport.NewSemaphore(4)
 	tr := transport.NewWithURL(f.srv.URL, sem)
-	return &OperatorNativeWG{
+	o := &OperatorNativeWG{
 		queries:     &query.Queries{Interfaces: query.NewInterfaceStore(tr, nil)},
 		transport:   tr,
 		kmod:        NewKmodManager(nil),
@@ -134,6 +138,8 @@ func newCreateTestOperator(t *testing.T, f *fakeNDMS) *OperatorNativeWG {
 		resolveFn:   func(string) (string, int, error) { return "203.0.113.10", 51820, nil },
 		supportsASC: func() bool { return false },
 	}
+	t.Cleanup(o.Close)
+	return o
 }
 
 func testTunnel(id, name string) *storage.AWGTunnel {

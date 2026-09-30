@@ -4,12 +4,18 @@ package external
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
 	"github.com/hoaxisr/awg-manager/internal/tunnel/config"
@@ -26,6 +32,40 @@ type Service struct {
 	settingsStore *storage.SettingsStore
 	tunnelService service.Service
 	appLog        *logging.ScopedLogger
+
+	// orphans — интерфейсы OpkgTun без владельца, от аллокатора номеров.
+	// descriptions — описания записей NDMS по номеру. Обе nil-безопасны:
+	// без них список остаётся прежним, просто беднее.
+	orphans      func(ctx context.Context) ([]OrphanIface, error)
+	descriptions func(ctx context.Context) map[int]string
+}
+
+// OrphanIface — интерфейс OpkgTun, за которым не стоит ни одной записи панели.
+type OrphanIface struct {
+	Iface string
+	// NDMSName — ИМЯ ЗАПИСИ, как его отдал роутер, а не собранное из номера.
+	// Снос ходит по нему: собирать имя заново значит завести второй разборщик
+	// рядом с тем, которым занятость считал пул, и на записи, которую один
+	// принимает, а другой нет, снос ушёл бы в никуда и отчитался успехом.
+	// Пусто — записи нет вовсе, снимать надо только устройство.
+	NDMSName    string
+	Description string
+	Addrs       []string
+	// NDMSRecord / KernelDevice — из каких половин интерфейс состоит. Обе
+	// держат номер пула и снимаются независимо, и пользователю в строке важно
+	// именно это: «только устройство» — это интерфейс, поднятый мимо NDMS.
+	NDMSRecord   bool
+	KernelDevice bool
+}
+
+// SetOrphanSource подключает поставщиков сирот и описаний. Отдельным сеттером,
+// а не аргументом конструктора: аллокатор номеров собирается позже сервиса.
+func (s *Service) SetOrphanSource(
+	orphans func(ctx context.Context) ([]OrphanIface, error),
+	descriptions func(ctx context.Context) map[int]string,
+) {
+	s.orphans = orphans
+	s.descriptions = descriptions
 }
 
 // NewService creates a new external tunnel service.
@@ -43,10 +83,25 @@ func NewService(
 	}
 }
 
+// Швы над sysinfo: без них List непроверяем — он читает интерфейсы МАШИНЫ, на
+// которой запущен, и подставить ему расклад роутера нечем.
+var (
+	listSystemInterfaces = sysinfo.ListSystemInterfaces
+	isAWGInterface       = sysinfo.IsAWGInterface
+	linkExists           = func(name string) bool { _, err := os.Stat("/sys/class/net/" + name); return err == nil }
+)
+
+// ErrAdoptNotAWG — живой интерфейс не AWG (F492): его старт снёс бы чужой TUN.
+// ErrAdoptForeign — интерфейс отмечен как сторонний (issue #935).
+var (
+	ErrAdoptNotAWG  = errors.New("интерфейс не AWG — принимать нечего")
+	ErrAdoptForeign = errors.New("интерфейс отмечен как интерфейс другой программы")
+)
+
 // List returns tunnels that exist in the system but are not managed by awg-manager.
 func (s *Service) List(ctx context.Context) ([]TunnelInfo, error) {
 	// Get all system interfaces
-	systemNumbers, err := sysinfo.ListSystemInterfaces()
+	systemNumbers, err := listSystemInterfaces()
 	if err != nil {
 		s.appLog.Warn("list", "", "Failed to list system interfaces: "+err.Error())
 		systemNumbers = []int{}
@@ -69,50 +124,228 @@ func (s *Service) List(ctx context.Context) ([]TunnelInfo, error) {
 	// Find external tunnels (in system but not managed).
 	// Deduplicate by number: opkgtunX and awgX both produce the same number,
 	// so without dedup the same interface would appear twice.
-	seen := make(map[int]bool)
+	//
+	// Карт ДВЕ, и это не дублирование. scanned — дедуп ВНУТРИ перебора,
+	// listed — что реально попало в список. Раньше роль была одна, и на ней
+	// функция ломалась целиком: перебор помечал каждый просмотренный номер, а
+	// дописывание сирот такие номера пропускает. Живой поставщик занятости
+	// читает ТУ ЖЕ ListSystemInterfaces, поэтому у сироты с устройством номер
+	// всегда оказывался помечен — и до списка доезжали только сироты без
+	// устройства, то есть ровно обратный случай.
+	scanned := make(map[int]bool)
+	listed := make(map[int]bool)
 	var candidateNums []int
 	for _, num := range systemNumbers {
-		if managed[num] || seen[num] {
+		if managed[num] || scanned[num] {
 			continue
 		}
-		seen[num] = true
+		scanned[num] = true
 		candidateNums = append(candidateNums, num)
 	}
 
-	if len(candidateNums) == 0 {
-		return []TunnelInfo{}, nil
-	}
-
 	type checkResult struct {
+		num   int
 		info  *TunnelInfo
 		isAWG bool
 	}
 
-	results := make([]checkResult, len(candidateNums))
-	var wg sync.WaitGroup
-
-	for i, num := range candidateNums {
-		wg.Add(1)
-		go func(idx, n int) {
-			defer wg.Done()
-			names := tunnel.NewNames(fmt.Sprintf("awg%d", n))
-			info, isAWG := sysinfo.IsAWGInterface(ctx, names.IfaceName)
-			results[idx] = checkResult{info: info, isAWG: isAWG}
-		}(i, num)
-	}
-	wg.Wait()
-
 	var external []TunnelInfo
-	for _, res := range results {
-		if res.isAWG && res.info != nil {
-			external = append(external, *res.info)
+	if len(candidateNums) > 0 {
+		results := make([]checkResult, len(candidateNums))
+		var wg sync.WaitGroup
+
+		for i, num := range candidateNums {
+			wg.Add(1)
+			go func(idx, n int) {
+				defer wg.Done()
+				names := tunnel.NewNames(fmt.Sprintf("awg%d", n))
+				info, isAWG := isAWGInterface(ctx, names.IfaceName)
+				results[idx] = checkResult{num: n, info: info, isAWG: isAWG}
+			}(i, num)
+		}
+		wg.Wait()
+
+		for _, res := range results {
+			if res.isAWG && res.info != nil {
+				external = append(external, *res.info)
+				listed[res.num] = true
+			}
 		}
 	}
 
 	if external == nil {
 		external = []TunnelInfo{}
 	}
+
+	external = s.withOrphans(ctx, external, listed)
+	external = s.withForeign(ctx, external, listed)
+	s.annotate(ctx, external, managedTunnels)
 	return external, nil
+}
+
+// withForeign дописывает отмеченные сторонние интерфейсы: отмеченный OpkgTun
+// перестал быть сиротой и иначе пропал бы из списка, а интерфейса ядра в
+// переборе номеров нет вовсе. Интерфейс ядра — номер -1.
+func (s *Service) withForeign(ctx context.Context, external []TunnelInfo, listed map[int]bool) []TunnelInfo {
+	if s.settingsStore == nil {
+		return external
+	}
+	for _, name := range s.settingsStore.GetForeignInterfaces() {
+		num, isOpkg := opkgtun.IndexOf(name)
+		if isOpkg && listed[num] {
+			for i := range external {
+				if external[i].TunnelNumber == num {
+					external[i].Foreign = true
+					external[i].Removable = false
+				}
+			}
+			continue
+		}
+		// Половины NDMSRecord/KernelDevice не заполняются: отмеченный не сирота,
+		// источника половин для него нет; Addresses дочитает annotate из ядра.
+		row := TunnelInfo{InterfaceName: name, TunnelNumber: -1, Foreign: true}
+		if isOpkg {
+			row.TunnelNumber = num
+			listed[num] = true
+		}
+		external = append(external, row)
+	}
+	return external
+}
+
+// appendOrphans дописывает интерфейсы OpkgTun, которые не принадлежат НИ ОДНОЙ
+// записи панели и при этом не являются AWG-туннелями, — поэтому предыдущий
+// проход их не увидел.
+//
+// Почему в этом же списке, а не отдельным экраном: состояние у них одно и то же
+// — «интерфейс на роутере, которым панель не владеет». Пока трактовки жили в
+// двух местах, один и тот же интерфейс панель предлагала и принять, и удалить
+// (стенд 15.09, opkgtun13). Список должен быть один, а различаться должны
+// ДЕЙСТВИЯ в строке: принять можно только то, поверх чего есть живой туннель.
+//
+// Источник сиротства — аллокатор номеров, а не собственная проверка: он один
+// знает про записи прокси и режимы роутера, которых перебор выше не видит.
+func (s *Service) withOrphans(ctx context.Context, external []TunnelInfo, listed map[int]bool) []TunnelInfo {
+	if s.orphans == nil {
+		return external
+	}
+	orphans, err := s.orphans(ctx)
+	if err != nil {
+		// Не отказ всего списка: внешние туннели уже собраны и полезны сами по
+		// себе. Недосчёт сирот молчанием хуже не делает — он лишь не покажет
+		// строку, а показанное остаётся верным.
+		s.appLog.Warn("list", "", "Не удалось собрать осиротевшие интерфейсы: "+err.Error())
+		return external
+	}
+
+	// Сироты приходят ДВАЖДЫ: сперва помечают уже собранные строки, потом
+	// дописывают недостающие. Пометка обязательна — «можно удалить» решает
+	// аллокатор, а не факт присутствия строки в списке: строка, чей номер
+	// держит владелец, которого стор туннелей не знает (половина прокси, режим
+	// роутера), — это не сирота, и кнопка на ней врала бы (сервер ответит
+	// отказом).
+	byNum := make(map[int]OrphanIface, len(orphans))
+	for _, o := range orphans {
+		if num, ok := opkgtun.IndexOf(o.Iface); ok {
+			byNum[num] = o
+		}
+	}
+	for i := range external {
+		o, isOrphan := byNum[external[i].TunnelNumber]
+		if !isOrphan {
+			continue
+		}
+		external[i].Removable = true
+		external[i].NDMSRecord = o.NDMSRecord
+		external[i].KernelDevice = o.KernelDevice
+		if external[i].Description == "" {
+			external[i].Description = o.Description
+		}
+		if len(external[i].Addresses) == 0 {
+			external[i].Addresses = o.Addrs
+		}
+	}
+
+	for _, o := range orphans {
+		num, ok := opkgtun.IndexOf(o.Iface)
+		if !ok || listed[num] {
+			continue
+		}
+		listed[num] = true
+		external = append(external, TunnelInfo{
+			Removable:     true,
+			InterfaceName: o.Iface,
+			TunnelNumber:  num,
+			IsAWG:         false,
+			Description:   o.Description,
+			Addresses:     o.Addrs,
+			NDMSRecord:    o.NDMSRecord,
+			KernelDevice:  o.KernelDevice,
+		})
+	}
+	return external
+}
+
+// annotate дополняет строки тем, что нужно человеку для решения: описанием из
+// NDMS и именем туннеля, чей адрес совпал.
+//
+// Совпадение считается по ВСЕМ записям туннелей, включая остановленные: адрес
+// записан за туннелем и тогда, когда он выключен, а конфликт выстрелит ровно в
+// момент, когда оба окажутся подняты. Проверка перед стартом туннеля смотрит на
+// то же самое (orchestrator.checkSystemAddressConflict).
+func (s *Service) annotate(ctx context.Context, external []TunnelInfo, managed []storage.AWGTunnel) {
+	if len(external) == 0 {
+		return
+	}
+	owner := make(map[string]string, len(managed))
+	for _, t := range managed {
+		if addr := addrOnly(t.Interface.Address); addr != "" {
+			owner[addr] = t.Name
+		}
+	}
+	var descr map[int]string
+	if s.descriptions != nil {
+		descr = s.descriptions(ctx)
+	}
+	for i := range external {
+		e := &external[i]
+		if e.Description == "" {
+			e.Description = descr[e.TunnelNumber]
+		}
+		if len(e.Addresses) == 0 {
+			e.Addresses = ifaceAddresses(e.InterfaceName)
+		}
+		for _, a := range e.Addresses {
+			if name, dup := owner[a]; dup {
+				e.ConflictsWith = name
+				break
+			}
+		}
+	}
+}
+
+// addrOnly отбрасывает маску: адреса туннелей хранятся как "10.8.1.3/32".
+func addrOnly(addr string) string {
+	return strings.TrimSpace(strings.SplitN(addr, "/", 2)[0])
+}
+
+// ifaceAddresses — адреса устройства, если оно есть в ядре.
+var ifaceAddresses = func(name string) []string {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		if ipNet, ok := a.(*net.IPNet); ok {
+			out = append(out, ipNet.IP.String())
+		}
+	}
+	return out
 }
 
 // AdoptRequest contains parameters for adopting an external tunnel.
@@ -132,9 +365,16 @@ func (s *Service) Adopt(ctx context.Context, req AdoptRequest) (*service.TunnelW
 	}
 
 	// Check if tunnel is still running
-	info, isAWG := sysinfo.IsAWGInterface(ctx, req.InterfaceName)
+	info, isAWG := isAWGInterface(ctx, req.InterfaceName)
 	if isAWG && info != nil && info.PublicKey != "" {
 		return nil, fmt.Errorf("tunnel is still active - stop it in the external application and try again")
+	}
+	if !isAWG && linkExists(req.InterfaceName) {
+		return nil, fmt.Errorf("%w: %s", ErrAdoptNotAWG, req.InterfaceName)
+	}
+	if canon := fmt.Sprintf("opkgtun%d", tunnelNum); s.settingsStore != nil &&
+		slices.Contains(s.settingsStore.GetForeignInterfaces(), canon) {
+		return nil, fmt.Errorf("%w: %s", ErrAdoptForeign, canon)
 	}
 
 	// Check if this number is already managed
@@ -156,6 +396,9 @@ func (s *Service) Adopt(ctx context.Context, req AdoptRequest) (*service.TunnelW
 	}
 	if t.Name == "" {
 		t.Name = fmt.Sprintf("Imported %s", req.InterfaceName)
+	}
+	if err := tunnel.ValidateName(t.Name); err != nil {
+		return nil, err
 	}
 
 	// Set defaults
@@ -199,6 +442,12 @@ func (s *Service) Adopt(ctx context.Context, req AdoptRequest) (*service.TunnelW
 	}
 
 	s.appLog.Info("adopt", t.ID, "Adopted external tunnel: "+t.Name)
+
+	// Запись OpkgTunN несёт описание сторонней программы, а F517 признаёт её
+	// нашей только с описанием = имени туннеля: без этого туннель без живого
+	// устройства не стартовал бы никогда. Взятие забирает запись осознанно —
+	// поэтому захват без проверки владения. Записи нет — её заведёт Фаза 1.
+	s.tunnelService.CaptureDescription(ctx, t.ID, t.Name)
 
 	// Start the tunnel under awg-manager control
 	if err := s.tunnelService.Start(ctx, t.ID); err != nil {

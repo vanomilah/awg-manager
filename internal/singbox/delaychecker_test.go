@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -302,5 +303,95 @@ func TestDelayChecker_CheckOne_CtxCanceledDuringBackoff(t *testing.T) {
 	}
 	if len(pub.events) != 0 {
 		t.Fatalf("events should not be published on canceled context, got %d", len(pub.events))
+	}
+}
+
+// TestDelayChecker_ProbeReportsInFlightDistinctly — ревью нашло: CheckOne
+// отвечает (0, nil) и на таймаут, и на «проба этого тега уже идёт». Для
+// карточки в UI это одно и то же, а для вызова по запросу — нет: MCP,
+// попав в окно периодической проверки (до ~10 с на медленном прокси),
+// отчитывался бы «не ответил» о живом прокси. Probe различает эти случаи;
+// CheckOne сохраняет прежнее поведение для UI.
+func TestDelayChecker_ProbeReportsInFlightDistinctly(t *testing.T) {
+	clash := &fakeClash{delays: map[string]int{"A": 120}}
+	d := &DelayChecker{
+		clash:    clash,
+		testURL:  "https://example.com/",
+		timeout:  3 * time.Second,
+		inflight: map[string]bool{"A": true},
+	}
+
+	if _, err := d.Probe(context.Background(), "A"); !errors.Is(err, ErrProbeInFlight) {
+		t.Fatalf("Probe during an in-flight probe = %v, want ErrProbeInFlight", err)
+	}
+	if got, err := d.CheckOne(context.Background(), "A"); err != nil || got != 0 {
+		t.Fatalf("CheckOne must keep answering (0, nil) for the UI, got (%d, %v)", got, err)
+	}
+	if clash.calls["A"] != 0 {
+		t.Fatalf("a busy tag must not be probed twice, got %d calls", clash.calls["A"])
+	}
+
+	delete(d.inflight, "A")
+	got, err := d.Probe(context.Background(), "A")
+	if err != nil || got != 120 {
+		t.Fatalf("Probe when free = (%d, %v), want (120, nil)", got, err)
+	}
+}
+
+// fakeClients — сколько панелей «открыто».
+type fakeDelayClients struct{ n atomic.Int64 }
+
+func (f *fakeDelayClients) ClientCount() int { return int(f.n.Load()) }
+
+// Тик меряет задержку КАЖДОГО выхода и каждого активного тега подписки — по
+// исходящему запросу через каждый прокси в минуту. Единственный потребитель
+// результата — SSE-событие, поэтому при закрытой панели измерять некому и тик
+// обязан пропускаться целиком.
+func TestDelayChecker_Run_SkipsWhenNobodyWatching(t *testing.T) {
+	clash := &fakeClash{delays: map[string]int{"A": 10, "B": 20}}
+	lister := &fakeDelayLister{tunnels: []TunnelInfo{{Tag: "A"}, {Tag: "B"}}}
+	d := &DelayChecker{
+		clash: clash, lister: lister, publisher: &fakeDelayPublisher{},
+		interval: 20 * time.Millisecond, timeout: time.Second,
+		testURL: "http://example.invalid", inflight: map[string]bool{},
+	}
+	d.SetClientCounter(&fakeDelayClients{}) // ноль зрителей
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	clash.mu.Lock()
+	calls := len(clash.calls)
+	clash.mu.Unlock()
+	if calls != 0 {
+		t.Errorf("проб %d, ожидалось 0 при закрытой панели", calls)
+	}
+}
+
+// Открытая панель возвращает измерения.
+func TestDelayChecker_Run_ProbesWhenWatched(t *testing.T) {
+	clash := &fakeClash{delays: map[string]int{"A": 10}}
+	lister := &fakeDelayLister{tunnels: []TunnelInfo{{Tag: "A"}}}
+	d := &DelayChecker{
+		clash: clash, lister: lister, publisher: &fakeDelayPublisher{},
+		interval: 20 * time.Millisecond, timeout: time.Second,
+		testURL: "http://example.invalid", inflight: map[string]bool{},
+	}
+	clients := &fakeDelayClients{}
+	clients.n.Store(1)
+	d.SetClientCounter(clients)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.Run(ctx)
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	clash.mu.Lock()
+	n := clash.calls["A"]
+	clash.mu.Unlock()
+	if n < 2 {
+		t.Errorf("проб %d, ожидалось ≥2 при открытой панели", n)
 	}
 }

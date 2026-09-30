@@ -1,11 +1,13 @@
 // Frontend polling stores for the device proxy feature:
-//   - config (30s poll): reflects persisted Config; SSE-invalidated by
+//   - config (без таймера): reflects persisted Config; SSE-invalidated by
 //     resource:invalidated{resource:"deviceproxy.config"}.
-//   - outbounds (15s poll): available outbound tags for the dropdowns.
-//   - runtime (5s poll): live selector.now + persisted default for
+//   - outbounds (120 с): available outbound tags for the dropdowns — своего
+//     публикатора у каталога нет.
+//   - runtime (без таймера): live selector.now + persisted default for
 //     the "Активный туннель" card; SSE-invalidated by
-//     resource:invalidated{resource:"deviceproxy.runtime"}.
-//   - instances (30s poll): list of all proxy instances for multi-instance UI.
+//     resource:invalidated{resource:"deviceproxy.runtime"}, в том числе
+//     сторожем движка на смене живости.
+//   - instances (без таймера): list of all proxy instances for multi-instance UI.
 import { writable } from 'svelte/store';
 import { api } from '$lib/api/client';
 import { createPollingStore, type PollingStore } from './polling';
@@ -14,13 +16,13 @@ import type { DeviceProxyConfig, DeviceProxyInstance, DeviceProxyOutbound, Devic
 
 export const deviceProxyConfig: PollingStore<DeviceProxyConfig> = createPollingStore<DeviceProxyConfig>(
 	() => api.getDeviceProxyConfig(),
-	{ staleTime: 30_000, pollInterval: 30_000 },
+	{ staleTime: 30_000, pollInterval: 0 },
 );
 registerStore('deviceproxy.config', deviceProxyConfig);
 
 export const deviceProxyInstances: PollingStore<DeviceProxyInstance[]> = createPollingStore<DeviceProxyInstance[]>(
 	() => api.listDeviceProxyInstances(),
-	{ staleTime: 30_000, pollInterval: 30_000 },
+	{ staleTime: 30_000, pollInterval: 0 },
 );
 registerStore('deviceproxy.config', deviceProxyInstances);
 
@@ -31,13 +33,19 @@ registerStore('deviceproxy.config', deviceProxyInstances);
 // класса slow-RCI. Изменения имён доезжают за ≤2 мин или при перезаходе.
 export const deviceProxyOutbounds: PollingStore<DeviceProxyOutbound[]> = createPollingStore<DeviceProxyOutbound[]>(
 	() => api.listDeviceProxyOutbounds(),
+	// Таймер сохранён: публикатора у deviceproxy.outbounds нет (см. ниже).
 	{ staleTime: 60_000, pollInterval: 120_000 },
 );
 registerStore('deviceproxy.outbounds', deviceProxyOutbounds);
 
 export const deviceProxyRuntime: PollingStore<DeviceProxyRuntime> = createPollingStore<DeviceProxyRuntime>(
 	() => api.getDeviceProxyRuntime(),
-	{ staleTime: 5_000, pollInterval: 5_000 },
+	// Таймера нет: сторож движка публикует deviceproxy.runtime на СМЕНЕ
+	// живости (internal/singbox/watchdog.go). Раньше падение sing-box (OOM на
+	// 256 МБ — рабочий сценарий) публиковало только singbox.status, и карточка
+	// показывала бы «работает» бессрочно — ради этого и стоял таймер (F355).
+	// Теперь обновление приходит событием (F364).
+	{ staleTime: 5_000, pollInterval: 0 },
 );
 registerStore('deviceproxy.runtime', deviceProxyRuntime);
 

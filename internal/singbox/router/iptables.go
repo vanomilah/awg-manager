@@ -84,6 +84,59 @@ const (
 	maxIPRuleDrainPasses = 32
 )
 
+// SetDataDir перенацеливает файлы роутера в каталог данных демона. Нужна
+// потому, что `-data-dir` иначе соблюдается наполовину: демон, запущенный в
+// песочнице, писал ctclean.sh и правила netfilter в БОЕВОЙ /opt/etc/awg-manager
+// (F168).
+//
+// Хук ndm живёт по своему пути (/opt/etc/ndm/netfilter.d) и здесь не меняется —
+// но его ТЕЛО ссылается на все перенацеленные файлы, поэтому песочница обязана
+// увести и его: см. SetNetfilterHookPath.
+func SetDataDir(dir string) {
+	sub := filepath.Join(dir, "singbox")
+	netfilterRulesPath = filepath.Join(sub, "router-netfilter.rules")
+	netfilterBlackholePath = filepath.Join(sub, "router-blackhole.rules")
+	netfilterMangleRulesPath = filepath.Join(sub, "router-netfilter-mangle.rules")
+	netfilterNatRulesPath = filepath.Join(sub, "router-netfilter-nat.rules")
+	netfilterCtCleanPath = filepath.Join(sub, "awgm-ctclean.sh")
+	bypassSavePath = filepath.Join(sub, "bypass.ipset")
+}
+
+// DataDirPaths — текущие пути, производные от каталога данных. Существует для
+// проверки того, что SetDataDir не забыл ни одного: список файлов растёт, а
+// забытый путь молча уводит запись в боевой каталог.
+func DataDirPaths() map[string]string {
+	return map[string]string{
+		"netfilterRulesPath":       netfilterRulesPath,
+		"netfilterBlackholePath":   netfilterBlackholePath,
+		"netfilterMangleRulesPath": netfilterMangleRulesPath,
+		"netfilterNatRulesPath":    netfilterNatRulesPath,
+		"netfilterCtCleanPath":     netfilterCtCleanPath,
+		"bypassSavePath":           bypassSavePath,
+	}
+}
+
+// SetNetfilterHookPath уводит сам хук ndm в сторону. Зовётся только тогда,
+// когда каталог данных НЕ боевой: тело хука ссылается на правила и скрипты
+// каталога данных, и стендовый запуск иначе переписал бы боевой хук ссылками
+// в /tmp — после ухода песочницы ndm восстанавливал бы правила по мёртвым
+// путям, молча (F168).
+func SetNetfilterHookPath(path string) { netfilterHookPath = path }
+
+// NetfilterHookPath — текущий путь хука; нужен тестам, чтобы вернуть его.
+func NetfilterHookPath() string { return netfilterHookPath }
+
+// RestoreDataDirPaths возвращает пути, снятые DataDirPaths. Пара к ней для
+// тестов, которые трогают глобальные каталоги.
+func RestoreDataDirPaths(p map[string]string) {
+	netfilterRulesPath = p["netfilterRulesPath"]
+	netfilterBlackholePath = p["netfilterBlackholePath"]
+	netfilterMangleRulesPath = p["netfilterMangleRulesPath"]
+	netfilterNatRulesPath = p["netfilterNatRulesPath"]
+	netfilterCtCleanPath = p["netfilterCtCleanPath"]
+	bypassSavePath = p["bypassSavePath"]
+}
+
 // Mutable in tests via t.Cleanup so they can redirect into a tmp dir.
 // Production code reads these at call time.
 var (
@@ -240,6 +293,10 @@ func IsTProxyTargetAvailable(ctx context.Context) bool {
 	}
 	return ok
 }
+
+// tproxyTargetProbe — шов над пробой iptables: тесты подменяют, прод зовёт
+// IsTProxyTargetAvailable.
+var tproxyTargetProbe = IsTProxyTargetAvailable
 
 // EnsureXtDscpModule best-effort loads xt_dscp so the QoS `-m dscp` dispatch
 // rules can be accepted at iptables-restore COMMIT time. Same soft-fail
@@ -1429,7 +1486,10 @@ func refreshNetfilterHookIfPresent() {
 	_ = writeNetfilterHook(true)
 }
 
-func (it *IPTables) Uninstall(ctx context.Context) error {
+// Uninstall is best-effort by design (F79): every step is idempotent
+// teardown whose "nothing to remove" is indistinguishable from failure
+// without parsing iptables stderr; callers get no error.
+func (it *IPTables) Uninstall(ctx context.Context) {
 	if it.cleanupHook != nil {
 		it.cleanupHook()
 	}
@@ -1451,7 +1511,6 @@ func (it *IPTables) Uninstall(ctx context.Context) error {
 	// would leave the rest. Loop until ENOENT, capped defensively.
 	it.drainFwmarkRules(ctx)
 	_ = it.runIP(ctx, "route", "flush", "table", fmt.Sprintf("%d", RoutingTable))
-	return nil
 }
 
 func (it *IPTables) removeSourceHooks(ctx context.Context) {
@@ -1482,11 +1541,14 @@ func (it *IPTables) removeSourceHooks(ctx context.Context) {
 // XKeen's removal logic — robust to rule ordering and matcher changes
 // as long as the `-m comment --comment <tag>` survives serialisation.
 func (it *IPTables) removeCommentTaggedRulesFromTable(ctx context.Context, table, chain, tag string) {
-	result, err := sysexec.Run(ctx, sysiptables.Binary, "-w", "-t", table, "-S", chain)
-	if err != nil || result == nil {
+	// Разбор идёт через ШОВ роли (runIPTablesOut), а не прямым sysexec: иначе
+	// снос невидим тесту, и его выпил остаётся зелёным. "-w" добавляет сам
+	// sysiptables.RunOutput.
+	out, err := it.runIPTablesOut(ctx, "-t", table, "-S", chain)
+	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(result.Stdout, "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		if !strings.Contains(line, `--comment "`+tag+`"`) && !strings.Contains(line, `--comment `+tag) {
 			continue
 		}
@@ -1494,8 +1556,8 @@ func (it *IPTables) removeCommentTaggedRulesFromTable(ctx context.Context, table
 			continue
 		}
 		delLine := "-D " + strings.TrimPrefix(line, "-A ")
-		args := append([]string{"-w", "-t", table}, strings.Fields(delLine)...)
-		_, _ = sysexec.Run(ctx, sysiptables.Binary, args...)
+		args := append([]string{"-t", table}, strings.Fields(delLine)...)
+		_ = it.runIPTables(ctx, args...)
 	}
 }
 
@@ -1508,17 +1570,16 @@ func (it *IPTables) removeSourceHooksFromTable(ctx context.Context, table, chain
 }
 
 func (it *IPTables) removeHooksFromTable(ctx context.Context, table, parentChain, chain string) {
-	result, err := sysexec.Run(ctx, sysiptables.Binary, "-w", "-t", table, "-S", parentChain)
-	if err != nil || result == nil {
+	out, err := it.runIPTablesOut(ctx, "-t", table, "-S", parentChain)
+	if err != nil {
 		return
 	}
-	// Match both `-j chain` (old jump syntax pre-fastnat-fix) and
-	// `-g chain` (current goto syntax) so upgrading installs scrub
-	// stale jumps from previous versions before we re-append the new one.
+	// Install рендерит `-j` (:519, :521); `-g` принимается на случай ручных
+	// правок и старых версий — пином не покрыт.
 	jumpJ := "-j " + chain
 	gotoG := "-g " + chain
 	prefix := "-A " + parentChain
-	for _, line := range strings.Split(result.Stdout, "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		if !strings.Contains(line, jumpJ) && !strings.Contains(line, gotoG) {
 			continue
 		}
@@ -1561,28 +1622,6 @@ func EnsureRouterNetfilterModules(ctx context.Context) []error {
 	return errs
 }
 
-// HasAnyInstalled returns true if at least one of the AWGM chains exists
-// in the kernel. Used for the disabled-cleanup path: even a partial install
-// (e.g. mangle chain present but nat chain missing after a failed upgrade)
-// must trigger Uninstall so no stale remnants survive.
-func (it *IPTables) HasAnyInstalled(ctx context.Context) bool {
-	return it.runIPTables(ctx, "-t", "mangle", "-nL", ChainName) == nil ||
-		it.runIPTables(ctx, "-t", "nat", "-nL", RedirectChain) == nil
-}
-
-// IsInstalled returns true only when both AWGM chains exist. Used for the
-// enabled-reconcile path: if either chain is missing a full re-install is
-// needed to reach a known-good state.
-func (it *IPTables) IsInstalled(ctx context.Context) bool {
-	if it.runIPTables(ctx, "-t", "mangle", "-nL", ChainName) != nil {
-		return false
-	}
-	if it.runIPTables(ctx, "-t", "nat", "-nL", RedirectChain) != nil {
-		return false
-	}
-	return true
-}
-
 // Probe reports the live interception state in two booleans, from a single
 // `iptables -S <table>` per table (one exec each instead of separate -nL +
 // -S PREROUTING calls):
@@ -1599,8 +1638,8 @@ func (it *IPTables) IsInstalled(ctx context.Context) bool {
 // On a query error Probe returns (false, false, err); callers must treat that
 // as "unknown" (do NOT reinstall) rather than "broken".
 func (it *IPTables) Probe(ctx context.Context) (installed, jumps bool, err error) {
-	installed, jumps, _, err = it.probeAll(ctx)
-	return installed, jumps, err
+	st, err := it.probeAll(ctx)
+	return st.installed, st.jumps, err
 }
 
 // probeAll is Probe plus the fail-closed blackhole's liveness. The blackhole
@@ -1617,22 +1656,40 @@ func (it *IPTables) Probe(ctx context.Context) (installed, jumps bool, err error
 // before acting on any of the three, or a transient `-S` failure will read as
 // "nothing is installed". In particular blackhole reads false even when the
 // mangle dump already showed it, because the nat dump failed afterwards.
-func (it *IPTables) probeAll(ctx context.Context) (installed, jumps, blackhole bool, err error) {
+// iptState — живое состояние перехвата, снятое за один `-S` на таблицу.
+// Структурой, а не пятёркой bool: поля называют себя на месте вызова, и
+// добавление наблюдения не переписывает каждый вызывающий.
+type iptState struct {
+	// installed — ОБЕ цепочки AWGM объявлены. Путь «включено и целостно».
+	installed bool
+	// anyChain — объявлена ХОТЯ БЫ ОДНА. Путь уборки: даже частичная
+	// установка (mangle есть, nat не доехал после сбойного обновления)
+	// обязана попасть в Uninstall, иначе остатки переживут выключение.
+	anyChain bool
+	// jumps — обе цепочки действительно входятся из PREROUTING.
+	jumps bool
+	// blackhole — цепочка fail-closed жива И входится.
+	blackhole bool
+}
+
+func (it *IPTables) probeAll(ctx context.Context) (iptState, error) {
 	mangleDump, err := it.runIPTablesOut(ctx, "-t", "mangle", "-S")
 	if err != nil {
-		return false, false, false, err
+		return iptState{}, err
 	}
 	mChain, mJump := scanChain(mangleDump, ChainName)
 	bChain, bJump := scanChain(mangleDump, BlackholeChain)
-	blackhole = bChain && bJump
 	natDump, err := it.runIPTablesOut(ctx, "-t", "nat", "-S")
 	if err != nil {
-		return false, false, false, err
+		return iptState{}, err
 	}
 	nChain, nJump := scanChain(natDump, RedirectChain)
-	installed = mChain && nChain
-	jumps = installed && mJump && nJump
-	return installed, jumps, blackhole, nil
+	return iptState{
+		installed: mChain && nChain,
+		anyChain:  mChain || nChain,
+		jumps:     mChain && nChain && mJump && nJump,
+		blackhole: bChain && bJump,
+	}, nil
 }
 
 // scanChain reports the chain's declaration and its PREROUTING jump in an

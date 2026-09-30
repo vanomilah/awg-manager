@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +74,23 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 				ipsetOK = bypassset.IsIPSetAvailable()
 			}
 		}
+		// Место хранения cache.db живёт в 00-base.json — применяем через
+		// оператор ДО персиста и ДО overlay (issue #842): при отказе стор не
+		// говорит «tmp», пока база на флеше, а overlay ниже берёт у оператора
+		// уже эффективный путь. На КАЖДОМ PUT, без гейта по прежнему значению:
+		// применение без правки не пишет и не взводит reload, зато любой PUT
+		// долечивает базу, разъехавшуюся с настройкой (отказ персиста ниже
+		// после успешного применения, гонка с Enable), а не только бут.
+		// Отказ персиста ниже откатывает применение к прежнему месту.
+		prevLoc := ""
+		if cur, err := s.deps.Settings.Get(); err == nil {
+			prevLoc = cur.SingboxRouter.CacheFileLocation
+		}
+		if s.deps.ApplyCacheFileLocation != nil {
+			if err := s.deps.ApplyCacheFileLocation(normalized.CacheFileLocation); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.deps.Settings.Update(func(cur *storage.Settings) error {
 			// Переход «пусто → непусто» требует живого ipset-бинаря. Только на
 			// переходе: при уже выбранных тегах и сломанном ipset прочие правки
@@ -101,6 +119,14 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 			cur.SingboxRouter = normalized
 			return nil
 		}); err != nil {
+			// Персист не прошёл, а база уже переписана — вернуть её к прежнему
+			// месту, иначе стор и 00-base.json расходятся до следующего PUT/бута.
+			// Снесённый при переезде cache.db откат не воскрешает (это кэш).
+			if s.deps.ApplyCacheFileLocation != nil {
+				if err := s.deps.ApplyCacheFileLocation(prevLoc); err != nil {
+					s.appLog.Warn("settings", "cache-location", "откат места cache.db к "+prevLoc+" не удался: "+err.Error())
+				}
+			}
 			return nil, err
 		}
 		if engineChanged {
@@ -258,6 +284,9 @@ func NormalizeSingboxRouterSettings(sr storage.SingboxRouterSettings) (storage.S
 			return sr, fmt.Errorf("udpTimeout: invalid duration %q: %w", sr.UDPTimeout, err)
 		}
 	}
+	if sr.UDPNATMax < 0 || sr.UDPNATMax > 65536 {
+		return sr, fmt.Errorf("udpNatMax: must be 0..65536, got %d", sr.UDPNATMax)
+	}
 	// source-preserve без списка сегментов — включённая опция, которая ничего не
 	// делает; пустой список при выключенной опции чистим, чтобы персист не тянул
 	// протухший выбор до следующего включения.
@@ -272,6 +301,12 @@ func NormalizeSingboxRouterSettings(sr storage.SingboxRouterSettings) (storage.S
 		return sr, err
 	}
 	sr.QoSClasses = normalizeQoSClasses(sr.QoSClasses)
+	switch sr.CacheFileLocation {
+	case "", storage.CacheFileLocationFlash, storage.CacheFileLocationTmp:
+		// valid
+	default:
+		return sr, fmt.Errorf("cacheFileLocation: invalid value %q (must be \"flash\" or \"tmp\")", sr.CacheFileLocation)
+	}
 	return sr, nil
 }
 
@@ -294,11 +329,21 @@ const (
 // struct is a fixed point.
 func normalizeFakeIPSettings(sr *storage.SingboxRouterSettings) error {
 	def := DefaultFakeIPTunParams()
-	if sr.FakeIPStack == "" {
-		sr.FakeIPStack = "gvisor"
-	}
-	if sr.FakeIPStack != "gvisor" && sr.FakeIPStack != "system" {
-		return fmt.Errorf("fakeipStack must be %q or %q, got %q", "gvisor", "system", sr.FakeIPStack)
+	// Стек НЕ дефолтится намеренно: пустое значение — это «не писать ключ
+	// stack», то есть собственный стек sing-tun (sing-box ≥1.15). Подстановка
+	// "gvisor", как было до 1.15, сделала бы новый стек недостижимым через API.
+	//
+	// "gvisor" и "mixed" ПРИВОДЯТСЯ к пустому, а не отвергаются: наш бинарь
+	// собран без with_gvisor, и такой конфиг движок не поднимет вовсе, а отказ
+	// здесь (нормализация зовётся и на загрузке) оставил бы панель без
+	// настроек. Приведение идемпотентно и совпадает с migrateToV39.
+	switch sr.FakeIPStack {
+	case "gvisor", "mixed":
+		sr.FakeIPStack = ""
+	case "", "system":
+	default:
+		return fmt.Errorf("fakeipStack must be empty (sing-tun stack) or %q, got %q",
+			"system", sr.FakeIPStack)
 	}
 	if sr.FakeIPPool4 == "" {
 		sr.FakeIPPool4 = def.Inet4Range
@@ -377,45 +422,14 @@ func (s *ServiceImpl) ListBindableInterfaces(ctx context.Context) ([]WANInterfac
 	return s.deps.BindableInterfaces.ListBindable(ctx)
 }
 
-// ListAllBindableInterfaces returns every bindable interface, including those
-// already used by a direct outbound. Subscriptions and manual tunnels may
-// share an interface with a direct outbound, so their picker must offer the
-// same set the bind validator accepts (#709).
-func (s *ServiceImpl) ListAllBindableInterfaces(ctx context.Context) ([]WANInterfaceInfo, error) {
-	if s.deps.BindableInterfaces == nil {
-		return []WANInterfaceInfo{}, nil
-	}
-	return s.deps.BindableInterfaces.ListAllBindable(ctx)
-}
-
-// ListIngressEligibleInterfaces возвращает интерфейсы, пригодные для
-// ingress-scope: bindable минус WAN минус LAN-бриджи (по Type). Для UI
-// router-страницы (мультиселект).
-func (s *ServiceImpl) ListIngressEligibleInterfaces(ctx context.Context) ([]WANInterfaceInfo, error) {
-	bindable, err := s.ListBindableInterfaces(ctx)
-	if err != nil {
-		return nil, err
-	}
-	wan, _ := s.ListWANInterfaces(ctx)
-	wanNames := map[string]bool{}
-	for _, w := range wan {
-		wanNames[w.Name] = true
-	}
-	out := make([]WANInterfaceInfo, 0, len(bindable))
-	for _, i := range bindable {
-		if wanNames[i.Name] || strings.EqualFold(i.Type, "Bridge") {
-			continue
-		}
-		out = append(out, i)
-	}
-	return out, nil
-}
-
 // validateBindInterface ensures name refers to a bindable interface. With
 // no lister wired (tests / minimal deployments) it is permissive.
 func (s *ServiceImpl) validateBindInterface(ctx context.Context, name string) error {
 	if s.deps.BindableInterfaces == nil {
 		return nil
+	}
+	if slices.Contains(s.foreignIfaces(), name) {
+		return nil // отмеченный сторонний — выбор пользователя, даже если его сейчас нет
 	}
 	ifaces, err := s.deps.BindableInterfaces.ListBindable(ctx)
 	if err != nil {
@@ -427,4 +441,14 @@ func (s *ServiceImpl) validateBindInterface(ctx context.Context, name string) er
 		}
 	}
 	return fmt.Errorf("bind_interface %q is not a selectable interface", name)
+}
+
+// foreignIfaces — отметки «Сторонний интерфейс» из настроек; без NDMS.
+// nil при ошибке Settings.Get допустим только потому, что после Load Get
+// отдаёт кэш из памяти и не ошибается; иначе strip вырезал бы выходы.
+func (s *ServiceImpl) foreignIfaces() []string {
+	if s.deps.Settings == nil {
+		return nil
+	}
+	return s.deps.Settings.GetForeignInterfaces()
 }

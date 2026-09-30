@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -43,7 +44,7 @@ func TestReplaceConfigSkipsConfForNativeWG(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.ReplaceConfig(context.Background(), "awg20", sampleConf, ""); err != nil {
+	if err := s.ReplaceConfig(context.Background(), "awg20", sampleConf, "", ReplaceOptions{}); err != nil {
 		t.Fatalf("ReplaceConfig: %v", err)
 	}
 
@@ -59,7 +60,7 @@ func TestReplaceConfigWritesConfForKernel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.ReplaceConfig(context.Background(), "awg10", sampleConf, ""); err != nil {
+	if err := s.ReplaceConfig(context.Background(), "awg10", sampleConf, "", ReplaceOptions{}); err != nil {
 		t.Fatalf("ReplaceConfig: %v", err)
 	}
 
@@ -88,7 +89,7 @@ func TestReplaceConfig_ClearsPresharedKeyAbsentInNewConf(t *testing.T) {
 	}
 
 	// sampleConf секции PresharedKey не содержит.
-	if err := s.ReplaceConfig(context.Background(), "awg10", sampleConf, ""); err != nil {
+	if err := s.ReplaceConfig(context.Background(), "awg10", sampleConf, "", ReplaceOptions{}); err != nil {
 		t.Fatalf("ReplaceConfig: %v", err)
 	}
 
@@ -98,5 +99,25 @@ func TestReplaceConfig_ClearsPresharedKeyAbsentInNewConf(t *testing.T) {
 	}
 	if got.Peer.PresharedKey != "" {
 		t.Errorf("PresharedKey = %q, want пустой: новый .conf ключа не несёт", got.Peer.PresharedKey)
+	}
+}
+
+// Пересекающиеся H1-H4 модуль отвергает на setconf — замена конфига обязана
+// отказать раньше, тем же гейтом, что импорт, create и update.
+func TestReplaceConfig_RejectsOverlappingHeaders(t *testing.T) {
+	s, _ := serviceWithStore(t)
+	if err := s.store.Create(&storage.AWGTunnel{ID: "awg10", Name: "k", Backend: "kernel"}); err != nil {
+		t.Fatal(err)
+	}
+
+	conf := strings.Replace(sampleConf, "Address = 10.8.0.2/32",
+		"Address = 10.8.0.2/32\nH1 = 10\nH2 = 10\nH3 = 30\nH4 = 40", 1)
+
+	err := s.ReplaceConfig(context.Background(), "awg10", conf, "", ReplaceOptions{})
+	if err == nil {
+		t.Fatal("ReplaceConfig принял конфиг с H1 = H2, ожидалась ошибка")
+	}
+	if !strings.Contains(err.Error(), "H1 и H2") {
+		t.Errorf("ошибка = %v, ожидалось упоминание H1 и H2", err)
 	}
 }

@@ -20,8 +20,10 @@ import (
 type Subsystem string
 
 const (
-	SubsystemWdtt     Subsystem = "wdtt"
-	SubsystemFreeTurn Subsystem = "freeturn"
+	SubsystemWdtt        Subsystem = "wdtt"
+	SubsystemFreeTurn    Subsystem = "freeturn"
+	SubsystemObfPhobos   Subsystem = "obf-phobos"
+	SubsystemObfClusterM Subsystem = "obf-clusterm"
 )
 
 // Downloader — узкий контракт загрузки (форма childproc.Downloader, по
@@ -98,6 +100,10 @@ type Deps struct {
 	//
 	// Отказ чтения — не ноль: без ответа гейт закрывается.
 	InstanceCount func(Subsystem) (int, error)
+	// Installed — успешная РУЧНАЯ установка (ServeInstall). Проводка нуджит
+	// бут прокси-рантайма, чтобы ожидание бинарей (F98) снялось без таймера.
+	// Из Install не зовётся: Install работает внутри Boot под bootMu.
+	Installed func(Subsystem)
 }
 
 // subsys — состояние одной подсистемы: где её бинари, какой у неё пин и не
@@ -142,6 +148,18 @@ func New(d Deps) *Service {
 				versionPath: versionPath(d.DataDir, "freeturn-version.json"),
 				specs:       archSpecs(FreeTurnEmbeddedBinaries, d.Arch),
 			},
+			SubsystemObfPhobos: {
+				name:        SubsystemObfPhobos,
+				clientBin:   filepath.Join(defaultBinDir, "awgm-wg-obfuscator-phobos"),
+				versionPath: versionPath(d.DataDir, "obf-phobos-version.json"),
+				specs:       archSpecs(ObfPhobosEmbeddedBinaries, d.Arch),
+			},
+			SubsystemObfClusterM: {
+				name:        SubsystemObfClusterM,
+				clientBin:   filepath.Join(defaultBinDir, "awgm-wg-obfuscator-clusterm"),
+				versionPath: versionPath(d.DataDir, "obf-clusterm-version.json"),
+				specs:       archSpecs(ObfClusterMEmbeddedBinaries, d.Arch),
+			},
 		},
 	}
 }
@@ -168,7 +186,7 @@ func archSpecs(table map[string]ArchSpecs, arch string) *ArchSpecs {
 func (s *Service) pick(name string) (*subsys, error) {
 	sub, ok := s.subs[Subsystem(strings.TrimSpace(name))]
 	if !ok {
-		return nil, fmt.Errorf("неизвестная подсистема %q: ожидается wdtt или freeturn", name)
+		return nil, fmt.Errorf("неизвестная подсистема %q: ожидается wdtt, freeturn, obf-phobos или obf-clusterm", name)
 	}
 	return sub, nil
 }
@@ -221,6 +239,40 @@ func (s *Service) PinnedSHA256(kind instancestore.Kind) string {
 		return sub.specs.Server.SHA256
 	}
 	return sub.specs.Client.SHA256
+}
+
+// SubsystemOf — подсистема, чьи бинари держит роль. Пусто для неизвестного
+// kind: вызывающие обязаны считать это отказом классификации, а не «ничьё».
+func SubsystemOf(kind instancestore.Kind) Subsystem {
+	switch kind {
+	case instancestore.KindWdttClient, instancestore.KindWdttServer:
+		return SubsystemWdtt
+	case instancestore.KindFreeTurnClient, instancestore.KindFreeTurnServer:
+		return SubsystemFreeTurn
+	}
+	return ""
+}
+
+// Stale — подсистемы, которым на буте нужна загрузка (F98): есть включённая
+// запись, для архитектуры есть пин и бинари на диске не совпали с SHA пина.
+// Арка без пина не stale — скачать нечего, гейт назовёт причину сам.
+// Выключенные записи бут не держат: пока никто не хочет работать, ждать
+// нечего. Порядок детерминирован.
+func (s *Service) Stale(records []instancestore.Record) []Subsystem {
+	want := map[Subsystem]bool{}
+	for _, rec := range records {
+		if rec.Enabled {
+			want[SubsystemOf(rec.Kind)] = true
+		}
+	}
+	var out []Subsystem
+	for _, name := range []Subsystem{SubsystemWdtt, SubsystemFreeTurn} {
+		sub := s.subs[name]
+		if want[name] && sub.specs != nil && !sub.binariesMatchSpecs() {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // Status — install-статус подсистемы.
@@ -298,8 +350,28 @@ func (s *Service) Install(ctx context.Context, subsystem string) error {
 	if err := sub.writeInstalledVersion(label); err != nil {
 		s.warn(fmt.Sprintf("%s: version-file: %s", sub.name, err.Error()))
 	}
-	s.info(fmt.Sprintf("%s v%s установлен: %s, %s", sub.name, label, sub.clientBin, sub.serverBin))
+	if sub.serverBin == "" {
+		s.info(fmt.Sprintf("%s v%s установлен: %s", sub.name, label, sub.clientBin))
+	} else {
+		s.info(fmt.Sprintf("%s v%s установлен: %s, %s", sub.name, label, sub.clientBin, sub.serverBin))
+	}
 	return nil
+}
+
+// EnsureInstalled — путь к клиентскому бинарю подсистемы; если бинаря нет
+// или он не совпадает с пином, докачивает (тот же путь, что кнопка «Обновить»).
+func (s *Service) EnsureInstalled(ctx context.Context, subsystem string) (string, error) {
+	sub, err := s.pick(subsystem)
+	if err != nil {
+		return "", err
+	}
+	if sub.binariesMatchSpecs() {
+		return sub.clientBin, nil
+	}
+	if err := s.Install(ctx, subsystem); err != nil {
+		return "", err
+	}
+	return sub.clientBin, nil
 }
 
 // ErrInstancesExist — удаление бинарей отклонено: подсистемой ещё пользуются.

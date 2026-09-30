@@ -22,6 +22,7 @@ import (
 
 // mockRouterSvc satisfies router.Service with controllable return values.
 type mockRouterSvc struct {
+	addRuleSetErr error
 	bindMAC       string
 	bindPolicy    string
 	bindErr       error
@@ -51,6 +52,12 @@ type mockRouterSvc struct {
 	// natPreview / natPreviewErr feed the policy-tun source-preserve preview.
 	natPreview    []router.NATSegmentInfo
 	natPreviewErr error
+	// applyCalls / discardCalls count invocations of ApplyStaging /
+	// DiscardStaging so handlers can be asserted to actually call the service.
+	applyCalls   int
+	discardCalls int
+	// policies backs ListPolicies for composition assertions.
+	policies []router.PolicyInfo
 }
 
 func (m *mockRouterSvc) Reconcile(ctx context.Context) error { return nil }
@@ -85,12 +92,6 @@ func (m *mockRouterSvc) ListWANInterfaces(ctx context.Context) ([]router.WANInte
 func (m *mockRouterSvc) ListBindableInterfaces(ctx context.Context) ([]router.WANInterfaceInfo, error) {
 	return []router.WANInterfaceInfo{{Name: "ipsec0", Label: "IPSec", Up: true}}, nil
 }
-func (m *mockRouterSvc) ListAllBindableInterfaces(ctx context.Context) ([]router.WANInterfaceInfo, error) {
-	return []router.WANInterfaceInfo{{Name: "ipsec0", Label: "IPSec", Up: true}}, nil
-}
-func (m *mockRouterSvc) ListIngressEligibleInterfaces(ctx context.Context) ([]router.WANInterfaceInfo, error) {
-	return nil, nil
-}
 func (m *mockRouterSvc) PolicyTunNATPreview(ctx context.Context) (router.NATPreview, error) {
 	return router.NATPreview{Segments: m.natPreview}, m.natPreviewErr
 }
@@ -106,7 +107,9 @@ func (m *mockRouterSvc) BulkSetRuleOutbound(ctx context.Context, indices []int, 
 func (m *mockRouterSvc) MoveRule(ctx context.Context, from, to int) error           { return nil }
 func (m *mockRouterSvc) SetRouteFinal(ctx context.Context, tag string) error        { return nil }
 func (m *mockRouterSvc) ListRuleSets(ctx context.Context) ([]router.RuleSet, error) { return nil, nil }
-func (m *mockRouterSvc) AddRuleSet(ctx context.Context, rs router.RuleSet) error    { return nil }
+func (m *mockRouterSvc) AddRuleSet(ctx context.Context, rs router.RuleSet) error {
+	return m.addRuleSetErr
+}
 func (m *mockRouterSvc) UpdateRuleSet(ctx context.Context, tag string, rs router.RuleSet) error {
 	return nil
 }
@@ -146,7 +149,7 @@ func (m *mockRouterSvc) ApplyPreset(ctx context.Context, presetID, outboundTag s
 }
 func (m *mockRouterSvc) ListPresets() ([]router.Preset, error) { return nil, nil }
 func (m *mockRouterSvc) ListPolicies(ctx context.Context) ([]router.PolicyInfo, error) {
-	return []router.PolicyInfo{}, nil
+	return m.policies, nil
 }
 func (m *mockRouterSvc) CreatePolicy(ctx context.Context, description string) (router.PolicyInfo, error) {
 	return router.PolicyInfo{Name: "Policy0", Description: description}, nil
@@ -180,10 +183,10 @@ func (m *mockRouterSvc) UpdateDNSRule(ctx context.Context, index int, r router.D
 }
 func (m *mockRouterSvc) DeleteDNSRule(ctx context.Context, index int) error  { return nil }
 func (m *mockRouterSvc) MoveDNSRule(ctx context.Context, from, to int) error { return nil }
-func (m *mockRouterSvc) GetDNSGlobals(ctx context.Context) (string, string, error) {
-	return "", "", nil
+func (m *mockRouterSvc) GetDNSGlobals(ctx context.Context) (string, string, string, error) {
+	return "", "", "", nil
 }
-func (m *mockRouterSvc) SetDNSGlobals(ctx context.Context, final, strategy string) error {
+func (m *mockRouterSvc) SetDNSGlobals(ctx context.Context, final, strategy, timeout string) error {
 	return nil
 }
 func (m *mockRouterSvc) GetDNSChainPreset(ctx context.Context) (storage.DNSChainPresetState, error) {
@@ -219,10 +222,12 @@ func (m *mockRouterSvc) StagingStatus(_ context.Context) router.StagingStatus {
 }
 
 func (m *mockRouterSvc) ApplyStaging(_ context.Context) (orchestrator.ValidationResult, error) {
+	m.applyCalls++
 	return m.applyRes, m.applyErr
 }
 
 func (m *mockRouterSvc) DiscardStaging(_ context.Context) error {
+	m.discardCalls++
 	return m.discardErr
 }
 
@@ -408,12 +413,24 @@ func TestRouterBindDevice_DelegatesToService(t *testing.T) {
 }
 
 func TestRouterListPolicies_Returns200(t *testing.T) {
-	h := newMockRouterHandler(&mockRouterSvc{})
+	svc := &mockRouterSvc{policies: []router.PolicyInfo{{Name: "Policy0"}, {Name: "Policy7"}}}
+	h := newMockRouterHandler(svc)
 	req := httptest.NewRequest(http.MethodGet, "/api/singbox/router/policies", nil)
 	rr := httptest.NewRecorder()
 	h.PoliciesCollection(rr, req)
 	if rr.Code != http.StatusOK {
-		t.Errorf("want 200, got %d (body: %s)", rr.Code, rr.Body.String())
+		t.Fatalf("want 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Data []struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Data) != 2 || got.Data[0].Name != "Policy0" || got.Data[1].Name != "Policy7" {
+		t.Fatalf("wrong data: %#v", got.Data)
 	}
 }
 
@@ -480,11 +497,12 @@ func TestGetStaging_WithDraft(t *testing.T) {
 func TestPostStagingApply_200(t *testing.T) {
 	svc := &mockRouterSvc{}
 	h := newMockRouterHandler(svc)
-	req := httptest.NewRequest(http.MethodPost, "/api/singbox/router/staging/apply", nil)
-	rr := httptest.NewRecorder()
-	h.PostStagingApply(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Errorf("status: %d body=%s", rr.Code, rr.Body)
+	rr := perform(h.PostStagingApply, http.MethodPost, "/api/singbox/router/staging/apply", "")
+	if rr.Code != 200 || svc.applyCalls != 1 {
+		t.Fatalf("code=%d applyCalls=%d body=%s", rr.Code, svc.applyCalls, rr.Body)
+	}
+	if decodeJSONBody(t, rr)["data"].(map[string]any)["ok"] != true {
+		t.Fatalf("тело: %s", rr.Body)
 	}
 }
 
@@ -548,11 +566,17 @@ func TestPostStagingApply_422OnSbCheck(t *testing.T) {
 func TestPostStagingDiscard_200(t *testing.T) {
 	svc := &mockRouterSvc{}
 	h := newMockRouterHandler(svc)
-	req := httptest.NewRequest(http.MethodPost, "/api/singbox/router/staging/discard", nil)
-	rr := httptest.NewRecorder()
-	h.PostStagingDiscard(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Errorf("status: %d body=%s", rr.Code, rr.Body)
+	rr := perform(h.PostStagingDiscard, http.MethodPost, "/api/singbox/router/staging/discard", "")
+	if rr.Code != 200 || svc.discardCalls != 1 {
+		t.Fatalf("code=%d discardCalls=%d body=%s", rr.Code, svc.discardCalls, rr.Body)
+	}
+}
+
+func TestPostStagingDiscard_500OnServiceError(t *testing.T) {
+	svc := &mockRouterSvc{discardErr: errors.New("io")}
+	rr := perform(newMockRouterHandler(svc).PostStagingDiscard, http.MethodPost, "/api/singbox/router/staging/discard", "")
+	if rr.Code != 500 {
+		t.Fatalf("отказ службы → 500, got %d", rr.Code)
 	}
 }
 
@@ -592,7 +616,8 @@ func TestPostStagingDiscard_405OnWrongMethod(t *testing.T) {
 func newTestRouterHandlerReal(t *testing.T) (*SingboxRouterHandler, string) {
 	t.Helper()
 	dir := t.TempDir()
-	orch := orchestrator.New(dir, nil)
+	orch := orchestrator.NewWithAppliedPath(dir, nil, filepath.Join(t.TempDir(), "singbox-applied.json"))
+	t.Cleanup(orch.Close)
 	if err := orch.Register(orchestrator.SlotMeta{Slot: orchestrator.SlotRouter, Filename: "20-router.json"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1062,5 +1087,22 @@ func TestRouterPutSettings_ExplicitEmptyPool6Passes(t *testing.T) {
 	}
 	if svc.settings.FakeIPPool6 != "" {
 		t.Errorf("fakeipPool6 = %q, want \"\" (подстановки быть не должно)", svc.settings.FakeIPPool6)
+	}
+}
+
+// F434 (#941): отказ по небезопасному тегу inline-набора — ошибка ввода, а не
+// сбой демона: 400 с кодом, который фронт покажет пользователю, вместо 500.
+func TestRouterAddRuleSet_UnsafeTag_Returns400(t *testing.T) {
+	svc := &mockRouterSvc{addRuleSetErr: fmt.Errorf("%w: %q: latin letters, digits", router.ErrRuleSetTagUnsafe, "\u041c\u043e\u0451")}
+	h := newMockRouterHandler(svc)
+	req := httptest.NewRequest(http.MethodPost, "/api/singbox/router/rulesets/add",
+		strings.NewReader(`{"tag":"\u041c\u043e\u0451","type":"inline","rules":[{"domain_suffix":[".example.com"]}]}`))
+	rr := httptest.NewRecorder()
+	h.AddRuleSet(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "RULE_SET_TAG_UNSAFE") {
+		t.Errorf("want code RULE_SET_TAG_UNSAFE in body: %s", rr.Body.String())
 	}
 }

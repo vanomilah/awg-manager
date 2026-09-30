@@ -128,8 +128,16 @@ func ErrorWithStatus(w http.ResponseWriter, status int, message, code string) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// ErrorWithData writes an error response with custom HTTP status, message, code, and data.
-func ErrorWithData(w http.ResponseWriter, status int, message, code string, data interface{}) {
+// ErrorWithData — отказ, который обязан рассказать, что УЖЕ сделано.
+//
+// Конверт у успеха и отказа один (APIResponse), поле Data в нём было всегда и
+// у отказов просто опускалось — поэтому форма прежних ошибок не меняется, а
+// клиент кладёт всё тело в err.body и читает его без правок.
+//
+// Нужно там, где операция многошаговая и падение середины не отменяет
+// сделанного: сказать «не удалось» и умолчать о необратимой части — значит
+// оставить пользователя с расхождением, которое он объяснить не сможет.
+func ErrorWithData(w http.ResponseWriter, status int, message, code string, data any) {
 	resp := APIResponse{
 		Error:   true,
 		Message: message,

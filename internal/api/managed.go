@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/managed"
 	"github.com/hoaxisr/awg-manager/internal/response"
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -25,22 +26,38 @@ type ManagedPeerDTO struct {
 	TunnelIP     string `json:"tunnelIP" example:"10.10.0.2"`
 	DNS          string `json:"dns,omitempty" example:"8.8.8.8"`
 	Enabled      bool   `json:"enabled" example:"true"`
+	// i1..i5 и signatureProfile — сигнатура имитации этого клиента;
+	// попадает в его .conf.
+	I1               string `json:"i1,omitempty" example:"<b 0xc0>"`
+	I2               string `json:"i2,omitempty"`
+	I3               string `json:"i3,omitempty"`
+	I4               string `json:"i4,omitempty"`
+	I5               string `json:"i5,omitempty"`
+	SignatureProfile string `json:"signatureProfile,omitempty" example:"quic_initial"`
+	// ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+	// пусто — весь трафик). RemoteSubnets — сети за клиентом, IPv4 CIDR (#713).
+	ClientAllowedIPs string   `json:"clientAllowedIPs,omitempty" example:"10.10.0.0/24, 192.168.1.0/24"`
+	RemoteSubnets    []string `json:"remoteSubnets,omitempty" example:"192.168.77.0/24"`
 }
 
 // ManagedServerDTO mirrors frontend ManagedServer.
 type ManagedServerDTO struct {
-	InterfaceName string           `json:"interfaceName" example:"Wireguard1"`
-	Address       string           `json:"address" example:"10.10.0.1"`
-	Mask          string           `json:"mask" example:"255.255.255.0"`
-	ListenPort    int              `json:"listenPort" example:"51821"`
-	Endpoint      string           `json:"endpoint,omitempty" example:"203.0.113.42:51821"`
-	DNS           string           `json:"dns,omitempty" example:"8.8.8.8"`
-	MTU           int              `json:"mtu,omitempty" example:"1420"`
-	NatEnabled    bool             `json:"natEnabled,omitempty" example:"true"`
-	NATMode       string           `json:"natMode,omitempty" example:"internet-only"`
-	LANSegments   []string         `json:"lanSegments,omitempty" example:"Home"`
-	Policy        string           `json:"policy" example:"default"`
-	Peers         []ManagedPeerDTO `json:"peers"`
+	InterfaceName string   `json:"interfaceName" example:"Wireguard1"`
+	Address       string   `json:"address" example:"10.10.0.1"`
+	Mask          string   `json:"mask" example:"255.255.255.0"`
+	ListenPort    int      `json:"listenPort" example:"51821"`
+	Endpoint      string   `json:"endpoint,omitempty" example:"203.0.113.42:51821"`
+	DNS           string   `json:"dns,omitempty" example:"8.8.8.8"`
+	MTU           int      `json:"mtu,omitempty" example:"1420"`
+	NatEnabled    bool     `json:"natEnabled,omitempty" example:"true"`
+	NATMode       string   `json:"natMode,omitempty" example:"internet-only"`
+	LANSegments   []string `json:"lanSegments,omitempty" example:"Home"`
+	// ForeignACLs — чужие списки `ip access-group … in` на интерфейсе сервера
+	// (кроме нашего AWGM_<iface>), в порядке привязки. Список, привязанный
+	// раньше нашего и разрешающий шире, срабатывает до выбора сегментов.
+	ForeignACLs []string         `json:"foreignAcls,omitempty" example:"GUEST_ACL"`
+	Policy      string           `json:"policy" example:"default"`
+	Peers       []ManagedPeerDTO `json:"peers"`
 }
 
 // ManagedServerResponse is the envelope for GET /managed-server.
@@ -182,19 +199,23 @@ func isValidWGKey(key string) bool {
 
 // managedServerResponse is a safe DTO that strips private keys from peers.
 type managedServerResponse struct {
-	InterfaceName string              `json:"interfaceName"`
-	Description   string              `json:"description,omitempty"`
-	Address       string              `json:"address"`
-	Mask          string              `json:"mask"`
-	ListenPort    int                 `json:"listenPort"`
-	Endpoint      string              `json:"endpoint,omitempty"`
-	DNS           string              `json:"dns,omitempty"`
-	MTU           int                 `json:"mtu,omitempty"`
-	NATEnabled    bool                `json:"natEnabled"`
-	NATMode       string              `json:"natMode,omitempty"`
-	LANSegments   []string            `json:"lanSegments,omitempty"`
-	Policy        string              `json:"policy"`
-	Peers         []managedPeerPublic `json:"peers"`
+	InterfaceName string   `json:"interfaceName"`
+	Description   string   `json:"description,omitempty"`
+	Address       string   `json:"address"`
+	Mask          string   `json:"mask"`
+	ListenPort    int      `json:"listenPort"`
+	Endpoint      string   `json:"endpoint,omitempty"`
+	DNS           string   `json:"dns,omitempty"`
+	MTU           int      `json:"mtu,omitempty"`
+	NATEnabled    bool     `json:"natEnabled"`
+	NATMode       string   `json:"natMode,omitempty"`
+	LANSegments   []string `json:"lanSegments,omitempty"`
+	// ForeignACLs — чужие списки `ip access-group … in` на интерфейсе сервера
+	// (кроме нашего AWGM_<iface>), в порядке привязки. Список, привязанный
+	// раньше нашего и разрешающий шире, срабатывает до выбора сегментов.
+	ForeignACLs []string            `json:"foreignAcls,omitempty"`
+	Policy      string              `json:"policy"`
+	Peers       []managedPeerPublic `json:"peers"`
 }
 
 // managedPeerPublic is a peer DTO without private/preshared keys.
@@ -204,18 +225,38 @@ type managedPeerPublic struct {
 	TunnelIP    string `json:"tunnelIP"`
 	DNS         string `json:"dns,omitempty"`
 	Enabled     bool   `json:"enabled"`
+	// I1..I5 и SignatureProfile — сигнатура имитации пира (CONTEXT.md
+	// «Владелец сигнатуры»); попадает в .conf этого пира.
+	I1               string `json:"i1,omitempty"`
+	I2               string `json:"i2,omitempty"`
+	I3               string `json:"i3,omitempty"`
+	I4               string `json:"i4,omitempty"`
+	I5               string `json:"i5,omitempty"`
+	SignatureProfile string `json:"signatureProfile,omitempty"`
+	// ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+	// пусто — весь трафик). RemoteSubnets — сети за клиентом, IPv4 CIDR (#713).
+	ClientAllowedIPs string   `json:"clientAllowedIPs,omitempty"`
+	RemoteSubnets    []string `json:"remoteSubnets,omitempty"`
 }
 
 // toManagedServerResponse converts storage model to a safe response DTO.
-func toManagedServerResponse(s *storage.ManagedServer) *managedServerResponse {
+func toManagedServerResponse(s *storage.ManagedServer, foreign []string) *managedServerResponse {
 	peers := make([]managedPeerPublic, len(s.Peers))
 	for i, p := range s.Peers {
 		peers[i] = managedPeerPublic{
-			PublicKey:   p.PublicKey,
-			Description: p.Description,
-			TunnelIP:    p.TunnelIP,
-			DNS:         p.DNS,
-			Enabled:     p.Enabled,
+			PublicKey:        p.PublicKey,
+			Description:      p.Description,
+			TunnelIP:         p.TunnelIP,
+			DNS:              p.DNS,
+			Enabled:          p.Enabled,
+			I1:               p.I1,
+			I2:               p.I2,
+			I3:               p.I3,
+			I4:               p.I4,
+			I5:               p.I5,
+			SignatureProfile: p.SignatureProfile,
+			ClientAllowedIPs: p.ClientAllowedIPs,
+			RemoteSubnets:    p.RemoteSubnets,
 		}
 	}
 	return &managedServerResponse{
@@ -230,6 +271,7 @@ func toManagedServerResponse(s *storage.ManagedServer) *managedServerResponse {
 		NATEnabled:    s.NATEnabled,
 		NATMode:       s.NATMode,
 		LANSegments:   s.LANSegments,
+		ForeignACLs:   foreign,
 		Policy:        s.Policy,
 		Peers:         peers,
 	}
@@ -239,6 +281,7 @@ func toManagedServerResponse(s *storage.ManagedServer) *managedServerResponse {
 type ManagedServerHandler struct {
 	svc     managed.ManagedServerService
 	servers *ServersHandler // for shared server:updated publishing
+	log     *logging.ScopedLogger
 }
 
 // SetServersHandler sets the servers handler for shared SSE publishing.
@@ -266,18 +309,34 @@ func (h *ManagedServerHandler) writeServersSnapshot(w http.ResponseWriter, r *ht
 }
 
 // NewManagedServerHandler creates a new managed server handler.
-func NewManagedServerHandler(svc managed.ManagedServerService) *ManagedServerHandler {
-	return &ManagedServerHandler{svc: svc}
+func NewManagedServerHandler(svc managed.ManagedServerService, appLogger logging.AppLogger) *ManagedServerHandler {
+	return &ManagedServerHandler{
+		svc: svc,
+		log: logging.NewScopedLogger(appLogger, logging.GroupServer, logging.SubManaged),
+	}
+}
+
+// foreignACLsFor — чужие привязки для карточки: без нашего AWGM_ (уже вычтен
+// службой). `_WEBADMIN_<iface>` здесь ТОЖЕ чужой и показывается: это правила
+// межсетевого экрана пользователя из веб-морды роутера, и с #879 мы их больше
+// не снимаем — предупреждение на карточке заменило снятие.
+// Ошибка чтения running-config → nil: карточка без предупреждения, не без сервера.
+func (h *ManagedServerHandler) foreignACLsFor(ctx context.Context, iface string) []string {
+	names, err := h.svc.ForeignAccessGroups(ctx, iface)
+	if err != nil || len(names) == 0 {
+		return nil
+	}
+	return names
 }
 
 // getManagedList builds the list of managed server DTOs for the composite
 // servers snapshot. Always returns a non-nil slice so callers can json-marshal
 // it as `[]` rather than `null`.
-func (h *ManagedServerHandler) getManagedList() []*managedServerResponse {
+func (h *ManagedServerHandler) getManagedList(ctx context.Context) []*managedServerResponse {
 	servers := h.svc.List()
 	out := make([]*managedServerResponse, 0, len(servers))
 	for i := range servers {
-		out = append(out, toManagedServerResponse(&servers[i]))
+		out = append(out, toManagedServerResponse(&servers[i], h.foreignACLsFor(ctx, servers[i].InterfaceName)))
 	}
 	return out
 }
@@ -468,6 +527,10 @@ func (h *ManagedServerHandler) Subtree(w http.ResponseWriter, r *http.Request) {
 			response.Error(w, "unknown path", "UNKNOWN_PATH")
 			return
 		}
+		if parts[2] == "presets" {
+			h.PeerPresets(w, r, id)
+			return
+		}
 		pubkey := parts[2]
 		if !h.validatePubkey(w, pubkey) {
 			return
@@ -521,7 +584,7 @@ func (h *ManagedServerHandler) List(w http.ResponseWriter, r *http.Request) {
 		response.MethodNotAllowed(w)
 		return
 	}
-	response.Success(w, h.getManagedList())
+	response.Success(w, h.getManagedList(r.Context()))
 }
 
 // SuggestAddress returns a free private /24 for the create-server UI.
@@ -572,7 +635,7 @@ func (h *ManagedServerHandler) Get(w http.ResponseWriter, r *http.Request, id st
 		response.Error(w, err.Error(), "NOT_FOUND")
 		return
 	}
-	response.Success(w, toManagedServerResponse(server))
+	response.Success(w, toManagedServerResponse(server, h.foreignACLsFor(r.Context(), server.InterfaceName)))
 }
 
 // Stats returns runtime statistics for one managed server's peers.
@@ -627,7 +690,7 @@ func (h *ManagedServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.svc.InvalidateCache(server.InterfaceName)
-	response.Success(w, toManagedServerResponse(server))
+	response.Success(w, toManagedServerResponse(server, nil))
 	h.publishServerUpdated()
 }
 
@@ -823,6 +886,10 @@ func (h *ManagedServerHandler) SetEnabled(w http.ResponseWriter, r *http.Request
 	h.writeServersSnapshot(w, r)
 }
 
+// managedRestartDelay — пауза перед рестартом, чтобы HTTP-ответ успел уйти с роутера
+// до опускания интерфейса; шов для тестов.
+var managedRestartDelay = 300 * time.Millisecond
+
 // Restart accepts a restart/start command for one managed server.
 // POST /api/managed-servers/{id}/restart
 //
@@ -856,9 +923,13 @@ func (h *ManagedServerHandler) Restart(w http.ResponseWriter, r *http.Request, i
 		// Give the HTTP response a small window to leave the router before the
 		// interface is brought down. This keeps same-server restart from being
 		// cancelled by the browser connection disappearing mid-request.
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(managedRestartDelay)
 
 		if err := h.svc.RestartOrStart(ctx, id); err != nil {
+			h.log.Warn("restart", id, "restart failed: "+err.Error())
+			// Карточка перерисуется свежим (не изменившимся) состоянием вместо
+			// вечного «перезапускается».
+			h.publishServerUpdated()
 			return
 		}
 

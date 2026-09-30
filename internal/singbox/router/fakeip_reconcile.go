@@ -51,9 +51,8 @@ func (s *ServiceImpl) reconcileFakeIPTun(ctx context.Context, sr storage.Singbox
 	// reconcileInstalled): после рестарта демона могли выжить AWGM-цепочки
 	// прежнего tproxy-режима — в fakeip они заворачивают policy-трафик в порт
 	// без слушателя, и не лечит их никто, потому что fakeip своего netfilter
-	// не ставит вовсе. Провал Uninstall внутри Disable этого не ловит: он
-	// проглатывается warn-and-continue, а сам Uninstall сегодня ВСЕГДА
-	// возвращает nil (F79) — то есть первый же тихий сбой невидим.
+	// не ставит вовсе. Uninstall best-effort и ошибки не возвращает (F79),
+	// поэтому провал шага внутри Disable не наблюдаем — свип здесь нужен.
 	//
 	// Собственные ingress-ресурсы fakeip свип не задевает: у них свои теги
 	// (AWGM-FAKEIP-INGRESS), таблица 700 и приоритет 29000, а Uninstall
@@ -64,15 +63,10 @@ func (s *ServiceImpl) reconcileFakeIPTun(ctx context.Context, sr storage.Singbox
 		force := !s.netfilterStateKnown
 		s.mu.Unlock()
 		if force {
-			if err := s.deps.IPTables.Uninstall(ctx); err != nil {
-				// Сегодня недостижимо (F79) — ветка на будущее, когда шаги
-				// Uninstall станут честными. Зеркалит обоих вызывающих.
-				s.appLog.Warn("fakeip-reconcile", "", "iptables uninstall: "+err.Error())
-			} else {
-				s.mu.Lock()
-				s.netfilterStateKnown = true
-				s.mu.Unlock()
-			}
+			s.deps.IPTables.Uninstall(ctx)
+			s.mu.Lock()
+			s.netfilterStateKnown = true
+			s.mu.Unlock()
 		}
 	}
 
@@ -139,6 +133,22 @@ func (s *ServiceImpl) reconcileFakeIPTun(ctx context.Context, sr storage.Singbox
 	// Движок может быть жив, а его стек отцепиться от tun — это состояние не
 	// лечит никто другой, см. healDetachedTun. Слот он проверяет сам.
 	s.healDetachedTun(iface, "fakeip-reconcile", orchestrator.SlotFakeIP)
+	// Гейт probeErr == nil — см. reconcilePolicyTun.
+	if probeErr == nil {
+		s.healTunAddress(ctx, sr, iface, ndmsName, "fakeip-reconcile")
+	}
+
+	// Разовая миграция слота на форму sing-box 1.14 (см. reconcileInstalled) —
+	// для 21-fakeip.json. В устоявшемся состоянии это одно чтение файла,
+	// бюджет тика (30 с) не страдает.
+	s.heal1140SlotMigration(ctx, orchestrator.SlotFakeIP)
+
+	// Смена udpTimeout/udpNatMax через UpdateSettings — tun-in fakeip строится
+	// только на enable, поэтому без heal'а изменение не доезжало до живого
+	// режима (F114). После миграции слота — актуальный tun-in уже в форме 1.14.
+	if s.healTunSettings(ctx, orchestrator.SlotFakeIP, sr) {
+		s.completeExternalFlip(ctx, sr, iface, ndmsName, "fakeip-reconcile")
+	}
 
 	// One-shot (до первого УСПЕХА) ассерт permit-ACL: покрывает апгрейд
 	// awg-manager поверх уже включённого fakeip (ACL появился в этой версии)

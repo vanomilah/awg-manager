@@ -11,6 +11,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/singbox"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
+	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
 // SlotSubscriptionsMeta is the SlotMeta registered on startup.
@@ -95,8 +96,14 @@ type OperatorAdapter struct {
 	isMihomoPrimary   func() bool
 	onPostCommit      func()
 
-	mu              sync.Mutex
-	cfg             slotConfig
+	mu  sync.Mutex
+	cfg slotConfig
+	// loadErr — отказ LoadFromDisk прочитать существующий слот. flush()
+	// пишет 40-subscriptions.json ЦЕЛИКОМ из памяти, поэтому память, не
+	// сверенная с диском, стирает ВСЕ подписки при первой же операции над
+	// одной из них — а зовёт эту операцию планировщик автообновления сам,
+	// раз в минуту, без участия человека. Пока признак стоит, писать нельзя.
+	loadErr         error
 	lastDropped     []DropReason // outbounds filtered out of the most recent flush
 	preFlushDropped []DropReason // Pass-1 rejects from Add/Update before the next flush
 
@@ -214,6 +221,11 @@ func (a *OperatorAdapter) LoadFromDisk(configDir string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		// Файл есть, но прочитать его не вышло. Что в нём — неизвестно,
+		// значит и переписывать его из пустой памяти нельзя: см. loadErr.
+		a.mu.Lock()
+		a.loadErr = err
+		a.mu.Unlock()
 		return fmt.Errorf("subscription adapter: load %s: %w", path, err)
 	}
 	if len(b) == 0 {
@@ -223,6 +235,12 @@ func (a *OperatorAdapter) LoadFromDisk(configDir string) error {
 	defer a.mu.Unlock()
 	var cfg slotConfig
 	if err := json.Unmarshal(b, &cfg); err != nil {
+		// Разобрать нечего, и такой файл не переварит сам sing-box — то есть
+		// подписки уже не работают, терять в нём нечего. Уносим в карантин и
+		// идём дальше с пустой памятью: fail-closed здесь означал бы, что
+		// подписки залипли до ручного вмешательства, до которого на роутере
+		// никто не дойдёт.
+		storage.QuarantineCorrupt(path, err)
 		return fmt.Errorf("subscription adapter: parse %s: %w", path, err)
 	}
 	if cfg.Inbounds == nil {
@@ -582,6 +600,9 @@ func dropLoopExhaustedErr(dropped []DropReason) error {
 }
 
 func (a *OperatorAdapter) flush() error {
+	if a.loadErr != nil {
+		return fmt.Errorf("%w: слот подписок не прочитан при старте (%v) — запись запрещена, иначе она стёрла бы подписки, которых нет в памяти", ErrValidation, a.loadErr)
+	}
 	dropped := append([]DropReason(nil), a.preFlushDropped...)
 	a.preFlushDropped = nil
 

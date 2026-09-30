@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -44,10 +45,36 @@ type DelayChecker struct {
 	timeout   time.Duration
 	testURL   string
 
+	// clients отвечает, открыта ли панель хоть у кого-нибудь. Опционально:
+	// без него проверка работает всегда, как и раньше.
+	clients ClientCounter
+
 	// mu protects single-flight per tag to avoid hammering Clash when both
 	// the periodic tick and an on-demand call race.
 	mu       sync.Mutex
 	inflight map[string]bool
+}
+
+// ClientCounter reports the number of open panels (SSE client subscriptions).
+// Общий для потребителей пакета: по нему delay-проверка и агрегатор трафика
+// решают, нужна ли их работа кому-нибудь прямо сейчас.
+type ClientCounter interface {
+	ClientCount() int
+}
+
+// SetClientCounter wires the source of "сколько панелей сейчас открыто".
+func (d *DelayChecker) SetClientCounter(c ClientCounter) {
+	d.mu.Lock()
+	d.clients = c
+	d.mu.Unlock()
+}
+
+// nobodyWatching — правда ли, что панель не открыта ни у кого.
+func (d *DelayChecker) nobodyWatching() bool {
+	d.mu.Lock()
+	c := d.clients
+	d.mu.Unlock()
+	return c != nil && c.ClientCount() == 0
 }
 
 // NewDelayChecker constructs a checker with sane defaults.
@@ -63,14 +90,34 @@ func NewDelayChecker(clash clashAPI, lister tunnelLister, pub DelayPublisher) *D
 	}
 }
 
+// ErrProbeInFlight is returned by Probe when a delay test for the same
+// tag is already running — typically the periodic sweep, which holds a
+// slow proxy's tag for up to timeout+retry+timeout. It is not a verdict
+// about the proxy: nothing was measured.
+var ErrProbeInFlight = errors.New("delay probe for this tag is already in flight")
+
 // CheckOne runs a single delay test for `tag` and publishes the result.
 // Returns the delay in ms (0 on timeout). Errors from Clash are normalized
-// to (0, nil) since they represent timeouts from the UI's perspective.
+// to (0, nil) since they represent timeouts from the UI's perspective;
+// so is an in-flight probe, because the card that asked will be updated
+// by the probe already running. On-demand callers that must tell the two
+// apart (MCP) use Probe.
 func (d *DelayChecker) CheckOne(ctx context.Context, tag string) (int, error) {
+	delay, err := d.Probe(ctx, tag)
+	if errors.Is(err, ErrProbeInFlight) {
+		return 0, nil
+	}
+	return delay, err
+}
+
+// Probe is CheckOne that says so when it measured nothing: a probe for
+// the tag already in flight yields ErrProbeInFlight instead of the 0 that
+// also means "timed out".
+func (d *DelayChecker) Probe(ctx context.Context, tag string) (int, error) {
 	d.mu.Lock()
 	if d.inflight[tag] {
 		d.mu.Unlock()
-		return 0, nil
+		return 0, ErrProbeInFlight
 	}
 	d.inflight[tag] = true
 	d.mu.Unlock()
@@ -152,8 +199,16 @@ func (d *DelayChecker) Check(ctx context.Context) {
 // Run blocks until ctx is cancelled, calling Check every `interval`.
 // First tick runs immediately so the UI gets data before the first minute
 // elapses.
+// Здесь гейт ПОЛНЫЙ, а не разрежение (в отличие от матрицы и sysfs-поллера):
+// единственный выход проверки — SSE-событие singbox:delay, ни истории, ни
+// решений на её результате не висит. При закрытой панели тик измерял бы
+// задержку каждого выхода и каждого активного тега подписки — по исходящему
+// запросу через КАЖДЫЙ прокси в минуту — и выбрасывал результат.
+//
+// Задержка появления данных не выросла: свежеоткрытая панель и раньше ждала
+// ближайшего тика, потому что снимка тут нет, только пуш.
 func (d *DelayChecker) Run(ctx context.Context) {
-	if ctx.Err() == nil {
+	if ctx.Err() == nil && !d.nobodyWatching() {
 		d.Check(ctx)
 	}
 	ticker := time.NewTicker(d.interval)
@@ -163,6 +218,9 @@ func (d *DelayChecker) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if d.nobodyWatching() {
+				continue
+			}
 			d.Check(ctx)
 		}
 	}

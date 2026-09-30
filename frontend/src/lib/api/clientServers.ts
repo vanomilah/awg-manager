@@ -8,6 +8,7 @@ import type {
 	ManagedServerDriftResponse,
 	ManagedServerRestoreResponse,
 	ManagedServerStats,
+	PeerPresets,
 	RestoreOptions,
 	UpdateManagedPeerRequest,
 	UpdateManagedServerRequest,
@@ -111,6 +112,13 @@ export class ServersClient extends SystemClient {
 		return this.request(`/servers/config?name=${encodeURIComponent(name)}`);
 	}
 
+	// Снимок /servers/all разово, без подписки на polling-стор: страницам,
+	// которым нужен разовый ответ (кто из интерфейсов — сервер), интервал
+	// опроса не нужен.
+	async getAllServers(): Promise<import('$lib/stores/servers').ServersSnapshot> {
+		return this.request('/servers/all');
+	}
+
 	async markServerInterface(name: string): Promise<import('$lib/stores/servers').ServersSnapshot> {
 		return this.request(`/servers/mark?name=${encodeURIComponent(name)}`, {
 			method: 'POST'
@@ -196,7 +204,15 @@ export class ServersClient extends SystemClient {
 
 	async addSystemServerPeer(
 		serverId: string,
-		data: { description: string; tunnelIP: string }
+		// dns — резолвер пира для .conf (#933); пусто = LAN-адрес роутера.
+		// clientAllowedIPs/remoteSubnets — сети клиента (#713).
+		data: {
+			description: string;
+			tunnelIP: string;
+			dns?: string;
+			clientAllowedIPs?: string;
+			remoteSubnets?: string[];
+		}
 	): Promise<import('$lib/stores/servers').ServersSnapshot> {
 		return this.request(`/servers/${encodeURIComponent(serverId)}/peers`, {
 			method: 'POST',
@@ -207,12 +223,27 @@ export class ServersClient extends SystemClient {
 	async updateSystemServerPeer(
 		serverId: string,
 		pubkey: string,
-		data: { description: string; tunnelIP: string }
+		// signature омитим — сигнатура пира не трогается; прислали — заменяет
+		// все пять полей и профиль.
+		data: {
+			description: string;
+			tunnelIP: string;
+			dns?: string;
+			signature?: { profile: string; i1: string; i2: string; i3: string; i4: string; i5: string };
+			clientAllowedIPs?: string;
+			remoteSubnets?: string[];
+		}
 	): Promise<import('$lib/stores/servers').ServersSnapshot> {
 		return this.request(`/servers/${encodeURIComponent(serverId)}/peers/${encodeURIComponent(pubkey)}`, {
 			method: 'PUT',
 			body: JSON.stringify(data)
 		});
+	}
+
+	/** Пресеты поля «AllowedIPs клиента»; dns — как введён в форме (пусто — умолчание бэкенда). */
+	async getSystemServerPeerPresets(serverId: string, dns: string): Promise<PeerPresets> {
+		const q = dns ? `?dns=${encodeURIComponent(dns)}` : '';
+		return this.request(`/servers/${encodeURIComponent(serverId)}/peers/presets${q}`);
 	}
 
 	async deleteSystemServerPeer(
@@ -235,9 +266,11 @@ export class ServersClient extends SystemClient {
 		});
 	}
 
-	async getSystemServerPeerConf(serverId: string, pubkey: string): Promise<string> {
+	/** endpointHost — хост Endpoint вместо WAN/KeenDNS (прокси-обвязки шлют 127.0.0.1). */
+	async getSystemServerPeerConf(serverId: string, pubkey: string, endpointHost = ''): Promise<string> {
+		const q = endpointHost ? `?endpoint=${encodeURIComponent(endpointHost)}` : '';
 		const res = await this.request<{ conf: string }>(
-			`/servers/${encodeURIComponent(serverId)}/peers/${encodeURIComponent(pubkey)}/conf`
+			`/servers/${encodeURIComponent(serverId)}/peers/${encodeURIComponent(pubkey)}/conf${q}`
 		);
 		return res.conf;
 	}
@@ -335,6 +368,11 @@ export class ServersClient extends SystemClient {
 		});
 	}
 
+	async getManagedPeerPresets(serverId: string, dns: string): Promise<PeerPresets> {
+		const q = dns ? `?dns=${encodeURIComponent(dns)}` : '';
+		return this.request(`/managed-servers/${encodeURIComponent(serverId)}/peers/presets${q}`);
+	}
+
 	async deleteManagedPeer(serverId: string, pubkey: string): Promise<import('$lib/stores/servers').ServersSnapshot> {
 		return this.request(`/managed-servers/${encodeURIComponent(serverId)}/peers/${encodeURIComponent(pubkey)}`, {
 			method: 'DELETE'
@@ -348,8 +386,10 @@ export class ServersClient extends SystemClient {
 		});
 	}
 
-	async getManagedPeerConf(serverId: string, pubkey: string): Promise<string> {
-		const res = await this.request<{ conf: string }>(`/managed-servers/${encodeURIComponent(serverId)}/peers/${encodeURIComponent(pubkey)}/conf`);
+	/** endpointHost — хост Endpoint вместо WAN/KeenDNS (прокси-обвязки шлют 127.0.0.1). */
+	async getManagedPeerConf(serverId: string, pubkey: string, endpointHost = ''): Promise<string> {
+		const q = endpointHost ? `?endpoint=${encodeURIComponent(endpointHost)}` : '';
+		const res = await this.request<{ conf: string }>(`/managed-servers/${encodeURIComponent(serverId)}/peers/${encodeURIComponent(pubkey)}/conf${q}`);
 		return res.conf;
 	}
 

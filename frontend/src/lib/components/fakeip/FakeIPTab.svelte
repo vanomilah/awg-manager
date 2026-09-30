@@ -136,7 +136,7 @@
 			{engineState}
 			wanAutoDetect={$settings?.wanAutoDetect ?? true}
 			wanInterface={$settings?.wanInterface}
-			fakeipStack={$settings?.fakeipStack ?? 'gvisor'}
+			fakeipStack={$settings?.fakeipStack ?? ''}
 			fakeipIface={$status?.fakeipIface}
 			onRestart={handleRestart}
 		>
@@ -163,7 +163,7 @@
 				wanAutoDetect={$settings?.wanAutoDetect ?? true}
 				wanInterface={$settings?.wanInterface}
 				snifferEnabled={$settings?.snifferEnabled ?? false}
-				fakeipStack={$settings?.fakeipStack ?? 'gvisor'}
+				fakeipStack={$settings?.fakeipStack ?? ''}
 				fakeipPool4={$settings?.fakeipPool4}
 				fakeipPool6={$settings?.fakeipPool6}
 				fakeipMtu={$settings?.fakeipMtu}
@@ -228,7 +228,7 @@
 			<!--
 				«Соединения»-чип по мокапу page-connections = ВЕРБАТИМ текущий
 				sb-router connections-вью (футер мокапа: «как в текущем sb-router-вью»).
-				Переиспользуем ConnectionsSubTab — свой Clash WS, totals, разбивка по
+				Переиспользуем ConnectionsSubTab — общий с оболочкой поток Clash, totals, разбивка по
 				outbound/host/client, фильтры/поиск, таблица с kill. Живой блок:
 				при остановленном движке / clash-down — стандартная заглушка.
 			-->

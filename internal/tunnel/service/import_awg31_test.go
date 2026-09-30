@@ -3,9 +3,14 @@ package service
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
+	"github.com/hoaxisr/awg-manager/internal/storage"
+	"github.com/hoaxisr/awg-manager/internal/tunnel"
 )
 
 // .conf с HeaderProtectionKey проходил мимо ValidateAWG3: гейт стоял только на
@@ -30,10 +35,10 @@ AllowedIPs = 0.0.0.0/0
 }
 
 func TestImportRejectsBadHeaderProtectionKey(t *testing.T) {
-	s, tunnels, _ := serviceForCreate(t, &createOp{})
+	s, tunnels, _ := serviceForImport(t)
 
 	// 31 байт вместо 32 — pubKeyToHex ниже по течению молча вернёт "".
-	_, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZQ==", 12), "t", "kernel")
+	_, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZQ==", 12), "t", "kernel", ImportLink{})
 	if err == nil {
 		t.Fatal("импорт с битым HeaderProtectionKey обязан провалиться")
 	}
@@ -46,18 +51,73 @@ func TestImportRejectsBadHeaderProtectionKey(t *testing.T) {
 }
 
 func TestImportRejectsShortPaddingWithHeaderProtection(t *testing.T) {
-	s, _, _ := serviceForCreate(t, &createOp{})
+	s, _, _ := serviceForImport(t)
 
-	_, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", 11), "t", "kernel")
+	_, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", 11), "t", "kernel", ImportLink{})
 	if err == nil {
 		t.Fatal("импорт с S1 < 12 при заданном HeaderProtectionKey обязан провалиться")
 	}
 }
 
 func TestImportAcceptsValidAWG31Conf(t *testing.T) {
-	s, _, _ := serviceForCreate(t, &createOp{})
+	s, _, _ := serviceForImport(t)
 
-	if _, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", 12), "t", "kernel"); err != nil {
+	if _, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", 12), "t", "kernel", ImportLink{}); err != nil {
 		t.Fatalf("валидный AWG 3.1 .conf обязан импортироваться: %v", err)
 	}
+}
+
+// PF21: связь прокси-подсистемы обязана лежать в записи СРАЗУ после Import —
+// значит она уехала в тот же store.Create, что и сам туннель. Дописанная
+// вторым шагом, она оставляла окно, в котором туннель уже создан, а уборка
+// связанных его не видит: такой сироты не снять уже ничем, кроме ручного
+// удаления карточки.
+func TestImportWritesOwnershipLinkWithTheRecord(t *testing.T) {
+	s, _, _ := serviceForImport(t)
+
+	res, err := s.Import(context.Background(), awg31Conf("MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", 12), "t", "kernel",
+		ImportLink{WdttClientID: "  default  "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.store.Get(res.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Подрезка входа здесь же: связь ищут строгим сравнением
+	// (`proxyTunnelLinkedTo`), и " default " не совпал бы с "default".
+	if stored.WdttClientID != "default" {
+		t.Fatalf("связь не легла в запись: %q", stored.WdttClientID)
+	}
+	if stored.FreeTurnClientID != "" {
+		t.Fatalf("чужая связь проставлена: %q", stored.FreeTurnClientID)
+	}
+}
+
+// serviceForImport — сервис над временным стором и каталогом .conf; оператор —
+// голый MockOperator: импорт ресурсы NDMS не создаёт, их поднимает Start.
+func serviceForImport(t *testing.T) (*ServiceImpl, string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	confs := filepath.Join(dir, "confs")
+	old := tunnel.ConfDir
+	tunnel.ConfDir = confs
+	t.Cleanup(func() { tunnel.ConfDir = old })
+
+	tunnels := filepath.Join(dir, "tunnels")
+	store := storage.NewAWGTunnelStoreWithLockDir(tunnels, filepath.Join(dir, "locks"))
+	// Пул номеров OpkgTun обязателен на пути OS5: без него выдача ID
+	// отказывается работать намеренно. Харнесс подставляет пустую занятость —
+	// в тестах на роутер не ходим, — но состав из одного источника настоящий.
+	pool := opkgtun.NewPool(16, opkgtun.Source{
+		Name: "тест",
+		Read: func(context.Context) (opkgtun.Taken, error) { return nil, nil },
+	})
+	svc := &ServiceImpl{
+		store:          store,
+		legacyOperator: &MockOperator{},
+		state:          NewMockStateManager(),
+	}
+	svc.SetOpkgTunPool(pool, func() bool { return true })
+	return svc, tunnels, confs
 }

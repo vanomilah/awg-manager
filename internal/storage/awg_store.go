@@ -2,7 +2,6 @@ package storage
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/sys/lock"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
+	"github.com/hoaxisr/awg-manager/internal/tunnelid"
 )
 
 // ErrNotFound — записи туннеля нет. Им оборачивается отсутствие файла в Get,
@@ -117,13 +118,17 @@ func (s *AWGTunnelStore) List() ([]AWGTunnel, error) {
 // гейт посева реестра выходов, где временно нечитаемый каталог выглядел бы как
 // «терять нечего». Отсутствие каталога — законное «пусто».
 //
-// ГРАНИЦА, которую важно понимать: от ПОРЧИ JSON строгое чтение в пути выдачи
-// идентификатора не защищает. Там первым отрабатывает List() и уносит битый
-// файл в карантин переименованием — к моменту сбора занятости файла уже нет, и
-// номер честно свободен. Это не дыра, а работающий по замыслу карантин:
-// повреждённая запись выводится из обращения, о чём пользователю сообщают.
+// ГРАНИЦА, которую важно понимать: от ПОРЧИ JSON строгое чтение не защищает и
+// защищать не должно — побочных действий у него нет вовсе, и это свойство, на
+// которое опирается второй потребитель (зеркало реестра выходов: «не смогли
+// перечислить» ≠ «записей нет», требование 20). Карантин повреждённой записи
+// делает прощающий List(), и на пути выдачи идентификатора он зовётся ПЕРВЫМ —
+// см. service.kernelID. К моменту сбора занятости битого файла уже нет, и
+// номер честно свободен.
+//
 // Строгое чтение ловит другой класс — ВРЕМЕННУЮ нечитаемость файла, которую
-// List() пропускает молча и без переименования.
+// List() пропускает молча и без переименования: номер такой записи выглядел бы
+// свободным, и его выдали бы второй раз.
 //
 // МИГРАЦИЙ ЗДЕСЬ НЕТ — в отличие от List() (DefaultRoute и всё, что добавят
 // после). Потребители читают только Backend, ID и Interface.Address, которых
@@ -159,9 +164,24 @@ func (s *AWGTunnelStore) ListStrict() ([]AWGTunnel, error) {
 	return tunnels, nil
 }
 
+// tunnelPath maps an id to its file. Malformed ids (anything with a
+// separator or a dot, see tunnelid) are refused here rather than trusted
+// from the caller: the REST layer validates, but the MCP layer and any
+// future caller must not be able to read <dataDir>/settings.json through
+// "../settings". A refused id reads as "no such tunnel".
+func (s *AWGTunnelStore) tunnelPath(id string) (string, error) {
+	if !tunnelid.Valid(id) {
+		return "", fmt.Errorf("%w: %q is not a valid tunnel id", ErrNotFound, id)
+	}
+	return filepath.Join(s.dir, id+".json"), nil
+}
+
 // Get returns a single tunnel by ID.
 func (s *AWGTunnelStore) Get(id string) (*AWGTunnel, error) {
-	path := filepath.Join(s.dir, id+".json")
+	path, err := s.tunnelPath(id)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -214,7 +234,10 @@ func (s *AWGTunnelStore) saveLocked(tunnel *AWGTunnel) error {
 	// Remove trailing newline added by Encode
 	data := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 
-	path := filepath.Join(s.dir, tunnel.ID+".json")
+	path, err := s.tunnelPath(tunnel.ID)
+	if err != nil {
+		return err
+	}
 	if err := AtomicWrite(path, data); err != nil {
 		return fmt.Errorf("write tunnel file: %w", err)
 	}
@@ -246,6 +269,9 @@ func (s *AWGTunnelStore) saveLocked(tunnel *AWGTunnel) error {
 // Затирать запись целиком (*t = снимок) запрещено — это ровно тот дефект,
 // ради которого транзакция и заведена.
 func (s *AWGTunnelStore) Update(id string, mut func(*AWGTunnel) error) error {
+	if _, err := s.tunnelPath(id); err != nil {
+		return err
+	}
 	lk, err := lock.WaitLockDir(s.lockName, s.lockDir, s.timeout)
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
@@ -277,6 +303,9 @@ func (s *AWGTunnelStore) Create(tunnel *AWGTunnel) error {
 	if tunnel.ID == "" {
 		return fmt.Errorf("create tunnel: empty ID")
 	}
+	if _, err := s.tunnelPath(tunnel.ID); err != nil {
+		return fmt.Errorf("create tunnel: %w", err)
+	}
 
 	lk, err := lock.WaitLockDir(s.lockName, s.lockDir, s.timeout)
 	if err != nil {
@@ -293,13 +322,16 @@ func (s *AWGTunnelStore) Create(tunnel *AWGTunnel) error {
 
 // Delete removes tunnel file.
 func (s *AWGTunnelStore) Delete(id string) error {
+	path, err := s.tunnelPath(id)
+	if err != nil {
+		return err
+	}
 	lk, err := lock.WaitLockDir(s.lockName, s.lockDir, s.timeout)
 	if err != nil {
 		return fmt.Errorf("acquire lock: %w", err)
 	}
 	defer lk.Unlock()
 
-	path := filepath.Join(s.dir, id+".json")
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("tunnel not found: %s", id)
@@ -316,103 +348,135 @@ func (s *AWGTunnelStore) Delete(id string) error {
 
 // Exists checks if tunnel exists.
 func (s *AWGTunnelStore) Exists(id string) bool {
-	path := filepath.Join(s.dir, id+".json")
-	_, err := os.Stat(path)
+	path, err := s.tunnelPath(id)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
 	return err == nil
 }
 
 const (
-	// OS 5.x: карта числовых индексов туннелей:
-	//   OpkgTun0..9   — зарезервированы под fakeip-движок sing-box
-	//                   (см. internal/singbox/router, tunNDMSName);
-	//   OpkgTun10..16 — kernel-AWG туннели (awg10..awg16); потолок 16 —
-	//                   прошивочный лимит NDMS на индекс OpkgTun;
-	//   awg20+        — NativeWG: чистые storage-ключи, в OpkgTun НЕ
-	//                   отображаются (NDMS-интерфейс — WireguardN по
-	//                   NWGIndex, kernel-интерфейс — nwgN).
-	os5MinIndex = 10
-	os5MaxIndex = 16
-	// os5NWGMinIndex — начало диапазона ID для NativeWG на OS 5.x. Сверху
-	// диапазон не ограничен: реальную ёмкость задают индексы Wireguard0..99
-	// в NDMS (nwg.MaxTunnels) и слоты awg_proxy (16 одновременных туннелей
-	// с обфускацией на прошивках без нативного ASC), а не диапазон ID.
+	// os5NWGMinIndex — исторический пол диапазона ID для NativeWG на OS 5.x.
+	// Действующий пол считает nwgFloor: он не даёт диапазонам пересечься с
+	// номерами OpkgTun. Сверху диапазон не ограничен: реальную ёмкость задают
+	// индексы Wireguard0..99 в NDMS (nwg.MaxTunnels) и слоты awg_proxy
+	// (16 одновременных туннелей с обфускацией на прошивках без нативного
+	// ASC), а не диапазон ID.
 	// Легаси NativeWG-туннели, созданные до разделения диапазонов, могут
 	// занимать awg10..awg16 — это допустимо, kernel-аллокатор просто
 	// пропускает занятые ими номера (миграция не выполняется).
 	os5NWGMinIndex = 20
 )
 
-// NextAvailableID finds the next available tunnel ID for the given backend
-// ("kernel" | "nativewg"; любое другое значение, включая пустое, трактуется
-// как kernel).
-// - OS 5.x, kernel:   awg10..awg16 → OpkgTun10..OpkgTun16 (прошивочный лимит NDMS — 16)
-// - OS 5.x, nativewg: awg20, awg21, ... (в OpkgTun не отображаются, см. os5NWGMinIndex)
-// - OS 4.x: awgm0, awgm1, ... (uses 'm' prefix, no NDMS; backend не различается)
-// occupancy — внешняя занятость номеров OpkgTun (живые интерфейсы плюс пины
-// чужих подсистем). Спрашивается ТОЛЬКО в kernel-ветке на OS 5.x: nativewg
-// живёт как Wireguard<N>, а на 4.x интерфейсов OpkgTun нет вовсе — платить
-// отказом за источник, который им не нужен, они не должны.
-func (s *AWGTunnelStore) NextAvailableID(ctx context.Context, backend string, occupancy OpkgTunPins) (string, error) {
+// NextAvailableID finds the next available tunnel ID for the given backend.
+//
+// Осталось два случая, и оба — не про пул номеров OpkgTun:
+//   - OS 4.x: awgm0, awgm1, ... (префикс 'm', NDMS нет; backend не различается)
+//   - OS 5.x, nativewg: awg<N> начиная с nwgFloor — awg20 на mips, awg50 на
+//     arm/arm64 (живёт как Wireguard<N>, интерфейс OpkgTun не создаёт)
+//
+// Kernel-туннели на OS 5.x сюда больше не приходят: их идентификатор
+// ОДНОВРЕМЕННО является номером интерфейса, а номер выдаёт общий пул
+// (internal/opkgtun). Отдельная выдача здесь означала бы окно между чтением
+// занятости и записью на диск, в которое номер уводит соседняя подсистема
+// (#891), — поэтому kernel на OS 5.x получает отказ, а не «запасной» номер.
+func (s *AWGTunnelStore) NextAvailableID(backend string) (string, error) {
 	tunnels, err := s.List()
 	if err != nil {
 		return "", err
 	}
-	return nextAvailableID(tunnels, backend, osdetect.Is5(), occupancy, ctx)
+	return nextAvailableID(tunnels, backend, osdetect.Is5(), opkgtun.CeilingForHost())
+}
+
+// NextAvailableOS4ID — идентификатор awgm<N> для прошивок без OpkgTun.
+//
+// Отдельным методом, а не аргументом «это 4.x» у NextAvailableID: версию ОС
+// там определяет глобальный osdetect, а на этом пути её уже определил
+// вызывающий своим предикатом. Двух решающих об одном и том же быть не должно —
+// разойдясь, они дадут awgm-идентификатор на пятёрке или отказ на четвёрке.
+func (s *AWGTunnelStore) NextAvailableOS4ID() (string, error) {
+	tunnels, err := s.List()
+	if err != nil {
+		return "", err
+	}
+	// Потолок не при чём: на 4.x интерфейсов OpkgTun нет вовсе, и ветка,
+	// которая его читает, недостижима.
+	return nextAvailableID(tunnels, "", false, 0)
+}
+
+// nwgFloor — первый идентификатор, который выдаётся NativeWG.
+//
+// Диапазоны РАЗВЕДЕНЫ, а не просто «не совпадают по факту»: идентификатор
+// kernel-туннеля awgN — это и номер интерфейса OpkgTunN, поэтому его выбирает
+// пул, а идентификатор NativeWG — только ключ хранилища, и его выбирают здесь.
+// Пересекись диапазоны, и два выбирающих спорили бы за один ключ: пул видит
+// записи на диске, но открытую резервацию kernel'а этот перебор не видит, и
+// проигравший получал бы «tunnel already exists» без ретрая (F317).
+//
+// Поэтому пол поднимается выше потолка OpkgTun этой архитектуры. Исторический
+// пол 20 сохраняется, пока он и так выше: на mips потолок 16, и ничего не
+// меняется; на arm потолок 49, и до #891 kernel туда не заходил, а теперь
+// заходит.
+//
+// Разведение не отменяет вето по занятым идентификаторам у пула: легаси
+// NativeWG мог осесть в kernel-диапазоне до разделения, и его ключ по-прежнему
+// занят.
+func nwgFloor(opkgTunCeiling int) int {
+	return max(os5NWGMinIndex, opkgTunCeiling+1)
 }
 
 // nextAvailableID — чистая функция выбора ID (вынесена из NextAvailableID
-// для тестируемости без глобального osdetect-состояния).
-func nextAvailableID(tunnels []AWGTunnel, backend string, is5 bool, occupancy OpkgTunPins, ctx context.Context) (string, error) {
-	existing := make(map[int]bool)
+// для тестируемости без глобального osdetect-состояния). Потолок OpkgTun
+// приходит аргументом, а не из runtime.GOARCH, чтобы тест не зависел от
+// машины, на которой его запустили.
+func nextAvailableID(tunnels []AWGTunnel, backend string, is5 bool, opkgTunCeiling int) (string, error) {
+	existing := map[int]bool{}
 
 	if is5 {
-		// Занятые номера собираются по ВСЕМ туннелям независимо от backend —
-		// так диапазоны не коллидируют между собой (легаси NativeWG на awg12
-		// продолжает занимать номер в kernel-диапазоне, и наоборот).
+		if backend != "nativewg" {
+			return "", fmt.Errorf("kernel-туннель на OS 5.x получает номер в пуле OpkgTun, а не здесь")
+		}
+		// Занятые ИДЕНТИФИКАТОРЫ собираются по ВСЕМ туннелям независимо от
+		// backend: awgN — ключ хранилища, и двух записей с одним ключом быть
+		// не может. Легаси NativeWG на awg12 поэтому продолжает занимать
+		// идентификатор в kernel-диапазоне (номер OpkgTun он при этом не
+		// занимает — OpkgTunIndex у него false), и наоборот.
 		for _, t := range tunnels {
-			if len(t.ID) > 3 && t.ID[:3] == "awg" {
-				if num, err := strconv.Atoi(t.ID[3:]); err == nil {
-					existing[num] = true
-				}
+			if num, ok := AWGIdentifierNum(t.ID); ok {
+				existing[num] = true
 			}
 		}
-		if backend == "nativewg" {
-			for i := os5NWGMinIndex; ; i++ {
-				if !existing[i] {
-					return "awg" + strconv.Itoa(i), nil
-				}
-			}
-		}
-		// Дальше — kernel: его идентификатор ОДНОВРЕМЕННО является номером
-		// интерфейса OpkgTun, поэтому к занятым идентификаторам добавляется
-		// занятость номеров, собранная снаружи. Отсутствие источника — не
-		// «занятых нет», а незаконченная проводка: молча вернуться к одному
-		// лишь хранилищу значит выдать номер, который уже кем-то занят.
-		if occupancy == nil {
-			return "", fmt.Errorf("источник занятости OpkgTun не задан")
-		}
-		taken, err := occupancy(ctx)
-		if err != nil {
-			return "", fmt.Errorf("занятость OpkgTun: %w", err)
-		}
-		for i := os5MinIndex; i <= os5MaxIndex; i++ {
-			if !existing[i] && !taken[i] {
+		for i := nwgFloor(opkgTunCeiling); ; i++ {
+			if !existing[i] {
 				return "awg" + strconv.Itoa(i), nil
 			}
 		}
-		return "", fmt.Errorf("maximum number of tunnels reached (%d)", os5MaxIndex-os5MinIndex+1)
-	} else {
-		for _, t := range tunnels {
-			if len(t.ID) > 4 && t.ID[:4] == "awgm" {
-				if num, err := strconv.Atoi(t.ID[4:]); err == nil {
-					existing[num] = true
-				}
-			}
-		}
-		for i := 0; ; i++ {
-			if !existing[i] {
-				return "awgm" + strconv.Itoa(i), nil
+	}
+	for _, t := range tunnels {
+		if rest, ok := strings.CutPrefix(t.ID, "awgm"); ok {
+			if num, err := strconv.Atoi(rest); err == nil {
+				existing[num] = true
 			}
 		}
 	}
+	for i := 0; ; i++ {
+		if !existing[i] {
+			return "awgm" + strconv.Itoa(i), nil
+		}
+	}
+}
+
+// AWGIdentifierNum — номер из идентификатора вида "awg<цифры>".
+//
+// Разбор один на проект (opkgtun.Digits): собственный принимал бы "awg-5" как
+// −5, потому что это принимает strconv.Atoi, а ручка создания такой
+// идентификатор пропускает (tunnelid.Valid). Расхождение двух разборов имени и
+// есть содержание #891.
+func AWGIdentifierNum(id string) (int, bool) {
+	rest, ok := strings.CutPrefix(id, "awg")
+	if !ok {
+		return 0, false
+	}
+	return opkgtun.Digits(rest)
 }

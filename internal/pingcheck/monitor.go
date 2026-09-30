@@ -10,10 +10,20 @@ import (
 )
 
 const (
-	handshakeTimeout  = 30 * time.Second
-	handshakePollFreq = 2 * time.Second
-	maxBackoff        = 30 * time.Minute
+	handshakeTimeout = 30 * time.Second
+	maxBackoff       = 30 * time.Minute
 )
+
+// handshakePollFreq — период опроса wg в waitHandshake; тесты ужимают.
+var handshakePollFreq = 2 * time.Second
+
+// runCmd — шов над exec.Run для команд лечения (`ip link set`, `awg set`); в
+// тестах подменяется рекордером, в проде — exec.Run.
+var runCmd = exec.Run
+
+// resolveEndpoint — шов над DNS-резолвом endpoint'а перед лечением; тесты
+// подменяют, прод зовёт tryResolveEndpoint.
+var resolveEndpoint = tryResolveEndpoint
 
 // runMonitorLoop runs the simple health sensor loop for a kernel tunnel.
 func (s *Service) runMonitorLoop(m *tunnelMonitor) {
@@ -28,7 +38,7 @@ func (s *Service) runMonitorLoop(m *tunnelMonitor) {
 
 	// Run the first check immediately after monitor start.
 	// This avoids waiting up to one full interval after enabling monitoring.
-	s.sensorTick(m, config)
+	s.lockedTick(m, config)
 
 	interval := time.Duration(config.Interval) * time.Second
 	ticker := time.NewTicker(interval)
@@ -42,7 +52,7 @@ func (s *Service) runMonitorLoop(m *tunnelMonitor) {
 				return
 			}
 			m.failThreshold = config.FailThreshold
-			s.sensorTick(m, config)
+			s.lockedTick(m, config)
 
 		case <-m.stopCh:
 			return
@@ -50,6 +60,14 @@ func (s *Service) runMonitorLoop(m *tunnelMonitor) {
 			return
 		}
 	}
+}
+
+// lockedTick — sensorTick под tickMu монитора (цикл монитора; check-now
+// берёт тот же замок через TryLock).
+func (s *Service) lockedTick(m *tunnelMonitor, config *checkConfig) {
+	m.tickMu.Lock()
+	defer m.tickMu.Unlock()
+	s.sensorTick(m, config)
 }
 
 // sensorTick performs one check cycle.
@@ -71,6 +89,25 @@ func (s *Service) sensorTick(m *tunnelMonitor, config *checkConfig) {
 		m.failCount = 0
 		m.restartCount = 0
 		s.mu.Unlock()
+
+		// Публикуем на каждом успехе, как NWG-монитор: dnsroute-фейловер
+		// снимает туннель с failedSet только по «pass», а toggle отдаёт «pass»
+		// лишь при рукопожатии в своём окне. Поднялся позже — иначе списки
+		// висят на backup до рестарта демона (#855).
+		if s.bus != nil {
+			s.bus.Publish("pingcheck:state", events.PingCheckStateEvent{
+				TunnelID: m.tunnelID,
+				Status:   "pass",
+			})
+			// И подсказку инвалидации — тоже на КАЖДОЙ проверке. Прежний
+			// комментарий «состояние карточки не менялось» был неверен:
+			// страница мониторинга показывает время последней проверки,
+			// задержку и счётчики, а они меняются каждый раз. Из-за этого
+			// странице пришлось вернуть таймер опроса (F354); теперь он не
+			// нужен — обновление приходит ровно тогда, когда есть что
+			// показать (F364).
+			s.bus.PublishInvalidated(events.ResourcePingcheck, "check")
+		}
 
 		s.addLogEntry(LogEntry{
 			Timestamp:  now,
@@ -101,6 +138,14 @@ func (s *Service) sensorTick(m *tunnelMonitor, config *checkConfig) {
 		Threshold:  config.FailThreshold,
 		Backend:    "kernel",
 	})
+
+	// Неудачная проверка меняет ровно те же поля карточки, что и удачная:
+	// время последней проверки, задержку и счётчик отказов «2 из 3».
+	// Публикуем и здесь — иначе странице мониторинга снова понадобился бы
+	// таймер (F364).
+	if s.bus != nil {
+		s.bus.PublishInvalidated(events.ResourcePingcheck, "check")
+	}
 
 	if failCount < config.FailThreshold {
 		return
@@ -145,13 +190,29 @@ func (s *Service) doLinkToggle(m *tunnelMonitor, config *checkConfig, ifaceName 
 	// 1. Re-resolve DNS endpoint before link down (while DNS may still work)
 	var newEndpoint string
 	if stored != nil {
-		newEndpoint = tryResolveEndpoint(stored.Peer.Endpoint)
+		newEndpoint = resolveEndpoint(stored.Peer.Endpoint)
 	}
+
+	// Канал остановки снимаем под локом ДО лечения: StopMonitoring закрывает
+	// его и обнуляет поле под s.mu, а чтение поля из середины лечения могло
+	// застать nil — и ожидание рукопожатия с backoff шли бы до конца.
+	s.mu.RLock()
+	stopCh := m.stopCh
+	s.mu.RUnlock()
+	if stopCh == nil {
+		return
+	}
+
+	// Штамп рукопожатия ДО down: ядро (wireguard и amneziawg, стенд
+	// 2026-09-06) сохраняет latest-handshake через down/up, а ключи сессии
+	// сбрасывает — трафик пойдёт только после НОВОГО рукопожатия. «Штамп
+	// моложе N минут» после up отдавал ложное «восстановлено».
+	baseline := s.lastHandshake(ifaceName)
 
 	// 2. Link down — NDMS switches to fallback immediately
 	//    conf: running preserved (user intent intact), link: pending
 	linkDown := true
-	if _, err := exec.Run(s.ctx, "/opt/sbin/ip", "link", "set", ifaceName, "down"); err != nil {
+	if _, err := runCmd(s.ctx, "/opt/sbin/ip", "link", "set", ifaceName, "down"); err != nil {
 		s.logWarn(m.tunnelID, "ip link set down failed: "+err.Error())
 		linkDown = false
 	}
@@ -161,22 +222,26 @@ func (s *Service) doLinkToggle(m *tunnelMonitor, config *checkConfig, ifaceName 
 	//    `awg set` panics the kernel when the interface is gone, and this path
 	//    runs exactly when connectivity is lost (prebuilt/kmod/README.md).
 	if linkDown && newEndpoint != "" && stored != nil {
-		exec.Run(s.ctx, "/opt/sbin/awg", "set", ifaceName,
+		runCmd(s.ctx, "/opt/sbin/awg", "set", ifaceName,
 			"peer", stored.Peer.PublicKey,
 			"endpoint", newEndpoint)
 	}
 
 	// 4. Link up — WireGuard re-initiates handshake
-	if _, err := exec.Run(s.ctx, "/opt/sbin/ip", "link", "set", ifaceName, "up"); err != nil {
+	if _, err := runCmd(s.ctx, "/opt/sbin/ip", "link", "set", ifaceName, "up"); err != nil {
 		s.logWarn(m.tunnelID, "ip link set up failed: "+err.Error())
 	}
 
 	// 5. Wait for handshake (interruptible by monitor stop signal)
-	ok := s.waitHandshake(ifaceName, m.stopCh)
+	ok := s.waitHandshake(ifaceName, baseline, stopCh)
 
 	s.mu.Lock()
 	m.restartCount++
 	m.failCount = 0
+	if ok {
+		// Иначе статус «recovering» висел бы до следующего тика.
+		m.lastResult = &CheckResult{Success: true}
+	}
 	restartCount := m.restartCount
 	s.mu.Unlock()
 
@@ -217,7 +282,7 @@ func (s *Service) doLinkToggle(m *tunnelMonitor, config *checkConfig, ifaceName 
 		s.logInfo(m.tunnelID, fmt.Sprintf("Backoff %v before next cycle", backoff))
 		select {
 		case <-time.After(backoff):
-		case <-m.stopCh:
+		case <-stopCh:
 		case <-s.ctx.Done():
 		}
 	}
@@ -243,10 +308,25 @@ func tryResolveEndpoint(endpoint string) string {
 	return net.JoinHostPort(ips[0], port)
 }
 
-// waitHandshake polls awg show for a fresh handshake after link toggle.
-// stopCh allows early exit when StopMonitoring is called during link toggle,
-// preventing the HTTP handler from blocking for up to 30 seconds.
-func (s *Service) waitHandshake(ifaceName string, stopCh <-chan struct{}) bool {
+// lastHandshake отдаёт точный штамп рукопожатия интерфейса (epoch-секунды
+// ядра). Если штамп прочитать не удалось, отдаёт текущую секунду: тогда
+// восстановлением считается только рукопожатие новее «сейчас» — ложный минус
+// безвреден (следующий успешный тик всё равно публикует pass), ложный плюс
+// по старому штампу — нет.
+func (s *Service) lastHandshake(ifaceName string) time.Time {
+	if s.wg != nil {
+		if hs, err := s.wg.LatestHandshake(s.ctx, ifaceName); err == nil {
+			return hs
+		}
+	}
+	return time.Now().Truncate(time.Second)
+}
+
+// waitHandshake polls awg show after link toggle for a handshake NEWER than
+// baseline (the stamp taken before link down). stopCh allows early exit when
+// StopMonitoring is called during link toggle, preventing the HTTP handler
+// from blocking for up to 30 seconds.
+func (s *Service) waitHandshake(ifaceName string, baseline time.Time, stopCh <-chan struct{}) bool {
 	timeout := s.handshakeTimeout
 	if timeout <= 0 {
 		timeout = handshakeTimeout
@@ -261,11 +341,11 @@ func (s *Service) waitHandshake(ifaceName string, stopCh <-chan struct{}) bool {
 			if s.wg == nil {
 				continue
 			}
-			show, err := s.wg.Show(s.ctx, ifaceName)
+			hs, err := s.wg.LatestHandshake(s.ctx, ifaceName)
 			if err != nil {
 				continue
 			}
-			if show.HasRecentHandshake(3 * time.Minute) {
+			if !hs.IsZero() && hs.After(baseline) {
 				return true
 			}
 		case <-deadline:

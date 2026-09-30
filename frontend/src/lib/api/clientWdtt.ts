@@ -22,7 +22,6 @@ import {
 } from './proxyInstances';
 
 export type WdttDeleteClientResult = {
-	message?: string;
 	deletedTunnels?: string[];
 	tunnelErrors?: string[];
 };
@@ -50,6 +49,12 @@ export type WdttSaveServerResult = {
  * глушить надо именно этот код — «ошибка вообще» скрыла бы настоящие сбои.
  */
 export const WDTT_WG_NOT_READY = 'WDTT_WG_NOT_READY';
+
+/**
+ * Сервер выдал адрес, уже занятый другим туннелем (#869): туннель не создан,
+ * само не рассосётся — автозавод после этого кода останавливается.
+ */
+export const WDTT_WG_ADDRESS_CONFLICT = 'WDTT_WG_ADDRESS_CONFLICT';
 
 export class WdttClient extends FreeturnClient {
 	async getWdttConfig(): Promise<WdttConfig> {
@@ -90,19 +95,10 @@ export class WdttClient extends FreeturnClient {
 		return { id: view.id, name: view.name, config: toWdttClientConfig(view) };
 	}
 
-	/**
-	 * Удаление клиента: связанные AWG-туннели сносит своя ручка, удаление
-	 * инстанса их не трогает. Порядок «сначала связи, потом инстанс» —
-	 * уборщик ищет туннели по id ЖИВОЙ записи.
-	 */
+	/** Удаление клиента: связанные AWG-туннели уносит бэкенд тем же запросом. */
 	async deleteWdttClient(id: string): Promise<WdttDeleteClientResult> {
-		const cleared = await this.proxyClearLinkedTunnels('wdtt-client', id);
-		await this.proxyDelete('wdtt-client', id);
-		return {
-			message: cleared.message,
-			deletedTunnels: cleared.deletedTunnels,
-			tunnelErrors: cleared.tunnelErrors
-		};
+		const res = await this.proxyDelete('wdtt-client', id);
+		return { deletedTunnels: res.deletedTunnels, tunnelErrors: res.tunnelErrors };
 	}
 
 	async renameWdttClient(id: string, name: string): Promise<void> {

@@ -35,7 +35,7 @@
 		geoipFiles: string[];
 		maxelem: number;
 		saving: boolean;
-		initialTarget?: { kind: 'interface' | 'policy'; name: string };
+		initialTarget?: { kind: 'interface' | 'policy'; name: string; tunnelId?: string };
 		initialPreset?: CatalogPreset | null;
 		onpickcatalog?: () => void;
 		onsave: (payload: Partial<DnsRoute>) => void;
@@ -66,6 +66,11 @@
 	let cidrText = $state('');
 	let mode = $state<'interface' | 'policy'>('interface');
 	let tunnelId = $state('');
+	// Цель правила, не найденная в каталоге: показывается как есть, другой
+	// туннель вместо неё не подставляется (иначе сохранение молча перенесло
+	// бы правило, а снимок для isDirty совпал бы с подставленным).
+	// null — цель найдена; '' — цели у правила нет вовсе.
+	let unknownTarget = $state<string | null>(null);
 	let policyChoice = $state<'existing' | 'new'>('existing');
 	let existingPolicyName = $state('');
 	let newPolicyName = $state('');
@@ -105,6 +110,7 @@
 		geositePickerOpen = false;
 		geoipPickerOpen = false;
 		iconPickerOpen = false;
+		unknownTarget = null;
 		if (rule) {
 			name = rule.name;
 			iconUrl = rule.iconUrl;
@@ -139,13 +145,14 @@
 				newPolicyIfaces = [];
 			} else {
 				// HR interface-mode rules come back from the backend with
-				// route.interface = route.tunnelId = kernel iface name
-				// ("nwg0"), not our internal tunnel id ("awg10"). Resolve
+				// route.interface = kernel iface name ("nwg0"); route.tunnelId
+				// is `system:<id>` for system exits and the same kernel name
+				// otherwise, not our internal tunnel id ("awg10"). Resolve
 				// the select's value by matching any of those fields against
-				// every tunnel property so the dropdown shows the right
-				// option instead of blanking out. Also handle the
-				// reclassification case above where the iface name lived in
-				// hrPolicyName.
+				// every tunnel property. Also handle the reclassification
+				// case above where the iface name lived in hrPolicyName.
+				// No match — no silent fallback: the target is shown as
+				// unknown and save waits for an explicit choice.
 				const route = rule.routes?.[0];
 				const candidate = route?.tunnelId || route?.interface || rule.hrPolicyName || '';
 				const match = tunnels.find(
@@ -154,7 +161,8 @@
 						x.iface === candidate ||
 						x.name === candidate,
 				);
-				tunnelId = match?.id ?? tunnels[0]?.id ?? '';
+				tunnelId = match?.id ?? '';
+				if (!match) unknownTarget = route?.interface || candidate;
 			}
 			// Capture snapshot for isDirty
 			initialName = rule.name;
@@ -179,9 +187,15 @@
 			} else if (initialTarget?.kind === 'interface') {
 				mode = 'interface';
 				const t = tunnels.find(
-					(x) => x.id === initialTarget.name || x.name === initialTarget.name || x.iface === initialTarget.name,
+					(x) =>
+						x.id === initialTarget.tunnelId ||
+						x.id === initialTarget.name ||
+						x.name === initialTarget.name ||
+						x.iface === initialTarget.name,
 				);
-				tunnelId = t?.id ?? tunnels[0]?.id ?? '';
+				// Незнакомая цель — как при редактировании: без подстановки.
+				tunnelId = t?.id ?? '';
+				if (!t) unknownTarget = initialTarget.name;
 			} else {
 				mode = 'interface';
 				tunnelId = tunnels[0]?.id ?? '';
@@ -478,6 +492,11 @@
 
 		{#if mode === 'interface'}
 			<Dropdown bind:value={tunnelId} options={interfaceTunnelOpts} fullWidth />
+			{#if unknownTarget !== null && !tunnelId}
+				<div class="warn-text">
+					{unknownTarget ? `Цель: ${unknownTarget} (не найдена в списке)` : 'Цель правила не задана'} — выберите туннель
+				</div>
+			{/if}
 		{:else}
 			<div class="radio-block">
 				<label class="radio-option" class:active={policyChoice === 'existing'}>

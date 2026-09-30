@@ -111,9 +111,24 @@ func FreeTurnClientArgs(c FreeTurnClientConfig) []string {
 	}
 	str("-transport", c.Transport)
 	str("-mode", c.Mode)
-	flag("-bond", c.Bond)
+	if k := c.KCP; k != nil && c.Mode == "tcp" {
+		args = append(args,
+			"-kcp-nodelay", strconv.Itoa(k.NoDelay),
+			"-kcp-interval", strconv.Itoa(k.Interval),
+			"-kcp-resend", strconv.Itoa(k.Resend),
+			"-kcp-nc", strconv.Itoa(k.NC),
+			"-kcp-sndwnd", strconv.Itoa(k.SndWnd),
+			"-kcp-rcvwnd", strconv.Itoa(k.RcvWnd),
+			"-kcp-mtu", strconv.Itoa(k.MTU),
+			"-kcp-acknodelay="+strconv.FormatBool(k.ACKNoDelay))
+	}
+	// -bond без -mode tcp и -obf-timing без профиля клиент отвергает на старте.
+	flag("-bond", c.Bond && c.Mode == "tcp")
 	str("-obf-profile", c.ObfProfile)
 	str("-obf-key", c.ObfKey)
+	if c.ObfTimingMs > 0 && c.ObfProfile != "" && c.ObfProfile != "none" {
+		args = append(args, "-obf-timing", strconv.Itoa(c.ObfTimingMs)+"ms")
+	}
 	if c.StreamsPerCred > 0 {
 		args = append(args, "-streams-per-cred", strconv.Itoa(c.StreamsPerCred))
 	}

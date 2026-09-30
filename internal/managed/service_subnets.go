@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+
+	"github.com/hoaxisr/awg-manager/internal/ndms"
+	"github.com/hoaxisr/awg-manager/internal/peersubnet"
 )
 
 // rfc1918Networks lists the private IPv4 ranges that are valid for a
@@ -28,6 +31,7 @@ func mustParseCIDR(s string) *net.IPNet {
 // usedSubnet is one occupied address space already configured on the
 // router, paired with a label suitable for surfacing in error messages.
 type usedSubnet struct {
+	id    string // NDMS id интерфейса; пуст у синтетических записей
 	label string
 	cidr  *net.IPNet
 }
@@ -150,7 +154,7 @@ func lastIP(cidr *net.IPNet) net.IP {
 // subnetsOverlap is true when either network contains the other's
 // network address.
 func subnetsOverlap(a, b *net.IPNet) bool {
-	return a.Contains(b.IP) || b.Contains(a.IP)
+	return peersubnet.Overlaps(a, b)
 }
 
 // listUsedSubnets queries every router interface and returns the
@@ -164,6 +168,11 @@ func (s *Service) listUsedSubnets(ctx context.Context, excludeIface string) ([]u
 	if err != nil {
 		return nil, err
 	}
+	return usedSubnetsOf(all, excludeIface), nil
+}
+
+// usedSubnetsOf — разбор listUsedSubnets над уже прочитанным списком.
+func usedSubnetsOf(all []ndms.Interface, excludeIface string) []usedSubnet {
 	out := make([]usedSubnet, 0, len(all))
 	for _, iface := range all {
 		if iface.Address == "" || iface.Mask == "" {
@@ -183,9 +192,9 @@ func (s *Service) listUsedSubnets(ctx context.Context, excludeIface string) ([]u
 		if label == "" {
 			label = iface.ID
 		}
-		out = append(out, usedSubnet{label: label, cidr: cidr})
+		out = append(out, usedSubnet{id: iface.ID, label: label, cidr: cidr})
 	}
-	return out, nil
+	return out
 }
 
 // findConflict returns the first occupied subnet that overlaps with

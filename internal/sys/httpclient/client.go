@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -47,6 +48,12 @@ type CallConfig struct {
 	// Supports "http://", "socks5://", "socks5h://" schemes.
 	ProxyURL string
 
+	// Proxy — что делать с прокси из окружения. Нулевое значение
+	// (ProxyInheritEnv) — прежнее поведение: непривязанный транспорт
+	// наследует HTTP(S)_PROXY. ProxyDirect снимает наследование там, где
+	// «прямой выход» — часть смысла запроса, а не умолчание.
+	Proxy ProxyPolicy
+
 	// Method defaults to GET; set to "HEAD" for monitoring probes.
 	Method string
 
@@ -73,6 +80,51 @@ type Client struct {
 	// baseTransport is pre-built with clean defaults. Cloned per-call
 	// when interface or proxy override is needed.
 	baseTransport *http.Transport
+}
+
+// sessionCaches — кэши TLS-сессий, ПО ОДНОМУ НА ПУТЬ ВЫХОДА (интерфейс+прокси).
+//
+// Соединения мы намеренно не переиспользуем (DisableKeepAlives ниже): зонд
+// связности обязан каждый раз заново пройти DNS, TCP и рукопожатие — иначе он
+// перестаёт проверять путь, а LatencyMs (httpprobe) считается из времени
+// connect и на тёплом соединении обнулился бы. Но платить за ПРОВЕРКУ ЦЕПОЧКИ
+// на каждом рукопожатии не обязательно: при возобновлении сессии TLS 1.3
+// сервер не шлёт Certificate, и crypto/tls восстанавливает peerCertificates и
+// verifiedChains из кэша, минуя verifyServerCertificate. На softfloat MIPS это
+// самая дорогая часть — профиль стенда отдавал 19% всего CPU панели на
+// x509.Verify с ECDSA P-384.
+//
+// Кэш ОБЩИЙ МЕЖДУ ВЫЗОВАМИ, но НЕ между путями выхода. Ключ сессии внутри
+// crypto/tls — это имя хоста, интерфейс и прокси в него не входят. Один кэш на
+// всех означал бы, что билет, выданный при выходе через туннель A,
+// предъявляется при выходе через B и через прямой WAN: сервер получает
+// возможность связать разные точки выхода одного роутера, а зонд туннеля B
+// формально не проверял свой путь свежей цепочкой. Поэтому ключуем парой.
+//
+// Цена — по одному полному рукопожатию на путь за время жизни билета вместо
+// одного на всех; выигрыш от возобновления при этом сохраняется у каждого.
+var (
+	sessionMu     sync.Mutex
+	sessionCaches = map[string]tls.ClientSessionCache{}
+)
+
+// sessionCacheFor отдаёт кэш сессий для конкретного пути выхода.
+func sessionCacheFor(iface string, proxy *url.URL) tls.ClientSessionCache {
+	key := iface
+	if proxy != nil {
+		key += "|" + proxy.Host
+	}
+	sessionMu.Lock()
+	defer sessionMu.Unlock()
+	c, ok := sessionCaches[key]
+	if !ok {
+		// Пути выхода — это интерфейсы роутера, их единицы; расти карте
+		// неоткуда. Размер кэша скромный: держать разобранные цепочки
+		// сертификатов на устройстве с 256 МБ ни к чему.
+		c = tls.NewLRUClientSessionCache(8)
+		sessionCaches[key] = c
+	}
+	return c
 }
 
 // New creates a Client with sensible defaults.
@@ -123,13 +175,12 @@ func (c *Client) Do(ctx context.Context, cfg CallConfig) (*Result, error) {
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), buildTrace(timings)))
 
 	// Validate proxy URL early so traffic never leaks via WAN on parse failure.
-	var parsedProxy *url.URL
-	if cfg.ProxyURL != "" {
-		var err error
-		parsedProxy, err = url.Parse(cfg.ProxyURL)
-		if err != nil {
-			return nil, fmt.Errorf("httpclient: invalid proxy URL %q: %w", cfg.ProxyURL, err)
-		}
+	// Разбор ОБЩИЙ с NewTransport: раньше строгая проверка стояла только там,
+	// и один и тот же мусорный адрес на двух входах пакета вёл себя
+	// по-разному — здесь он молча подавлял ProxyDirect.
+	parsedProxy, err := parseProxyURL(cfg.ProxyURL)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build per-call transport (interface binding + proxy).
@@ -219,9 +270,14 @@ func (c *Client) buildTransport(cfg CallConfig, parsedProxy *url.URL) *http.Tran
 	// Set up proxy. Explicit URL wins; otherwise honour HTTP_PROXY/HTTPS_PROXY
 	// for direct (unbound) egress. Bind mode must not use env proxy — traffic
 	// must stay on the tunnel interface.
+	//
+	// cfg.Proxy == ProxyDirect снимает наследование окружения у НЕпривязанного
+	// транспорта: «не передавать ProxyURL» для прямого выхода недостаточно, и
+	// этот вход тоже должен уметь его потребовать — он шире, чем NewTransport,
+	// и через него ходят диагностика, пробы связи и измерение «прямого» IP.
 	if parsedProxy != nil {
 		t.Proxy = http.ProxyURL(parsedProxy)
-	} else if cfg.Interface == "" {
+	} else if cfg.Interface == "" && cfg.Proxy != ProxyDirect {
 		t.Proxy = http.ProxyFromEnvironment
 	}
 
@@ -242,6 +298,12 @@ func (c *Client) buildTransport(cfg CallConfig, parsedProxy *url.URL) *http.Tran
 		t.TLSClientConfig = t.TLSClientConfig.Clone()
 	}
 	t.TLSClientConfig.NextProtos = []string{"http/1.1"}
+	// Кэш сессий ставим здесь, а не в базовый конфиг: он свой у каждого пути
+	// выхода (см. sessionCacheFor). Тесты, собравшие Client вручную со своим
+	// кэшем в базовом конфиге, его сохраняют.
+	if t.TLSClientConfig.ClientSessionCache == nil {
+		t.TLSClientConfig.ClientSessionCache = sessionCacheFor(cfg.Interface, parsedProxy)
+	}
 
 	return t
 }

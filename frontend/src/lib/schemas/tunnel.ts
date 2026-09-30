@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { calcByteSize } from '$lib/utils/protocols';
+import { MAX_SIGNATURE_CHARS } from '$lib/utils/protocols';
 
 // Header protection takes its 12-byte nonce from the front of the Sx junk
 // padding (S1 initiation, S2 response, S3 cookie, S4 transport), so shorter
@@ -60,10 +60,19 @@ export const editTunnelSchema = z.object({
     }, { message: 'IPv6 endpoint указывается в квадратных скобках: [2001:db8::1]:51820' }),
     allowedIPs: z.string().min(1, 'AllowedIPs обязателен'),
     // В AWG 3.0 keepalive стал диапазоном "min-max", из которого пир берёт
-    // случайное значение на каждый взвод таймера; NativeWG диапазон не примет,
-    // это проверяет бэкенд.
+    // случайное значение на каждый взвод таймера. Диапазон принимают оба
+    // бэкенда: kernel применяет его целиком, NativeWG отдаёт прошивке нижнюю
+    // границу (storage.Keepalive.Effective).
+    //
+    // Нулевая нижняя граница отвергается отдельным предикатом, а не правкой
+    // isU16Range: 0 означает «keepalive выключен», и с диапазоном это
+    // противоречие — а вот у device-параметров AWG 3.0 нулевая нижняя граница
+    // законна (ContentPaddingAddition = 0-64), и общий предикат им нужен как
+    // есть. Зеркало config.ValidateKeepaliveSubmitted на бэкенде.
     persistentKeepalive: z.coerce.string().default('25')
-        .refine(isU16Range, { message: 'Укажите число 0-65535 или диапазон min-max' }),
+        .refine(isU16Range, { message: 'Укажите число 0-65535 или диапазон min-max' })
+        .refine(v => !(v.includes('-') && Number(v.split('-')[0]) === 0),
+            { message: 'Нижняя граница 0 означает выключенный keepalive — диапазоном его не задать' }),
     // AWG params
     jc: z.coerce.number().int().min(1).max(128).default(4),
     jmin: z.coerce.number().int().min(0).max(1280).default(40),
@@ -94,10 +103,8 @@ export const editTunnelSchema = z.object({
     randomTrailers: z.boolean().default(false),
     disableCookies: z.boolean().default(false),
 }).refine(data => {
-    const total = calcByteSize(data.i1) + calcByteSize(data.i2) +
-        calcByteSize(data.i3) + calcByteSize(data.i4) + calcByteSize(data.i5);
-    return total <= 4096;
-}, { message: 'Суммарный размер I1-I5 не должен превышать 4096 байт', path: ['i1'] })
+    return (data.i1 + data.i2 + data.i3 + data.i4 + data.i5).length <= MAX_SIGNATURE_CHARS;
+}, { message: `Суммарная длина I1-I5 не должна превышать ${MAX_SIGNATURE_CHARS} символов`, path: ['i1'] })
     .refine(data => !data.headerProtectionKey ||
         [data.s1, data.s2, data.s3, data.s4].every(v => v >= HEADER_PROTECTION_MIN_PADDING), {
         message: `При заданном HeaderProtectionKey значения S1-S4 должны быть не меньше ${HEADER_PROTECTION_MIN_PADDING} — из этих байт берётся nonce`,

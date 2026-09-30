@@ -284,7 +284,8 @@ func (s *SettingsStore) migrateToV28(settings *Settings) {
 // migrateToV29 introduces SessionTtlHours (issue #441), defaulting to the
 // historical fixed 24h session lifetime, and EntwareAuthEnabled, whose zero
 // value (false — keep NDMS-only login) is the intended default so no
-// explicit action is needed beyond the version stamp.
+// explicit action is needed beyond the version stamp. EntwareAuthEnabled
+// removed 26.09.2026 (способ входа выбирается на форме логина).
 func (s *SettingsStore) migrateToV29(settings *Settings) {
 	if settings.SessionTtlHours == 0 {
 		settings.SessionTtlHours = DefaultSessionTTLHours
@@ -426,4 +427,88 @@ func (s *SettingsStore) migrateToV35(settings *Settings) {
 	if settings.SingboxRouter.FakeIPPool6 == "" {
 		settings.SingboxRouter.FakeIPPool6 = "fc00::/18"
 	}
+}
+
+// migrateToV36 переносит сигнатуру I1–I5 с сервера на его пиров: до схемы 36
+// одна сигнатура на сервер копировалась в .conf каждого пира. Байты не
+// меняются — уже выданные конфиги остаются валидными. Пир со своей
+// сигнатурой не трогается. Идемпотентно.
+func (s *SettingsStore) migrateToV36(settings *Settings) {
+	for i := range settings.ManagedServers {
+		MovePeerSignaturesFromServer(&settings.ManagedServers[i])
+	}
+}
+
+// MovePeerSignaturesFromServer раздаёт серверную сигнатуру LegacyI1..LegacyI5
+// пирам, у которых своей нет, и очищает поля сервера. Байты копируются как
+// есть; профиль остаётся пустым — по унаследованным байтам его не восстановить.
+// Используется миграцией V36 и разбором старых бэкапов и ASC-снимков.
+// Идемпотентна: без непустых legacy-полей ничего не делает.
+func MovePeerSignaturesFromServer(sv *ManagedServer) {
+	if sv.LegacyI1 == "" && sv.LegacyI2 == "" && sv.LegacyI3 == "" && sv.LegacyI4 == "" && sv.LegacyI5 == "" {
+		return
+	}
+	for j := range sv.Peers {
+		p := &sv.Peers[j]
+		if p.I1 != "" || p.I2 != "" || p.I3 != "" || p.I4 != "" || p.I5 != "" {
+			continue
+		}
+		p.I1, p.I2, p.I3, p.I4, p.I5 = sv.LegacyI1, sv.LegacyI2, sv.LegacyI3, sv.LegacyI4, sv.LegacyI5
+	}
+	sv.LegacyI1, sv.LegacyI2, sv.LegacyI3, sv.LegacyI4, sv.LegacyI5 = "", "", "", "", ""
+}
+
+// migrateToV37 переводит цель пробы связи с gstatic на cp.cloudflare у тех,
+// кто адрес НЕ ТРОГАЛ. Прежний дефолт систематически не отвечает с выходов
+// коммерческих VPN (замер на стенде 2026-09-12: 1 ответ из 3 через живой
+// туннель Amnezia против 3 из 3 с WAN), из-за чего исправный туннель
+// показывался как «Нет связи». Новые установки берут адрес из
+// DefaultConnectivityCheckURL; этой миграцией правка доходит до уже
+// установленных панелей.
+//
+// Сравнение со СТАРЫМ дефолтом, а не «перезаписать всегда»: выбранный
+// пользователем адрес — его решение, и молча заменить его значило бы отобрать
+// настройку. Пустое значение тоже заполняется: пустым его читает
+// pingcheck.checkURL как «взять дефолт», и оставлять дыру в файле незачем.
+// Идемпотентна.
+func (s *SettingsStore) migrateToV37(settings *Settings) {
+	if settings.ConnectivityCheckURL == "" || settings.ConnectivityCheckURL == legacyGstaticCheckURL {
+		settings.ConnectivityCheckURL = DefaultConnectivityCheckURL
+	}
+}
+
+// migrateToV38 снимает вшитый "gvisor" у тех, кто стек НЕ ВЫБИРАЛ. До v38
+// нормализация дефолтила пустое значение в "gvisor", поэтому оно лежит в файле
+// у каждой установки. С sing-box 1.15 пустое значение означает «ключ stack не
+// писать» — движок берёт собственный стек sing-tun, который и стал дефолтом;
+// legacy-стеки удаляются в 1.17.
+//
+// Сравнение со СТАРЫМ дефолтом, как в migrateToV37: "system" и "mixed" — это
+// осознанный выбор, его не трогаем. Оборотная сторона известна и принята:
+// у того, кто выбрал "gvisor" руками, выбор снимется — в файле он неотличим от
+// подставленного дефолта. Идемпотентна.
+func (s *SettingsStore) migrateToV38(settings *Settings) {
+	if settings.SingboxRouter.FakeIPStack == "gvisor" {
+		settings.SingboxRouter.FakeIPStack = ""
+	}
+}
+
+// migrateToV39 снимает стеки, которых в движке больше НЕТ: наш sing-box
+// собирается без тега with_gvisor, и sing-tun на "gvisor" и "mixed" отвечает
+// "gVisor is not included in this build" — туннель просто не поднимется.
+// В отличие от migrateToV38 это касается и осознанного выбора: выбор,
+// который движок не исполнит, дороже сохранённого намерения. "system" жив.
+// Идемпотентна.
+func (s *SettingsStore) migrateToV39(settings *Settings) {
+	switch settings.SingboxRouter.FakeIPStack {
+	case "gvisor", "mixed":
+		settings.SingboxRouter.FakeIPStack = ""
+	}
+}
+
+// migrateToV40 включает анонимную статистику установок (Updates.StatsEnabled)
+// существующим установкам: поле новое, нулевое значение — «выключено», а
+// дефолт — «включено»; выключить можно тумблером в настройках.
+func (s *SettingsStore) migrateToV40(settings *Settings) {
+	settings.Updates.StatsEnabled = true
 }

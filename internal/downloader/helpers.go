@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/sys/httpdownload"
+
+	"github.com/hoaxisr/awg-manager/internal/sys/httpclient"
 )
 
 type Request struct {
@@ -23,6 +25,20 @@ type Request struct {
 	MaxBodyBytes  int64
 	RouteOverride *Route
 	AllowedStatus []int
+	// RedirectGuard проверяет адрес каждого хопа редиректа (см.
+	// httpclient.RedirectPolicy). Нужен там, где URL вводит пользователь:
+	// dial-стража у загрузчика нет (в прокси-режиме он слеп), а проверка URL
+	// хопа от режима не зависит.
+	RedirectGuard func(string) error
+	// UserAgent называет нас хосту. Заполняется ТОЛЬКО для наших адресов
+	// (сервер обновлений, зеркала бинарей): загрузчик общий, и через него
+	// же идут подписки по введённому пользователем URL — туда версия и
+	// арка панели уходить не должны. Пусто = заголовка нет вовсе.
+	UserAgent string
+	// Headers — дополнительные заголовки; то же правило, что у UserAgent:
+	// только для наших адресов. Сейчас это лишь анонимная статистика
+	// установок в запросе проверки обновлений (internal/updater/stats.go).
+	Headers http.Header
 }
 
 type ResponseMeta struct {
@@ -63,6 +79,11 @@ func (s *Service) ReadAll(ctx context.Context, req Request) ([]byte, ResponseMet
 	}
 	defer lease.Close()
 	meta := ResponseMeta{Route: lease.Route}
+	if req.RedirectGuard != nil {
+		// Клиент собран этим ResolveClient и живёт до lease.Close() — правка
+		// политики никого другого не задевает.
+		lease.Client.CheckRedirect = httpclient.RedirectPolicy(httpclient.MaxRedirectHops, req.RedirectGuard)
+	}
 
 	requestCtx := ctx
 	cancel := func() {}
@@ -82,6 +103,12 @@ func (s *Service) ReadAll(ctx context.Context, req Request) ([]byte, ResponseMet
 	httpReq, err := http.NewRequestWithContext(requestCtx, method, req.URL, requestBody)
 	if err != nil {
 		return nil, meta, fmt.Errorf("download via %s: build request: %w", lease.Route.DisplayName(), err)
+	}
+	if req.UserAgent != "" {
+		httpReq.Header.Set("User-Agent", req.UserAgent)
+	}
+	for k, v := range req.Headers {
+		httpReq.Header[k] = v
 	}
 	if strings.EqualFold(httpReq.Header.Get("Connection"), "close") {
 		httpReq.Close = true
@@ -149,6 +176,12 @@ func (s *Service) DownloadFile(ctx context.Context, req FileRequest) (FileResult
 	httpReq, err := http.NewRequestWithContext(requestCtx, method, req.URL, requestBody)
 	if err != nil {
 		return result, fmt.Errorf("download via %s: build request: %w", lease.Route.DisplayName(), err)
+	}
+	if req.UserAgent != "" {
+		httpReq.Header.Set("User-Agent", req.UserAgent)
+	}
+	for k, v := range req.Headers {
+		httpReq.Header[k] = v
 	}
 	if strings.EqualFold(httpReq.Header.Get("Connection"), "close") {
 		httpReq.Close = true

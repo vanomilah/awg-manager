@@ -8,12 +8,14 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/ndms/command"
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -35,6 +37,9 @@ type stateAwareGetter struct {
 	mu      sync.Mutex
 	asc     map[string]map[string]string
 	bridges []fakeBridge // static bridge entries injected by tests
+	// created — интерфейсы, созданные POST-ом и ещё не снятые: настоящий NDMS
+	// показывает их в списке сразу, до записи сервера в настройки (F546).
+	created map[string]bool
 }
 
 func (g *stateAwareGetter) Get(ctx context.Context, path string, out any) error {
@@ -52,6 +57,22 @@ func (g *stateAwareGetter) Get(ctx context.Context, path string, out any) error 
 				}
 			}
 			raw, err := json.Marshal(src)
+			if err != nil {
+				return err
+			}
+			return json.Unmarshal(raw, out)
+		}
+		// rc интерфейса: обогащение WGServers.Get без него — ошибка (F510).
+		// Пиры — записанные в хранилище (роутер совпадает с записью): правка
+		// по ключу проверяет наличие пира свежим чтением.
+		if strings.HasPrefix(path, "/show/rc/interface/") && !strings.Contains(strings.TrimPrefix(path, "/show/rc/interface/"), "/") {
+			var peers []map[string]any
+			if sv, ok := g.store.GetManagedServerByID(strings.TrimPrefix(path, "/show/rc/interface/")); ok {
+				for _, p := range sv.Peers {
+					peers = append(peers, map[string]any{"key": p.PublicKey})
+				}
+			}
+			raw, err := json.Marshal(map[string]any{"wireguard": map[string]any{"peer": peers}})
 			if err != nil {
 				return err
 			}
@@ -77,6 +98,11 @@ func (g *stateAwareGetter) Get(ctx context.Context, path string, out any) error 
 	}
 	g.mu.Lock()
 	brs := g.bridges
+	for name := range g.created {
+		if _, ok := m[name]; !ok {
+			m[name] = json.RawMessage(`{"id":"` + name + `","interface-name":"` + name + `","type":"Wireguard"}`)
+		}
+	}
 	g.mu.Unlock()
 	for _, br := range brs {
 		entry := map[string]any{
@@ -108,6 +134,16 @@ func (g *stateAwareGetter) applyPost(payload map[string]interface{}) {
 		if !ok {
 			continue
 		}
+		g.mu.Lock()
+		if no, _ := cfg["no"].(bool); no {
+			delete(g.created, ifaceName)
+		} else if len(cfg) == 0 {
+			if g.created == nil {
+				g.created = map[string]bool{}
+			}
+			g.created[ifaceName] = true
+		}
+		g.mu.Unlock()
 		wg, ok := cfg["wireguard"].(map[string]interface{})
 		if !ok {
 			continue
@@ -173,6 +209,10 @@ func (g *stateAwareGetter) GetRaw(ctx context.Context, path string) ([]byte, err
 		}
 		return []byte(`""`), nil
 	}
+	// Удаление пира сверяет маршруты с его меткой (#713) — статических нет.
+	if path == "/show/rc/ip/route" {
+		return []byte(`[]`), nil
+	}
 	return nil, errors.New("stateAwareGetter: GetRaw not faked: " + path)
 }
 
@@ -187,7 +227,16 @@ func (g *stateAwareGetter) Post(_ context.Context, payload any) (json.RawMessage
 	top, _ := payload.(map[string]any)
 	show, _ := top["show"].(map[string]any)
 	iface, _ := show["interface"].(map[string]any)
-	sn, _ := iface["system-name"].(map[string]any)
+	sn, ok := iface["system-name"].(map[string]any)
+	if !ok {
+		// {"show":{"interface":{"name":<id>}}} — детальный снимок интерфейса.
+		// Отдаём ровно то, что читает GenerateConf: публичный ключ сервера.
+		if id, ok := iface["name"].(string); ok && id != "" {
+			return []byte(`{"show":{"interface":{"id":"` + id + `","interface-name":"` + id +
+				`","type":"Wireguard","wireguard":{"public-key":"SRV-` + id + `"}}}}`), nil
+		}
+		return nil, errors.New("stateAwareGetter: Post payload not recognised")
+	}
 	name, _ := sn["name"].(string)
 	if name == "" {
 		return nil, errors.New("stateAwareGetter: Post payload not recognised")
@@ -210,12 +259,25 @@ type recordingPoster struct {
 	err    error
 	onPost func(map[string]interface{})
 	failOn func(map[string]interface{}) error // per-command инъекция ошибки
+	// respond — per-command тело ответа (nil — "{}"): отказы NDMS внутри
+	// вложенного status, которые транспорт ошибкой не считает.
+	respond func(map[string]interface{}) json.RawMessage
+	// honorCtx — отменённый ctx отвергается без записи, как у настоящего транспорта.
+	honorCtx bool
 }
 
 func (p *recordingPoster) Post(ctx context.Context, payload any) (json.RawMessage, error) {
 	p.mu.Lock()
+	if p.honorCtx && ctx.Err() != nil {
+		p.mu.Unlock()
+		return nil, ctx.Err()
+	}
 	var injected error
+	var resp json.RawMessage
 	if m, ok := payload.(map[string]interface{}); ok {
+		if p.respond != nil {
+			resp = p.respond(m)
+		}
 		p.posts = append(p.posts, m) // запись ДО проверки failOn: тест видит, что было попытано
 		if p.onPost != nil {
 			p.onPost(m)
@@ -232,6 +294,9 @@ func (p *recordingPoster) Post(ctx context.Context, payload any) (json.RawMessag
 	if err != nil {
 		return nil, err
 	}
+	if resp != nil {
+		return resp, nil
+	}
 	return json.RawMessage("{}"), nil
 }
 
@@ -240,7 +305,7 @@ func (p *recordingPoster) Post(ctx context.Context, payload any) (json.RawMessag
 // ListStore caches always miss — necessary because Create #1 and
 // Create #2 both call /show/interface/ and we want them to see
 // different snapshots.
-func newCreateTestService(t *testing.T) (*Service, *storage.SettingsStore) {
+func newCreateTestService(t *testing.T) (*Service, *storage.SettingsStore, *stateAwareGetter) {
 	t.Helper()
 	tmpDir := t.TempDir()
 	store := storage.NewSettingsStore(tmpDir)
@@ -254,6 +319,7 @@ func newCreateTestService(t *testing.T) (*Service, *storage.SettingsStore) {
 		Policies:      query.NewPolicyStore(getter, query.NopLogger()),
 		WGServers:     query.NewWGServerStore(getter, query.NopLogger(), ifaces),
 		RunningConfig: query.NewRunningConfigStore(getter, query.NopLogger()),
+		StaticRoutes:  query.NewStaticRouteStore(getter, query.NopLogger()),
 	}
 	poster := &recordingPoster{onPost: getter.applyPost}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -269,11 +335,30 @@ func newCreateTestService(t *testing.T) (*Service, *storage.SettingsStore) {
 	svc.wgRun = func(_ context.Context, _ string, _ ...string) (string, error) {
 		return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n", nil
 	}
-	return svc, store
+	// AddPeer иначе форкает /opt/bin/wg — на машине разработчика его нет.
+	svc.keyGen = &fakeKeyGen{}
+	return svc, store, getter
+}
+
+// fakeKeyGen выдаёт детерминированные ключи вместо wg genkey/pubkey/genpsk.
+type fakeKeyGen struct{ n int }
+
+func (f *fakeKeyGen) next() int {
+	f.n++
+	return f.n
+}
+
+func (f *fakeKeyGen) GenerateKeyPair(_ context.Context) (string, string, error) {
+	n := f.next()
+	return fmt.Sprintf("priv-%d", n), fmt.Sprintf("pub-%d", n), nil
+}
+
+func (f *fakeKeyGen) GeneratePresharedKey(_ context.Context) (string, error) {
+	return fmt.Sprintf("psk-%d", f.next()), nil
 }
 
 func TestService_CreateMultipleServers(t *testing.T) {
-	svc, store := newCreateTestService(t)
+	svc, store, _ := newCreateTestService(t)
 	ctx := context.Background()
 
 	first, err := svc.Create(ctx, CreateServerRequest{
@@ -384,7 +469,7 @@ func TestService_CreateRejectsConflicts(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc, _ := newCreateTestService(t)
+			svc, _, _ := newCreateTestService(t)
 			ctx := context.Background()
 			if _, err := svc.Create(ctx, CreateServerRequest{Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820}); err != nil {
 				t.Fatalf("seed first server: %v", err)
@@ -421,7 +506,7 @@ func TestService_CreateRejectsConflicts(t *testing.T) {
 func TestService_Create_CapturesPrivateKey(t *testing.T) {
 	const wantKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 
-	svc, store := newCreateTestService(t)
+	svc, store, _ := newCreateTestService(t)
 
 	// Stub wg-tools: return a known key regardless of the interface name.
 	svc.wgRun = func(_ context.Context, _ string, _ ...string) (string, error) {
@@ -482,7 +567,7 @@ func TestService_Create_CapturesPrivateKey(t *testing.T) {
 }
 
 func TestService_Create_FailsWhenPrivateKeyUnavailable(t *testing.T) {
-	svc, store := newCreateTestService(t)
+	svc, store, _ := newCreateTestService(t)
 
 	svc.wgRun = func(_ context.Context, _ string, _ ...string) (string, error) {
 		return "", errors.New("wg unavailable")
@@ -510,7 +595,7 @@ func TestService_Create_FailsWhenPrivateKeyUnavailable(t *testing.T) {
 // This is required for TestSetNATMode_InternetOnly_SetsStaticToWAN.
 func newNATModeTestService(t *testing.T) (*Service, *storage.SettingsStore, *recordingPoster) {
 	t.Helper()
-	svc, store := newCreateTestService(t)
+	svc, store, _ := newCreateTestService(t)
 
 	// Build a fake Getter that answers /show/ip/route with a default via PPPoE0.
 	routeGetter := query.NewFakeGetter()
@@ -823,7 +908,7 @@ func TestSetNATMode_InternetOnly_RemovesStaleTargets(t *testing.T) {
 }
 
 func TestService_Create_SkipsASCWhenDisabled(t *testing.T) {
-	svc, store := newCreateTestService(t)
+	svc, store, _ := newCreateTestService(t)
 
 	generate := false
 	server, err := svc.Create(context.Background(), CreateServerRequest{
@@ -886,6 +971,7 @@ func newLANSegmentsTestService(t *testing.T) (*Service, *storage.SettingsStore, 
 		Policies:      query.NewPolicyStore(getter, query.NopLogger()),
 		WGServers:     query.NewWGServerStore(getter, query.NopLogger(), ifaces),
 		RunningConfig: query.NewRunningConfigStore(getter, query.NopLogger()),
+		StaticRoutes:  query.NewStaticRouteStore(getter, query.NopLogger()),
 	}
 	poster := &recordingPoster{onPost: getter.applyPost}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -902,67 +988,93 @@ func newLANSegmentsTestService(t *testing.T) (*Service, *storage.SettingsStore, 
 	return svc, store, poster
 }
 
-// TestSetLANSegments_RebuildOrder verifies that SetLANSegments posts the four
+// withRunningConfig подменяет стор running-config фикстурой из строк (форма
+// стенда: тело блока с отступом 4 пробела). Без него stateAwareGetter отвечает
+// на /show/running-config ошибкой — путь «running-config недоступен».
+func withRunningConfig(svc *Service, lines ...string) {
+	fg := query.NewFakeGetter()
+	b, _ := json.Marshal(map[string]any{"message": lines})
+	fg.SetJSON("/show/running-config", string(b))
+	svc.queries.RunningConfig = query.NewRunningConfigStore(fg, query.NopLogger())
+}
+
+// seedServer — managed-сервер 10.66.66.1/24 на iface (как в RebuildOrder).
+func seedServer(t *testing.T, store *storage.SettingsStore, iface string) {
+	t.Helper()
+	if err := store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: iface, Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820,
+	}); err != nil {
+		t.Fatalf("seed %s: %v", iface, err)
+	}
+}
+
+func resetPosts(p *recordingPoster) {
+	p.mu.Lock()
+	p.posts = nil
+	p.mu.Unlock()
+}
+
+// parseStrings — parse-строки RCI в порядке отправки.
+func parseStrings(p *recordingPoster) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []string
+	for _, m := range p.posts {
+		if s, ok := m["parse"].(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestSetLANSegments_RebuildOrder verifies that SetLANSegments posts the five
 // parse commands in the required order and persists LANSegments in storage.
 // Empty-list variant verifies only unbind+remove are sent (no permit/bind).
+// Подслучаи с остатком `_WEBADMIN_` пинят снятие чужого permit-all первым.
 func TestSetLANSegments_RebuildOrder(t *testing.T) {
 	const ifaceName = "Wireguard0"
+	acl := "AWGM_" + ifaceName
+
+	assertParses := func(t *testing.T, got, want []string) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("expected %d parse commands, got %d: %v", len(want), len(got), got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("parse[%d]: got %q, want %q", i, got[i], want[i])
+			}
+		}
+	}
+
+	// Живой привязанный список — прежняя последовательность.
+	ourACL := []string{"access-list AWGM_Wireguard0", "    permit ip 10.66.66.0 255.255.255.0 10.10.10.0 255.255.255.0", "    auto-delete", "!",
+		"interface Wireguard0", "    security-level private", "    ip access-group AWGM_Wireguard0 in", "!"}
 
 	t.Run("non-empty segments", func(t *testing.T) {
 		svc, store, poster := newLANSegmentsTestService(t)
 		ctx := context.Background()
-
-		if err := store.AddManagedServer(storage.ManagedServer{
-			InterfaceName: ifaceName,
-			Address:       "10.66.66.1",
-			Mask:          "255.255.255.0",
-			ListenPort:    51820,
-		}); err != nil {
-			t.Fatalf("seed server: %v", err)
-		}
-
-		poster.mu.Lock()
-		poster.posts = nil
-		poster.mu.Unlock()
+		withRunningConfig(svc, ourACL...)
+		seedServer(t, store, ifaceName)
+		resetPosts(poster)
 
 		if err := svc.SetLANSegments(ctx, ifaceName, []string{"Home"}); err != nil {
 			t.Fatalf("SetLANSegments: %v", err)
 		}
 
-		// Collect parse strings in order.
-		poster.mu.Lock()
-		posts := make([]map[string]interface{}, len(poster.posts))
-		copy(posts, poster.posts)
-		poster.mu.Unlock()
-
-		var parseStrings []string
-		for _, p := range posts {
-			if s, ok := p["parse"].(string); ok {
-				parseStrings = append(parseStrings, s)
-			}
-		}
-
-		acl := "AWGM_" + ifaceName
 		// Expected order:
 		// 1. no interface <iface> ip access-group <acl> in
 		// 2. no access-list <acl>
 		// 3. access-list <acl> permit ip <peerSub> <peerMask> <segSub> <segMask>
 		// 4. interface <iface> ip access-group <acl> in
-		wantParses := []string{
+		// 5. access-list <acl> auto-delete
+		assertParses(t, parseStrings(poster), []string{
 			fmt.Sprintf("no interface %s ip access-group %s in", ifaceName, acl),
 			"no access-list " + acl,
 			fmt.Sprintf("access-list %s permit ip 10.66.66.0 255.255.255.0 10.10.10.0 255.255.255.0", acl),
 			fmt.Sprintf("interface %s ip access-group %s in", ifaceName, acl),
-		}
-
-		if len(parseStrings) != len(wantParses) {
-			t.Fatalf("expected %d parse commands, got %d: %v", len(wantParses), len(parseStrings), parseStrings)
-		}
-		for i, want := range wantParses {
-			if parseStrings[i] != want {
-				t.Errorf("parse[%d]: got %q, want %q", i, parseStrings[i], want)
-			}
-		}
+			fmt.Sprintf("access-list %s auto-delete", acl),
+		})
 
 		// Storage must be updated.
 		saved, ok := store.GetManagedServerByID(ifaceName)
@@ -974,53 +1086,38 @@ func TestSetLANSegments_RebuildOrder(t *testing.T) {
 		}
 	})
 
+	// Стенд 28.09: первое включение — привязки и списка нет; unbind и
+	// `no access-list` вслепую дали бы E «argument parse error» в журнале роутера.
+	t.Run("first enable without list: no unbind/remove", func(t *testing.T) {
+		svc, store, poster := newLANSegmentsTestService(t)
+		withRunningConfig(svc, "interface Wireguard0", "    security-level private", "!")
+		seedServer(t, store, ifaceName)
+		resetPosts(poster)
+		if err := svc.SetLANSegments(context.Background(), ifaceName, []string{"Home"}); err != nil {
+			t.Fatalf("SetLANSegments: %v", err)
+		}
+		assertParses(t, parseStrings(poster), []string{
+			fmt.Sprintf("access-list %s permit ip 10.66.66.0 255.255.255.0 10.10.10.0 255.255.255.0", acl),
+			fmt.Sprintf("interface %s ip access-group %s in", ifaceName, acl),
+			fmt.Sprintf("access-list %s auto-delete", acl),
+		})
+	})
+
 	t.Run("empty segments unbinds and removes only", func(t *testing.T) {
 		svc, store, poster := newLANSegmentsTestService(t)
 		ctx := context.Background()
-
-		if err := store.AddManagedServer(storage.ManagedServer{
-			InterfaceName: ifaceName,
-			Address:       "10.66.66.1",
-			Mask:          "255.255.255.0",
-			ListenPort:    51820,
-		}); err != nil {
-			t.Fatalf("seed server: %v", err)
-		}
-
-		poster.mu.Lock()
-		poster.posts = nil
-		poster.mu.Unlock()
+		withRunningConfig(svc, ourACL...)
+		seedServer(t, store, ifaceName)
+		resetPosts(poster)
 
 		if err := svc.SetLANSegments(ctx, ifaceName, []string{}); err != nil {
 			t.Fatalf("SetLANSegments(empty): %v", err)
 		}
 
-		poster.mu.Lock()
-		posts := make([]map[string]interface{}, len(poster.posts))
-		copy(posts, poster.posts)
-		poster.mu.Unlock()
-
-		var parseStrings []string
-		for _, p := range posts {
-			if s, ok := p["parse"].(string); ok {
-				parseStrings = append(parseStrings, s)
-			}
-		}
-
-		acl := "AWGM_" + ifaceName
-		wantParses := []string{
+		assertParses(t, parseStrings(poster), []string{
 			fmt.Sprintf("no interface %s ip access-group %s in", ifaceName, acl),
 			"no access-list " + acl,
-		}
-
-		if len(parseStrings) != len(wantParses) {
-			t.Fatalf("expected %d parse commands, got %d: %v", len(wantParses), len(parseStrings), parseStrings)
-		}
-		for i, want := range wantParses {
-			if parseStrings[i] != want {
-				t.Errorf("parse[%d]: got %q, want %q", i, parseStrings[i], want)
-			}
-		}
+		})
 
 		saved, ok := store.GetManagedServerByID(ifaceName)
 		if !ok {
@@ -1030,6 +1127,27 @@ func TestSetLANSegments_RebuildOrder(t *testing.T) {
 			t.Errorf("storage LANSegments: got %v, want empty", saved.LANSegments)
 		}
 	})
+
+	// Teardown-ветка тоже не трогает чужой `_WEBADMIN_` (#879): снятие
+	// сегментов — не повод сносить правила межсетевого экрана пользователя.
+	t.Run("empty segments leave foreign permit-all alone", func(t *testing.T) {
+		svc, store, poster := newLANSegmentsTestService(t)
+		withRunningConfig(svc,
+			"interface Wireguard0",
+			"    ip access-group _WEBADMIN_Wireguard0 in",
+			"!",
+		)
+		seedServer(t, store, ifaceName)
+		resetPosts(poster)
+
+		if err := svc.SetLANSegments(context.Background(), ifaceName, []string{}); err != nil {
+			t.Fatalf("SetLANSegments(empty): %v", err)
+		}
+
+		// Нашего списка нет — снимать нечего; чужой не тронут.
+		assertParses(t, parseStrings(poster), nil)
+	})
+
 }
 
 func TestResolveLANSegmentsPlan(t *testing.T) {
@@ -1038,13 +1156,13 @@ func TestResolveLANSegmentsPlan(t *testing.T) {
 		{Name: "Guest", Address: "10.10.20.1", Mask: "255.255.255.0"},
 	}
 	t.Run("valid segments → network-subnet permit rules", func(t *testing.T) {
-		rules, err := resolveLANSegmentsPlan("10.66.66.1", "255.255.255.0", []string{"Home", "Guest"}, bridges)
+		rules, err := resolveLANSegmentsPlan("10.66.66.1", "255.255.255.0", nil, []string{"Home", "Guest"}, bridges)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		want := []permitRule{
-			{srcSub: "10.66.66.0", srcMask: "255.255.255.0", dstSub: "10.10.10.0", dstMask: "255.255.255.0"},
-			{srcSub: "10.66.66.0", srcMask: "255.255.255.0", dstSub: "10.10.20.0", dstMask: "255.255.255.0"},
+			{srcSub: "10.66.66.0", srcMask: "255.255.255.0", dstSub: "10.10.10.0", dstMask: "255.255.255.0", seg: "Home"},
+			{srcSub: "10.66.66.0", srcMask: "255.255.255.0", dstSub: "10.10.20.0", dstMask: "255.255.255.0", seg: "Guest"},
 		}
 		if len(rules) != len(want) {
 			t.Fatalf("got %d rules, want %d: %+v", len(rules), len(want), rules)
@@ -1056,17 +1174,17 @@ func TestResolveLANSegmentsPlan(t *testing.T) {
 		}
 	})
 	t.Run("unknown segment errors", func(t *testing.T) {
-		if _, err := resolveLANSegmentsPlan("10.66.66.1", "255.255.255.0", []string{"Ghost"}, bridges); err == nil {
+		if _, err := resolveLANSegmentsPlan("10.66.66.1", "255.255.255.0", nil, []string{"Ghost"}, bridges); err == nil {
 			t.Fatal("expected error for unknown segment")
 		}
 	})
 	t.Run("bad peer subnet errors", func(t *testing.T) {
-		if _, err := resolveLANSegmentsPlan("not-an-ip", "255.255.255.0", []string{"Home"}, bridges); err == nil {
+		if _, err := resolveLANSegmentsPlan("not-an-ip", "255.255.255.0", nil, []string{"Home"}, bridges); err == nil {
 			t.Fatal("expected error for bad peer subnet")
 		}
 	})
 	t.Run("empty catalog with requested segments errors", func(t *testing.T) {
-		if _, err := resolveLANSegmentsPlan("10.66.66.1", "255.255.255.0", []string{"Home"}, nil); err == nil {
+		if _, err := resolveLANSegmentsPlan("10.66.66.1", "255.255.255.0", nil, []string{"Home"}, nil); err == nil {
 			t.Fatal("expected error when catalog empty")
 		}
 	})
@@ -1079,9 +1197,11 @@ func TestUpdate_SubnetChange_RebuildsLANACL(t *testing.T) {
 	if err := store.AddManagedServer(storage.ManagedServer{
 		InterfaceName: ifaceName, Address: "10.66.66.1", Mask: "255.255.255.0",
 		ListenPort: 51820, LANSegments: []string{"Home"},
+		Peers: []storage.ManagedPeer{{PublicKey: "PEER1", TunnelIP: "10.66.66.2/32", RemoteSubnets: []string{"192.168.77.0/24"}}},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	withRunningConfig(svc)
 	poster.mu.Lock()
 	poster.posts = nil
 	poster.mu.Unlock()
@@ -1110,6 +1230,10 @@ func TestUpdate_SubnetChange_RebuildsLANACL(t *testing.T) {
 	}
 	if !foundNew {
 		t.Errorf("expected permit with new source subnet 10.77.77.0; posts=%v", posts)
+	}
+	// Сети за клиентом пиров пересборка сохраняет (#713).
+	if !slices.Contains(parseStrings(poster), "access-list AWGM_Wireguard0 permit ip 192.168.77.0 255.255.255.0 10.10.10.0 255.255.255.0") {
+		t.Errorf("пересборка потеряла сеть за клиентом; posts=%v", parseStrings(poster))
 	}
 }
 
@@ -1310,6 +1434,22 @@ func TestSetLANSegments_InvalidSegment_DoesNotDestroyACL(t *testing.T) {
 	if len(saved.LANSegments) != 1 || saved.LANSegments[0] != "Home" {
 		t.Errorf("storage LANSegments changed: %v", saved.LANSegments)
 	}
+
+	// Пин места strip: он идёт ПОСЛЕ preflight, поэтому чужой permit-all на
+	// невалидном запросе остаётся на месте — роутер не тронут вообще.
+	t.Run("с остатком _WEBADMIN_ и сегментом Ghost", func(t *testing.T) {
+		svc, store, poster := newLANSegmentsTestService(t)
+		withRunningConfig(svc, "interface Wireguard0", "    ip access-group _WEBADMIN_Wireguard0 in", "!")
+		seedServer(t, store, ifaceName)
+		resetPosts(poster)
+
+		if err := svc.SetLANSegments(context.Background(), ifaceName, []string{"Ghost"}); err == nil {
+			t.Fatalf("expected error for unknown segment")
+		}
+		if got := parseStrings(poster); len(got) != 0 {
+			t.Errorf("роутер тронут на невалидном запросе: %v", got)
+		}
+	})
 }
 
 // hasStaticNATPost reports whether any RCI POST touches ip.static (set or remove).
@@ -1461,7 +1601,7 @@ func findInterfaceMTUPost(posts []map[string]interface{}, name string) (int, boo
 }
 
 func TestService_Create_SetsInterfaceMTU(t *testing.T) {
-	svc, _ := newCreateTestService(t)
+	svc, _, _ := newCreateTestService(t)
 
 	srv, err := svc.Create(context.Background(), CreateServerRequest{
 		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820, MTU: 1400,
@@ -1481,7 +1621,7 @@ func TestService_Create_SetsInterfaceMTU(t *testing.T) {
 }
 
 func TestService_Create_DefaultInterfaceMTU(t *testing.T) {
-	svc, _ := newCreateTestService(t)
+	svc, _, _ := newCreateTestService(t)
 
 	srv, err := svc.Create(context.Background(), CreateServerRequest{
 		Address: "10.66.66.1", Mask: "255.255.255.0", ListenPort: 51820,
@@ -1593,5 +1733,43 @@ func TestUpdate_MTUAbsent_NoInterfaceMTUPost(t *testing.T) {
 	poster.mu.Unlock()
 	if _, found := findInterfaceMTUPost(posts, ifaceName); found {
 		t.Errorf("ip.mtu must not be posted when req.MTU is nil; posts=%v", posts)
+	}
+}
+
+type recAppLog struct{ entries []string }
+
+func (r *recAppLog) AppLog(level logging.Level, _, _, action, target, message string) {
+	r.entries = append(r.entries, string(level)+"|"+action+"|"+target+"|"+message)
+}
+
+// Деградация static-NAT до одного WAN раньше была видна только в slog; теперь — в
+// журнале приложения (/logs), обе ветки: running-config не читается и `ip global` нет.
+func TestNatStaticTargets_DegradationIsInAppLog(t *testing.T) {
+	cases := []struct {
+		name    string
+		rc      func(*query.FakeGetter)
+		wantMsg string
+	}{
+		{"running-config недоступен", func(fg *query.FakeGetter) {}, // без SetJSON → ошибка чтения
+			"running-config недоступен ("},
+		{"нет ip global", func(fg *query.FakeGetter) {
+			fg.SetJSON("/show/running-config", `{"message":["interface Bridge0","    ip address 192.168.1.1","!"]}`)
+		}, "в running-config нет ни одного `ip global`: static NAT только на WAN по умолчанию"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fg := query.NewFakeGetter()
+			tc.rc(fg)
+			spy := &recAppLog{}
+			q := &query.Queries{RunningConfig: query.NewRunningConfigStore(fg, query.NopLogger())}
+			svc := New(&fakePoster{}, nil, q, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), spy)
+			_, err := svc.natStaticTargets(context.Background())
+			if err == nil {
+				t.Fatal("без Routes-провайдера фолбэк обязан отказать — тут проверяем только журнал")
+			}
+			if len(spy.entries) != 1 || !strings.HasPrefix(spy.entries[0], "warn|nat|internet-only|"+tc.wantMsg) {
+				t.Fatalf("журнал = %v", spy.entries)
+			}
+		})
 	}
 }

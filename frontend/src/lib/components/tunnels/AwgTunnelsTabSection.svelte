@@ -4,7 +4,7 @@
 	// состоянию страницы на ctx.* — единый проп-контекст с live-геттерами
 	// (см. awgTabContext.ts). Сторы сортировки — прямым импортом.
 	import { StatStrip, Stat, LayoutViewToggle, Button, Badge, TableSortHeader, StatusDot, TrafficSparkline, StoreStatusBadge, Toggle } from '$lib/components/ui';
-	import { TunnelCard, ExternalTunnelCard, SystemTunnelCard, TunnelToolbarViewRow, AdoptTunnelDialog } from '$lib/components/tunnels';
+	import { TunnelCard, ExternalTunnelCard, SystemTunnelCard, TunnelToolbarViewRow, AdoptTunnelDialog, TunnelLockGlyph } from '$lib/components/tunnels';
 	import { EmptyState } from '$lib/components/layout';
 	import { awgTunnelTableSort } from '$lib/stores/tunnelTableSort';
 	import { formatBitRate, formatBytes } from '$lib/utils/format';
@@ -15,6 +15,7 @@
 	import TunnelTitleRow from '$lib/components/tunnels/TunnelTitleRow.svelte';
 	import TunnelMetaText from '$lib/components/tunnels/TunnelMetaText.svelte';
 	import TunnelListTrafficCell from '$lib/components/tunnels/TunnelListTrafficCell.svelte';
+	import { tunnelLockAvailable } from '$lib/components/tunnels/tunnelPageSelectors';
 	import { formatRelativeTime, formatDuration } from '$lib/utils/format';
 	import { type AwgTunnelSortKey } from '$lib/stores/tunnelTableSort';
 	import { goto } from '$app/navigation';
@@ -274,14 +275,22 @@
 			{@const showConnectivityRow = awgShowConnectivityRow(tunnel.status)}
 				<div class="awg-list-row">
 				<div class="awg-list-cell awg-list-cell-toggle">
-					<Toggle
-						checked={ctx.isManagedTunnelOn(tunnel)}
-						size="sm"
-						variant="flip"
-						tint={awgToggleTint(tunnel, connectivity)}
-						disabled={(ctx.toggleLoading[tunnel.id] ?? false) || tunnel.hasAddressConflict === true}
-						onchange={() => ctx.handleToggleOnOff(tunnel.id)}
-					/>
+					{#if tunnelLockAvailable(tunnel)}
+						<TunnelLockGlyph
+							locked={!!tunnel.locked}
+							onclick={() => ctx.handleLockClick(tunnel.id)}
+						/>
+					{/if}
+					<span title={tunnel.locked ? 'Туннель защищён от изменений' : undefined}>
+						<Toggle
+							checked={ctx.isManagedTunnelOn(tunnel)}
+							size="sm"
+							variant="flip"
+							tint={awgToggleTint(tunnel, connectivity)}
+							disabled={(ctx.toggleLoading[tunnel.id] ?? false) || tunnel.hasAddressConflict === true || !!tunnel.locked}
+							onchange={() => ctx.handleToggleOnOff(tunnel.id)}
+						/>
+					</span>
 				</div>
 					<div class="awg-list-cell awg-list-cell-name">
 						<div class="tunnel-list-name-stack">
@@ -401,11 +410,13 @@
 					<div class="awg-list-cell awg-list-cell-actions tunnel-list-cell--actions">
 						<TunnelListActions
 							editHref="/tunnels/{tunnel.id}"
-							editTitle="Изменить туннель «{tunnel.name}»"
+							editDisabled={!!tunnel.locked}
+							editTitle={tunnel.locked ? 'Туннель защищён от изменений' : `Изменить туннель «${tunnel.name}»`}
 							onTest={() => ctx.openAwgDiagnostics(tunnel.id, tunnel.name)}
 							testTitle="Тест туннеля «{tunnel.name}»"
 							onDelete={() => ctx.requestDelete(tunnel.id)}
-							deleteTitle="Удалить туннель «{tunnel.name}»"
+							deleteDisabled={!!tunnel.locked}
+							deleteTitle={tunnel.locked ? 'Туннель защищён от изменений' : `Удалить туннель «${tunnel.name}»`}
 							deleting={ctx.deleteLoading[tunnel.id] ?? false}
 						/>
 					</div>
@@ -559,14 +570,25 @@
 								<span class="awg-inline-badge awg-inline-badge--muted">external</span>
 								{#if tunnel.isAWG}
 									<span class="awg-inline-badge">AWG</span>
+								{:else}
+									<span class="awg-inline-badge awg-inline-badge--muted">только интерфейс</span>
 								{/if}
+								{#if tunnel.foreign}<Badge variant="accent" size="sm">сторонний</Badge>{/if}
 							</div>
 							<div class="awg-list-sub">
-								{#if tunnel.publicKey}
-									{tunnel.publicKey.slice(0, 16)}…
-									<span class="awg-list-dot">·</span>
+								<!-- У интерфейса ядра нет номера OpkgTun (tunnelNumber < 0) —
+								     «#-1» не показываем, разделители ставим только между частями. -->
+								{#if tunnel.description}
+									«{tunnel.description}»
 								{/if}
-								#{tunnel.tunnelNumber}
+								{#if tunnel.publicKey}
+									{#if tunnel.description}<span class="awg-list-dot">·</span>{/if}
+									{tunnel.publicKey.slice(0, 16)}…
+								{/if}
+								{#if tunnel.tunnelNumber >= 0}
+									{#if tunnel.description || tunnel.publicKey}<span class="awg-list-dot">·</span>{/if}
+									#{tunnel.tunnelNumber}
+								{/if}
 							</div>
 						</div>
 						<div class="awg-list-cell awg-list-cell-status">
@@ -581,6 +603,11 @@
 								Handshake {tunnel.lastHandshake ? formatRelativeTime(tunnel.lastHandshake) : '—'}
 							</div>
 							<div class="awg-list-sub">Не управляется AWG Manager</div>
+							{#if tunnel.conflictsWith}
+								<div class="awg-list-sub awg-ext-conflict">
+									⚠ адрес {tunnel.addresses?.[0] ?? ''} занят туннелем «{tunnel.conflictsWith}»
+								</div>
+							{/if}
 						</div>
 						<div class="awg-list-cell">
 							<div class="awg-list-kv-primary awg-list-mono awg-endpoint-line">
@@ -618,17 +645,39 @@
 								<div class="traffic-rate tx">↑ {formatBytes(tunnel.txBytes)}</div>
 							</div>
 						</div>
-						<div class="awg-list-cell awg-list-cell-actions">
+						<div class="awg-list-cell awg-list-cell-actions awg-ext-actions">
 							<!-- Короткая надпись: полная не влезала в колонку действий и
 							     вылезала за неё на узких экранах. Смысл — в title. -->
-							<Button
-								variant="primary"
-								size="sm"
-								title="Взять под управление: {tunnel.interfaceName}"
-								onclick={() => ctx.handleAdoptClick(tunnel.interfaceName)}
-							>
-								Взять
-							</Button>
+							{#if tunnel.isAWG && !tunnel.foreign}
+								<Button
+									variant="primary"
+									size="sm"
+									title="Взять под управление: {tunnel.interfaceName}"
+									onclick={() => ctx.handleAdoptClick(tunnel.interfaceName)}
+								>
+									Взять
+								</Button>
+							{/if}
+							{#if tunnel.foreign}
+								<Button
+									variant="ghost"
+									size="sm"
+									title="Снять отметку «интерфейс другой программы»: {tunnel.interfaceName}"
+									onclick={() => ctx.handleForeignUnmark(tunnel.interfaceName)}
+								>
+									Снять отметку
+								</Button>
+							{/if}
+							{#if tunnel.removable && !tunnel.foreign}
+								<Button
+									variant="outline-danger"
+									size="sm"
+									title="Удалить интерфейс {tunnel.interfaceName} с роутера"
+									onclick={() => ctx.handleExternalDelete(tunnel.interfaceName)}
+								>
+									Удалить
+								</Button>
+							{/if}
 						</div>
 					</div>
 				{/each}
@@ -659,6 +708,7 @@
 					onToggleOnOff={() => ctx.handleToggleOnOff(tunnel.id)}
 					ondelete={() => ctx.requestDelete(tunnel.id)}
 					ondetail={(id) => ctx.openDetail(id)}
+					onLockClick={() => ctx.handleLockClick(tunnel.id)}
 				/>
 			{/each}
 			{#each ctx.sortedFilteredSystemList as tunnel (tunnel.id)}
@@ -697,6 +747,8 @@
 							tunnel={extTunnel}
 							view={awgGridView}
 							onadopt={(name) => ctx.handleAdoptClick(name)}
+							ondelete={(name) => ctx.handleExternalDelete(name)}
+							onunmark={(name) => ctx.handleForeignUnmark(name)}
 						/>
 					{/each}
 				</div>
@@ -709,6 +761,17 @@
 {/if}
 
 <style>
+	.awg-ext-conflict {
+		color: var(--color-warning, #e0af68);
+	}
+
+	.awg-ext-actions {
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+
 
 	/* ── D7: drag-reorder (общее pointer-ядро sb-router/reorderDrag).
 	   Движок вертикальный, поэтому на время активного drag сетка

@@ -188,9 +188,17 @@ func newHTTPClientFromSpec(spec TransportSpec) (*http.Client, error) {
 		return nil, fmt.Errorf("unsupported transport mode %q", spec.Mode)
 	}
 
+	// Прокси окружения наследуется СОЗНАТЕЛЬНО (Proxy оставлен нулевым,
+	// httpclient.ProxyInheritEnv): у режима «через прокси» адрес уже
+	// стоит в cfg.ProxyURL и он сильнее окружения, а у прямого режима
+	// наследование прокси владельца роутера — желаемое поведение загрузчика.
 	tr, err := httpclient.NewTransport(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Transport: tr}, nil
+	// Политика редиректов общая с загрузчиками подписок: предел хопов и
+	// запрет спуска https→http (F312). Стража внутренних адресов здесь нет
+	// намеренно: в режиме через прокси диалится локальный прокси, и страж на
+	// dial слеп, а зеркало и GitHub — наши адреса.
+	return &http.Client{Transport: tr, CheckRedirect: httpclient.RedirectPolicy(httpclient.MaxRedirectHops, nil)}, nil
 }

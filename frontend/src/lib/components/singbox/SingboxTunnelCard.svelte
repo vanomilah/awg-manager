@@ -100,6 +100,8 @@
 				return 'Naive';
 			case 'mieru':
 				return 'Mieru';
+			case 'trusttunnel':
+				return 'TrustTunnel';
 			default:
 				return protocol ? protocol.charAt(0).toUpperCase() + protocol.slice(1) : '—';
 		}
@@ -975,10 +977,6 @@
 	}
 	.traffic-head { margin-top: 8px; }
 
-	.list-cell-ping-mini {
-		justify-content: flex-start;
-		padding-right: 0.6rem;
-	}
 	.traffic-row-list {
 		display: flex;
 		align-items: center;
@@ -1028,11 +1026,6 @@
 	.sbx-tunnel-list-row .list-cell {
 		min-width: 0;
 		vertical-align: middle;
-	}
-	.sbx-tunnel-list-row .list-cell-delay {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
 	}
 	.sbx-tunnel-list-row .list-title-row {
 		display: flex;
@@ -1096,17 +1089,9 @@
 		outline: 1px solid var(--color-accent, #58a6ff);
 		outline-offset: 1px;
 	}
-	.badges-inline {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.25rem;
-	}
 
 	.sbx-tunnel-list-row .list-cell-badges {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		align-self: stretch;
+		text-align: center;
 	}
 
 	.sbx-tunnel-list-row .badges-inline {

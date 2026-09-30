@@ -131,7 +131,9 @@
     );
     const isURLTest = $derived(subscription.mode === 'urltest');
     /** URL feed vs inline server list (wizard: «Подписка» / «Группа серверов»). */
-    const isInlineGroup = $derived(subscription.isInline || !subscription.url?.trim());
+    const isInlineGroup = $derived(
+        subscription.isInline || (!subscription.isFile && !subscription.url?.trim()),
+    );
     const sourceKindLabel = $derived(isInlineGroup ? 'группа' : 'подписка');
     const lastFetchedHuman = $derived(
         subscription.lastFetched ? formatRelativeTime(subscription.lastFetched) : '—',
@@ -153,6 +155,7 @@
             case 'hysteria2':     return 'Hysteria2';
             case 'naive':         return 'Naive';
             case 'mieru':         return 'Mieru';
+            case 'trusttunnel':   return 'TrustTunnel';
             default:              return activeMember.protocol;
         }
     });
@@ -753,7 +756,7 @@
     }}
 >
     <p>
-        Подписка <strong>{subscription.label || subscription.url}</strong> будет
+        Подписка <strong>{subscription.label || subscription.url || subscription.path}</strong> будет
         удалена вместе с её sing-box outbound'ами и NDMS Proxy
         <code class="mono">Proxy{subscription.proxyIndex}</code>.
     </p>
@@ -1298,15 +1301,12 @@
         outline-offset: -2px;
     }
     .lc {
-        display: flex;
-        align-items: center;
         min-width: 0;
         font-size: var(--sbx-card-value);
         color: var(--color-text-secondary);
         vertical-align: middle;
     }
     .lc-delay {
-        gap: 0.35rem;
         min-width: 0;
     }
     .delay-inline-err {
@@ -1323,15 +1323,7 @@
         font-size: var(--sbx-card-value);
         color: var(--color-text-muted);
     }
-    .lc-name {
-        flex-direction: column;
-        align-items: flex-start !important;
-        gap: 0.15rem;
-    }
     .lc-endpoint {
-        display: flex;
-        align-items: center;
-        gap: 0.25rem;
         min-width: 0;
         overflow: hidden;
     }
@@ -1354,10 +1346,6 @@
         white-space: nowrap;
     }
     .lc-actions {
-        flex-wrap: nowrap;
-        gap: 0.375rem;
-        justify-content: center;
-        align-items: center;
         white-space: nowrap;
     }
 </style>

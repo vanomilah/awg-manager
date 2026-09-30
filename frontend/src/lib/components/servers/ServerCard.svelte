@@ -15,6 +15,7 @@
 	import { peerSort } from '$lib/stores/peerSort';
 	import { maskToPrefix, resolveNatMode } from '$lib/utils/network';
 	import { countActiveSystemPeers } from '$lib/utils/serverPeerActivity';
+	import { systemPeerTunnelIP } from '$lib/utils/serverPeerOptions';
 	import { patchSystemServerEnabledInSnapshot, systemServerIsUp } from '$lib/utils/systemServerState';
 	import {
 		PeerSortControls,
@@ -38,6 +39,8 @@
 		ingressEnabled?: boolean;
 		onToggleIngress?: (interfaceName: string, enabled: boolean) => Promise<void>;
 		activeEngine?: 'sing-box' | 'mihomo';
+		/** LAN-адрес роутера — для тумблера «DNS роутера» в модалках пира. */
+		routerIP?: string;
 	}
 
 	let {
@@ -47,6 +50,7 @@
 		ingressEnabled = false,
 		onToggleIngress = async () => {},
 		activeEngine = 'sing-box',
+		routerIP = '',
 	}: Props = $props();
 
 	let engineLabel = $derived(activeEngine === 'mihomo' ? 'Mihomo' : 'sing-box');
@@ -92,19 +96,13 @@
 	let totalRx = $derived((server.peers ?? []).reduce((sum, p) => sum + p.rxBytes, 0));
 	let totalTx = $derived((server.peers ?? []).reduce((sum, p) => sum + p.txBytes, 0));
 
-	function peerTunnelIP(p: WireguardServerPeer): string {
-		const raw = p.allowedIPs?.find((ip) => ip.includes('/32')) || p.allowedIPs?.[0] || '';
-		if (!raw) return '';
-		return raw.includes('/') ? raw : `${raw}/32`;
-	}
-
 	function toManagedPeer(p: WireguardServerPeer): ManagedPeer {
 		return {
 			publicKey: p.publicKey,
 			privateKey: '',
 			presharedKey: '',
 			description: p.description,
-			tunnelIP: peerTunnelIP(p),
+			tunnelIP: systemPeerTunnelIP(p),
 			enabled: p.enabled,
 		};
 	}
@@ -129,7 +127,7 @@
 			peers = peers.filter(
 				(p) =>
 					(p.description || '').toLowerCase().includes(q) ||
-					peerTunnelIP(p).toLowerCase().includes(q)
+					systemPeerTunnelIP(p).toLowerCase().includes(q)
 			);
 		}
 		const sortBy = $peerSort.sortBy;
@@ -141,7 +139,7 @@
 				return comparePeerFieldsDirected(
 					{
 						name: a.description || a.publicKey,
-						ip: peerTunnelIP(a),
+						ip: systemPeerTunnelIP(a),
 						endpoint: sa?.endpoint || '-',
 						rxBytes: sa?.rxBytes ?? null,
 						txBytes: sa?.txBytes ?? null,
@@ -150,7 +148,7 @@
 					},
 					{
 						name: b.description || b.publicKey,
-						ip: peerTunnelIP(b),
+						ip: systemPeerTunnelIP(b),
 						endpoint: sb?.endpoint || '-',
 						rxBytes: sb?.rxBytes ?? null,
 						txBytes: sb?.txBytes ?? null,
@@ -521,6 +519,7 @@
 	bind:open={addPeerOpen}
 	serverId={server.id}
 	{server}
+	{routerIP}
 	onclose={() => (addPeerOpen = false)}
 	onAdded={() => servers.invalidate()}
 />
@@ -530,6 +529,7 @@
 		bind:open={editPeerOpen}
 		serverId={server.id}
 		peer={selectedPeer}
+		{routerIP}
 		onclose={() => { editPeerOpen = false; selectedPeer = null; }}
 		onUpdated={() => servers.invalidate()}
 	/>
@@ -551,6 +551,7 @@
 		peer={confGeneratorPeer}
 		{ascParams}
 		{wanIP}
+		{routerIP}
 		onclose={() => {
 			confGeneratorOpen = false;
 		}}

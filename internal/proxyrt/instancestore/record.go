@@ -43,6 +43,30 @@ var AllKinds = []Kind{
 	KindFreeTurnServer,
 }
 
+// IsClient — клиентская ли роль. У клиента бывают связанные AWG-туннели, у
+// сервера их не бывает по построению: сервер — вход, туннеля на него не заводят.
+//
+// Владелец перечня ОДИН на всех. Прежде он был списан дважды —
+// `wdttlink.isClientKind` и список ролей в `proxyLinkedCleaners` проводки, — и
+// новая клиентская роль, забытая во второй копии, дала бы молчаливое «убирать
+// нечего» вместо уборки: ни ошибки, ни падения, только осиротевшая карточка
+// туннеля навсегда.
+func (k Kind) IsClient() bool {
+	return k == KindWdttClient || k == KindFreeTurnClient
+}
+
+// ClientKinds — клиентские роли перечнем, для тех, кому нужен обход, а не
+// проверка. Производная от AllKinds и IsClient: третьей копии списка нет.
+func ClientKinds() []Kind {
+	out := make([]Kind, 0, len(AllKinds))
+	for _, k := range AllKinds {
+		if k.IsClient() {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
 // ServerUser — абонент wdtt-сервера. Источник правды ЗДЕСЬ (посеян из
 // ServerConfig.Clients старого wdtt.json — блокер B5 ревью); passwords.json
 // в ConfigDir — производная, её собирает proxyapp/wdttusers перед стартом.
@@ -201,7 +225,21 @@ type DataTarget struct {
 // стороны: его пишет ftlink при включении списка, а читает уборка при удалении
 // инстанса — разъехавшись, они оставили бы файл сиротой.
 func FreeTurnAllowlistPath(dataDir, serverID string) string {
-	safeID := strings.Map(func(r rune) rune {
+	return filepath.Join(dataDir, "freeturn", "allowlist-"+safeInstanceID(serverID)+".json")
+}
+
+// FreeTurnLinksPath — файл выданных ссылок абонентов freeturn-сервера (#919:
+// ссылку надо уметь показать повторно). Пишет ftlink при генерации ссылки,
+// читает уборка при удалении инстанса — как и у списка разрешённых, две
+// разъехавшиеся формулы оставили бы файл сиротой.
+func FreeTurnLinksPath(dataDir, serverID string) string {
+	return filepath.Join(dataDir, "freeturn", "links-"+safeInstanceID(serverID)+".json")
+}
+
+// safeInstanceID — id инстанса, пригодный для имени файла: id приходит из API
+// и в путь как есть не годится.
+func safeInstanceID(serverID string) string {
+	return strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
 			return r
@@ -209,7 +247,6 @@ func FreeTurnAllowlistPath(dataDir, serverID string) string {
 			return '_'
 		}
 	}, serverID)
-	return filepath.Join(dataDir, "freeturn", "allowlist-"+safeID+".json")
 }
 
 // DataTargets — данные, которые переживут удаление инстанса, если их не убрать:
@@ -217,9 +254,10 @@ func FreeTurnAllowlistPath(dataDir, serverID string) string {
 // списка разрешённых. Без инстанса они мертвы, а убрать их из UI нечем (стенд
 // 2026-08-28).
 //
-// У freeturn-сервера путей ДВА: заданный в конфиге и путь по умолчанию.
-// Выключение списка (ftlink.Disable) снимает поле с конфига, не трогая файл, —
-// и по одному лишь конфигу файл переставал быть виден навсегда.
+// У freeturn-сервера путей ТРИ: заданный в конфиге, путь списка по умолчанию
+// и файл выданных ссылок. Выключение списка (ftlink.Disable) снимает поле с
+// конфига, не трогая файл, — и по одному лишь конфигу файл переставал быть
+// виден навсегда.
 //
 // Пусто у клиентских ролей: своих данных на диске у них нет.
 func (r Record) DataTargets(dataDir string) []DataTarget {
@@ -234,7 +272,7 @@ func (r Record) DataTargets(dataDir string) []DataTarget {
 			return nil
 		}
 		return targetsOf("freeturn", r.FreeTurnServer.ClientsFile,
-			FreeTurnAllowlistPath(dataDir, r.ID))
+			FreeTurnAllowlistPath(dataDir, r.ID), FreeTurnLinksPath(dataDir, r.ID))
 	}
 	return nil
 }

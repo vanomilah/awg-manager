@@ -128,9 +128,13 @@ type InterfaceStore struct {
 	byID      map[string]*ndms.Interface
 	startedAt map[string]time.Time
 	failed    map[string]time.Time
-	// sys is a derived view: NDMSName → kernel-system-name. Built
-	// from byID on every mutation. Read paths take this under s.mu
-	// (RLock) — no separate lock.
+	// sysNames — имена ядра, полученные резолвером, по NDMS-id. Отдельно от
+	// byID, потому что InvalidateAll и OnCreated строят записи заново из
+	// ответа RCI, а `interface-name` там не имя ядра (5.02.A.11: NDMS-id
+	// или подпись, `Bridge0` → `Home`). Жило бы в записи — терялось бы при
+	// каждом сбросе, и следующий ListAll снова спрашивал бы все ~20
+	// интерфейсов (F473). Снимается на ifdestroyed.
+	sysNames map[string]string
 }
 
 // NewInterfaceStore constructs a new InterfaceStore. Bootstrap is
@@ -145,6 +149,7 @@ func NewInterfaceStore(g Getter, log Logger) *InterfaceStore {
 		byID:      make(map[string]*ndms.Interface),
 		startedAt: make(map[string]time.Time),
 		failed:    make(map[string]time.Time),
+		sysNames:  make(map[string]string),
 	}
 }
 
@@ -239,7 +244,8 @@ func (s *InterfaceStore) GetProxy(ctx context.Context, name string) (*ndms.Proxy
 }
 
 // FetchSummary returns InterfaceDetails by issuing a fresh batch-POST
-// show.interface query on every call — no cache read. Used by
+// show.interface query on every call; an interface absent from NDMS is
+// answered without the point query (F546). Used by
 // state.Manager for kernel-tunnel state determination because NDMS
 // `iflayerchanged link=running` hooks are not reliable for OpkgTun:
 // the cache that GetDetails consults can stay frozen with Link != "up"
@@ -251,6 +257,14 @@ func (s *InterfaceStore) GetProxy(ctx context.Context, name string) (*ndms.Proxy
 // GetDetails (cache helper, not authoritative).
 func (s *InterfaceStore) FetchSummary(ctx context.Context, name string) (*ndms.InterfaceDetails, error) {
 	if name == "" {
+		return nil, nil
+	}
+	// Интерфейса нет в NDMS — не спрашиваем: на запрос по отсутствующему
+	// имени NDMS пишет E «unable to find» в свой журнал (F546). nil — тот же
+	// ответ, что давал status-error NDMS.
+	if ok, err := s.exists(ctx, name); err != nil {
+		return nil, err
+	} else if !ok {
 		return nil, nil
 	}
 	// Batch POST вместо прямого GET /summary: NDMS обрабатывает GET с
@@ -411,7 +425,6 @@ func (s *InterfaceStore) ResolveSystemName(ctx context.Context, ndmsName string)
 	if err := s.ensureBootstrap(ctx); err != nil {
 		return ""
 	}
-
 	// Fast-path: if ndmsName is ALREADY a syntactically valid Linux kernel
 	// interface name and exists in the running kernel, it is already a kernel device
 	// (e.g. caller passed "eth3", "apcli0", "mbr10", "ppp1" or "nwg0").
@@ -423,25 +436,20 @@ func (s *InterfaceStore) ResolveSystemName(ctx context.Context, ndmsName string)
 	}
 
 	s.mu.RLock()
-	var sysName string
-	if iface, ok := s.byID[ndmsName]; ok {
-		sysName = iface.SystemName
-	}
 	if t, ok := s.failed[ndmsName]; ok && time.Since(t) < 60*time.Second {
 		s.mu.RUnlock()
 		return ""
 	}
 	s.mu.RUnlock()
 
-	// Trustworthy cached value: non-empty, distinct from NDMS id, looks
-	// like a kernel name, AND exists in the running kernel. The last
-	// check defends against firmware quirks where the parser filter has
-	// already nominally accepted a value but the device is missing
-	// (hotplug races, label-typed values that happen to be lowercase).
-	if sysName != "" && sysName != ndmsName &&
-		looksLikeKernelIfname(sysName) &&
-		kernelIfaceExists(sysName) {
+	if sysName := s.cachedSystemName(ndmsName); trustedSystemName(ndmsName, sysName) {
 		return sysName
+	}
+	// Интерфейса нет в кэше — резолвер не спрашиваем: на отсутствующее имя
+	// NDMS пишет E `unable to find X in "Network::Interface::Base"` в свой
+	// журнал (F546), а запомнить ответ всё равно негде (rememberSystemName).
+	if !s.mayExist(ctx, ndmsName) {
+		return ""
 	}
 
 	// Fallback: dedicated NDMS resolver endpoint.
@@ -455,13 +463,137 @@ func (s *InterfaceStore) ResolveSystemName(ctx context.Context, ndmsName string)
 		s.mu.Unlock()
 		return ""
 	}
+	s.rememberSystemName(ndmsName, resolved)
+	return resolved
+}
+
+// cachedSystemName — запомненное резолвером имя, иначе `interface-name`
+// из ответа RCI.
+func (s *InterfaceStore) cachedSystemName(ndmsName string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if name, ok := s.sysNames[ndmsName]; ok {
+		return name
+	}
+	if iface, ok := s.byID[ndmsName]; ok {
+		return iface.SystemName
+	}
+	return ""
+}
+
+// rememberSystemName запоминает имя только для интерфейса, который есть в
+// сторе: ifdestroyed между запросом и ответом резолвера иначе оставил бы
+// имя удалённого интерфейса.
+func (s *InterfaceStore) rememberSystemName(ndmsName, resolved string) {
 	s.mu.Lock()
 	if iface, ok := s.byID[ndmsName]; ok {
+		s.sysNames[ndmsName] = resolved
 		iface.SystemName = resolved
 	}
 	delete(s.failed, ndmsName)
 	s.mu.Unlock()
-	return resolved
+}
+
+// trustedSystemName: non-empty, distinct from NDMS id, looks like a kernel
+// name, AND exists in the running kernel. The last check defends against
+// firmware quirks where the parser filter has already nominally accepted a
+// value but the device is missing (hotplug races, label-typed values that
+// happen to be lowercase).
+func trustedSystemName(ndmsName, sysName string) bool {
+	return sysName != "" && sysName != ndmsName &&
+		looksLikeKernelIfname(sysName) &&
+		kernelIfaceExists(sysName)
+}
+
+// resolveSystemNames разрешает ненадёжные имена ОДНИМ пакетным POST —
+// ListAll/ListWAN иначе шли бы резолвером по одному интерфейсу подряд
+// (стенд: 22 запроса, ~0.6 с). Сбой пакета не фатален: ResolveSystemName
+// в цикле вызывающего доспросит по одному.
+func (s *InterfaceStore) resolveSystemNames(ctx context.Context, ids []string) {
+	var todo []string
+	for _, id := range ids {
+		if !trustedSystemName(id, s.cachedSystemName(id)) {
+			todo = append(todo, id)
+		}
+	}
+	if len(todo) < 2 {
+		return
+	}
+	batch := make([]any, len(todo))
+	for i, id := range todo {
+		batch[i] = transport.ShowQuery([]string{"interface", "system-name"}, map[string]any{"name": id})
+	}
+	raw, err := s.getter.Post(ctx, batch)
+	if err != nil {
+		return
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil || len(items) != len(todo) {
+		return
+	}
+	for i, item := range items {
+		if name := parseSystemName(item); name != "" {
+			s.rememberSystemName(todo[i], name)
+		}
+	}
+}
+
+// SystemNames — имена ядра для ids (id → имя; неразрешённых в карте нет)
+// без запроса на каждый id. В отличие от ResolveSystemName имени из кэша
+// достаточно, даже если устройства сейчас нет: обратной карте целей
+// (routing.SystemTunnelsByIface) нужно имя, а не живость устройства, — а
+// ResolveSystemName на отсутствующем устройстве каждый раз шёл бы в резолвер.
+// Прочие разрешаются одним пакетом (resolveSystemNames), одиночный — одним
+// запросом.
+func (s *InterfaceStore) SystemNames(ctx context.Context, ids []string) map[string]string {
+	out := make(map[string]string, len(ids))
+	if len(ids) == 0 || s.ensureBootstrap(ctx) != nil {
+		return out
+	}
+	// Имя из s.sysNames уже прошло через резолвер — доверяем ему без
+	// kernelIfaceExists (сюда и приходят за именем отсутствующего сейчас
+	// устройства). Имя из byID.SystemName — сырое `interface-name` из
+	// списка, резолвером не подтверждено, поэтому проверяем его так же,
+	// как ResolveSystemName: trustedSystemName (включая kernelIfaceExists).
+	// Без этой проверки лейбл NDMS, похожий на имя ядра (5.02.A.11),
+	// использовался бы вечно, а реальное имя так и не запрашивалось.
+	cached := func(id string) string {
+		s.mu.RLock()
+		resolverName, viaResolver := s.sysNames[id]
+		iface, hasIface := s.byID[id]
+		s.mu.RUnlock()
+		if viaResolver {
+			if resolverName != id && looksLikeKernelIfname(resolverName) {
+				return resolverName
+			}
+			return ""
+		}
+		if hasIface && trustedSystemName(id, iface.SystemName) {
+			return iface.SystemName
+		}
+		return ""
+	}
+	var todo []string
+	for _, id := range ids {
+		if name := cached(id); name != "" {
+			out[id] = name
+		} else if s.mayExist(ctx, id) { // отсутствующее — без резолвера (F546)
+			todo = append(todo, id)
+		}
+	}
+	if len(todo) == 1 {
+		if name := s.fetchSystemName(ctx, todo[0]); name != "" {
+			s.rememberSystemName(todo[0], name)
+		}
+	} else {
+		s.resolveSystemNames(ctx, todo)
+	}
+	for _, id := range todo {
+		if name := cached(id); name != "" {
+			out[id] = name
+		}
+	}
+	return out
 }
 
 // fetchSystemName resolves an NDMS interface id to its kernel name via
@@ -491,6 +623,11 @@ func (s *InterfaceStore) fetchSystemName(ctx context.Context, ndmsName string) s
 	if err != nil {
 		return ""
 	}
+	return parseSystemName(raw)
+}
+
+// parseSystemName разбирает ответ резолвера (одиночный или элемент пакета).
+func parseSystemName(raw []byte) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return ""
@@ -570,6 +707,22 @@ func (s *InterfaceStore) List(ctx context.Context) ([]ndms.Interface, error) {
 	return out, nil
 }
 
+// ListFresh — список интерфейсов, прочитанный с роутера сейчас, мимо карты
+// событий и без её обновления. Для проверок перед записью (занятые сети #713):
+// карта держится хуками NDMS, и пропущенный хук выкинул бы существующий
+// интерфейс из проверки. Отказ RCI — ошибка.
+func (s *InterfaceStore) ListFresh(ctx context.Context) ([]ndms.Interface, error) {
+	raw, err := s.fetchListMap(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ndms.Interface, 0, len(raw))
+	for _, iface := range raw {
+		out = append(out, iface)
+	}
+	return out, nil
+}
+
 // LANBridge — LAN-сегмент (бридж) с подсетью, для выбора в LAN-forward.
 // Description — человекочитаемое имя сегмента (NDMS description, напр. "LAN").
 type LANBridge struct{ Name, Description, Address, Mask string }
@@ -600,6 +753,13 @@ func (s *InterfaceStore) ListWAN(ctx context.Context) ([]wan.Interface, error) {
 	if err != nil {
 		return nil, err
 	}
+	var public []string
+	for _, iface := range all {
+		if iface.SecurityLevel == "public" {
+			public = append(public, iface.ID)
+		}
+	}
+	s.resolveSystemNames(ctx, public)
 	out := make([]wan.Interface, 0, len(all))
 	for _, iface := range all {
 		if iface.SecurityLevel != "public" {
@@ -628,19 +788,40 @@ func (s *InterfaceStore) ListWAN(ctx context.Context) ([]wan.Interface, error) {
 // Sorted by Name for deterministic UI rendering. Uses
 // ResolveSystemName for kernel-name lookup (see notes on ListWAN).
 //
+// Порты коммутатора (type Port) пропускаются: это не отдельное устройство
+// ядра — NDMS резолвит их в имя родителя (`GigabitEthernet1/0` → eth3, как
+// сам `GigabitEthernet1`), security-level у них нет.
+//
 // Deduplicates by kernel Name: if multiple NDMS entries resolve to the
 // same kernel ifname (e.g. a stale stub from a failed bootstrap fetch
-// coexists with the real entry), the Up=true entry wins; on a tie the
-// first seen is kept. Collisions are warn-logged with both NDMS IDs.
+// coexists with the real entry, or WifiMaster0 and its AccessPoint0 both
+// map to ra0), the winner is chosen by preferCandidate — the same one on
+// every call. До F475 ничья решалась порядком обхода map, и у `eth3`
+// security-level прыгал между public WAN и пустым портом — WAN случайно
+// пропадал из списков привязки sing-box (они берут только public).
 func (s *InterfaceStore) ListAll(ctx context.Context) ([]ndms.AllInterface, error) {
-	all, err := s.List(ctx)
+	listed, err := s.List(ctx)
 	if err != nil {
 		return nil, err
 	}
+	all := listed[:0]
+	for _, iface := range listed {
+		if iface.Type != "Port" {
+			all = append(all, iface)
+		}
+	}
+	ids := make([]string, len(all))
+	for i, iface := range all {
+		ids[i] = iface.ID
+	}
+	s.resolveSystemNames(ctx, ids)
 	seen := make(map[string]ndms.AllInterface, len(all))
 	winnerID := make(map[string]string, len(all))
 	for _, iface := range all {
 		kernelName := s.ResolveSystemName(ctx, iface.ID)
+		// Запасной путь оставлен намеренно: эхо метки (`Home`,
+		// `GigabitEthernet0`) wireToInterface уже вычистил, сюда доходит
+		// имя ядра отсутствующего сейчас устройства (выдернутый usb0).
 		if kernelName == "" {
 			kernelName = iface.SystemName
 		}
@@ -665,7 +846,7 @@ func (s *InterfaceStore) ListAll(ctx context.Context) ([]ndms.AllInterface, erro
 		}
 		prevWinner := winnerID[kernelName]
 		kept, dropped := prevWinner, iface.ID
-		if candidate.Up && !existing.Up {
+		if preferCandidate(candidate, iface.ID, existing, prevWinner) {
 			seen[kernelName] = candidate
 			winnerID[kernelName] = iface.ID
 			kept, dropped = iface.ID, prevWinner
@@ -678,6 +859,18 @@ func (s *InterfaceStore) ListAll(ctx context.Context) ([]ndms.AllInterface, erro
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// preferCandidate — побеждает ли кандидат (id) текущего победителя (winID)
+// за одно имя ядра: поднятый, затем с security-level, затем меньший id.
+func preferCandidate(c ndms.AllInterface, id string, win ndms.AllInterface, winID string) bool {
+	if c.Up != win.Up {
+		return c.Up
+	}
+	if (c.SecurityLevel != "") != (win.SecurityLevel != "") {
+		return c.SecurityLevel != ""
+	}
+	return id < winID
 }
 
 // === Hook-side write API (called from events.Dispatcher) ===
@@ -738,6 +931,7 @@ func (s *InterfaceStore) OnDestroyed(id string) {
 	s.mu.Lock()
 	delete(s.byID, id)
 	delete(s.startedAt, id)
+	delete(s.sysNames, id)
 	s.mu.Unlock()
 }
 
@@ -757,11 +951,8 @@ func (s *InterfaceStore) OnDestroyed(id string) {
 //   - State field is the overall interface-up flag and tracks the
 //     ctrl layer the same way: running=up, anything else=down. ctrl
 //     also gates startedAt (the uptime clock).
-//
-// IPv4 / IPv6 layer events are accepted but currently produce no
-// field updates — the existing summary-layer fields aren't part of
-// any read path's hot loop yet. If they become hot, mirror the
-// running→up mapping.
+//   - IPv4 layer events store the level as-is into the IPv4 field (it
+//     is layer-state, not up/down). IPv6 events produce no updates.
 func (s *InterfaceStore) OnLayerChanged(id, layer, level string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -794,12 +985,14 @@ func (s *InterfaceStore) OnLayerChanged(id, layer, level string) {
 }
 
 // OnIPChanged handles ifipchanged NDMS events. Patches address only.
-// State is owned by the ctrl layer (see OnLayerChanged); Connected is
-// also a derived signal we don't trust from this hook payload alone
-// because the NDMS event-script forwarder doesn't always populate up/
-// connected fields, leading to spurious "down" / "no" overwrites of
-// genuinely running interfaces.
-func (s *InterfaceStore) OnIPChanged(id, address string, _, _ bool) {
+//
+// Состояние линка сюда не приходит СОЗНАТЕЛЬНО: оно принадлежит ctrl-слою
+// (OnLayerChanged), а поля up/connected из этого хука недостоверны —
+// форвардер событий NDMS заполняет их не всегда, и доверие к ним затирало
+// живые интерфейсы ложными "down"/"no". Раньше они принимались параметрами и
+// выбрасывались внутри; параметр, который никто не читает, приглашает начать
+// его читать, поэтому их здесь нет вовсе.
+func (s *InterfaceStore) OnIPChanged(id, address string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	iface, ok := s.byID[id]
@@ -823,31 +1016,49 @@ func layerLevelToUpDown(level string) string {
 
 // === Command-side write API (proactive refresh after a successful POST) ===
 
-// Invalidate is called by command-side code AFTER a successful NDMS
-// write to ensure the next read sees the new state without waiting
-// for the eventual hook. Issues ONE HTTP (/show/interface/<name>) and
-// patches the map. If the interface no longer exists in NDMS (200 +
-// empty body), it is removed from the map.
+// Refresh reads the record as NDMS holds it RIGHT NOW, patches the cache
+// with the result the same way Invalidate does, and returns it. Use this
+// instead of Get when the decision must reflect NDMS now rather than the
+// last hook-driven snapshot: NDMS hooks (ifcreated/ifdestroyed/…) don't
+// fire for an out-of-band edit like `interface OpkgTunN description …`,
+// so Get can stay stale indefinitely (F532).
 //
-// 404 is not expected here — command callers invoke this only after
-// a successful POST, so the interface exists. If a 404 does arrive
-// (e.g. a different actor deleted the interface concurrently), the
-// HTTPError propagates as a logged warning and the map is left
-// untouched (next bootstrap or hook will reconcile).
-func (s *InterfaceStore) Invalidate(name string) {
+// A record the cache knows is read point-wise (`show interface <name>`).
+// A record the cache doesn't know is looked up in a fresh full list
+// instead: on a point read of an absent name NDMS writes E `unable to find
+// "<name>"` into its own log (F546), while the list is silent and just as
+// fresh — a record the cache missed (lost hook) is still found, so the
+// ownership gate never mistakes a foreign record for an absent one (F517).
+//
+// Absent record → (nil, nil), and the entry is removed from the cache.
+// Transport/parse error → error returned, cache left untouched — same
+// contract Invalidate already had.
+func (s *InterfaceStore) Refresh(ctx context.Context, name string) (*ndms.Interface, error) {
 	if name == "" {
-		return
+		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	if err := s.ensureBootstrap(ctx); err != nil {
-		s.log.Warnf("Invalidate %s: bootstrap failed: %v", name, err)
-		return
+		return nil, err
 	}
-	iface, err := s.fetchOne(ctx, name)
-	if err != nil {
-		s.log.Warnf("Invalidate %s: refresh failed: %v", name, err)
-		return
+	s.mu.RLock()
+	_, known := s.byID[name]
+	s.mu.RUnlock()
+	var iface *ndms.Interface
+	if known {
+		var err error
+		if iface, err = s.fetchOne(ctx, name); err != nil {
+			return nil, err
+		}
+	} else {
+		// Из списка берём только эту запись: подмена всей карты затёрла бы
+		// то, что хуки успели применить к соседям, пока шёл запрос.
+		raw, err := s.fetchListMap(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if rec, ok := raw[name]; ok {
+			iface = &rec
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -856,13 +1067,38 @@ func (s *InterfaceStore) Invalidate(name string) {
 		// NDMS confirms absent — remove from map.
 		delete(s.byID, name)
 		delete(s.startedAt, name)
-		return
+		return nil, nil
 	}
 	s.byID[name] = iface
 	if iface.Uptime > 0 && iface.ConfLayer == "running" {
 		if _, exists := s.startedAt[name]; !exists {
 			s.startedAt[name] = time.Now().Add(-time.Duration(iface.Uptime) * time.Second)
 		}
+	}
+	cp := *iface
+	return &cp, nil
+}
+
+// Invalidate is called by command-side code AFTER a successful NDMS
+// write to ensure the next read sees the new state without waiting
+// for the eventual hook. Thin wrapper over Refresh (5s timeout, own
+// background context) that swallows the error into a Warn log — this
+// is a fire-and-forget call, callers don't check the outcome.
+//
+// 404/"unable to find" is not expected here — command callers invoke
+// this only after a successful POST, so the interface exists. If it
+// does arrive anyway (e.g. a different actor deleted the interface
+// concurrently), Refresh already treats it as "absent" and removes the
+// entry; any other error is logged and the map is left untouched (next
+// bootstrap or hook will reconcile).
+func (s *InterfaceStore) Invalidate(name string) {
+	if name == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := s.Refresh(ctx, name); err != nil {
+		s.log.Warnf("Invalidate %s: refresh failed: %v", name, err)
 	}
 }
 
@@ -899,7 +1135,32 @@ func (s *InterfaceStore) InvalidateAll() {
 	}
 	s.byID = nextByID
 	s.startedAt = nextStartedAt
+	for id := range s.sysNames {
+		if _, ok := nextByID[id]; !ok {
+			delete(s.sysNames, id)
+		}
+	}
 	s.booted.Store(true)
+}
+
+// mayExist — false, только если кэш уверен, что записи нет. Ошибка кэша —
+// «не знаем» (true): вызывающий спросит NDMS, как раньше. Для частых опросов:
+// запись, пропущенную кэшем, до ближайшего хука или перечитывания не видно.
+func (s *InterfaceStore) mayExist(ctx context.Context, name string) bool {
+	iface, err := s.Get(ctx, name)
+	return err != nil || iface != nil
+}
+
+// exists — есть ли запись name в NDMS, без точечного запроса по отсутствующей
+// (F546): известная кэшу есть; неизвестная проверяется свежим списком
+// (Refresh), который E не пишет и находит запись, пропущенную кэшем. Для
+// путей, где решение обязано опираться на NDMS сейчас.
+func (s *InterfaceStore) exists(ctx context.Context, name string) (bool, error) {
+	if !s.mayExist(ctx, name) {
+		rec, err := s.Refresh(ctx, name)
+		return rec != nil, err
+	}
+	return true, nil
 }
 
 // === Internal helpers ===
@@ -918,7 +1179,11 @@ func (s *InterfaceStore) fetchListMap(ctx context.Context) (map[string]ndms.Inte
 			s.log.Warnf("parse interface %s: %v", id, err)
 			continue
 		}
-		out[id] = iface
+		// Ключ — id записи, а не ключ ответа: порты коммутатора NDMS
+		// отдаёт под ключами "0".."4" с id `GigabitEthernet0/0`… (стенд
+		// 5.02.A.11). По ключу ответа их не находили ни Get, ни запоминание
+		// имени резолвера — порты спрашивались на каждом ListAll (F473).
+		out[iface.ID] = iface
 	}
 	return out, nil
 }
@@ -936,6 +1201,17 @@ func (s *InterfaceStore) fetchListMap(ctx context.Context) (map[string]ndms.Inte
 // to be a 404 in the GET form; now the POST may return an empty envelope
 // for the same case). HTTPError 404 (rare race condition on POST) is
 // returned as-is.
+//
+// F532: NDMS answers this POST form with HTTP 200 even for a record that
+// doesn't exist — a nested `{"status":[{"status":"error","code":...}]}`
+// envelope, NOT the top-level `{"status":"error",...}` shape
+// transport.Client.postJSON's ExtractError checks for (stand: KN-1810,
+// 5.02.A.11). Only code 6553619 ("unable to find") means "no such
+// record" → (nil, nil). Any OTHER code inside that envelope is a real
+// NDMS-side failure ("don't know", not "doesn't exist") and must not be
+// silently treated as absence — a Phase-1 ownership gate acting on a
+// false (nil, nil) would create a record on top of one that already
+// exists, and Refresh would evict a perfectly good cache entry.
 func (s *InterfaceStore) fetchOne(ctx context.Context, name string) (*ndms.Interface, error) {
 	raw, err := s.getter.Post(ctx, transport.ShowInterface(name, nil))
 	if err != nil {
@@ -947,6 +1223,12 @@ func (s *InterfaceStore) fetchOne(ctx context.Context, name string) (*ndms.Inter
 	}
 	if len(inner) == 0 {
 		return nil, nil
+	}
+	if statusErr := parseNestedStatusError(inner); statusErr != nil {
+		if statusErr.Code == ndmsUnableToFindCode {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("fetch interface %s: ndms status error %s: %s", name, statusErr.Code, statusErr.Message)
 	}
 	var w ifaceWire
 	if err := json.Unmarshal(inner, &w); err != nil {
@@ -960,6 +1242,43 @@ func (s *InterfaceStore) fetchOne(ctx context.Context, name string) (*ndms.Inter
 	}
 	iface := wireToInterface(w)
 	return &iface, nil
+}
+
+// ndmsUnableToFindCode — код NDMS-конверта "unable to find" (стенд
+// KN-1810, 5.02.A.11): единственное значение code, которое означает
+// «записи нет», а не «запрос не удался».
+const ndmsUnableToFindCode = "6553619"
+
+// ndmsStatusError is one `{"status":"error",...}` element of a nested
+// NDMS status array — the shape this POST form wraps into `show.interface`
+// on failure, distinct from the top-level status envelope
+// transport.ExtractError checks.
+type ndmsStatusError struct {
+	Code    string
+	Message string
+}
+
+// parseNestedStatusError reports the first `status: "error"` entry of a
+// `{"status":[...]}` array at the top of inner, or nil if inner isn't
+// that shape (a normal interface object has no top-level "status" field
+// of this form, so this never misfires on a real record).
+func parseNestedStatusError(inner []byte) *ndmsStatusError {
+	var w struct {
+		Status []struct {
+			Status  string          `json:"status"`
+			Code    json.RawMessage `json:"code"` // строка у стенда; число тоже принимаем
+			Message string          `json:"message"`
+		} `json:"status"`
+	}
+	if json.Unmarshal(inner, &w) != nil {
+		return nil
+	}
+	for _, s := range w.Status {
+		if s.Status == "error" {
+			return &ndmsStatusError{Code: strings.Trim(string(s.Code), `"`), Message: s.Message}
+		}
+	}
+	return nil
 }
 
 // === Wire format ===

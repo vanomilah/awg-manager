@@ -1,11 +1,13 @@
 package orchestrator
 
 // decide takes an event and current state, returns actions to execute.
-// Pure function — no I/O, no side effects. All decision logic lives here.
+// Без I/O. Единственная мутация состояния здесь — пометка «бут не состоялся»
+// в decideBoot/decideReconnect: решать это обязан владелец состояния, иначе
+// обязанность снова уезжает вызывающему (ровно так и появился F194).
 func decide(event Event, state *State) []Action {
 	switch event.Type {
 	case EventBoot:
-		return decideBoot(state)
+		return decideBoot(event, state)
 	case EventReconnect:
 		return decideReconnect(state)
 	case EventStart:
@@ -22,8 +24,6 @@ func decide(event Event, state *State) []Action {
 		return decideWANUp(event, state)
 	case EventWANDown:
 		return decideWANDown(event, state)
-	case EventPingCheckFailed:
-		return decidePingCheckFailed(event, state)
 	case EventQuiesce:
 		return decideQuiesce(state)
 	default:
@@ -31,7 +31,17 @@ func decide(event Event, state *State) []Action {
 	}
 }
 
-func decideBoot(state *State) []Action {
+func decideBoot(event Event, state *State) []Action {
+	// WAN не поднят — бута не будет: стартовать туннели некуда, а приводить
+	// маршруты бессмысленно. Отмечаем, что бут ДОЛЖЕН состояться, и первое
+	// WAN-событие отработает за него (HandleEvent). Решение принимает тот,
+	// кто владеет состоянием, а не вызывающий отдельным методом.
+	if !event.WANUp {
+		state.bootPending = true
+		return nil
+	}
+	state.bootPending = false
+
 	var actions []Action
 
 	for _, t := range state.tunnels {
@@ -51,7 +61,10 @@ func decideBoot(state *State) []Action {
 			actions = appendPostStartActions(actions, t)
 
 		case "nativewg":
-			if !state.supportsASC || t.ViaProxy {
+			if t.Obfuscated {
+				actions = append(actions, Action{Type: ActionStartNativeWG, Tunnel: t.ID})
+				actions = appendPostStartActions(actions, t)
+			} else if !state.supportsASC || t.ViaProxy {
 				// Reconcile-to-desired instead of unconditional Stop+Start:
 				// the executor skips the disruptive restart when the tunnel
 				// is already running WITH a handshake, and still re-attaches
@@ -59,7 +72,7 @@ func decideBoot(state *State) []Action {
 				// without our kmod proxy → conf=running but no handshake).
 				actions = append(actions, Action{Type: ActionReconcileNativeWG, Tunnel: t.ID})
 				actions = appendPostStartActions(actions, t)
-			} else if t.EndpointMayV6 {
+			} else if t.EndpointMayV6 || t.AWG3 {
 				// На ASC-прошивке NDMS сам поднимает интерфейс из своего
 				// конфига, и для v4-литерала это самодостаточно (boot ничего
 				// не делает намеренно). Для v6-литерала и hostname'а (мог
@@ -69,6 +82,9 @@ func decideBoot(state *State) []Action {
 				// Start возвращает его (wg set) и заново регистрирует
 				// endpoint-страж; для hostname→v4 Start безвреден — тот же
 				// resync, что decideReconnect делает для работающих.
+				// Конфиг 3.x — то же: до обновления прошивки на ASC3 он мог
+				// идти через awg_proxy, и в конфиге NDMS остались снятый ASC и
+				// endpoint 127.0.0.1 слота (tunnelState.AWG3).
 				actions = append(actions, Action{Type: ActionStartNativeWG, Tunnel: t.ID})
 				actions = appendPostStartActions(actions, t)
 			}
@@ -84,6 +100,19 @@ func decideBoot(state *State) []Action {
 }
 
 func decideReconnect(state *State) []Action {
+	// Реконнект поднимает включённые туннели и приводит маршруты — то есть
+	// делает работу бута. Пометка «бут не состоялся» после него не нужна:
+	// оставить её значит однажды выстрелить полным бутом на ровном месте
+	// (этот путь живёт и в середине жизни демона — quiesce/resume бэкапа).
+	//
+	// Но только при поднятом WAN. Сам реконнект WAN не проверяет вовсе, и на
+	// загрузке с лежащим WAN экспорт бэкапа (quiesce → resume) снимал бы
+	// пометку, ничего при этом не подняв: отложенный бут терялся, а настоящий
+	// WAN-up получал уже обычный decideWANUp.
+	if state.anyWANUp() {
+		state.bootPending = false
+	}
+
 	var actions []Action
 
 	actions = append(actions, Action{Type: ActionRestoreEndpointTracking})
@@ -95,7 +124,10 @@ func decideReconnect(state *State) []Action {
 				// Re-apply NDMS config, firewall, routing around the running process.
 				actions = append(actions, Action{Type: ActionReconcileKernel, Tunnel: t.ID})
 			case "nativewg":
-				if state.supportsASC && !t.ViaProxy {
+				if t.Obfuscated {
+					actions = append(actions, Action{Type: ActionStartNativeWG, Tunnel: t.ID})
+					actions = appendPostStartActions(actions, t)
+				} else if state.supportsASC && !t.ViaProxy {
 					// KeenOS 5+ ASC mode has no kmod proxy to restore. A running
 					// NativeWG interface may still need a full resync after awgm
 					// restart/update so ASC bindings, routes and persistence are
@@ -289,6 +321,13 @@ func decideWANUp(event Event, state *State) []Action {
 			}
 
 		case "nativewg":
+			if t.Obfuscated {
+				// Полный Start переставит host-route на новый WAN — ASC-ветка
+				// ниже делает continue, но NDMS наш host-route не двигает.
+				actions = append(actions, Action{Type: ActionStartNativeWG, Tunnel: t.ID})
+				actions = appendPostStartActions(actions, t)
+				continue
+			}
 			if state.supportsASC && !t.ViaProxy {
 				continue // NDMS handles failover natively via ASC on >= 5.01.A.3
 			}
@@ -329,6 +368,11 @@ func decideWANDown(event Event, state *State) []Action {
 			actions = append(actions, Action{Type: ActionSuspendKernel, Tunnel: t.ID})
 
 		case "nativewg":
+			if t.Obfuscated {
+				// Слота нет (нечего SuspendProxy) и Stop не нужен: WAN упал —
+				// host-route мёртв вместе с ним, поднимется на WAN-up.
+				continue
+			}
 			if state.supportsASC && !t.ViaProxy {
 				continue // ASC handles failover natively
 			}
@@ -463,14 +507,6 @@ func decideRestart(event Event, state *State) []Action {
 	actions = appendPostStartActions(actions, t)
 
 	return actions
-}
-
-func decidePingCheckFailed(event Event, state *State) []Action {
-	t := state.tunnels[event.Tunnel]
-	if t == nil || !t.Running || t.Backend != "kernel" {
-		return nil
-	}
-	return []Action{{Type: ActionLinkToggle, Tunnel: t.ID}}
 }
 
 // appendPostStartActions adds monitoring + routing actions after a tunnel start.

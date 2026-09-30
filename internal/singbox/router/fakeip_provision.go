@@ -18,8 +18,9 @@ type StaticRouteSpec struct {
 	Mask      string
 	Reject    bool
 	Comment   string
-	// V6 selects the IPv6 route form (bare network+interface, no mask/host/
-	// reject/comment). Mirrors ndmscommand.StaticRouteSpec.V6.
+	// V6 selects the IPv6 route form: подсеть уезжает ключом prefix (хост — как
+	// /128), mask и host там отсутствуют, а reject и comment поддержаны.
+	// Mirrors ndmscommand.StaticRouteSpec.V6.
 	V6 bool
 }
 
@@ -74,12 +75,12 @@ type SegmentNATProvider interface {
 }
 
 // RunningConfigReader читает строки /show/running-config. TTL-кэша 60 мин
-// хватает всему остальному, но policy-tun-reconcile обязан звать InvalidateAll
-// перед чтением: дрейф permit/route, внесённый пользователем мимо нас, иначе
-// невидим до часа.
+// хватает всему остальному, но policy-tun-reconcile решает по свежему чтению
+// (Fetch — мимо кэша и singleflight): дрейф permit/route, внесённый
+// пользователем мимо нас, иначе невидим до часа.
 type RunningConfigReader interface {
 	Lines(ctx context.Context) ([]string, error)
-	InvalidateAll()
+	Fetch(ctx context.Context) ([]string, error)
 }
 
 // NATStateReader — структурированное состояние NAT (вместо текстового парсинга
@@ -104,8 +105,8 @@ type FakeIPTunParams struct {
 	// (resolveFakeIPParams).
 	RealServer string
 	// CachePath is the sing-box experimental.cache_file path (store_fakeip).
-	// Not a spec-default — wired by cmd/awg-manager from singbox.DefaultCacheDBPath
-	// so the router stays decoupled from the operator's path layout.
+	// Not a Deps input: fakeIPParamsWithCache fills it from Deps.CacheDBPath
+	// (the operator's effective path, issue #842) on the way to the overlay spec.
 	CachePath string
 }
 
@@ -120,7 +121,7 @@ func DefaultFakeIPTunParams() FakeIPTunParams {
 		TunAddr6:   "fdfe:dcba:9876::1/126",
 		MTU:        1500,
 		RealServer: "1.1.1.1", // default upstream; user-overridable via FakeIPRealServer
-		// CachePath left empty — wired by main.go from singbox.DefaultCacheDBPath.
+		// CachePath left empty — fakeIPParamsWithCache takes Deps.CacheDBPath.
 	}
 }
 
@@ -128,6 +129,18 @@ func DefaultFakeIPTunParams() FakeIPTunParams {
 // живых настроек, а не из снимка времени сборки зависимостей.
 func (s *ServiceImpl) resolveFakeIPParams(sr storage.SingboxRouterSettings) FakeIPTunParams {
 	return resolveFakeIPParamsWith(s.deps.FakeIPTun, sr, s.bootstrapDNS())
+}
+
+// fakeIPParamsWithCache — параметры для overlay и спеки: плюс эффективный
+// путь cache.db у оператора (issue #842). Отдельно от resolveFakeIPParams,
+// который зовётся с тика планировщика ради адресов и пулов и не должен
+// ради них читать 00-base.json с флеша.
+func (s *ServiceImpl) fakeIPParamsWithCache(sr storage.SingboxRouterSettings) FakeIPTunParams {
+	p := s.resolveFakeIPParams(sr)
+	if s.deps.CacheDBPath != nil {
+		p.CachePath = s.deps.CacheDBPath()
+	}
+	return p
 }
 
 // bootstrapDNS читает общий адрес bootstrap-резолвера; пусто, когда стор не

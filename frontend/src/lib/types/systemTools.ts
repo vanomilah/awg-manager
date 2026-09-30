@@ -93,8 +93,11 @@ export type SystemProcessItem = {
 	nice: number;
 	threads: number;
 	state: string; // "R", "S", "D", "Z", "T"
-	cpuPercent: number;
-	memoryRss: number;
+	cpuPercent: number; // доля всего процессора (все ядра), 0..100
+	cpuTimeSec: number; // utime+stime с запуска процесса
+	memoryRss: number; // VmRSS = memoryOwn + memoryFile
+	memoryOwn: number; // RssAnon+RssShmem — ядро без swap не отдаст
+	memoryFile: number; // RssFile — страницы файлов, ядро отдаёт при нехватке
 	memoryVsize: number;
 	memoryPercent: number;
 	name: string;

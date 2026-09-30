@@ -387,6 +387,7 @@ func buildTunnelSettings(stored *storage.AWGTunnel) TunnelSettings {
 	ts := TunnelSettings{
 		MTU:               stored.Interface.MTU,
 		DNS:               stored.Interface.DNS,
+		AllowedIPs:        stored.Peer.AllowedIPs,
 		Qlen:              stored.Interface.Qlen,
 		Jc:                stored.Interface.Jc,
 		Jmin:              stored.Interface.Jmin,
@@ -619,6 +620,28 @@ func (r *Runner) collectAWGProxyModule(ctx context.Context) AWGProxyModule {
 				if line != "" {
 					mod.DmesgLines = append(mod.DmesgLines, line)
 				}
+			}
+		}
+	}
+
+	return mod
+}
+
+// collectAWGMRelayModule reads kernel-релей обфускатора Phobos (awgm_relay,
+// спека §4.10). Никогда не паникует на отсутствующих /proc-файлах (relay
+// выключен настройкой или модуль не собран) — в этом случае Loaded=false.
+func (r *Runner) collectAWGMRelayModule() AWGMRelayModule {
+	mod := AWGMRelayModule{}
+
+	if v, err := r.readAWGMRelayVersion(); err == nil {
+		mod.Loaded = true
+		mod.Version = strings.TrimSpace(string(v))
+	}
+	if list, err := r.readAWGMRelayList(); err == nil {
+		mod.RawList = string(list)
+		for _, line := range strings.Split(mod.RawList, "\n") {
+			if strings.HasPrefix(line, "127.0.0.1:") {
+				mod.Slots++
 			}
 		}
 	}

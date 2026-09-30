@@ -2,10 +2,12 @@ package metrics
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/ndms"
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 )
 
@@ -54,7 +56,7 @@ func (p *fakeMetricsPublisher) Events() []publishedEvent {
 
 type fakeSubs struct{ count int }
 
-func (f *fakeSubs) SubscriberCount() int { return f.count }
+func (f *fakeSubs) ClientCount() int { return f.count }
 
 type fakeSnapshotPub struct {
 	mu    sync.Mutex
@@ -190,23 +192,59 @@ func TestMetricsPoller_EmptyPeersCooldown_SkipsSubsequentTicks(t *testing.T) {
 	}
 }
 
-func TestMetricsPoller_SkipsWhenNoSubscribers(t *testing.T) {
+// При закрытой панели поллер РАЗРЕЖАЕТСЯ, а не выключается: он единственный
+// кормилец истории трафика не управляемых системных туннелей, и полный гейт
+// оставлял в графике дыру во всю длину простоя (F352).
+func TestMetricsPoller_IdleStillFeedsHistory(t *testing.T) {
 	fg := query.NewFakeGetter()
-	fg.SetJSON("/show/interface/Wireguard0", `{"wireguard":{"peer":[]}}`)
-	peers := query.NewPeerStoreWithTTL(fg, query.NopLogger(), 1*time.Second)
+	fg.SetJSON("/show/interface/Wireguard0", `{"wireguard":{"peer":[{"public-key":"k","rxbytes":10,"txbytes":20,"last-handshake":0,"online":true,"enabled":true}]}}`)
+	peers := query.NewPeerStoreWithTTL(fg, query.NopLogger(), 1*time.Millisecond)
 	run := &fakeRunningProvider{}
 	run.Set([]InterfaceRef{{ID: "Wireguard0"}})
-	pub := &fakeMetricsPublisher{}
-	subs := &fakeSubs{count: 0}
+	history := &fakeHistory{}
 
-	p := NewWithInterval(peers, pub, run, subs, NopLogger(), 10*time.Millisecond)
+	// idleInterval = 12×interval = 60 мс. За 250 мс простоя обязано пройти
+	// хотя бы несколько разрежённых тиков.
+	p := NewWithInterval(peers, &fakeMetricsPublisher{}, run, &fakeSubs{count: 0}, NopLogger(), 5*time.Millisecond)
+	p.SetHistoryFeeder(history)
 	p.Start()
 	defer p.Stop()
 
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(250 * time.Millisecond)
 
-	if len(pub.Events()) != 0 {
-		t.Errorf("published events despite 0 subscribers: %d", len(pub.Events()))
+	if len(history.Entries()) == 0 {
+		t.Fatal("история не пишется при закрытой панели — дыра в графике системных туннелей")
+	}
+}
+
+// Разрежение обязано быть настоящим: без панели тиков должно быть заметно
+// меньше, чем с ней. Иначе экономия, ради которой всё затевалось, исчезает.
+func TestMetricsPoller_IdleIsThinned(t *testing.T) {
+	// Считаем обращения к роутеру, а не записи истории: история кормится только
+	// на смену дайджеста пиров, а он в фейке постоянный.
+	poll := func(clients int) int {
+		fg := query.NewFakeGetter()
+		fg.SetJSON("/show/interface/Wireguard0", `{"wireguard":{"peer":[{"public-key":"k","rxbytes":10,"txbytes":20,"last-handshake":0,"online":true,"enabled":true}]}}`)
+		peers := query.NewPeerStoreWithTTL(fg, query.NopLogger(), 1*time.Millisecond)
+		run := &fakeRunningProvider{}
+		run.Set([]InterfaceRef{{ID: "Wireguard0"}})
+
+		p := NewWithInterval(peers, &fakeMetricsPublisher{}, run, &fakeSubs{count: clients}, NopLogger(), 5*time.Millisecond)
+		p.SetHistoryFeeder(&fakeHistory{})
+		p.Start()
+		defer p.Stop()
+
+		time.Sleep(250 * time.Millisecond)
+		return fg.Calls("/show/interface/Wireguard0")
+	}
+
+	idle, watched := poll(0), poll(1)
+	if idle == 0 {
+		t.Fatal("простой не должен глушить поллер полностью")
+	}
+	// 12-кратное разрежение; берём запас втрое на дрожание планировщика.
+	if idle*4 > watched {
+		t.Errorf("разрежения нет: в простое %d тиков против %d при открытой панели", idle, watched)
 	}
 }
 
@@ -258,7 +296,9 @@ func TestMetricsPoller_ServerNilCallback_NoPublish(t *testing.T) {
 	}
 }
 
-func TestMetricsPoller_DedupsUnchangedData(t *testing.T) {
+// F469: туннель публикуется каждый тик и при неизменных данных — событие
+// служит часами графика (точка на событие, скорость по соседним).
+func TestMetricsPoller_TunnelPublishesEveryTick(t *testing.T) {
 	fg := query.NewFakeGetter()
 	fg.SetJSON("/show/interface/Wireguard0", `{"wireguard":{"peer":[{"public-key":"k","rxbytes":100,"txbytes":200,"last-handshake":5,"online":true,"enabled":true}]}}`)
 	peers := query.NewPeerStoreWithTTL(fg, query.NopLogger(), 1*time.Millisecond)
@@ -273,9 +313,50 @@ func TestMetricsPoller_DedupsUnchangedData(t *testing.T) {
 
 	time.Sleep(80 * time.Millisecond)
 
-	evs := pub.Events()
-	if len(evs) != 1 {
-		t.Errorf("dedupe: want 1 event for unchanged data, got %d", len(evs))
+	if evs := pub.Events(); len(evs) < 3 {
+		t.Errorf("неизменный туннель: событий %d, ждали на каждом тике (>=3)", len(evs))
+	}
+}
+
+// F469: сервер сравнивается по абсолютному времени рукопожатия. Растущие
+// «секунды назад» при том же рукопожатии — не изменение (раньше подсказка
+// уходила каждый тик); новые байты — изменение.
+func TestServerDigest_HandshakeAgeIsNotAChange(t *testing.T) {
+	t0 := time.Unix(1_000_000, 0)
+	a := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 10}}, t0)
+	b := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 15}}, t0.Add(5*time.Second))
+	if !a.equal(b) {
+		t.Error("то же рукопожатие 5 с спустя сочтено изменением")
+	}
+	// Тик из кэша PeerStore (TTL 8 с): «секунды назад» те же, что при
+	// чтении, а now на тик позже — это то же рукопожатие.
+	cached := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 10}}, t0.Add(8*time.Second))
+	if !a.equal(cached) {
+		t.Error("данные из кэша PeerStore на следующем тике сочтены новым рукопожатием")
+	}
+	// Целые «секунды назад» пересчитываются в абсолютное время с дрожью в 1 с.
+	jitter := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 16}}, t0.Add(5*time.Second))
+	if !a.equal(jitter) {
+		t.Error("дрожь пересчёта в 1 с сочтена новым рукопожатием")
+	}
+	// Новое рукопожатие (WireGuard — раз в ~2 мин): 120 с после прежнего.
+	c := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 1}}, t0.Add(111*time.Second))
+	if a.equal(c) {
+		t.Error("новое рукопожатие не сочтено изменением")
+	}
+	d := digestPeers([]ndms.Peer{{RxBytes: 9, TxBytes: 2, LastHandshakeSecondsAgo: 15}}, t0.Add(5*time.Second))
+	if a.equal(d) {
+		t.Error("новые байты не сочтены изменением")
+	}
+	offline := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 15, Online: false}}, t0.Add(5*time.Second))
+	onlineA := digestPeers([]ndms.Peer{{RxBytes: 1, TxBytes: 2, LastHandshakeSecondsAgo: 10, Online: true}}, t0)
+	if onlineA.equal(offline) {
+		t.Error("пир ушёл в offline без новых байт — изменение не замечено")
+	}
+	never := digestPeers([]ndms.Peer{{LastHandshakeSecondsAgo: math.MaxInt32}}, t0)
+	never2 := digestPeers([]ndms.Peer{{LastHandshakeSecondsAgo: math.MaxInt32}}, t0.Add(5*time.Second))
+	if !never.equal(never2) {
+		t.Error("«рукопожатий не было» на разных тиках сочтено изменением")
 	}
 }
 
@@ -309,5 +390,56 @@ func TestMetricsPoller_Stop_WithoutStart(t *testing.T) {
 		// Good
 	case <-time.After(100 * time.Millisecond):
 		t.Errorf("Stop without Start should return immediately")
+	}
+}
+
+// В простое серверные интерфейсы не опрашиваются: историю трафика они не кормят
+// (её ведёт publishTunnel, и только для не серверных ref), а их единственный
+// выход — подсказка в шину, где при нуле зрителей никого нет. Туннельные при
+// этом опрашиваться ОБЯЗАНЫ — ради них поллер в простое и не выключен.
+func TestMetricsPoller_IdleSkipsServersButNotTunnels(t *testing.T) {
+	fg := query.NewFakeGetter()
+	peerJSON := `{"wireguard":{"peer":[{"public-key":"k","rxbytes":10,"txbytes":20,"last-handshake":0,"online":true,"enabled":true}]}}`
+	fg.SetJSON("/show/interface/Wireguard0", peerJSON)
+	fg.SetJSON("/show/interface/Wireguard10", peerJSON)
+	peers := query.NewPeerStoreWithTTL(fg, query.NopLogger(), 1*time.Millisecond)
+	run := &fakeRunningProvider{}
+	run.Set([]InterfaceRef{{ID: "Wireguard0"}, {ID: "Wireguard10", IsServer: true}})
+
+	p := NewWithInterval(peers, &fakeMetricsPublisher{}, run, &fakeSubs{count: 0}, NopLogger(), 5*time.Millisecond)
+	p.SetHistoryFeeder(&fakeHistory{})
+	p.Start()
+	defer p.Stop()
+
+	time.Sleep(250 * time.Millisecond)
+
+	if got := fg.Calls("/show/interface/Wireguard0"); got == 0 {
+		t.Error("туннель в простое не опрашивается — история трафика встанет")
+	}
+	if got := fg.Calls("/show/interface/Wireguard10"); got != 0 {
+		t.Errorf("сервер в простое опрошен %d раз, потребителя у этого нет", got)
+	}
+}
+
+// F469: неизменный сервер даёт ОДНУ подсказку — дальше тишина, хотя
+// «секунды назад» у рукопожатия растут.
+func TestMetricsPoller_UnchangedServerHintsOnce(t *testing.T) {
+	fg := query.NewFakeGetter()
+	fg.SetJSON("/show/interface/Wireguard10", `{"wireguard":{"peer":[{"public-key":"k","rxbytes":1,"txbytes":2,"last-handshake":30,"online":true,"enabled":true}]}}`)
+	peers := query.NewPeerStoreWithTTL(fg, query.NopLogger(), 1*time.Millisecond)
+	run := &fakeRunningProvider{}
+	run.Set([]InterfaceRef{{ID: "Wireguard10", IsServer: true}})
+	pub := &fakeMetricsPublisher{}
+	subs := &fakeSubs{count: 1}
+	snap := &fakeSnapshotPub{}
+
+	p := NewWithInterval(peers, pub, run, subs, NopLogger(), 10*time.Millisecond)
+	p.SetServerSnapshotPublisher(snap)
+	p.Start()
+	defer p.Stop()
+
+	time.Sleep(80 * time.Millisecond)
+	if got := snap.Calls(); got != 1 {
+		t.Errorf("неизменный сервер: подсказок %d, ждали 1", got)
 	}
 }

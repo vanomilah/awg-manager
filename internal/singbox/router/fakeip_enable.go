@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -10,7 +11,6 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/env"
-	sysexec "github.com/hoaxisr/awg-manager/internal/sys/exec"
 )
 
 // fakeIPTunDescription is the NDMS interface description stamped on the
@@ -24,30 +24,24 @@ const fakeIPTunDescription = "awgm fakeip-tun"
 // recognizable in NDMS running-config and reap.
 const fakeIPPoolRouteComment = "awgm fakeip pool"
 
-// fakeIPAddrFlush clears the kernel addresses on the tun iface right before
-// sing-box starts and assigns the tun address from its own config (PoC-derived
-// ordering; stand-verified in 1F.1). Seam var for tests.
-var fakeIPAddrFlush = func(ctx context.Context, iface string) error {
-	_, err := sysexec.Run(ctx, ipBinary, "addr", "flush", "dev", iface)
-	return err
-}
-
 // enableFakeIPTun provisions the full fakeip-tun path: persist index → create
-// OpkgTun → addr/mtu/up → write+start sing-box slot → flush+wait readiness →
+// OpkgTun → addr/mtu/up → write+start sing-box slot → wait readiness →
 // pool routes → persist enabled. Called with s.mu held by Enable. Honors the
 // persist-before-create invariant (the startup reap only sees orphans by
 // persisted index) and rolls back ALL partial work in reverse on any failure so
 // no orphaned iface / stale persist is left behind.
 func (s *ServiceImpl) enableFakeIPTun(ctx context.Context, settings *storage.Settings, sr storage.SingboxRouterSettings) (err error) {
-	// resolveFakeIPParams overlays user-editable settings (pool4/6, MTU) from sr
-	// onto the wired static defaults. Single source of truth — shared with the
-	// fakeip config overlay (ensureFakeIPOverlayFromState).
-	p := s.resolveFakeIPParams(sr)
+	// fakeIPParamsWithCache overlays user-editable settings (pool4/6, MTU) from
+	// sr onto the wired static defaults plus the effective cache.db path. Single
+	// source of truth — shared with the fakeip config overlay
+	// (ensureFakeIPOverlayFromState).
+	p := s.fakeIPParamsWithCache(sr)
 
 	// Fail-fast nil-guard: production wires every fakeip dep, but a degraded /
 	// mis-wired build would otherwise nil-panic mid-provision. Refuse loudly
 	// before touching any state.
-	if s.deps.OpkgTun == nil || s.deps.StaticRoutes == nil || s.deps.OpkgTunIndices == nil {
+	if s.deps.OpkgTun == nil || s.deps.StaticRoutes == nil || s.deps.OpkgTunIndices == nil ||
+		s.deps.OpkgTunPool == nil {
 		return fmt.Errorf("fakeip-tun: provisioning deps not wired")
 	}
 	// Последний рубеж гейта прошивки: сюда приходит и восстановление режима из
@@ -102,7 +96,7 @@ func (s *ServiceImpl) enableFakeIPTun(ctx context.Context, settings *storage.Set
 	// installed-check is always false and routes every scheduler tick + startup here.
 	// If we are already provisioned with a LIVE iface, this is a no-op reconcile —
 	// re-provisioning would allocate a new index, clobber persist, orphan the prior
-	// iface, and exhaust the 0..9 range. Full drift-reconcile (re-add routes,
+	// iface, and exhaust the pool. Full drift-reconcile (re-add routes,
 	// restart a dead sing-box) is handled by reconcileFakeIPTun; here we
 	// only prevent the leak. Sits BEFORE allocate/SetOpkgTunState/Create — the
 	// no-op return runs before any rollback is pushed.
@@ -117,26 +111,55 @@ func (s *ServiceImpl) enableFakeIPTun(ctx context.Context, settings *storage.Set
 	}
 
 	// Handover: единая запись владения одна на всех, поэтому запись ЧУЖОГО
-	// режима обязана быть освобождена ДО аллокации (restore NAT best-effort →
-	// teardown), иначе её интерфейс остался бы зомби без персиста. Провал
-	// release оставляет чужой интерфейс живым — live не перечитываем, аллокатор
-	// его пропустит.
+	// режима обязана быть освобождена ДО выдачи (restore NAT best-effort →
+	// teardown), иначе её интерфейс остался бы зомби без персиста.
+	//
+	// Пин на отобранный номер честится ТОЛЬКО при removed — то есть когда
+	// интерфейс снесли МЫ САМИ. Провал release и «доказанно чужой» дают
+	// removed=false: в первом случае чужой интерфейс жив, во втором на номере
+	// стоит посторонний, и претендовать на него мы не вправе.
 	prevRecord := settings.OpkgTun // снапшот ДО каких-либо мутаций
+	pin := noPin
 	if prevRecord != nil && prevRecord.Mode != storage.OpkgTunModeFakeIP {
-		if _, rerr := s.releaseForeignOpkgTun(ctx, prevRecord, "fakeip-enable"); rerr != nil {
+		removed, rerr := s.releaseForeignOpkgTun(ctx, prevRecord, "fakeip-enable")
+		// Скан упал — Warn уже дал teardownGate, второй не нужен.
+		if rerr != nil && !errors.Is(rerr, errOpkgTunOwnershipUnknown) {
 			s.appLog.Warn("fakeip-enable", tunNDMSName(prevRecord.Index), "release foreign opkgtun: "+rerr.Error())
-		} else if live, err = s.deps.OpkgTunIndices.LiveOpkgTunIndices(ctx); err != nil {
-			return fmt.Errorf("enable fakeip-tun: list opkgtun indices: %w", err)
 		}
+		// live после сноса НЕ перечитывается: занятость собирает пул сам, а
+		// вторая ветка (пин на свой прежний номер) сюда не попадает вовсе.
+		// Прежде перечитывание было обязательным — live шла в аллокатор, — а
+		// теперь оно только лишний обход RCI, чей транзиентный отказ обрывал
+		// бы включение УЖЕ ПОСЛЕ сноса прежнего режима: интерфейса нет, запись
+		// старая, и пользователь остаётся без обоих режимов до следующего тика.
+		if removed {
+			// Интерфейс снесли МЫ САМИ — номер точно наш и точно пуст, поэтому
+			// пин обычный: перебивать на нём больше нечего.
+			pin = opkgTunPin{index: prevRecord.Index, proven: true}
+		}
+	} else {
+		pin = s.pinFor(ctx, prev, live, fakeIPTunDescription)
 	}
 
-	taken, err := allocOccupancy(ctx, live, s.deps.OpkgTunPins)
+	idx, res, err := s.reserveOpkgTun(ctx, storage.OpkgTunModeFakeIP, pin)
 	if err != nil {
 		return fmt.Errorf("enable fakeip-tun: %w", err)
 	}
-	idx, err := allocateFakeIPIndex(taken)
-	if err != nil {
-		return fmt.Errorf("enable fakeip-tun: allocate index: %w", err)
+	// Резервация держит номер до записи владения. Закрывается ПОСЛЕДНЕЙ: её
+	// defer регистрируется раньше отката, а defer'ы идут в обратном порядке —
+	// сперва откат снимает созданное, и только потом номер уходит в оборот.
+	//
+	// НЕ упрощать до res.Close() здесь: окно между выдачей и персистом узкое,
+	// и ни один тест разницы не увидит — соседний проситель в него попадает
+	// только на живом роутере. Свойство «пока резервация открыта, номер чужому
+	// не достаётся» проверено этажом ниже, у пула.
+	defer res.Close()
+	// Сравнение с ПРЕЖНЕЙ записью, чья бы она ни была: на handover своя запись
+	// (prev) пуста, а номер меняется именно там — permit'ы пользователя
+	// остаются на старом имени, и молчать об этом нельзя.
+	if prevRecord != nil && prevRecord.Index != idx {
+		s.appLog.Warn("fakeip-enable", tunIfaceName(idx),
+			"индекс OpkgTun изменился — проверьте permit в политиках")
 	}
 	// Two names per index (stand-verified): NDMS RCI rejects the lowercase kernel
 	// name, so every NDMS op (create/delete, address/mtu, up/down, static routes)
@@ -284,19 +307,11 @@ func (s *ServiceImpl) enableFakeIPTun(ctx context.Context, settings *storage.Set
 		RealServer: p.RealServer,
 		Stack:      sr.FakeIPStack,
 		UDPTimeout: sr.UDPTimeout,
+		UDPNATMax:  sr.UDPNATMax,
+
+		ExternalConfiguration: s.tunExternalWant(),
 	}
 	ensureFakeIPOverlay(fcfg, spec)
-
-	// Flush stale kernel addresses on the tun BEFORE sing-box starts, while the
-	// tun is still bare (NDMS assigned its address above via SetAddress; we drop
-	// it here so sing-box's gvisor attach re-adds its own configured inet4_address
-	// cleanly). Doing the flush PRE-start closes the 1F.1 race: the old post-start
-	// placement could flush right as the debounced (~250ms) orchestrator reload
-	// made sing-box attach to the tun, killing the just-attached address and the
-	// process. HARD fail: a flush error rolls the whole thing back.
-	if err = fakeIPAddrFlush(ctx, iface); err != nil {
-		return fmt.Errorf("enable fakeip-tun: addr flush: %w", err)
-	}
 
 	// D. Slot XOR: enable SlotFakeIP, disable SlotRouter (fakeip and tproxy router
 	// slots are mutually exclusive — sing-box must load exactly one routing config).

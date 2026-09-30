@@ -90,6 +90,17 @@
 				options={obfOptions}
 				fullWidth
 			/>
+			<Input
+				label="Задержка обфускации, мс"
+				type="number"
+				hint="0 — выкл.; только с профилем обфускации"
+				value={String(ftClient.obfTimingMs)}
+				onchange={(v) => {
+					// 0 — законное «выкл.», шаблон `Number(v) || прежнее` его не выставит.
+					if (ftClient) ftClient.obfTimingMs = Math.max(0, Math.trunc(Number(v)) || 0);
+				}}
+				fullWidth
+			/>
 			<Input label="URL подписки" bind:value={ftClient.sub} fullWidth />
 		{/if}
 	</div>
@@ -98,8 +109,9 @@
 		<div class="toggle-row">
 			<Toggle
 				label="Bond"
-				hint="Bond — только в режиме TCP"
+				hint="Только в режиме TCP; в UDP не применяется"
 				checked={ftClient.bond}
+				disabled={ftClient.mode !== 'tcp'}
 				onchange={(v) => {
 					if (ftClient) ftClient.bond = v;
 				}}

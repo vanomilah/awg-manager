@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -37,6 +38,14 @@ type ListStore[T any] struct {
 	fetch func(ctx context.Context) (T, error)
 	log   Logger
 	label string
+
+	// gen — поколение кэша: InvalidateAll и Fetch его увеличивают. Выборка
+	// кладёт результат, только если поколение не сменилось с её старта, —
+	// иначе начатая до сброса (или до более свежего Fetch) выборка записала
+	// бы старое на весь TTL. mu делает «проверка + Set» и «++ + сброс»
+	// атомарными друг относительно друга.
+	mu  sync.Mutex
+	gen uint64
 }
 
 // NewListStore constructs a ListStore. A nil log is safe — it falls
@@ -68,7 +77,15 @@ func (s *ListStore[T]) List(ctx context.Context) (T, error) {
 	if v, ok := s.ttl.Get(struct{}{}); ok {
 		return v, nil
 	}
+	return s.Refresh(ctx)
+}
+
+// Refresh fetches past the TTL and stores the result. Unlike
+// InvalidateAll+List it keeps the stale-on-error fallback: a failed fetch
+// serves the previous value instead of erroring.
+func (s *ListStore[T]) Refresh(ctx context.Context) (T, error) {
 	return s.sf.Do(struct{}{}, func() (T, error) {
+		gen := s.generation()
 		v, err := s.fetch(ctx)
 		if err != nil {
 			if stale, ok := s.ttl.Peek(struct{}{}); ok {
@@ -78,10 +95,54 @@ func (s *ListStore[T]) List(ctx context.Context) (T, error) {
 			var zero T
 			return zero, err
 		}
-		s.ttl.Set(struct{}{}, v)
+		// Присоединившиеся к полёту получат v в любом случае; в кэш — только
+		// если поколение то же.
+		s.setIfGen(gen, v)
 		return v, nil
 	})
 }
 
+// Fetch — чтение с роутера сейчас, для решений о наличии/владении: мимо TTL
+// и мимо singleflight. InvalidateAll+List свежести не гарантирует — List на
+// промахе присоединяется к выборке, начатой ДО сброса, и отдаёт данные старше
+// решения. Успех кладётся в кэш (если за время выборки не было нового сброса
+// или Fetch); ошибка возвращается как есть, прежнего значения вместо неё нет.
+// Fetch начинает новое поколение: выборки, стартовавшие раньше, кэш уже не
+// перезапишут.
+func (s *ListStore[T]) Fetch(ctx context.Context) (T, error) {
+	s.mu.Lock()
+	s.gen++
+	gen := s.gen
+	s.mu.Unlock()
+	v, err := s.fetch(ctx)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	s.setIfGen(gen, v)
+	return v, nil
+}
+
 // InvalidateAll drops the cached value, forcing the next List to fetch.
-func (s *ListStore[T]) InvalidateAll() { s.ttl.InvalidateAll() }
+// Выборки, начатые до сброса, свой результат в кэш уже не положат.
+func (s *ListStore[T]) InvalidateAll() {
+	s.mu.Lock()
+	s.gen++
+	s.ttl.InvalidateAll()
+	s.mu.Unlock()
+}
+
+func (s *ListStore[T]) generation() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.gen
+}
+
+// setIfGen кладёт v в кэш, только если поколение не сменилось с gen.
+func (s *ListStore[T]) setIfGen(gen uint64, v T) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.gen == gen {
+		s.ttl.Set(struct{}{}, v)
+	}
+}

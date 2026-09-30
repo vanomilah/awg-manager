@@ -24,16 +24,16 @@ type SingboxRouterHandler struct {
 	routerRefs      tunnelservice.RouterRefChecker
 }
 
+// Service exposes the router service so other wiring (the MCP adapter)
+// works against the same instance the HTTP handlers use, rather than a
+// second one with its own view of the staging draft.
+func (h *SingboxRouterHandler) Service() router.Service { return h.svc }
+
 func NewSingboxRouterHandler(svc router.Service, appLogger logging.AppLogger) *SingboxRouterHandler {
 	return &SingboxRouterHandler{
 		svc: svc,
 		log: logging.NewScopedLogger(appLogger, logging.GroupRouting, logging.SubSingboxRouter),
 	}
-}
-
-// Service returns the underlying router.Service instance.
-func (h *SingboxRouterHandler) Service() router.Service {
-	return h.svc
 }
 
 // SetOutboundRefCheckers wires device-proxy and router reference guards for
@@ -247,6 +247,10 @@ func (h *SingboxRouterHandler) handleErr(w http.ResponseWriter, action string, e
 		errors.Is(err, router.ErrRuleSetNotFound),
 		errors.Is(err, router.ErrOutboundNotFound):
 		response.Error(w, err.Error(), "NOT_FOUND")
+	case errors.Is(err, router.ErrRuleSetTagUnsafe):
+		// 400: тег inline-набора именует файл его артефакта — иначе два набора
+		// делят один файл и затирают правила друг друга (F434, #941).
+		response.Error(w, err.Error(), "RULE_SET_TAG_UNSAFE")
 	case errors.Is(err, router.ErrBulkEmptyIndices),
 		errors.Is(err, router.ErrBulkEmptyTags):
 		// 400: empty selection for a bulk rule/ruleset mutation — nothing to do.

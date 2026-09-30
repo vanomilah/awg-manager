@@ -37,8 +37,8 @@ export interface ExitWizardFields {
 /** WDTT: 24 клиент округляет вниз до 18, 27 — ближайшее кратное (WE-37). */
 export const DEFAULT_WORKERS = '27';
 
-/** FreeTurn: кратности нет, дефолт бинаря (`DefaultClientConfig`, internal/freeturn/types.go). */
-export const DEFAULT_FT_STREAMS = '10';
+/** FreeTurn: кратности нет, дефолт бинаря (`DefaultStreams`, config/defaults.go апстрима). */
+export const DEFAULT_FT_STREAMS = '12';
 
 function defaultWorkers(protocol: ExitProtocol): string {
 	return protocol === 'freeturn' ? DEFAULT_FT_STREAMS : DEFAULT_WORKERS;
@@ -149,7 +149,7 @@ export function fieldsFromFtPayload(
 		name: p.name?.trim() ?? '',
 		peer: p.peer ?? '',
 		password: '',
-		vkHashes: '',
+		vkHashes: p.vk?.trim() ?? '',
 		workers: p.n && p.n > 0 ? String(p.n) : DEFAULT_FT_STREAMS,
 	};
 }
@@ -213,8 +213,17 @@ export function applyFtPayload(cfg: FreeTurnClientConfig, p: FreeTurnLinkPayload
 	if (p.cid) cfg.clientId = p.cid;
 	if (p.transport) cfg.transport = p.transport as FreeTurnClientConfig['transport'];
 	if (p.mode) cfg.mode = p.mode as FreeTurnClientConfig['mode'];
-	if (typeof p.bond === 'boolean') cfg.bond = p.bond;
+	// Как и kcp, берутся как есть: ссылка без поля обязана снять прежнее значение.
+	cfg.bond = p.bond === true;
+	cfg.obfTimingMs = p.timing && p.timing > 0 ? p.timing : 0;
+	// Профиль берётся как есть, без гейта по режиму: режим гейтит бэкенд при
+	// рендере argv, а ссылка без kcp обязана снять прежний профиль.
+	cfg.kcp = p.kcp;
 	if (p.dns === 'plain' || p.dns === 'doh' || p.dns === 'auto') cfg.dnsMode = p.dns;
+	// Список резолверов ехал в ссылке (`dnss`), но терялся здесь: клиент
+	// получал режим без адресов, то есть не то, что прислал автор ссылки.
+	// Сами мы эти поля не выдаём, принимать обязаны (#933).
+	if (p.dnss) cfg.dnsServers = p.dnss;
 }
 
 export function applyWdttFields(
@@ -353,13 +362,12 @@ async function importWgTunnel(
 	if (!conf || mode === 'raw') return undefined;
 	const port = linkedTunnelListenPort(listen);
 	if (port == null) return undefined;
-	const tunnel = await api.importConfig(
-		patchWgConfEndpoint(conf, port),
+	const tunnel = await api.importConfig({
+		content: patchWgConfEndpoint(conf, port),
 		name,
-		undefined,
-		link.freeTurnClientId,
-		link.wdttClientId,
-	);
+		freeTurnClientId: link.freeTurnClientId,
+		wdttClientId: link.wdttClientId,
+	});
 	return tunnel.id;
 }
 

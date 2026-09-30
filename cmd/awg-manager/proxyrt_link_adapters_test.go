@@ -717,10 +717,12 @@ func TestProxyIngressEnsurerDropsStaleAndSaves(t *testing.T) {
 }
 
 type fakeNATAccess struct {
-	nat    []string
-	policy []string
-	lan    []string
-	wans   []string
+	nat     []string
+	policy  []string
+	lan     []string
+	wans    []string
+	foreign []string
+	asked   []string
 }
 
 func (f *fakeNATAccess) ApplyNATModeToInterface(_ context.Context, iface, mode string, prevWANs []string) ([]string, error) {
@@ -733,22 +735,19 @@ func (f *fakeNATAccess) ApplyPolicyToInterface(_ context.Context, iface, policy 
 	return nil
 }
 
+func (f *fakeNATAccess) ForeignAccessGroups(_ context.Context, iface string) ([]string, error) {
+	f.asked = append(f.asked, iface)
+	return f.foreign, nil
+}
+
 func (f *fakeNATAccess) ApplyLANSegmentsToInterface(_ context.Context, iface, addr, mask string, segments []string) error {
 	f.lan = append(f.lan, strings.Join(append([]string{iface, addr, mask}, segments...), "|"))
 	return nil
 }
 
-type fakePermit struct{ ifaces []string }
-
-func (f *fakePermit) SetPermitAllACL(_ context.Context, name string) error {
-	f.ifaces = append(f.ifaces, name)
-	return nil
-}
-
 func TestProxyAccessApplierPassesArgsAndWAN(t *testing.T) {
 	svc := &fakeNATAccess{wans: []string{"ISP2", "ISP3"}}
-	permit := &fakePermit{}
-	a := proxyAccessApplier{svc: svc, ifaces: permit}
+	a := proxyAccessApplier{svc: svc}
 
 	wans, err := a.ApplyNATModeToInterface(context.Background(), "OpkgTun17", "internet-only", []string{"ISP1"})
 	if err != nil {
@@ -778,11 +777,13 @@ func TestProxyAccessApplierPassesArgsAndWAN(t *testing.T) {
 		t.Fatalf("аргументы LAN: %v", svc.lan)
 	}
 
-	if err := a.EnsureInterfaceFirewallPermit(context.Background(), "OpkgTun17"); err != nil {
+	svc.foreign = []string{"GUEST_ACL"}
+	names, err := a.ForeignAccessGroups(context.Background(), "OpkgTun17")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(permit.ifaces) != 1 || permit.ifaces[0] != "OpkgTun17" {
-		t.Fatalf("аргументы permit: %v", permit.ifaces)
+	if strings.Join(names, ",") != "GUEST_ACL" || strings.Join(svc.asked, ",") != "OpkgTun17" {
+		t.Fatalf("чужие привязки: names=%v спрошено=%v", names, svc.asked)
 	}
 }
 
@@ -1388,5 +1389,27 @@ func TestRawMirrorSurvivesEnabledClientReconcile(t *testing.T) {
 	}
 	if len(pub.events) != 0 {
 		t.Fatalf("качели инвалидации фронта: %v", pub.events)
+	}
+}
+
+// Занятость записи WDTT-сервера — все четыре его сокета. Raw (DTLS+1 либо
+// явный) и direct раньше в неё не входили, и посев не видел межзаписной
+// коллизии на них (F156).
+func TestRecordPortsWdttServerCountsRawAndDirect(t *testing.T) {
+	got := recordPorts(instancestore.Record{ID: "s", Kind: instancestore.KindWdttServer,
+		WdttServer: &roles.WdttServerConfig{Listen: "0.0.0.0:56002", WgPort: 56001, DirectListen: "0.0.0.0:56010"}})
+	want := map[int]bool{56002: true, 56001: true, 56003: true, 56010: true}
+	if len(got) != len(want) {
+		t.Fatalf("ports = %v, want %v", got, want)
+	}
+	for _, p := range got {
+		if !want[p] {
+			t.Fatalf("ports = %v, лишний %d", got, p)
+		}
+	}
+	explicit := recordPorts(instancestore.Record{ID: "s", Kind: instancestore.KindWdttServer,
+		WdttServer: &roles.WdttServerConfig{Listen: "0.0.0.0:56002", RawListen: "0.0.0.0:56013", DirectListen: "0.0.0.0:56002"}})
+	if len(explicit) != 2 || explicit[0] != 56002 || explicit[1] != 56013 {
+		t.Fatalf("явный raw и direct==DTLS: ports = %v, want [56002 56013]", explicit)
 	}
 }

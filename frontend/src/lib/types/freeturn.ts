@@ -12,11 +12,15 @@ export interface FreeTurnClientConfig {
 	streams: number;
 	transport: 'tcp' | 'udp';
 	mode: 'udp' | 'tcp';
+	/** Upstream 4.0+: объединение сессий под одно TCP-соединение, только mode tcp. */
 	bond: boolean;
 	obfProfile: 'none' | 'rtpopus' | 'rtpopus2' | 'rtpopus3';
 	obfKey?: string;
 	obfKeySet?: boolean;
+	/** -obf-timing в мс, 0 — выкл.; только с профилем обфускации. */
+	obfTimingMs: number;
 	streamsPerCred: number;
+	kcp?: FreeTurnKCP;
 	platform: 'desktop' | 'mobile';
 	dnsMode: 'plain' | 'doh' | 'auto';
 	dnsServers?: string;
@@ -33,6 +37,12 @@ export interface FreeTurnServerConfig {
 	enabled: boolean;
 	listen: string;
 	connect: string;
+	/**
+	 * Адрес, который уезжает в ссылку абоненту (#933): DNS-имя роутера или его
+	 * внешний IP, при желании с портом. Пусто — бэкенд подставит внешний IP,
+	 * а он DNS-имя не отдаёт никогда.
+	 */
+	linkPeer?: string;
 	mode: 'udp' | 'tcp';
 	obfProfile: 'none' | 'rtpopus' | 'rtpopus2' | 'rtpopus3';
 	obfKey?: string;
@@ -99,6 +109,18 @@ export interface FreeTurnStatus {
 	routerClock?: string;
 }
 
+/** Профиль KCP tcp-режима (upstream 3.2+): приезжает ссылкой, редактора нет. */
+export interface FreeTurnKCP {
+	nodelay: number;
+	interval: number;
+	resend: number;
+	nc: number;
+	sndwnd: number;
+	rcvwnd: number;
+	mtu: number;
+	acknodelay: boolean;
+}
+
 export interface FreeTurnLinkPayload {
 	v: number;
 	provider?: string;
@@ -108,6 +130,7 @@ export interface FreeTurnLinkPayload {
 	bond?: boolean;
 	obf?: string;
 	key?: string;
+	timing?: number;
 	n?: number;
 	spc?: number;
 	cid?: string;
@@ -118,6 +141,9 @@ export interface FreeTurnLinkPayload {
 	name?: string;
 	mtu?: number;
 	wg?: string;
+	kcp?: FreeTurnKCP;
+	/** Upstream 4.0+: ссылка на звонок, идёт в -links. */
+	vk?: string;
 }
 
 export interface FreeTurnGenerateLinkRequest {
@@ -141,6 +167,8 @@ export interface FreeTurnGenerateLinkResult {
 export interface FreeTurnAllowlistEntry {
 	clientId: string;
 	comment?: string;
+	/** Выданная абоненту ссылка, если она сохранялась (#919). */
+	link?: string;
 }
 
 export interface FreeTurnAllowlistStatus {
@@ -174,7 +202,6 @@ export interface FreeTurnCaptchaOverview {
 }
 
 export interface FreeTurnDeleteClientResult {
-	message?: string;
 	deletedTunnels?: string[];
 	tunnelErrors?: string[];
 }

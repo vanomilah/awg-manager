@@ -524,6 +524,32 @@ func TestGenerate_WithObfuscation(t *testing.T) {
 	assertNotContains(t, result, "S4 =")
 }
 
+// F167: пустые H1..H4 нельзя писать как `H1 = ` — `awg setconf` на такой
+// строке отвергает ВЕСЬ файл (стенд 08.09). Пусто = дефолт ядра, номер типа
+// сообщения WireGuard.
+func TestGenerate_EmptyHeadersFallBackToMessageTypes(t *testing.T) {
+	tunnel := &storage.AWGTunnel{
+		Interface: storage.AWGInterface{
+			PrivateKey: "privkey=",
+			// I1 без H1..H4 — обычная AWG 1.5-раскладка: классификатор
+			// признаёт конфиг обфусцированным, H-поля при этом пустые.
+			AWGObfuscation: storage.AWGObfuscation{
+				Jc: 4, Jmin: 50, Jmax: 1000, S1: 56, S2: 78,
+				I1: "<b 0x01>",
+			},
+		},
+		Peer: storage.AWGPeer{PublicKey: "pubkey=", Endpoint: "server:51820", AllowedIPs: []string{"0.0.0.0/0"}},
+	}
+
+	result := Generate(tunnel)
+
+	assertNotContains(t, result, "H1 = \n")
+	assertContains(t, result, "H1 = 1")
+	assertContains(t, result, "H2 = 2")
+	assertContains(t, result, "H3 = 3")
+	assertContains(t, result, "H4 = 4")
+}
+
 func TestGenerate_WithSignaturePackets(t *testing.T) {
 	tunnel := &storage.AWGTunnel{
 		Interface: storage.AWGInterface{
@@ -1187,7 +1213,12 @@ func TestParse_AWG31Flags(t *testing.T) {
 		"on":      {"RandomTrailers = on", true},
 		"On":      {"RandomTrailers = On", true},
 		"numeric": {"RandomTrailers = 1", true},
+		"true":    {"RandomTrailers = true", true},
+		"TRUE":    {"RandomTrailers = TRUE", true},
+		"yes":     {"RandomTrailers = yes", true},
 		"off":     {"RandomTrailers = off", false},
+		"false":   {"RandomTrailers = false", false},
+		"no":      {"RandomTrailers = no", false},
 		"zero":    {"RandomTrailers = 0", false},
 		"absent":  {"", false},
 		"garbage": {"RandomTrailers = maybe", false},

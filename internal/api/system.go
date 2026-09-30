@@ -52,6 +52,7 @@ type SystemInfoData struct {
 	SupportsExtendedASC         bool                          `json:"supportsExtendedASC" example:"true"`
 	SupportsOpkgTun             bool                          `json:"supportsOpkgTun" example:"true"`
 	SupportsHRanges             bool                          `json:"supportsHRanges" example:"true"`
+	SupportsWireguardASC3       bool                          `json:"supportsWireguardASC3" example:"false"`
 	SupportsPingCheck           bool                          `json:"supportsPingCheck" example:"true"`
 	TotalMemoryMB               int                           `json:"totalMemoryMB" example:"512"`
 	IsLowMemory                 bool                          `json:"isLowMemory" example:"false"`
@@ -383,6 +384,12 @@ func (h *SystemHandler) Info(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	response.Success(w, h.InfoData())
+}
+
+// InfoData builds the /system/info payload. Exported for the MCP
+// localdeps adapter, which reuses it verbatim.
+func (h *SystemHandler) InfoData() map[string]interface{} {
 	// Get current settings
 	var disableMemorySaving bool
 	if h.settingsStore != nil {
@@ -430,9 +437,7 @@ func (h *SystemHandler) Info(w http.ResponseWriter, r *http.Request) {
 	// Router LAN IP (from br0 interface)
 	routerIP := netif.FirstIPv4(storage.DefaultInterface)
 
-	info := h.buildSystemInfo(disableMemorySaving, gcMemLimit, gogc, kernelModuleExists, kernelModuleLoaded, kernelModuleModel, kernelModuleVersion, kernelModuleLoadedVersion, isAarch64, activeBackendType, routerIP)
-
-	response.Success(w, info)
+	return h.buildSystemInfo(disableMemorySaving, gcMemLimit, gogc, kernelModuleExists, kernelModuleLoaded, kernelModuleModel, kernelModuleVersion, kernelModuleLoadedVersion, isAarch64, activeBackendType, routerIP)
 }
 
 func (h *SystemHandler) buildSystemInfo(disableMemorySaving bool, gcMemLimit, gogc string, kernelModuleExists, kernelModuleLoaded bool, kernelModuleModel, kernelModuleVersion, kernelModuleLoadedVersion string, isAarch64 bool, activeBackendType, routerIP string) map[string]interface{} {
@@ -459,8 +464,11 @@ func (h *SystemHandler) buildSystemInfo(disableMemorySaving bool, gcMemLimit, go
 		"supportsExtendedASC": osdetect.AtLeast(5, 1),
 		// Режимы fakeip-tun/policy-tun строятся на OpkgTun, которого нет в
 		// KeeneticOS 4.x — фронт гейтит их по этому флагу (issue #768).
-		"supportsOpkgTun":             osdetect.SupportsOpkgTun(),
-		"supportsHRanges":             ndmsinfo.SupportsHRanges(),
+		"supportsOpkgTun": osdetect.SupportsOpkgTun(),
+		"supportsHRanges": ndmsinfo.SupportsHRanges(),
+		// ASC прошивки знает AWG 3.x (5.02.A.11+): NativeWG несёт все
+		// параметры 3.x сам, без awg_proxy.
+		"supportsWireguardASC3":       ndmsinfo.SupportsWireguardASC3(),
 		"supportsPingCheck":           ndmsinfo.HasPingCheckComponent(),
 		"totalMemoryMB":               osdetect.GetTotalMemoryMB(),
 		"isLowMemory":                 osdetect.IsLowMemoryDevice(),

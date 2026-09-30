@@ -2,110 +2,136 @@ package vlink
 
 import (
 	"encoding/json"
-	"os"
-	"strings"
 	"testing"
 )
 
-const trustTunnelConnectURL = "https://trustunnel.ru/connect/?d=ARF1czMudHJ1dHVuLm9ubGluZQUPdXNlcl8xMzUzODE4OTc5Bgw4ZU9wclZwYXhReDYCFXVzMy50cnV0dW4ub25saW5lOjQ0MwsIZjcwMDQ4YWYDEXVzMy50cnV0dW4ub25saW5lDB_wn4e68J-HuCBVU0EgKNCh0KjQkCkgKFByZW1pdW0pDUBBJWh0dHBzOi8vZG5zLmFkZ3VhcmQtZG5zLmNvbS9kbnMtcXVlcnkacXVpYzovL2Rucy5hZGd1YXJkLWRucy5jb20EAQAKAQEJAQI"
+func ttOutboundMap(t *testing.T, p ParsedOutbound) map[string]any {
+	t.Helper()
+	var ob map[string]any
+	if err := json.Unmarshal(p.Outbound, &ob); err != nil {
+		t.Fatal(err)
+	}
+	return ob
+}
 
-func TestParseTrustTunnelConnectURL(t *testing.T) {
-	parsed, err := parseTrustTunnelConnectURL(trustTunnelConnectURL)
+func TestParseTrustTunnelLink_Single(t *testing.T) {
+	parsed, err := ParseLinkMany("tt://?" + ttOne)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(parsed) != 1 {
-		t.Fatalf("expected 1 outbound, got %d", len(parsed))
+		t.Fatalf("want 1 outbound, got %d", len(parsed))
 	}
-	ob := parsed[0]
-	if ob.Protocol != "trusttunnel" {
-		t.Fatalf("protocol: %q", ob.Protocol)
+	p := parsed[0]
+	if p.Protocol != "trusttunnel" || p.Tag != "Berlin" || p.Label != "Berlin" || p.Server != "1.2.3.4" || p.Port != 443 || p.MultiAddress {
+		t.Fatalf("meta: %+v", p)
 	}
-	if ob.Server != "us3.trutun.online" || ob.Port != 443 {
-		t.Fatalf("server/port: %s:%d", ob.Server, ob.Port)
+	ob := ttOutboundMap(t, p)
+	if ob["type"] != "trusttunnel" || ob["username"] != "premium" || ob["password"] != "s3cretPass" || ob["quic"] != false {
+		t.Fatalf("outbound: %v", ob)
 	}
-	var m map[string]any
-	if err := json.Unmarshal(ob.Outbound, &m); err != nil {
-		t.Fatal(err)
+	for _, forbidden := range []string{"health_check", "anti_dpi", "client_random_prefix"} {
+		if _, ok := ob[forbidden]; ok {
+			t.Fatalf("outbound must not carry %q", forbidden)
+		}
 	}
-	if m["username"] != "user_1353818979" || m["password"] != "8eOprVpaxQx6" {
-		t.Fatalf("auth: %#v", m)
+	tls := ob["tls"].(map[string]any)
+	if tls["enabled"] != true || tls["server_name"] != "vpn.example.com" {
+		t.Fatalf("tls: %v", tls)
 	}
-	if m["quic"] != false {
-		t.Fatalf("expected quic=false (H2 workaround), got %#v", m["quic"])
-	}
-	if m["client_random_prefix"] != "f70048af" {
-		t.Fatalf("client_random_prefix: %#v", m["client_random_prefix"])
-	}
-	tls, _ := m["tls"].(map[string]any)
-	if tls["server_name"] != "us3.trutun.online" {
-		t.Fatalf("tls sni: %#v", tls)
+	for _, absent := range []string{"insecure", "certificate", "fragment"} {
+		if _, ok := tls[absent]; ok {
+			t.Fatalf("tls must not carry %q by default", absent)
+		}
 	}
 }
 
-func TestParseTrustTunnelClientTOMLFile(t *testing.T) {
-	path := `c:\Users\Ivan\Downloads\Telegram Desktop\tt_1353818979 (11).toml`
-	body, err := os.ReadFile(path)
+func TestParseTrustTunnelLink_MultiAddressSNIFragment(t *testing.T) {
+	parsed, err := ParseLinkMany("tt://?" + ttTwo)
 	if err != nil {
-		t.Skip("sample TOML not available:", err)
+		t.Fatal(err)
 	}
-	if !IsTrustTunnelClientTOML(body) {
-		t.Fatal("IsTrustTunnelClientTOML=false")
+	if len(parsed) != 2 {
+		t.Fatalf("want 2 outbounds, got %d", len(parsed))
 	}
-	res := ParseTrustTunnelClientTOML(body)
-	if len(res.Errors) > 0 {
-		t.Fatalf("errors: %v", res.Errors)
+	if parsed[0].Tag != "Multi-1" || parsed[1].Tag != "Multi-2" || !parsed[0].MultiAddress || !parsed[1].MultiAddress {
+		t.Fatalf("tags/multi: %+v %+v", parsed[0], parsed[1])
 	}
+	if parsed[1].Server != "2001:db8::1" || parsed[1].Port != 8443 {
+		t.Fatalf("ipv6 address: %+v", parsed[1])
+	}
+	tls := ttOutboundMap(t, parsed[0])["tls"].(map[string]any)
+	if tls["server_name"] != "cdn.example.org" || tls["insecure"] != true || tls["fragment"] != true {
+		t.Fatalf("tls: %v", tls)
+	}
+	// http3 во входе → всё равно quic:false (H2-only)
+	if ttOutboundMap(t, parsed[0])["quic"] != false {
+		t.Fatal("quic must stay false")
+	}
+}
+
+func TestParseTrustTunnel_ConnectURL_AnyHost(t *testing.T) {
+	// name= в connect-URL перебивает Name из TLV ("Berlin"); без name= берётся TLV.
+	cases := []struct{ url, wantName string }{
+		{"https://trustunnel.ru/connect/?d=" + ttOne + "&name=Other", "Other"},
+		{"http://panel.example.net/x?foo=1&d=" + ttOne, "Berlin"},
+	}
+	for _, c := range cases {
+		parsed, err := ParseLinkMany(c.url)
+		if err != nil {
+			t.Fatalf("%s: %v", c.url, err)
+		}
+		if len(parsed) != 1 || parsed[0].Protocol != "trusttunnel" {
+			t.Fatalf("%s: %+v", c.url, parsed)
+		}
+		if parsed[0].Tag != c.wantName || parsed[0].Label != c.wantName {
+			t.Fatalf("%s: tag=%q label=%q, want %q", c.url, parsed[0].Tag, parsed[0].Label, c.wantName)
+		}
+	}
+	if _, err := ParseLinkMany("https://panel.example.net/x?foo=1"); err != ErrUnsupportedScheme {
+		t.Fatalf("url without d must stay unsupported, got %v", err)
+	}
+	if _, err := ParseLinkMany("https://panel.example.net/x?d=@@@"); err == nil {
+		t.Fatal("url with garbage d must fail")
+	}
+}
+
+func TestParseTrustTunnel_BareBase64Rejected(t *testing.T) {
+	if _, err := ParseLinkMany(ttOne); err != ErrUnsupportedScheme {
+		t.Fatalf("bare payload must be unsupported, got %v", err)
+	}
+}
+
+func TestParseBatch_TrustTunnelThreeLineExport(t *testing.T) {
+	// trusttunnel_endpoint печатает ссылку, пустую строку и подсказку про QR.
+	res := ParseBatch([]string{"tt://?" + ttOne, "", "To connect on mobile, you can scan QR code on the page: https://trusttunnel.org/qr.html#tt=" + ttOne})
 	if len(res.Outbounds) != 1 {
-		t.Fatalf("expected 1 outbound, got %d", len(res.Outbounds))
-	}
-	var m map[string]any
-	if err := json.Unmarshal(res.Outbounds[0].Outbound, &m); err != nil {
-		t.Fatal(err)
-	}
-	if m["username"] != "user_1353818979" || m["password"] != "8eOprVpaxQx6" {
-		t.Fatalf("auth: %#v", m)
-	}
-	if m["quic"] != false {
-		t.Fatalf("expected quic=false for H2 workaround")
-	}
-	if m["client_random_prefix"] != "f70048af" {
-		t.Fatalf("client_random_prefix: %#v", m["client_random_prefix"])
+		t.Fatalf("want 1 outbound, got %d (errors %v)", len(res.Outbounds), res.Errors)
 	}
 }
 
-func TestParseLinkManyTrustTunnelConnect(t *testing.T) {
-	parsed, err := ParseLinkMany(trustTunnelConnectURL)
+func TestTTEndpointToOutbounds_CertificatePEM(t *testing.T) {
+	const pemChain = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"
+	ep := ttEndpoint{
+		Hostname:    "vpn.example.com",
+		Addresses:   []string{"1.2.3.4:443"},
+		Username:    "u",
+		Password:    "p",
+		Certificate: pemChain,
+	}
+	parsed, err := ttEndpointToOutbounds(ep, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(parsed) != 1 {
-		t.Fatalf("got %d outbounds", len(parsed))
+		t.Fatalf("want 1 outbound, got %d", len(parsed))
 	}
-}
-
-func TestParseTrustTunnelTLVFields(t *testing.T) {
-	const payload = "ARF1czMudHJ1dHVuLm9ubGluZQUPdXNlcl8xMzUzODE4OTc5Bgw4ZU9wclZwYXhReDYCFXVzMy50cnV0dW4ub25saW5lOjQ0MwsIZjcwMDQ4YWYDEXVzMy50cnV0dW4ub25saW5lDB_wn4e68J-HuCBVU0EgKNCh0KjQkCkgKFByZW1pdW0pDUBBJWh0dHBzOi8vZG5zLmFkZ3VhcmQtZG5zLmNvbS9kbnMtcXVlcnkacXVpYzovL2Rucy5hZGd1YXJkLWRucy5jb20EAQAKAQEJAQI"
-	ep, err := decodeTrustTunnelPayload(payload)
-	if err != nil {
-		t.Fatal(err)
+	tls := ttOutboundMap(t, parsed[0])["tls"].(map[string]any)
+	certs, ok := tls["certificate"].([]any)
+	if !ok {
+		t.Fatalf("certificate must be a JSON array, got %T (%v)", tls["certificate"], tls["certificate"])
 	}
-	if ep.Hostname != "us3.trutun.online" {
-		t.Fatalf("hostname: %q", ep.Hostname)
-	}
-	if ep.Username != "user_1353818979" || ep.Password != "8eOprVpaxQx6" {
-		t.Fatalf("credentials mismatch")
-	}
-	if ep.UpstreamProtocol != "http3" {
-		t.Fatalf("upstream: %q", ep.UpstreamProtocol)
-	}
-	if !ep.AntiDPI || ep.ClientRandomPrefix != "f70048af" {
-		t.Fatalf("anti_dpi/prefix: %v %q", ep.AntiDPI, ep.ClientRandomPrefix)
-	}
-	if ep.Name != "🇺🇸 USA (США) (Premium)" {
-		t.Fatalf("name: %q", ep.Name)
-	}
-	if len(ep.DNSUpstreams) != 2 || !strings.HasPrefix(ep.DNSUpstreams[0], "https://") {
-		t.Fatalf("dns: %#v", ep.DNSUpstreams)
+	if len(certs) != 1 || certs[0] != pemChain {
+		t.Fatalf("certificate: %v", certs)
 	}
 }

@@ -1,5 +1,10 @@
 /**
- * saveStatus — polling store for GET /api/ndms/save-status (cold tier, 30s).
+ * saveStatus — polling store for GET /api/ndms/save-status.
+ *
+ * Показывает индикатор в шапке (layout/SaveStatusLed.svelte). До 17.09 стор
+ * не импортировал НИКТО: registerStore не выполнялся, и событие координатора
+ * уходило в никуда — индикатора в панели не было вовсе (F358). Сторож на этот
+ * случай — в SaveStatusLed.test.ts.
  *
  * Mirrors the former save:status SSE event one-for-one. SaveCoordinator
  * now publishes a `resource:invalidated` hint with Resource="saveStatus"
@@ -31,7 +36,9 @@ export const saveStatus: PollingStore<SaveStatus> = createPollingStore<SaveStatu
 	fetchSaveStatus,
 	{
 		staleTime: 30_000,
-		pollInterval: 30_000,
+		// Наш координатор публикует каждый свой переход, но несохранённые правки
+		// конфигурации, сделанные из РОДНОЙ веб-морды роутера, идут мимо него.
+		pollInterval: 60_000,
 	},
 );
 

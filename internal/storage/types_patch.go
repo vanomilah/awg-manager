@@ -18,7 +18,7 @@ type SettingsPatch struct {
 	AuthEnabled                 *bool                  `json:"authEnabled,omitempty"`
 	ApiKey                      *string                `json:"apiKey,omitempty"`
 	SessionTtlHours             *int                   `json:"sessionTtlHours,omitempty"`
-	EntwareAuthEnabled          *bool                  `json:"entwareAuthEnabled,omitempty"`
+	McpEnabled                  *bool                  `json:"mcpEnabled,omitempty"`
 	Server                      *ServerSettings        `json:"server,omitempty"`
 	PingCheck                   *PingCheckSettings     `json:"pingCheck,omitempty"`
 	Logging                     *LoggingSettingsPatch  `json:"logging,omitempty"`
@@ -30,8 +30,6 @@ type SettingsPatch struct {
 	ConnectivityCheckURL        *string                `json:"connectivityCheckUrl,omitempty"`
 	UsageLevel                  *string                `json:"usageLevel,omitempty"`
 	ServerInterfaces            *[]string              `json:"serverInterfaces,omitempty"`
-	ManagedServers              *[]ManagedServer       `json:"managedServers,omitempty"`
-	ManagedServer               *ManagedServer         `json:"managedServer,omitempty"`
 	ManagedPolicies             *[]string              `json:"managedPolicies,omitempty"`
 	MonitoringExcludedTunnels   *[]string              `json:"monitoringExcludedTunnels,omitempty"`
 	SingboxRouter               *SingboxRouterSettings `json:"singboxRouter,omitempty"`

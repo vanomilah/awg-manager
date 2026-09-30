@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,14 +33,15 @@ const proxyrtInstancesPath = "/api/proxyrt/instances"
 const proxyrtListenMovesPath = "/api/proxyrt/seed/listen-moves"
 
 // Коды ошибок поверхности. PROXY_NOT_SEEDED и PROXY_DECLARE_FAILED предписаны
-// планом (требования 15 и 17); остальные два заведены здесь под два гейта
-// создания, у которых своя причина отказа и свой текст для пользователя.
+// планом (требования 15 и 17); остальные заведены здесь под гейты создания, у
+// каждого из которых своя причина отказа и свой текст для пользователя.
 const (
 	proxyCodeNotSeeded       = "PROXY_NOT_SEEDED"
 	proxyCodeDeclareFailed   = "PROXY_DECLARE_FAILED"
 	proxyCodeNotFound        = "NOT_FOUND"
 	proxyCodeConfigInvalid   = "PROXY_CONFIG_INVALID"
 	proxyCodeOpkgUnsupported = "PROXY_OPKGTUN_UNSUPPORTED"
+	proxyCodeKindSingleton   = "PROXY_KIND_SINGLETON"
 )
 
 // ProxyManager — узкий срез *manager.Manager, нужный поверхности.
@@ -92,9 +95,10 @@ type ProxyRtSeedView struct {
 	// инстансы не перенесены. Признак отдельный от Error: только по имени
 	// файла интерфейс может сказать, ЧЬИ инстансы потеряны.
 	Skipped []ProxyRtSkippedSourceView `json:"skipped,omitempty"`
-	// MovedListen — инстансы, которым посев сменил listen-адрес, разводя
-	// конфликт за порт. Молчать нельзя: снаружи мог быть настроен клиент на
-	// прежний порт.
+	// MovedListen — инстансы, которым СМЕНИЛИ listen-адрес, разводя конфликт
+	// за порт. Источников ЧЕТЫРЕ: посев, боот, создание и правка инстанса.
+	// Молчать нельзя:
+	// снаружи мог быть настроен клиент на прежний порт.
 	MovedListen []ProxyRtListenMoveView `json:"movedListen,omitempty"`
 }
 
@@ -104,7 +108,8 @@ type ProxyRtSkippedSourceView struct {
 	Reason string `json:"reason,omitempty" example:"invalid character 'н'"`
 }
 
-// ProxyRtListenMoveView — один переезд listen-адреса, сделанный посевом.
+// ProxyRtListenMoveView — один переезд listen-адреса (посев, боот, создание
+// или правка).
 type ProxyRtListenMoveView struct {
 	Instance string `json:"instance" example:"freeturn-client:default"`
 	Name     string `json:"name,omitempty" example:"Клиент"`
@@ -118,6 +123,9 @@ type ProxyRtResourceView struct {
 	Status string `json:"status" example:"ok"`
 	Detail string `json:"detail,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Attrs — наблюдение ресурса для показа: у ndms_access ключ foreign-acl
+	// перечисляет чужие привязки `ip access-group … in` обеих половин.
+	Attrs map[string]string `json:"attrs,omitempty"`
 }
 
 // ProxyRtStepView — шаг последнего плана.
@@ -247,6 +255,28 @@ type ProxyInstancesDeps struct {
 	OpkgTunSupported func() bool
 	// OnWdttServerUpdated — уведомление при обновлении настроек wdtt-сервера (перематериализация passwords.json и SIGHUP).
 	OnWdttServerUpdated func(ctx context.Context, key string)
+	// Cleaners — уборщики связанных AWG-туннелей ПО РОЛИ. Карта содержит
+	// только клиентские роли: у сервера связанных туннелей не бывает, и
+	// отсутствие ключа — штатный «убирать нечего», а не дефект проводки.
+	//
+	// Живёт здесь, потому что инвариант «клиент уходит вместе со своими
+	// туннелями» обязан держаться на КАЖДОМ пути удаления. Пока его держал
+	// фронт двумя вызовами подряд (своя ручка очистки, затем удаление),
+	// удаление мимо панели оставляло карточку туннеля навсегда: уборка ищет
+	// туннели по id инстанса, а инстанса уже нет. Отдельной ручки очистки
+	// больше нет — этот путь единственный.
+	Cleaners map[instancestore.Kind]LinkedTunnelCleaner
+}
+
+// LinkedTunnelCleaner — снос AWG-туннелей, связанных с ОДНИМ клиентским
+// инстансом. Узкий консюмерский срез: пакет api не тянет proxyapp ради одного
+// метода, прод-реализацию подставляет проводка.
+type LinkedTunnelCleaner interface {
+	// DeleteLinked сносит туннели, связанные с clientID (это Record.ID, а не
+	// Key). Живая запись инстанса ему не нужна — он сканирует хранилище
+	// туннелей, — поэтому звать его можно и после захвата записи, до её
+	// удаления.
+	DeleteLinked(ctx context.Context, clientID string) (deleted []string, errs []string)
 }
 
 // ProxyInstancesHandler обслуживает /api/proxyrt/instances*.
@@ -422,6 +452,12 @@ func (h *ProxyInstancesHandler) create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, err)
 		return
 	}
+	// Единственность — только здесь: гейт читает менеджера, а на пути PATCH
+	// та же проверка ушла бы под m.mu внутрь мутатора (см. singletonGate).
+	if err := h.singletonGate(rec); err != nil {
+		h.fail(w, err)
+		return
+	}
 	if err := h.deps.Manager.Create(r.Context(), rec); err != nil {
 		h.fail(w, err)
 		return
@@ -518,32 +554,83 @@ func (h *ProxyInstancesHandler) patch(w http.ResponseWriter, r *http.Request, ke
 	h.respondRecord(w, key)
 }
 
+// ProxyDeleteData — тело ответа удаления инстанса: что снесено вместе с ним.
+type ProxyDeleteData struct {
+	Ok bool `json:"ok" example:"true"`
+	// DeletedTunnels — id связанных AWG-туннелей, снятых вместе с инстансом.
+	DeletedTunnels []string `json:"deletedTunnels,omitempty"`
+	// TunnelErrors — туннели, которые снять не удалось. Удаление инстанса они
+	// НЕ отменяют (решение прежнее: запирать удаление из-за них пользователь
+	// не просил), но и молча теряться не имеют права — иначе рассинхрон
+	// «инстанса нет, карточка есть» остаётся необъяснённым.
+	TunnelErrors []string `json:"tunnelErrors,omitempty"`
+}
+
+// ProxyDeleteErrorEnvelope — отказ удаления, который всё же снял связанные
+// туннели: `data` заполнена тем, что успело удалиться до отказа.
+type ProxyDeleteErrorEnvelope struct {
+	Error   bool            `json:"error" example:"true"`
+	Message string          `json:"message"`
+	Code    string          `json:"code"`
+	Data    ProxyDeleteData `json:"data"`
+}
+
+// ProxyDeleteResponse — конверт удаления инстанса.
+type ProxyDeleteResponse struct {
+	Success bool            `json:"success" example:"true"`
+	Data    ProxyDeleteData `json:"data"`
+}
+
 // remove — DELETE /api/proxyrt/instances/{key}
 //
-//	@Summary		Удалить прокси-инстанс
-//	@Description	Порядок сноса (teardown → ожидание → запись → уборка) держит менеджер.
+//	@Summary		Удалить прокси-инстанс вместе со связанными AWG-туннелями
+//	@Description	Порядок сноса самого инстанса (teardown → ожидание → запись → уборка) держит менеджер.
+//	@Description	Связанные AWG-туннели снимает сам handler, ДО удаления записи, и отчитывается
+//	@Description	о них в теле ответа. Отказ уборки туннелей удаление инстанса не отменяет.
 //	@Tags			proxyrt
 //	@Produce		json
 //	@Security		CookieAuth
 //	@Param			key	path		string	true	"Ключ инстанса (роль:id)"
-//	@Success		200	{object}	OkResponse
+//	@Success		200	{object}	ProxyDeleteResponse
 //	@Failure		404	{object}	APIErrorEnvelope
-//	@Failure		422	{object}	APIErrorEnvelope
+//	@Failure		422	{object}	ProxyDeleteErrorEnvelope
 //	@Failure		503	{object}	APIErrorEnvelope
 //	@Router			/proxyrt/instances/{key} [delete]
 func (h *ProxyInstancesHandler) remove(w http.ResponseWriter, r *http.Request, key string) {
 	if !h.requireSeeded(w) {
 		return
 	}
-	if _, ok := h.recordByKey(key); !ok {
+	rec, ok := h.recordByKey(key)
+	if !ok {
 		h.notFound(w, key)
 		return
 	}
-	if err := h.deps.Manager.Delete(r.Context(), key); err != nil {
-		h.fail(w, err)
+	// Связи снимаются ДО удаления записи, и порядок здесь несущий: уборщик
+	// намеренно пропускает зеркальную запись raw-клиента как проекцию ЖИВОГО
+	// инстанса (её уносит DropMirror внутри Manager.Delete). После удаления
+	// записи это рассуждение перестало бы быть верным.
+	var deleted, tunnelErrors []string
+	if c := h.deps.Cleaners[rec.Kind]; c != nil {
+		deleted, tunnelErrors = c.DeleteLinked(r.Context(), rec.ID)
+	} else if rec.Kind.IsClient() {
+		// Отсутствие уборщика у КЛИЕНТСКОЙ роли — дефект проводки, а не
+		// «убирать нечего»: молча удалив инстанс, мы оставили бы его туннель
+		// сиротой навсегда и отчитались успехом: отказ громче тишины.
+		response.InternalError(w, "очистка связанных туннелей роли "+
+			string(rec.Kind)+" не подключена")
 		return
 	}
-	response.Success(w, OkData{Ok: true})
+	if err := h.deps.Manager.Delete(r.Context(), key); err != nil {
+		// Отказ ПОСЛЕ уборки: туннели уже сняты, инстанс остался. Молчать об
+		// этом нельзя — пользователь увидел бы «не удалилось» и исчезнувшую
+		// карточку туннеля, и объяснить расхождение ему было бы нечем.
+		// Повтор безопасен: уборщик идемпотентен, на второй попытке он найдёт
+		// ноль связанных туннелей.
+		h.failWithDeleted(w, err, deleted, tunnelErrors)
+		return
+	}
+	response.Success(w, ProxyDeleteData{Ok: true,
+		DeletedTunnels: deleted, TunnelErrors: tunnelErrors})
 }
 
 // AckListenMoves — DELETE /api/proxyrt/seed/listen-moves
@@ -644,12 +731,30 @@ func (h *ProxyInstancesHandler) notFound(w http.ResponseWriter, key string) {
 // остальное, что вернул менеджер, — это отказ ДО записи на диск, и ведущая его
 // причина — отвергнутое объявление выходов (требование 15).
 func (h *ProxyInstancesHandler) fail(w http.ResponseWriter, err error) {
+	status, msg, code := failStatus(err)
+	response.ErrorWithStatus(w, status, msg, code)
+}
+
+// failStatus — классификация ошибки мутации: статус, текст, код. Вынесена,
+// чтобы отказ с отчётом (failWithDeleted) не завёл вторую классификацию.
+func failStatus(err error) (int, string, string) {
 	var ge *proxyGateError
 	if errors.As(err, &ge) {
-		response.ErrorWithStatus(w, http.StatusUnprocessableEntity, ge.msg, ge.code)
-		return
+		return http.StatusUnprocessableEntity, ge.msg, ge.code
 	}
-	response.ErrorWithStatus(w, http.StatusUnprocessableEntity, err.Error(), proxyCodeDeclareFailed)
+	return http.StatusUnprocessableEntity, err.Error(), proxyCodeDeclareFailed
+}
+
+// failWithDeleted — тот же отказ, что и fail, но с отчётом о снятых туннелях.
+// Классификация статуса и кода ОДНА на оба пути (общий failStatus), иначе
+// «удаление отказало» отвечало бы разными кодами в зависимости от того,
+// успела ли уборка.
+func (h *ProxyInstancesHandler) failWithDeleted(w http.ResponseWriter, err error,
+	deleted, tunnelErrors []string,
+) {
+	status, msg, code := failStatus(err)
+	response.ErrorWithData(w, status, msg, code,
+		ProxyDeleteData{Ok: false, DeletedTunnels: deleted, TunnelErrors: tunnelErrors})
 }
 
 func (h *ProxyInstancesHandler) recordByKey(key string) (instancestore.Record, bool) {
@@ -717,7 +822,38 @@ func (h *ProxyInstancesHandler) opkgTunSupported() bool {
 	return h.deps.OpkgTunSupported()
 }
 
-// gateCheck — два отказа, которые обязаны случиться ДО записи.
+// singletonGate — сервер один на роутер: адреса обеих половин константы, а
+// маскарад усыновляется по метке AWGM_WDTT постоянной областью
+// (wdttserver/role.go), поэтому второй инстанс, даже выключенный, сносил бы
+// правило живого на каждом своём прогоне.
+//
+// Живёт ОТДЕЛЬНО от gateCheck и зовётся ТОЛЬКО с пути POST, потому что читает
+// h.deps.Manager.Records(). gateCheck прогоняется изнутри мутатора
+// Manager.Update, а тот держит m.mu на всё время мутатора (manager.go:769-798)
+// — Records() берёт тот же нереентерабельный замок, и гейт внутри мутатора
+// вешал бы менеджер целиком, а с ним всю поверхность API.
+//
+// PATCH проверка и не нужна по построению: тело правки не содержит ни kind, ни
+// id, так что PATCH не может ни превратить чужую роль в сервер, ни развести
+// два сервера из одного. Сравнение с other.ID оставлено на случай POST с явным
+// id уже существующей записи — сама себе дублем она не считается.
+func (h *ProxyInstancesHandler) singletonGate(rec instancestore.Record) error {
+	if rec.Kind != instancestore.KindWdttServer {
+		return nil
+	}
+	for _, other := range h.deps.Manager.Records() {
+		if other.Kind == instancestore.KindWdttServer && other.ID != rec.ID {
+			return &proxyGateError{code: proxyCodeKindSingleton,
+				msg: fmt.Sprintf("wdtt-сервер уже заведён (%s): второй не нужен — обе половины делят адреса и метку правил", other.Key())}
+		}
+	}
+	return nil
+}
+
+// gateCheck — два отказа по СОДЕРЖИМОМУ записи, которые обязаны случиться ДО
+// её записи. Считается и на POST, и внутри мутатора PATCH, поэтому смотрит
+// только на саму запись: любое чтение менеджера отсюда — дедлок (см.
+// singletonGate).
 func (h *ProxyInstancesHandler) gateCheck(rec instancestore.Record) error {
 	if rec.Kind == instancestore.KindWdttServer && rec.WdttServer != nil {
 		c := rec.WdttServer
@@ -732,9 +868,57 @@ func (h *ProxyInstancesHandler) gateCheck(rec instancestore.Record) error {
 				msg: "natMode internet-only: не выбран WAN (natStaticWan)"}
 		}
 	}
+	// Адрес для ссылок абонентам (#933). Проверяется ЗДЕСЬ, а не в
+	// roles.Validate: ошибка оттуда становится cfgErr процесса, то есть
+	// «раздачу не запускать», — косметическое поле не смеет валить сервер.
+	// Отказ 400 на записи пользователь видит сразу и рядом с полем.
+	if rec.Kind == instancestore.KindFreeTurnServer && rec.FreeTurnServer != nil {
+		if err := validateLinkPeer(rec.FreeTurnServer.LinkPeer); err != nil {
+			return &proxyGateError{code: proxyCodeConfigInvalid, msg: err.Error()}
+		}
+	}
 	if proxyNeedsOpkgTun(rec) && !h.opkgTunSupported() {
 		return &proxyGateError{code: proxyCodeOpkgUnsupported,
 			msg: "прошивка не поддерживает интерфейсы OpkgTun: доступны только wg-клиенты"}
+	}
+	return nil
+}
+
+// validateLinkPeer проверяет адрес, который уедет в ссылку абоненту: «host» или
+// «host:port». Пусто — законно (подставится внешний IP роутера).
+//
+// Проверка не косметическая: значение уезжает абоненту, и узнать, что оно
+// нерабочее, владелец может только от него. Поэтому отсекаются и схема
+// («https://vpn.example.org»), и пустой порт, и порт вне диапазона, и мусор с
+// пробелом. Голый IPv6-литерал ОБЯЗАН быть в скобках: без них ни мы, ни клиент
+// не отличим его от «хост с портом» (F390).
+func validateLinkPeer(val string) error {
+	v := strings.TrimSpace(val)
+	if v == "" {
+		return nil
+	}
+	if strings.ContainsAny(v, " \t\r\n,/\\") {
+		return errors.New("адрес сервера для ссылки: один адрес вида host или host:port")
+	}
+	host := v
+	if h, port, err := net.SplitHostPort(v); err == nil {
+		host = h
+		n, perr := strconv.Atoi(port)
+		if perr != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("адрес сервера для ссылки: порт %q вне диапазона 1..65535", port)
+		}
+	} else if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
+		// IPv6 в скобках без порта: SplitHostPort его не разбирает, но форма
+		// однозначная — порт допишет сборщик ссылки.
+		host = strings.Trim(v, "[]")
+	} else if strings.Count(v, ":") > 1 {
+		// Двоеточий больше одного и SplitHostPort не разобрал — это голый
+		// IPv6 без скобок. Дописывание порта у сборщика ссылки такой адрес
+		// принимает за «порт уже есть» и оставляет без порта.
+		return errors.New("адрес сервера для ссылки: IPv6-адрес нужно писать в скобках — [2001:db8::1] или [2001:db8::1]:56000")
+	}
+	if !isValidServerEndpointHost(strings.Trim(host, "[]")) {
+		return fmt.Errorf("адрес сервера для ссылки: %q не похож на имя хоста или IP", host)
 	}
 	return nil
 }
@@ -823,10 +1007,12 @@ func proxyApplyConfig(rec *instancestore.Record, raw json.RawMessage) error {
 	if err := json.Unmarshal(raw, &keys); err != nil {
 		return fmt.Errorf("невалидный конфиг роли %s: %w", rec.Kind, err)
 	}
+	restorePins := proxyKeepPins(rec)
 	proxyResetPresentSlices(proxyConfigPtr(rec), keys)
 	if err := json.Unmarshal(raw, proxyConfigPtr(rec)); err != nil {
 		return fmt.Errorf("невалидный конфиг роли %s: %w", rec.Kind, err)
 	}
+	restorePins()
 	// natStaticWan и natStaticWans — две формы одного поля, и присланная
 	// форма обязана стать источником правды целиком. Иначе выбор WAN в UI
 	// (фронт говорит ТОЛЬКО на одиночку) молча не вступал бы в силу:
@@ -840,6 +1026,25 @@ func proxyApplyConfig(rec *instancestore.Record, raw json.RawMessage) error {
 		}
 	}
 	return nil
+}
+
+// proxyKeepPins запоминает пины интерфейсов записи и возвращает функцию,
+// которая кладёт их обратно после декодирования присланного конфига (F494).
+// Пины — поля сервера: их выделяет менеджер (ensurePins) из общего пула,
+// а присланная половина пары ушла бы туда пином номера, которого пул не видит.
+// У новой записи пины пусты — и остаются пустыми до менеджера.
+func proxyKeepPins(rec *instancestore.Record) func() {
+	switch {
+	case rec.WdttClient != nil:
+		c := rec.WdttClient
+		ndms, kernel := c.NdmsIface, c.RawIface
+		return func() { c.NdmsIface, c.RawIface = ndms, kernel }
+	case rec.WdttServer != nil:
+		c := rec.WdttServer
+		ndms, wg, rawNdms, rawKernel := c.NdmsIface, c.WgIface, c.RawNdmsIface, c.RawIface
+		return func() { c.NdmsIface, c.WgIface, c.RawNdmsIface, c.RawIface = ndms, wg, rawNdms, rawKernel }
+	}
+	return func() {}
 }
 
 // proxyResetPresentSlices обнуляет срезы конфига, чьи ключи есть в присланном
@@ -966,6 +1171,7 @@ func proxyStateView(st *proxyrt.InstanceState) *ProxyRtStateView {
 	for _, r := range st.Resources {
 		out.Resources = append(out.Resources, ProxyRtResourceView{
 			ID: string(r.ID), Status: string(r.Status), Detail: r.Detail, Error: r.Error,
+			Attrs: r.Attrs,
 		})
 	}
 	for _, s := range st.LastPlan {

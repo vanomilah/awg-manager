@@ -33,11 +33,18 @@ const EMPTY: ConnectionsSnapshot = {
 
 const snapshot = writable<ConnectionsSnapshot>(EMPTY);
 const wsStatus = writable<WSStatus>('connecting');
+// Метка последнего кадра: по ней вкладка «Соединения» отличает живой поток от
+// открытого, но замолчавшего. Раньше она держала для этого СВОЙ WebSocket к той
+// же ручке — тот же снимок conntrack сериализовался дважды в секунду (F349 §3).
+const lastMessageAt = writable(0);
 
 let clientsByIP = new Map<string, string>();
 let wsClose: (() => void) | null = null;
 let clientsTimer: ReturnType<typeof setInterval> | null = null;
 let bound = false;
+let holders = 0;
+let unbindStatus: (() => void) | null = null;
+let unbindSettings: (() => void) | null = null;
 let currentPath = '';
 let currentStatus: { enabled?: boolean; active?: boolean } | null = null;
 let currentSettings: { enabled?: boolean; routingEngine?: string } | null = null;
@@ -66,7 +73,10 @@ function connect(path: string): void {
 	}
 	wsClose = createClashWS<ClashConnectionsRaw>(
 		path,
-		(raw) => snapshot.set(parseSnapshot(raw, clientsByIP)),
+		(raw) => {
+			snapshot.set(parseSnapshot(raw, clientsByIP));
+			lastMessageAt.set(Date.now());
+		},
 		(s) => wsStatus.set(s),
 	);
 }
@@ -82,13 +92,25 @@ function disconnect(): void {
 	clientsByIP = new Map();
 	snapshot.set(EMPTY);
 	wsStatus.set('connecting');
+	lastMessageAt.set(0);
 }
 
-/** Подписывает store на enabled-состояние движка (идемпотентно). */
-export function bindLiveConnectionsStore(): void {
-	if (bound) return;
-	bound = true;
+/**
+ * Подписывает store на enabled-состояние движка и ВОЗВРАЩАЕТ отпуск.
+ *
+ * Считаем держателей: раньше `bound` ставился один раз навсегда, а `disconnect`
+ * звался только при ВЫКЛЮЧЕННОМ движке — поэтому после одного захода на страницу
+ * поток `/api/singbox/clash/connections` (кадр в секунду, разбор всей таблицы
+ * соединений на бэкенде) жил до конца сессии, на какой бы странице пользователь
+ * ни находился. Теперь последний ушедший держатель закрывает поток.
+ */
+export function bindLiveConnectionsStore(): () => void {
+	holders++;
 	const reconcile = () => {
+		if (holders <= 0) {
+			disconnect();
+			return;
+		}
 		const mihomo = currentSettings?.routingEngine === 'mihomo';
 		const enabled = mihomo
 			? (currentSettings?.enabled ?? false)
@@ -99,18 +121,46 @@ export function bindLiveConnectionsStore(): void {
 			disconnect();
 		}
 	};
-	singboxRouter.status.subscribe((s) => {
-		currentStatus = s;
+
+	if (!bound) {
+		bound = true;
+		unbindStatus = singboxRouter.status.subscribe((s) => {
+			currentStatus = s;
+			reconcile();
+		});
+		unbindSettings = singboxRouter.settings.subscribe((s) => {
+			currentSettings = s;
+			reconcile();
+		});
+	} else {
 		reconcile();
-	});
-	singboxRouter.settings.subscribe((s) => {
-		currentSettings = s;
-		reconcile();
-	});
+	}
+
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		holders--;
+		if (holders > 0) return;
+		unbindStatus?.();
+		unbindStatus = null;
+		unbindSettings?.();
+		unbindSettings = null;
+		bound = false;
+		disconnect();
+	};
 }
 
 export const liveConnectionsSnapshot = { subscribe: snapshot.subscribe };
 export const liveConnectionsWsStatus = { subscribe: wsStatus.subscribe };
+export const liveConnectionsLastMessageAt = { subscribe: lastMessageAt.subscribe };
+
+/** Убирает закрытые соединения из снимка, не дожидаясь следующего кадра. */
+export function dropConnections(ids: string[]): void {
+	if (ids.length === 0) return;
+	const gone = new Set(ids);
+	snapshot.update((s) => ({ ...s, connections: s.connections.filter((c) => !gone.has(c.id)) }));
+}
 
 export const liveConnectionsTraffic = derived(
 	[snapshot, wsStatus],

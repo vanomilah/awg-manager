@@ -4,18 +4,20 @@
 	import { RefreshCw, Search, ArrowUp, ArrowDown } from 'lucide-svelte';
 	import ProcessRow from './ProcessRow.svelte';
 	import type { SortField } from './shared';
+	import { CORE_WORDS, pluralize } from '$lib/utils/pluralize';
 
 	interface Props {
 		processes: SystemProcessItem[];
 		loading: boolean;
 		initialLoaded: boolean;
+		cpuCount: number;
 		sortField: SortField;
 		sortAsc: boolean;
 		onsort: (field: SortField) => void;
 		onkill: (proc: SystemProcessItem) => void;
 	}
 
-	let { processes, loading, initialLoaded, sortField, sortAsc, onsort, onkill }: Props = $props();
+	let { processes, loading, initialLoaded, cpuCount, sortField, sortAsc, onsort, onkill }: Props = $props();
 </script>
 
 <Card padding="sm">
@@ -66,7 +68,11 @@
 								{/if}
 							</div>
 						</th>
-						<th class="th-sortable col-th-cpu" onclick={() => onsort('cpu')}>
+						<th
+							class="th-sortable col-th-cpu"
+							title="Доля всего процессора роутера{cpuCount > 1 ? ` (${pluralize(cpuCount, CORE_WORDS)})` : ''}: 100 % — заняты все ядра"
+							onclick={() => onsort('cpu')}
+						>
 							<div class="th-wrap">
 								<span>CPU %</span>
 								{#if sortField === 'cpu'}
@@ -74,7 +80,23 @@
 								{/if}
 							</div>
 						</th>
-						<th class="th-sortable col-th-mem" onclick={() => onsort('mem')}>
+						<th
+							class="th-sortable col-th-time"
+							title="Процессорное время с запуска процесса"
+							onclick={() => onsort('time')}
+						>
+							<div class="th-wrap">
+								<span>Время CPU</span>
+								{#if sortField === 'time'}
+									{#if sortAsc}<ArrowUp size={11} />{:else}<ArrowDown size={11} />{/if}
+								{/if}
+							</div>
+						</th>
+						<th
+							class="th-sortable col-th-mem"
+							title="Своя память процесса — ядро не может её отдать. Отдельно — страницы файлов (бинари, библиотеки): их ядро освобождает при нехватке памяти. У процессов, порождённых через fork (например, воркеры nginx), общие страницы засчитываются каждому — сумма по строкам больше реального расхода"
+							onclick={() => onsort('mem')}
+						>
 							<div class="th-wrap">
 								<span>Память</span>
 								{#if sortField === 'mem'}
@@ -95,7 +117,7 @@
 				</thead>
 				<tbody>
 					{#each processes as proc (proc.pid)}
-						<ProcessRow {proc} {onkill} />
+						<ProcessRow {proc} {cpuCount} {onkill} />
 					{/each}
 				</tbody>
 			</table>
@@ -146,6 +168,7 @@
 	.col-th-state { width: 48px; text-align: center; }
 	.col-th-threads { width: 56px; text-align: center; }
 	.col-th-cpu { width: 76px; }
+	.col-th-time { width: 84px; }
 	.col-th-mem { width: 110px; }
 	.col-th-cmd { width: auto; overflow: hidden; }
 	.col-th-act { width: 48px; text-align: center; }

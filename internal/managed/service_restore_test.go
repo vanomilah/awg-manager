@@ -15,8 +15,10 @@ import (
 )
 
 type restoreLiveGetter struct {
-	live map[string]restoreLiveEntry
-	asc  map[string]map[string]string
+	live  map[string]restoreLiveEntry
+	asc   map[string]map[string]string
+	rcErr error // сбой чтения /show/rc/interface/<X>
+	ifErr error // сбой чтения /show/interface/
 }
 
 type restoreLiveEntry struct {
@@ -40,8 +42,18 @@ func (g *restoreLiveGetter) Get(ctx context.Context, path string, out any) error
 		b, _ := json.Marshal(src)
 		return json.Unmarshal(b, out)
 	}
+	// rc интерфейса без пиров: обогащение WGServers.Get без него — ошибка (F510).
+	if strings.HasPrefix(path, "/show/rc/interface/") && !strings.Contains(strings.TrimPrefix(path, "/show/rc/interface/"), "/") {
+		if g.rcErr != nil {
+			return g.rcErr
+		}
+		return json.Unmarshal([]byte(`{}`), out)
+	}
 	if path != "/show/interface/" {
 		return errors.New("unsupported path: " + path)
+	}
+	if g.ifErr != nil {
+		return g.ifErr
 	}
 	m := map[string]json.RawMessage{}
 	for name, ent := range g.live {
@@ -80,6 +92,21 @@ func (g *restoreLiveGetter) applyPost(payload map[string]interface{}) {
 		cfg, ok := raw.(map[string]interface{})
 		if !ok {
 			continue
+		}
+		// Создание и снятие интерфейса видны в списке сразу, как на роутере:
+		// иначе кэш InterfaceStore счёл бы созданный отсутствующим (F546).
+		if no, _ := cfg["no"].(bool); no {
+			if ent, ok := g.live[ifaceName]; ok {
+				ent.Present = false
+				g.live[ifaceName] = ent
+			}
+		} else if len(cfg) == 0 {
+			if g.live == nil {
+				g.live = map[string]restoreLiveEntry{}
+			}
+			ent := g.live[ifaceName]
+			ent.Present = true
+			g.live[ifaceName] = ent
 		}
 		wg, ok := cfg["wireguard"].(map[string]interface{})
 		if !ok {
@@ -230,6 +257,11 @@ func validPrivateKey(seed byte) string {
 	}
 	return base64.StdEncoding.EncodeToString(raw)
 }
+
+// validPeerKey — 44-символьный base64 из 32 байт. Preflight мержа отвергает
+// всё, что не разбирается в ключ WireGuard, поэтому фикстуры merge-путей
+// не могут пользоваться литералами вида "PUB1".
+func validPeerKey(seed byte) string { return validPrivateKey(seed) }
 
 func TestRestore_CreatesNewServerHappyPath(t *testing.T) {
 	dir := t.TempDir()
@@ -445,8 +477,8 @@ func TestRestore_MergeRejectsDuplicatePeerPublicKey(t *testing.T) {
 		PrivateKey:    priv,
 		Policy:        "none",
 		Peers: []storage.ManagedPeer{
-			{PublicKey: "PUB1", TunnelIP: "10.60.0.2/32", Enabled: true},
-			{PublicKey: "PUB1", TunnelIP: "10.60.0.3/32", Enabled: true},
+			{PublicKey: validPeerKey(11), TunnelIP: "10.60.0.2/32", Enabled: true},
+			{PublicKey: validPeerKey(11), TunnelIP: "10.60.0.3/32", Enabled: true},
 		},
 	}}, RestoreOptions{})
 	if len(out) != 1 || out[0].Action != "conflict" {
@@ -457,6 +489,211 @@ func TestRestore_MergeRejectsDuplicatePeerPublicKey(t *testing.T) {
 	}
 	if len(poster.posts) != 0 {
 		t.Fatalf("expected no RCI calls on merge preflight failure, got %d", len(poster.posts))
+	}
+}
+
+// F150: чужой бэкап приносил пира с ключом, который не разбирается в 32
+// байта base64. Он доезжал до NDMS, а логи резали его как pubkey[:8].
+func TestRestore_MergeRejectsInvalidPublicKey(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	priv := validPrivateKey(6)
+	_ = store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: "Wireguard0",
+		Address:       "10.62.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51852,
+		PrivateKey:    priv,
+		Policy:        "none",
+		Peers:         []storage.ManagedPeer{},
+	})
+
+	pub := mustDerivePublicKey(t, priv)
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {
+		Present:   true,
+		Address:   "10.62.0.1",
+		Mask:      "255.255.255.0",
+		PublicKey: pub,
+	}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{onPost: getter.applyPost}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.62.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51852,
+		PrivateKey:    priv,
+		Policy:        "none",
+		Peers: []storage.ManagedPeer{
+			{PublicKey: "not-base64!!", TunnelIP: "10.62.0.2/32", Enabled: true},
+		},
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "conflict" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+	if len(out[0].Conflicts) == 0 || !strings.Contains(out[0].Conflicts[0], "invalid peer public key") {
+		t.Fatalf("unexpected conflicts: %+v", out[0].Conflicts)
+	}
+	if len(poster.posts) != 0 {
+		t.Fatalf("expected no RCI calls on merge preflight failure, got %d", len(poster.posts))
+	}
+}
+
+// F153: ASC применялся ДО добавления пиров, поэтому сигнатура из
+// ASC-снимка не доставалась пирам, которые тот же мерж и создавал.
+func TestRestore_MergeASCSignatureReachesPeersAddedInSameMerge(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	priv := validPrivateKey(56)
+	_ = store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: "Wireguard0",
+		Address:       "10.63.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51853,
+		PrivateKey:    priv,
+		Policy:        "none",
+		Peers:         []storage.ManagedPeer{},
+	})
+
+	pub := mustDerivePublicKey(t, priv)
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {
+		Present:   true,
+		Address:   "10.63.0.1",
+		Mask:      "255.255.255.0",
+		PublicKey: pub,
+	}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{onPost: getter.applyPost}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	newPeer := validPeerKey(57)
+	asc := json.RawMessage(`{"jc":3,"jmin":77,"jmax":266,"s1":18,"s2":29,"h1":"103994526","h2":"1201929360","h3":"2403636727","h4":"3602647725","i1":"<b 0x0a>"}`)
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.63.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51853,
+		PrivateKey:    priv,
+		Policy:        "none",
+		ASC:           asc,
+		Peers: []storage.ManagedPeer{
+			{PublicKey: newPeer, TunnelIP: "10.63.0.2/32", Enabled: true},
+		},
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "merged" || out[0].AddedPeers != 1 {
+		t.Fatalf("outcomes: %+v", out)
+	}
+
+	got, ok := store.GetManagedServerByID("Wireguard0")
+	if !ok {
+		t.Fatalf("server not persisted")
+	}
+	if got.LegacyI1 != "" {
+		t.Fatalf("server must keep no signature after merge, got: %+v", got)
+	}
+	if len(got.Peers) != 1 || got.Peers[0].I1 != "<b 0x0a>" {
+		t.Fatalf("peer added by this merge must inherit the ASC signature, got: %+v", got.Peers)
+	}
+}
+
+// Битый ASC-снимок обязан остановить восстановление, а не молча записать
+// сервер без сигнатуры: разбор i1..i5 больше не глотает ошибку.
+func TestRestore_MalformedASCFailsWithoutPartialWrite(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {Present: false}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{onPost: getter.applyPost}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.65.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51855,
+		PrivateKey:    validPrivateKey(60),
+		Policy:        "none",
+		ASC:           json.RawMessage(`{"jc":3,`),
+		Peers:         []storage.ManagedPeer{},
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "failed" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+	if _, ok := store.GetManagedServerByID("Wireguard0"); ok {
+		t.Fatal("сервер не должен попасть в стор при битом ASC")
+	}
+}
+
+// F153: ASC теперь применяется после пиров, поэтому его отказ приходит уже
+// с добавленными пирами — отчёт обязан их показать, иначе оператор считает
+// мерж несостоявшимся и повторяет импорт.
+func TestRestore_MergeASCFailureStillReportsAddedPeers(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	priv := validPrivateKey(58)
+	_ = store.AddManagedServer(storage.ManagedServer{
+		InterfaceName: "Wireguard0",
+		Address:       "10.64.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51854,
+		PrivateKey:    priv,
+		Policy:        "none",
+		Peers:         []storage.ManagedPeer{},
+	})
+
+	pub := mustDerivePublicKey(t, priv)
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {
+		Present:   true,
+		Address:   "10.64.0.1",
+		Mask:      "255.255.255.0",
+		PublicKey: pub,
+	}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	// Без onPost роутер «не принимает» ASC: readback остаётся нулевым и
+	// verifyASCParamsApplied падает уже после того, как пир добавлен.
+	poster := &fakePoster{}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	asc := json.RawMessage(`{"jc":3,"jmin":77,"jmax":266,"s1":18,"s2":29,"h1":"103994526","h2":"1201929360","h3":"2403636727","h4":"3602647725"}`)
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.64.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    51854,
+		PrivateKey:    priv,
+		Policy:        "none",
+		ASC:           asc,
+		Peers: []storage.ManagedPeer{
+			{PublicKey: validPeerKey(59), TunnelIP: "10.64.0.2/32", Enabled: true},
+		},
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "failed" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+	if out[0].AddedPeers != 1 {
+		t.Fatalf("failed outcome must carry the peers already merged, got: %+v", out[0])
 	}
 }
 
@@ -472,7 +709,10 @@ func TestRestore_MergeAppliesASCAndPersistsIFields(t *testing.T) {
 		ListenPort:    51851,
 		PrivateKey:    priv,
 		Policy:        "none",
-		Peers:         []storage.ManagedPeer{},
+		Peers: []storage.ManagedPeer{
+			{PublicKey: "P1", TunnelIP: "10.61.0.2/32", Enabled: true},
+			{PublicKey: "P2", TunnelIP: "10.61.0.3/32", Enabled: true, I1: "OWN", SignatureProfile: "dns"},
+		},
 	})
 
 	pub := mustDerivePublicKey(t, priv)
@@ -538,8 +778,17 @@ func TestRestore_MergeAppliesASCAndPersistsIFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("server not persisted")
 	}
-	if got.I1 != "AA" || got.I2 != "BB" || got.I3 != "CC" || got.I4 != "DD" || got.I5 != "EE" {
-		t.Fatalf("expected I1..I5 persisted from merge ASC input, got: %+v", got)
+	if got.LegacyI1 != "" || got.LegacyI2 != "" || got.LegacyI3 != "" || got.LegacyI4 != "" || got.LegacyI5 != "" {
+		t.Fatalf("server must keep no signature after merge, got: %+v", got)
+	}
+	if got.Peers[0].I1 != "AA" || got.Peers[0].I2 != "BB" || got.Peers[0].I3 != "CC" || got.Peers[0].I4 != "DD" || got.Peers[0].I5 != "EE" {
+		t.Fatalf("peer without own signature must inherit from merge ASC input, got: %+v", got.Peers[0])
+	}
+	if got.Peers[0].SignatureProfile != "" {
+		t.Fatalf("inherited signature has no known profile, got: %q", got.Peers[0].SignatureProfile)
+	}
+	if got.Peers[1].I1 != "OWN" || got.Peers[1].SignatureProfile != "dns" {
+		t.Fatalf("peer with its own signature must keep it, got: %+v", got.Peers[1])
 	}
 }
 
@@ -1020,6 +1269,10 @@ func TestRestore_AppliesASCAndPersistsIFields(t *testing.T) {
 		PrivateKey:    validPrivateKey(31),
 		Policy:        "none",
 		ASC:           asc,
+		Peers: []storage.ManagedPeer{
+			{PublicKey: "P1", TunnelIP: "10.170.0.2/32", Enabled: true},
+			{PublicKey: "P2", TunnelIP: "10.170.0.3/32", Enabled: true, I1: "OWN", SignatureProfile: "dns"},
+		},
 	}}, RestoreOptions{})
 	if len(out) != 1 || out[0].Action != "created" {
 		t.Fatalf("outcomes: %+v", out)
@@ -1058,8 +1311,61 @@ func TestRestore_AppliesASCAndPersistsIFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("server not persisted")
 	}
-	if got.I1 != "AA" || got.I2 != "BB" || got.I3 != "CC" || got.I4 != "DD" || got.I5 != "EE" {
-		t.Fatalf("expected I1..I5 persisted from ASC input, got: %+v", got)
+	if got.LegacyI1 != "" || got.LegacyI2 != "" || got.LegacyI3 != "" || got.LegacyI4 != "" || got.LegacyI5 != "" {
+		t.Fatalf("server must keep no signature after restore, got: %+v", got)
+	}
+	if got.Peers[0].I1 != "AA" || got.Peers[0].I2 != "BB" || got.Peers[0].I3 != "CC" || got.Peers[0].I4 != "DD" || got.Peers[0].I5 != "EE" {
+		t.Fatalf("peer without own signature must inherit from ASC input, got: %+v", got.Peers[0])
+	}
+	if got.Peers[1].I1 != "OWN" || got.Peers[1].SignatureProfile != "dns" {
+		t.Fatalf("peer with its own signature must keep it, got: %+v", got.Peers[1])
+	}
+}
+
+func TestRestore_OldBackupServerSignatureGoesToPeers(t *testing.T) {
+	dir := t.TempDir()
+	store := storage.NewSettingsStore(dir)
+	_, _ = store.Load()
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {Present: false}}}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	queries := &query.Queries{
+		Interfaces: ifaces,
+		WGServers:  query.NewWGServerStore(getter, query.NopLogger(), ifaces),
+	}
+	poster := &fakePoster{onPost: getter.applyPost}
+	s := &Service{settings: store, transport: poster, queries: queries}
+
+	// Бэкап до схемы 36: сигнатура лежит у сервера, ASC-снимка нет.
+	out := s.Restore(context.Background(), []ManagedServerExport{{
+		InterfaceName: "Wireguard0",
+		Address:       "10.171.0.1",
+		Mask:          "255.255.255.0",
+		ListenPort:    52011,
+		PrivateKey:    validPrivateKey(32),
+		Policy:        "none",
+		LegacyI1:      "<b 0x0a>",
+		LegacyI3:      "<t>",
+		Peers: []storage.ManagedPeer{
+			{PublicKey: "P1", TunnelIP: "10.171.0.2/32", Enabled: true},
+			{PublicKey: "P2", TunnelIP: "10.171.0.3/32", Enabled: true, I1: "<b 0xff>", SignatureProfile: "sip"},
+		},
+	}}, RestoreOptions{})
+	if len(out) != 1 || out[0].Action != "created" {
+		t.Fatalf("outcomes: %+v", out)
+	}
+
+	got, ok := store.GetManagedServerByID("Wireguard0")
+	if !ok {
+		t.Fatalf("server not persisted")
+	}
+	if got.LegacyI1 != "" || got.LegacyI3 != "" {
+		t.Fatalf("server signature must not survive restore, got: %+v", got)
+	}
+	if got.Peers[0].I1 != "<b 0x0a>" || got.Peers[0].I3 != "<t>" || got.Peers[0].SignatureProfile != "" {
+		t.Fatalf("peer without own signature must inherit server's, got: %+v", got.Peers[0])
+	}
+	if got.Peers[1].I1 != "<b 0xff>" || got.Peers[1].I3 != "" || got.Peers[1].SignatureProfile != "sip" {
+		t.Fatalf("peer with its own signature must keep it, got: %+v", got.Peers[1])
 	}
 }
 
@@ -1200,5 +1506,48 @@ func TestRestore_InternetOnly_PersistsNATStaticWANs(t *testing.T) {
 	}
 	if got.NATStaticWAN != "" {
 		t.Errorf("legacy NATStaticWAN must be cleared, got %q", got.NATStaticWAN)
+	}
+}
+
+// Сбой чтения живого слота — ошибка восстановления сервера, а не «слот занят
+// другим сервером»: ложный конфликт уводил в перенумерацию живого сервера.
+func TestRestore_LiveReadFailureIsErrorNotConflict(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		rcErr, ifErr error
+	}{
+		{"rc", errors.New("rci down"), nil},
+		{"interfaces", nil, errors.New("rci down")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := storage.NewSettingsStore(t.TempDir())
+			_, _ = store.Load()
+			priv := validPrivateKey(61)
+			_ = store.AddManagedServer(storage.ManagedServer{InterfaceName: "Wireguard0", Address: "10.64.0.1", Mask: "255.255.255.0", ListenPort: 51854, PrivateKey: priv, Policy: "none"})
+			getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{"Wireguard0": {Present: true, Address: "10.64.0.1", Mask: "255.255.255.0", PublicKey: mustDerivePublicKey(t, priv)}}, rcErr: tc.rcErr, ifErr: tc.ifErr}
+			ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+			queries := &query.Queries{Interfaces: ifaces, WGServers: query.NewWGServerStore(getter, query.NopLogger(), ifaces)}
+			poster := &fakePoster{onPost: getter.applyPost}
+			s := &Service{settings: store, transport: poster, queries: queries}
+			out := s.Restore(context.Background(), []ManagedServerExport{{InterfaceName: "Wireguard0", Address: "10.64.0.1", Mask: "255.255.255.0", ListenPort: 51854, PrivateKey: priv, Policy: "none"}}, RestoreOptions{AllowRenumber: true})
+			if len(out) != 1 || out[0].Action != "failed" || !strings.Contains(out[0].Error, "не удалось прочитать конфигурацию Wireguard0") {
+				t.Fatalf("outcomes: %+v", out)
+			}
+			if len(poster.posts) != 0 {
+				t.Fatalf("RCI после сбоя чтения: %v", poster.posts)
+			}
+		})
+	}
+}
+
+// Интерфейса нет — прежнее поведение: слот свободен, без ошибки, даже если
+// чтение rc сломано (до него дело не доходит).
+func TestLiveInterfaceIdentity_AbsentIsNotError(t *testing.T) {
+	getter := &restoreLiveGetter{live: map[string]restoreLiveEntry{}, rcErr: errors.New("rci down")}
+	ifaces := query.NewInterfaceStoreWithTTL(getter, query.NopLogger(), 0, 0)
+	s := &Service{queries: &query.Queries{Interfaces: ifaces, WGServers: query.NewWGServerStore(getter, query.NopLogger(), ifaces)}}
+	exists, same, err := s.liveInterfaceIdentity(context.Background(), ManagedServerExport{InterfaceName: "Wireguard0", PrivateKey: validPrivateKey(62)})
+	if exists || same || err != nil {
+		t.Fatalf("exists=%v same=%v err=%v", exists, same, err)
 	}
 }

@@ -100,6 +100,12 @@ export interface SystemInfo {
 	kernelModuleVersion: string;
 	/** Version reported by the module currently in the kernel, "" if not loaded. */
 	kernelModuleLoadedVersion?: string;
+	/** Loaded awg_proxy version (NativeWG); >= 1.4.0 supports AWG 3.1. */
+	awgProxyVersion?: string;
+	/** awg_proxy version shipped with this build (in /opt/etc/awg-manager/modules). */
+	awgProxyExpectedVersion?: string;
+	/** Firmware ASC knows AWG 3.x (5.02.A.11+): NativeWG carries all 3.x params itself, no awg_proxy. */
+	supportsWireguardASC3?: boolean;
 	isAarch64: boolean;
 	activeBackend: string;
 	routingEngine?: 'singbox' | 'mihomo';
@@ -234,6 +240,7 @@ export interface UpdateSettings {
 	autoInstallEnabled: boolean;
 	autoInstallIntervalDays: number;
 	autoInstallTime: string;
+	statsEnabled: boolean;
 }
 
 export interface DownloadSettings {
@@ -264,11 +271,17 @@ export interface Settings {
 	 */
 	sessionTtlHours?: number;
 	/**
-	 * Allow login with Entware credentials (/opt/etc/shadow) in addition
-	 * to router admin credentials. Optional — legacy backends omit it;
-	 * UI treats absence as false.
+	 * MCP-эндпоинт /mcp включён. По умолчанию выключен; ключи доступа
+	 * управляются через /mcp/keys*. Optional — legacy backends omit it.
 	 */
-	entwareAuthEnabled?: boolean;
+	mcpEnabled?: boolean;
+	/**
+	 * Phobos-релей принудительно процессом (выключатель kernel-релея
+	 * awgm_relay). Optional — legacy backends omit it.
+	 */
+	obfuscatorRelayProcess?: boolean;
+	/** Причина, по которой сторож выключил kernel-релей (пусто — не срабатывал). */
+	obfuscatorKmodTripped?: string;
 	apiKey?: string;
 	server: ServerSettings;
 	pingCheck: PingCheckSettings;
@@ -282,6 +295,20 @@ export interface Settings {
 	usageLevel: UsageLevel;
 	hiddenSystemTunnels?: string[];
 	monitoringExcludedTunnels?: string[];
+	/**
+	 * Адрес bootstrap-резолвера sing-box (dns-bootstrap в 00-base.json):
+	 * им резолвятся доменные адреса endpoint'ов туннелей и серверов
+	 * подписок. Отвечает раньше любого другого DNS, поэтому только IP.
+	 * Пусто — адрес в конфиге не навязывается (issue #770).
+	 */
+	singboxBootstrapDNS?: string;
+	/**
+	 * Порт experimental.clash_api.external_controller в 00-base.json.
+	 * Хост всегда 127.0.0.1: Clash API — служебный канал управления
+	 * awg-manager, а не пользовательский слушатель. 0 — порт по
+	 * умолчанию (9099), issue #788.
+	 */
+	singboxClashPort?: number;
 }
 
 // #endregion
@@ -295,12 +322,10 @@ export interface AuthStatus {
 	authDisabled?: boolean;
 	login?: string;
 	expiresIn?: number;
-	/**
-	 * True when login via Entware credentials (/opt/etc/shadow) is enabled.
-	 * Present regardless of auth state; optional — legacy backends omit it.
-	 */
-	entwareAuthEnabled?: boolean;
 }
+
+/** Чем проверять логин: учётка роутера или Entware (/opt/etc/shadow). */
+export type LoginMethod = 'router' | 'entware';
 
 export interface LoginResult {
 	success: boolean;
@@ -392,6 +417,21 @@ export interface DnsProxy {
 
 export interface DnsProxyInfo {
 	proxies: DnsProxy[];
+}
+
+/** Ключ доступа к MCP-эндпоинту (без секрета). */
+export interface McpKey {
+	id: string;
+	name: string;
+	createdAt: string;
+	/** Ключ только для чтения: инструменты MCP, меняющие роутер, ему запрещены. */
+	readOnly?: boolean;
+	lastUsedAt?: string;
+}
+
+/** Ответ создания ключа: `key` — plaintext, показывается один раз. */
+export interface McpKeyCreated extends McpKey {
+	key: string;
 }
 
 // #endregion

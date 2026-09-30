@@ -1,6 +1,15 @@
 package ndms
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
+// BuiltInVPNServerDescription — описание встроенного WG-сервера Keenetic.
+// Единственный признак «этот интерфейс — встроенный сервер»: NDMS ставит его
+// сам, и по нему интерфейс отличают все слои проекта.
+const BuiltInVPNServerDescription = "Wireguard VPN Server"
 
 // Interface is a snapshot of one NDMS interface observed via
 // /show/interface/{name} or extracted from /show/interface/.
@@ -13,7 +22,7 @@ type Interface struct {
 	Link          string `json:"link"`      // "up" | "down"
 	Connected     string `json:"connected"` // "yes" | "no" | ""
 	SecurityLevel string `json:"securityLevel"`
-	IPv4          string `json:"ipv4,omitempty"` // summary.layer.ipv4 — "running" | ""
+	IPv4          string `json:"ipv4,omitempty"` // summary.layer.ipv4 — "running" | "pending" | "disabled" | ""
 	Address       string `json:"address,omitempty"`
 	Mask          string `json:"mask,omitempty"`
 	MTU           int    `json:"mtu,omitempty"`
@@ -206,6 +215,9 @@ type SystemWireguardTunnel struct {
 	Mask          string             `json:"mask,omitempty"`    // IPv4 mask
 	Uptime        int64              `json:"uptime,omitempty"`  // seconds since up
 	Peer          *WireguardPeerInfo `json:"peer,omitempty"`    // FIRST peer only
+	// External — "phobos": интерфейс создан установщиком Phobos
+	// (description Phobos-…) и установка на месте; не наш, не перенимается.
+	External string `json:"external,omitempty"`
 }
 
 // WireguardPeerInfo is the minimal tunnel-peer view (first peer only, for system-tunnel UI).
@@ -248,6 +260,22 @@ func (d InterfaceDetails) Intent() InterfaceIntent {
 		return IntentUp
 	}
 	return IntentDown
+}
+
+// ConfIntent — намерение админа, отличающее переходное состояние от ответа.
+// known=false значит «NDMS ещё не решил» (conf: pending или незнакомый слой):
+// такой ответ нельзя читать ни как «включил», ни как «выключил». Intent()
+// двузначен и относит pending к down — это безопасно для решения «стоит ли
+// останавливать», но не для решения «стоит ли поднимать».
+func (d InterfaceDetails) ConfIntent() (up, known bool) {
+	switch d.ConfLayer {
+	case "running":
+		return true, true
+	case "disabled":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // LinkUp returns true if the link layer is up.
@@ -328,4 +356,67 @@ type ASCParamsExtended struct {
 	I3 string `json:"i3"`
 	I4 string `json:"i4"`
 	I5 string `json:"i5"`
+}
+
+// ASCParamsAWG3 — ASC с параметрами устройства AmneziaWG 3.0/3.1 (5.02.A.11+).
+// Набор прошивка принимает только целиком: без любого из полей запрос молча
+// игнорируется (пустой ответ, ничего не применено — стенд 5.02.A.11), поэтому
+// omitempty нет. Ноль — «не задано»: так же пишет незаданное и импорт .conf.
+// Диапазоны идут парами start/end, одиночное значение — start=end.
+type ASCParamsAWG3 struct {
+	ASCParamsExtended
+	HeaderProtectionKey       string `json:"header-protection-key"`
+	ContentPaddingStart       int    `json:"content-padding-addition-start"`
+	ContentPaddingEnd         int    `json:"content-padding-addition-end"`
+	RekeyAfterTimeStart       int    `json:"rekey-after-time-start"`
+	RekeyAfterTimeEnd         int    `json:"rekey-after-time-end"`
+	RekeyTimeoutStart         int    `json:"rekey-timeout-start"`
+	RekeyTimeoutEnd           int    `json:"rekey-timeout-end"`
+	RejectAfterTimeStart      int    `json:"reject-after-time-start"`
+	RejectAfterTimeEnd        int    `json:"reject-after-time-end"`
+	KeepaliveTimeoutStart     int    `json:"keepalive-timeout-start"`
+	KeepaliveTimeoutEnd       int    `json:"keepalive-timeout-end"`
+	MaxHandshakeAttemptsStart int    `json:"max-handshake-attempts-start"`
+	MaxHandshakeAttemptsEnd   int    `json:"max-handshake-attempts-end"`
+	RandomTrailers            int    `json:"random-trailers"`
+	DisableCookies            int    `json:"disable-cookies"`
+}
+
+// ASC3Keys — JSON-ключи параметров 3.x в ASCParamsAWG3 (стенд 5.02.A.11).
+var ASC3Keys = []string{
+	"header-protection-key",
+	"content-padding-addition-start", "content-padding-addition-end",
+	"rekey-after-time-start", "rekey-after-time-end",
+	"rekey-timeout-start", "rekey-timeout-end",
+	"reject-after-time-start", "reject-after-time-end",
+	"keepalive-timeout-start", "keepalive-timeout-end",
+	"max-handshake-attempts-start", "max-handshake-attempts-end",
+	"random-trailers", "disable-cookies",
+}
+
+// KeepASC3 дописывает в запись ASC параметры 3.x, уже стоящие на интерфейсе
+// (current — WGServerStore.ASC3Fields), если сама запись их не несёт. Запись
+// без ключей 3.x прошивка понимает как «снять 3.x» (стенд 5.02.A.11): редактор
+// ASC 2.0 системного или managed-туннеля молча превращал бы 3.1 в 2.0. Запись
+// с любым ключом 3.x — осознанный полный набор, её не трогаем.
+func KeepASC3(params json.RawMessage, current map[string]json.RawMessage) (json.RawMessage, error) {
+	if len(current) == 0 {
+		return params, nil
+	}
+	var asc map[string]json.RawMessage
+	if err := json.Unmarshal(params, &asc); err != nil {
+		return nil, fmt.Errorf("parse ASC params: %w", err)
+	}
+	if asc == nil {
+		return nil, fmt.Errorf("parse ASC params: ожидается объект")
+	}
+	for _, k := range ASC3Keys {
+		if _, ok := asc[k]; ok {
+			return params, nil
+		}
+	}
+	for k, v := range current {
+		asc[k] = v
+	}
+	return json.Marshal(asc)
 }

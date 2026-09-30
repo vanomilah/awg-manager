@@ -386,6 +386,8 @@ definitions:
       name:
         example: My VPN
         type: string
+      obfuscator:
+        $ref: '#/definitions/api.ObfuscatorDTO'
       peer:
         $ref: '#/definitions/api.AWGPeerDTO'
       state:
@@ -486,13 +488,28 @@ definitions:
     type: object
   api.AddPeerRequestDTO:
     properties:
+      clientAllowedIPs:
+        description: |-
+          ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+          пусто — весь трафик). RemoteSubnets — сети за клиентом, IPv4 CIDR (#713).
+        example: 10.10.0.0/24, 192.168.1.0/24
+        type: string
       description:
         example: My Phone
         type: string
       dns:
         example: 8.8.8.8
         type: string
+      remoteSubnets:
+        example:
+        - 192.168.77.0/24
+        items:
+          type: string
+        type: array
       tunnelIP:
+        description: |-
+          TunnelIP is optional: when empty, the first free host address in the
+          server's subnet is allocated.
         example: 10.10.0.2/32
         type: string
     type: object
@@ -513,67 +530,250 @@ definitions:
         example: true
         type: boolean
     type: object
-  api.AmneziaPremiumAccountInfoRequest:
+  api.AmneziaPremiumCatalogData:
     properties:
-      sid:
-        example: v_sid_cookie_value
+      activeDeviceCount:
+        description: |-
+          ActiveDeviceCount / MaxDeviceCount — счётчик устройств подписки, как
+          его отдаёт портал. Сами по issued_configs не считаем: наш подсчёт
+          расходился с портальным.
+        example: 3
+        type: integer
+      countries:
+        description: |-
+          Countries — список стран подписки. Пустой список — не отказ: это
+          правдивый ответ портала, и придумывать по нему ошибку значило бы
+          решать за пользователя, что его подписка сломана. А вот ОТСУТСТВИЕ
+          поля у портала — отказ: см. premiumCatalog. Поле здесь всегда непустой
+          ссылкой ([] или список), null не уезжает никогда.
+        items:
+          $ref: '#/definitions/api.AmneziaPremiumCountry'
+        type: array
+      issuedConfigs:
+        description: |-
+          IssuedConfigs — уже выданные конфигурации подписки. Без omitempty и с
+          сохранением nil ровно по той же причине, что у Protocols выше: старый
+          ответ портала поля не содержал, и «портал про выданное не сказал» (null)
+          не то же самое, что «выданного нет» ([]). В первом случае мастер обязан
+          промолчать про повторную выдачу, во втором — считать, что страна ещё не
+          выдавалась.
+        items:
+          $ref: '#/definitions/api.AmneziaPremiumIssuedConfig'
+        type: array
+      maxDeviceCount:
+        example: 7
+        type: integer
+      planName:
+        description: |-
+          PlanName — название тарифа (display_name). subscription_description для
+          подписи не годится: там рекламный абзац, а не название.
+        example: Premium
+        type: string
+      subscriptionEndDate:
+        description: |-
+          SubscriptionEndDate — «действует до», как прислал портал (ISO 8601).
+          Строкой, а не временем: активность считает интерфейс, и разбор даты на
+          две стороны разошёлся бы.
+        example: "2027-04-19T08:31:00Z"
         type: string
     type: object
-  api.AmneziaPremiumAccountInfoResponse:
+  api.AmneziaPremiumCatalogResponse:
     properties:
       data:
-        type: object
+        $ref: '#/definitions/api.AmneziaPremiumCatalogData'
       success:
         example: true
         type: boolean
     type: object
-  api.AmneziaPremiumDownloadConfigData:
+  api.AmneziaPremiumConfigData:
     properties:
       config:
-        example: |-
-          [Interface]
-          PrivateKey = ...
+        description: |-
+          Config — текст .conf. Строки с ключом подписки из него вырезаны
+          клиентом (amneziacp.withoutKeyLines): живой ответ несёт ключ всей
+          подписки в комментарии-шапке.
+        type: string
+      countryCode:
+        description: CountryCode — страна в том виде, в каком ушла в портал.
+        example: nl
         type: string
     type: object
-  api.AmneziaPremiumDownloadConfigRequest:
+  api.AmneziaPremiumConfigRequest:
     properties:
       countryCode:
         example: nl
         type: string
-      sid:
-        example: v_sid_cookie_value
-        type: string
     type: object
-  api.AmneziaPremiumDownloadConfigResponse:
+  api.AmneziaPremiumConfigResponse:
     properties:
       data:
-        $ref: '#/definitions/api.AmneziaPremiumDownloadConfigData'
+        $ref: '#/definitions/api.AmneziaPremiumConfigData'
       success:
         example: true
         type: boolean
     type: object
-  api.AmneziaPremiumLoginData:
+  api.AmneziaPremiumCountry:
     properties:
-      sid:
-        example: v_sid_cookie_value
+      code:
+        description: |-
+          Code — код страны, как его прислал портал (server_country_code).
+          Регистр не трогаем: он же уезжает обратно в запрос конфигурации, где
+          приводится к нижнему уже клиентом.
+        example: nl
+        type: string
+      name:
+        description: |-
+          Name — название страны, как его прислал портал, вместе с суффиксами
+          вида «Switzerland [P2P]».
+        example: Netherlands
+        type: string
+      protocols:
+        description: |-
+          Protocols — признак доступности страны: список протоколов, которыми её
+          отдаёт подписка (available_protocols). Нам годится только awg, но
+          решение «показывать ли страну» принимает интерфейс — здесь важно
+          сохранить РАЗЛИЧИЕ между пустым списком (страна не отдаётся ничем) и
+          отсутствующим полем (старый ответ портала его не содержал, и страну
+          отбрасывать нельзя). Поэтому без omitempty: nil уезжает как null,
+          пустой список — как [].
+        items:
+          type: string
+        type: array
+    type: object
+  api.AmneziaPremiumDeclaredCountryData:
+    properties:
+      declaredCountryCode:
+        example: ru
         type: string
     type: object
-  api.AmneziaPremiumLoginRequest:
+  api.AmneziaPremiumDeclaredCountryRequest:
     properties:
+      declaredCountryCode:
+        example: ru
+        type: string
+    type: object
+  api.AmneziaPremiumDeclaredCountryResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AmneziaPremiumDeclaredCountryData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.AmneziaPremiumIssuedConfig:
+    properties:
+      countryCode:
+        description: |-
+          CountryCode — страна выданной конфигурации, как её прислал портал
+          (server_country_code). Регистр не трогаем — сопоставление с кодом
+          страны каталога делает интерфейс, как и во всём остальном каталоге.
+        example: nl
+        type: string
+      lastIssuedAt:
+        description: |-
+          LastIssuedAt — когда конфигурацию выдавали в последний раз
+          (last_downloaded), строкой в том виде, в каком прислал портал.
+        example: "2026-09-01T10:00:00Z"
+        type: string
+      portalUpdatedAt:
+        description: |-
+          PortalUpdatedAt — когда конфигурацию в последний раз меняли на стороне
+          портала (worker_last_updated). Позже LastIssuedAt — значит выданное
+          пользователю устарело.
+        example: "2026-09-02T10:00:00Z"
+        type: string
+      sourceType:
+        description: |-
+          SourceType — вид записи, как его прислал портал (source_type), строкой
+          и без разбора. Мастер делит записи по нему: gateway_account — активное
+          устройство подписки, всё прочее (и пустое — старый ответ портала поля
+          не содержал) переиздаваемо, и обе механики выше применяются ТОЛЬКО к
+          переиздаваемым. Без этого поля страна, где выдано активное устройство,
+          считалась бы уже выданной, и мастер показал бы состояние, которого нет.
+        example: downloaded_config
+        type: string
+    type: object
+  api.AmneziaPremiumKeyData:
+    properties:
+      saveError:
+        description: |-
+          SaveError — почему сохранить не вышло; пусто, когда сохранять не просили
+          или сохранение прошло. Непустое значение вместе с успешным ответом POST
+          означает «вошли, но ключ не сохранён»: неудача сохранения не отменяет
+          состоявшийся вход. Без omitempty намеренно: поле, пропадающее из тела
+          там, где ошибки нет, — это и есть вторая форма ответа.
+        type: string
+      stored:
+        description: Stored — шифротекст ключа лежит в настройках.
+        example: true
+        type: boolean
+      usable:
+        description: |-
+          Usable — сохранённый шифротекст расшифровывается секретом устройства.
+          Пара stored:false, usable:false читается как «ключа нет, расшифровывать
+          нечего», а не «ключ есть, но сломан»; сломанный ключ — это stored:true,
+          usable:false. Непригодный шифротекст НЕ стирается: пользователь видит
+          usable:false и вводит ключ заново, а секрет устройства ещё может
+          вернуться из бэкапа.
+        example: true
+        type: boolean
+    type: object
+  api.AmneziaPremiumKeyRequest:
+    properties:
+      key:
+        example: vpn://...
+        type: string
       remember:
         example: true
         type: boolean
-      vpn_key:
-        example: vpn://...
-        type: string
-      vpnKey:
-        example: vpn://...
-        type: string
+      store:
+        example: false
+        type: boolean
     type: object
-  api.AmneziaPremiumLoginResponse:
+  api.AmneziaPremiumKeyResponse:
     properties:
       data:
-        $ref: '#/definitions/api.AmneziaPremiumLoginData'
+        $ref: '#/definitions/api.AmneziaPremiumKeyData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.AmneziaPremiumMirrorData:
+    properties:
+      mirrorUrl:
+        example: https://storage.googleapis.com/amnezia/cp?m-path=/ru
+        type: string
+    type: object
+  api.AmneziaPremiumMirrorRequest:
+    properties:
+      mirrorUrl:
+        example: https://storage.googleapis.com/amnezia/cp?m-path=/ru
+        type: string
+    type: object
+  api.AmneziaPremiumMirrorResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AmneziaPremiumMirrorData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.AmneziaPremiumRevokeData:
+    properties:
+      countryCode:
+        example: nl
+        type: string
+    type: object
+  api.AmneziaPremiumRevokeRequest:
+    properties:
+      countryCode:
+        example: nl
+        type: string
+    type: object
+  api.AmneziaPremiumRevokeResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AmneziaPremiumRevokeData'
       success:
         example: true
         type: boolean
@@ -594,12 +794,6 @@ definitions:
         type: boolean
       authenticated:
         example: true
-        type: boolean
-      entwareAuthEnabled:
-        description: |-
-          EntwareAuthEnabled tells the (unauthenticated) login form that
-          Entware system credentials are accepted in addition to Keenetic ones.
-        example: false
         type: boolean
       expiresIn:
         example: 3600
@@ -674,6 +868,179 @@ definitions:
       tag:
         example: amsterdam
         type: string
+    type: object
+  api.AwgAnalyzeData:
+    properties:
+      errors:
+        items:
+          $ref: '#/definitions/api.AwgAnalyzeIssue'
+        type: array
+      interface:
+        $ref: '#/definitions/api.AwgAnalyzeInterface'
+      peer:
+        $ref: '#/definitions/api.AwgAnalyzePeer'
+      version:
+        example: awg3.1
+        type: string
+      warnings:
+        items:
+          $ref: '#/definitions/api.AwgAnalyzeIssue'
+        type: array
+    type: object
+  api.AwgAnalyzeInterface:
+    properties:
+      address:
+        example: 10.8.0.2/32
+        type: string
+      contentPaddingAddition:
+        example: 0-64
+        type: string
+      disableCookies:
+        example: false
+        type: boolean
+      dns:
+        example: 10.8.0.1
+        type: string
+      h1:
+        example: "1"
+        type: string
+      h2:
+        example: "2"
+        type: string
+      h3:
+        example: "3"
+        type: string
+      h4:
+        example: "4"
+        type: string
+      headerProtection:
+        description: |-
+          HeaderProtection — ключ задан и валиден (32 байта base64). Сам ключ
+          не возвращается.
+        example: true
+        type: boolean
+      i1:
+        example: <b 0xc0000001>
+        type: string
+      i2:
+        example: ""
+        type: string
+      i3:
+        example: ""
+        type: string
+      i4:
+        example: ""
+        type: string
+      i5:
+        example: ""
+        type: string
+      jc:
+        example: 4
+        type: integer
+      jmax:
+        example: 1000
+        type: integer
+      jmin:
+        example: 50
+        type: integer
+      keepaliveTimeout:
+        example: ""
+        type: string
+      maxHandshakeAttempts:
+        example: ""
+        type: string
+      mtu:
+        example: 1420
+        type: integer
+      mtuSet:
+        description: |-
+          MTUSet — ключ MTU есть в тексте; иначе значение выше — дефолт парсера
+          (1280), а не выбор пользователя.
+        example: true
+        type: boolean
+      randomTrailers:
+        example: true
+        type: boolean
+      rejectAfterTime:
+        example: ""
+        type: string
+      rekeyAfterTime:
+        example: ""
+        type: string
+      rekeyTimeout:
+        example: ""
+        type: string
+      s1:
+        example: 12
+        type: integer
+      s2:
+        example: 5
+        type: integer
+      s3:
+        example: 12
+        type: integer
+      s4:
+        example: 12
+        type: integer
+    type: object
+  api.AwgAnalyzeIssue:
+    properties:
+      code:
+        example: hp_padding_min
+        type: string
+      message:
+        example: Описание ошибки или предупреждения
+        type: string
+    type: object
+  api.AwgAnalyzePeer:
+    properties:
+      allowedIPs:
+        example:
+        - 0.0.0.0/0
+        - ::/0
+        items:
+          type: string
+        type: array
+      allowedIPsSet:
+        example: true
+        type: boolean
+      endpoint:
+        example: vpn.example.com:51820
+        type: string
+      hasPresharedKey:
+        example: true
+        type: boolean
+      keepaliveSet:
+        example: true
+        type: boolean
+      persistentKeepalive:
+        example: 25-35
+        type: string
+      presharedKeyFromStore:
+        description: |-
+          PresharedKeyFromStore — PSK взят из хранилища по tunnelId, в тексте
+          его не было.
+        example: false
+        type: boolean
+    type: object
+  api.AwgAnalyzeRequest:
+    properties:
+      conf:
+        example: |
+          [Interface]
+          PrivateKey = ...
+        type: string
+      tunnelId:
+        example: awg1
+        type: string
+    type: object
+  api.AwgAnalyzeResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.AwgAnalyzeData'
+      success:
+        example: true
+        type: boolean
     type: object
   api.BackupWarningDTO:
     properties:
@@ -1184,6 +1551,9 @@ definitions:
       mode:
         description: '"selector" (default) | "urltest"'
         type: string
+      path:
+        example: /opt/etc/awg-manager/sub.txt
+        type: string
       refreshHours:
         example: 24
         type: integer
@@ -1206,6 +1576,12 @@ definitions:
         type: integer
       refreshMode:
         example: interval
+        type: string
+    type: object
+  api.DeleteOrphanIfaceRequest:
+    properties:
+      iface:
+        example: opkgtun10
         type: string
     type: object
   api.DeleteSubscriptionGroupRequest:
@@ -1734,18 +2110,53 @@ definitions:
     type: object
   api.ExternalTunnelDTO:
     properties:
+      addresses:
+        description: |-
+          Addresses / ConflictsWith — адреса устройства и имя ДЕЙСТВУЮЩЕГО туннеля,
+          чей адрес совпал: такое совпадение выстрелит, когда оба будут подняты.
+        items:
+          type: string
+        type: array
+      conflictsWith:
+        example: Germany_AWG_3.1
+        type: string
+      description:
+        description: |-
+          Description — описание интерфейса в NDMS: единственное, по чему видно,
+          чей это интерфейс, прежде чем принять его или удалить.
+        example: ForeignAWG
+        type: string
       endpoint:
         example: ext.example.com:51820
         type: string
+      foreign:
+        description: 'Foreign — отмечен как сторонний (issue #935): не удаляют и не
+          принимают.'
+        example: false
+        type: boolean
       interfaceName:
         example: Wireguard2
         type: string
       isAWG:
         example: true
         type: boolean
+      kernelDevice:
+        example: true
+        type: boolean
+      ndmsRecord:
+        description: |-
+          NDMSRecord / KernelDevice — из каких половин состоит интерфейс: они
+          существуют независимо и снимаются независимо.
+        example: true
+        type: boolean
       publicKey:
         example: KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK=
         type: string
+      removable:
+        description: 'Removable — за номером нет владельца в аллокаторе: строку можно
+          снести.'
+        example: true
+        type: boolean
       rxBytes:
         example: 1048576
         type: integer
@@ -1765,6 +2176,36 @@ definitions:
       success:
         example: true
         type: boolean
+    type: object
+  api.ForeignIfaceCandidate:
+    properties:
+      kind:
+        enum:
+        - opkgtun
+        - kernel
+        type: string
+      label:
+        example: csqtt
+        type: string
+      name:
+        example: opkgtun7
+        type: string
+      up:
+        type: boolean
+    type: object
+  api.ForeignIfaceMarkResponse:
+    properties:
+      name:
+        example: opkgtun7
+        type: string
+      ok:
+        type: boolean
+    type: object
+  api.ForeignIfaceRequest:
+    properties:
+      name:
+        example: opkgtun7
+        type: string
     type: object
   api.GeoExpandData:
     properties:
@@ -2080,6 +2521,12 @@ definitions:
     type: object
   api.ImportConfRequest:
     properties:
+      amneziaCountry:
+        description: |-
+          AmneziaCountry — код страны подписки Amnezia Premium, из которой взята
+          конфигурация. Шлёт его мастер; обычный импорт файла поле не присылает,
+          и туннель остаётся без метки страны.
+        type: string
       backend:
         description: '"nativewg" | "kernel" (default: "kernel")'
         type: string
@@ -2087,8 +2534,18 @@ definitions:
         type: string
       freeTurnClientId:
         type: string
+      installUrl:
+        description: |-
+          InstallURL — ссылка установки Phobos (…/api/install/<token>): роутер сам
+          качает package.tar.gz и берёт из него .conf. TLS панели не проверяется.
+        type: string
       name:
         type: string
+      obfuscator:
+        allOf:
+        - $ref: '#/definitions/api.ObfuscatorImportRequest'
+        description: Obfuscator — параметры релея руками (ClusterM). Несовместимо
+          с [instance] в Content.
       wdttClientId:
         type: string
     type: object
@@ -2201,6 +2658,13 @@ definitions:
     properties:
       login:
         type: string
+      method:
+        description: 'Method — чем проверять: "router" (по умолчанию) или "entware".'
+        enum:
+        - router
+        - entware
+        example: router
+        type: string
       password:
         type: string
     type: object
@@ -2251,6 +2715,12 @@ definitions:
     type: object
   api.ManagedPeerDTO:
     properties:
+      clientAllowedIPs:
+        description: |-
+          ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+          пусто — весь трафик). RemoteSubnets — сети за клиентом, IPv4 CIDR (#713).
+        example: 10.10.0.0/24, 192.168.1.0/24
+        type: string
       description:
         example: My Phone
         type: string
@@ -2260,6 +2730,20 @@ definitions:
       enabled:
         example: true
         type: boolean
+      i1:
+        description: |-
+          i1..i5 и signatureProfile — сигнатура имитации этого клиента;
+          попадает в его .conf.
+        example: <b 0xc0>
+        type: string
+      i2:
+        type: string
+      i3:
+        type: string
+      i4:
+        type: string
+      i5:
+        type: string
       presharedKey:
         example: JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ=
         type: string
@@ -2268,6 +2752,15 @@ definitions:
         type: string
       publicKey:
         example: HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH=
+        type: string
+      remoteSubnets:
+        example:
+        - 192.168.77.0/24
+        items:
+          type: string
+        type: array
+      signatureProfile:
+        example: quic_initial
         type: string
       tunnelIP:
         example: 10.10.0.2
@@ -2319,6 +2812,10 @@ definitions:
         example: vpn.example.com:51821
         type: string
       i1:
+        description: |-
+          Серверные i1..i5 из старых бэкапов, когда сигнатура была общей на весь
+          сервер. Только на чтение: при импорте раздаются клиентам без своей
+          сигнатуры, в новые бэкапы не пишутся.
         type: string
       i2:
         type: string
@@ -2382,6 +2879,16 @@ definitions:
       endpoint:
         example: 203.0.113.42:51821
         type: string
+      foreignAcls:
+        description: |-
+          ForeignACLs — чужие списки `ip access-group … in` на интерфейсе сервера
+          (кроме нашего AWGM_<iface>), в порядке привязки. Список, привязанный
+          раньше нашего и разрешающий шире, срабатывает до выбора сегментов.
+        example:
+        - GUEST_ACL
+        items:
+          type: string
+        type: array
       interfaceName:
         example: Wireguard1
         type: string
@@ -2502,6 +3009,99 @@ definitions:
         items:
           $ref: '#/definitions/api.ManagedServerDTO'
         type: array
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.McpKeyCreateRequest:
+    properties:
+      name:
+        example: laptop
+        type: string
+      readOnly:
+        description: |-
+          ReadOnly mints a key restricted to tools that change nothing.
+          Omitted means full access, matching the behaviour before scopes
+          existed — clients that do not know the field keep working.
+        example: false
+        type: boolean
+    type: object
+  api.McpKeyCreatedData:
+    properties:
+      createdAt:
+        type: string
+      id:
+        example: 3f9c1a2b4d5e6f70
+        type: string
+      key:
+        example: awgm_Q3VyaW91cz8gVGhpcyBpcyBqdXN0IGFuIGV4YW1wbGU
+        type: string
+      name:
+        example: laptop
+        type: string
+      readOnly:
+        example: false
+        type: boolean
+    type: object
+  api.McpKeyCreatedResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.McpKeyCreatedData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.McpKeyDTO:
+    properties:
+      createdAt:
+        type: string
+      id:
+        example: 3f9c1a2b4d5e6f70
+        type: string
+      lastUsedAt:
+        type: string
+      name:
+        example: laptop
+        type: string
+      readOnly:
+        description: |-
+          ReadOnly is always present, unlike the stored field: the UI has to
+          distinguish a restricted key from a full one, and an omitted false
+          would render the same as "unknown".
+        example: false
+        type: boolean
+    type: object
+  api.McpKeyRevokeRequest:
+    properties:
+      id:
+        example: 3f9c1a2b4d5e6f70
+        type: string
+    type: object
+  api.McpKeyRevokedData:
+    properties:
+      revoked:
+        example: true
+        type: boolean
+    type: object
+  api.McpKeyRevokedResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.McpKeyRevokedData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.McpKeysListData:
+    properties:
+      keys:
+        items:
+          $ref: '#/definitions/api.McpKeyDTO'
+        type: array
+    type: object
+  api.McpKeysListResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.McpKeysListData'
       success:
         example: true
         type: boolean
@@ -2677,6 +3277,90 @@ definitions:
       revision:
         type: string
     type: object
+  api.ObfuscatorDTO:
+    properties:
+      flavor:
+        enum:
+        - phobos
+        - clusterm
+        example: phobos
+        type: string
+      idleTimeout:
+        example: 120
+        type: integer
+      key:
+        example: secret
+        type: string
+      localPort:
+        example: 39000
+        type: integer
+      masking:
+        enum:
+        - STUN
+        - MEDIA
+        - AUTO
+        - NONE
+        example: STUN
+        type: string
+      maxDummy:
+        example: 4
+        type: integer
+      obfuscateBytes:
+        example: 16
+        type: integer
+      target:
+        example: 1.2.3.4:51824
+        type: string
+    type: object
+  api.ObfuscatorImportRequest:
+    properties:
+      flavor:
+        description: '"phobos" | "clusterm" (пусто = clusterm)'
+        type: string
+      idleTimeout:
+        type: integer
+      key:
+        type: string
+      masking:
+        type: string
+      maxDummy:
+        type: integer
+      obfuscateBytes:
+        type: integer
+      target:
+        type: string
+    type: object
+  api.ObfuscatorItemDTO:
+    properties:
+      flavor:
+        enum:
+        - phobos
+        - clusterm
+        example: phobos
+        type: string
+      localPort:
+        example: 39000
+        type: integer
+      relay:
+        description: 'Relay — бэкенд релея: "kernel" (awgm_relay.ko) или "process".'
+        enum:
+        - kernel
+        - process
+        example: kernel
+        type: string
+      target:
+        example: 1.2.3.4:51824
+        type: string
+    type: object
+  api.ObfuscatorRelayRequest:
+    properties:
+      process:
+        description: true — Phobos-релей процессом, false — модулем ядра awgm_relay.
+        example: true
+        type: boolean
+    required:
+    - process
+    type: object
   api.OkData:
     properties:
       ok:
@@ -2739,6 +3423,40 @@ definitions:
       success:
         example: true
         type: boolean
+    type: object
+  api.PeerPresetsDTO:
+    properties:
+      exceptRouter:
+        example: 0.0.0.0/5, 8.0.0.0/7, 192.168.1.1/32, ::/0
+        type: string
+      routerOnly:
+        example: 10.10.0.0/24, 192.168.1.0/24
+        type: string
+    type: object
+  api.PeerPresetsResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.PeerPresetsDTO'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.PeerSignatureDTO:
+    properties:
+      i1:
+        example: <b 0xc0>
+        type: string
+      i2:
+        type: string
+      i3:
+        type: string
+      i4:
+        type: string
+      i5:
+        type: string
+      profile:
+        example: quic_initial
+        type: string
     type: object
   api.PermitInterfaceRequest:
     properties:
@@ -2941,6 +3659,9 @@ definitions:
         items:
           $ref: '#/definitions/api.SubscriptionHeader'
         type: array
+      path:
+        example: /opt/etc/awg-manager/sub.txt
+        type: string
       url:
         example: https://example.com/subscriptions/demo.txt
         type: string
@@ -2979,6 +3700,46 @@ definitions:
     properties:
       data:
         $ref: '#/definitions/api.DeviceProxyConfigData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.ProxyDeleteData:
+    properties:
+      deletedTunnels:
+        description: DeletedTunnels — id связанных AWG-туннелей, снятых вместе с инстансом.
+        items:
+          type: string
+        type: array
+      ok:
+        example: true
+        type: boolean
+      tunnelErrors:
+        description: |-
+          TunnelErrors — туннели, которые снять не удалось. Удаление инстанса они
+          НЕ отменяют (решение прежнее: запирать удаление из-за них пользователь
+          не просил), но и молча теряться не имеют права — иначе рассинхрон
+          «инстанса нет, карточка есть» остаётся необъяснённым.
+        items:
+          type: string
+        type: array
+    type: object
+  api.ProxyDeleteErrorEnvelope:
+    properties:
+      code:
+        type: string
+      data:
+        $ref: '#/definitions/api.ProxyDeleteData'
+      error:
+        example: true
+        type: boolean
+      message:
+        type: string
+    type: object
+  api.ProxyDeleteResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.ProxyDeleteData'
       success:
         example: true
         type: boolean
@@ -3159,6 +3920,13 @@ definitions:
     type: object
   api.ProxyRtResourceView:
     properties:
+      attrs:
+        additionalProperties:
+          type: string
+        description: |-
+          Attrs — наблюдение ресурса для показа: у ndms_access ключ foreign-acl
+          перечисляет чужие привязки `ip access-group … in` обеих половин.
+        type: object
       detail:
         type: string
       error:
@@ -3180,9 +3948,10 @@ definitions:
         type: string
       movedListen:
         description: |-
-          MovedListen — инстансы, которым посев сменил listen-адрес, разводя
-          конфликт за порт. Молчать нельзя: снаружи мог быть настроен клиент на
-          прежний порт.
+          MovedListen — инстансы, которым СМЕНИЛИ listen-адрес, разводя конфликт
+          за порт. Источников ЧЕТЫРЕ: посев, боот, создание и правка инстанса.
+          Молчать нельзя:
+          снаружи мог быть настроен клиент на прежний порт.
         items:
           $ref: '#/definitions/api.ProxyRtListenMoveView'
         type: array
@@ -3485,11 +4254,21 @@ definitions:
       name:
         example: My VPN
         type: string
+      server:
+        description: Server — системный WireGuard-сервер (managed, помеченный или
+          встроенный).
+        example: false
+        type: boolean
       status:
         example: connected
         type: string
       type:
         example: managed
+        type: string
+      warning:
+        description: 'Warning — «нет адреса в NDMS»: маршруты NDMS на такой туннель
+          молча не ставятся.'
+        example: нет адреса в NDMS
         type: string
     type: object
   api.RoutingTunnelsResponse:
@@ -3536,9 +4315,27 @@ definitions:
     type: object
   api.ServerAddPeerRequestDTO:
     properties:
+      clientAllowedIPs:
+        description: |-
+          ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+          пусто — весь трафик). RemoteSubnets — сети за клиентом, IPv4 CIDR (#713).
+        example: 10.0.14.0/24, 192.168.1.0/24
+        type: string
       description:
         example: My Phone
         type: string
+      dns:
+        description: |-
+          DNS — резолвер пира для `.conf`: список IP через запятую. Пусто —
+          LAN-адрес роутера (#933).
+        example: 192.168.1.1
+        type: string
+      remoteSubnets:
+        example:
+        - 192.168.77.0/24
+        items:
+          type: string
+        type: array
       tunnelIP:
         example: 10.0.14.2/32
         type: string
@@ -3661,9 +4458,36 @@ definitions:
     type: object
   api.ServerUpdatePeerRequestDTO:
     properties:
+      clientAllowedIPs:
+        description: |-
+          ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+          пусто — весь трафик). Отсутствие поля или null — не менять.
+        example: 10.0.14.0/24, 192.168.1.0/24
+        type: string
       description:
         example: My Phone
         type: string
+      dns:
+        description: |-
+          DNS — резолвер пира: «прислали → присвоили», как у Description. Пусто
+          снимает свой резолвер и возвращает пира к LAN-адресу роутера (#933).
+        example: 192.168.1.1
+        type: string
+      remoteSubnets:
+        description: |-
+          RemoteSubnets — сети за клиентом, IPv4 CIDR (#713); полная замена списка:
+          отсутствие поля или null — не менять; пустой список — снять все.
+        example:
+        - 192.168.77.0/24
+        items:
+          type: string
+        type: array
+      signature:
+        allOf:
+        - $ref: '#/definitions/api.PeerSignatureDTO'
+        description: |-
+          Signature: nil — сигнатуру пира не трогать; объект — заменить все пять
+          полей и профиль целиком (пустые поля объекта стирают старые байты).
       tunnelIP:
         example: 10.0.14.2/32
         type: string
@@ -3759,6 +4583,14 @@ definitions:
     type: object
   api.SettingsData:
     properties:
+      apiKey:
+        description: |-
+          ApiKey is the opaque secret accepted in place of a session cookie via
+          `Authorization: Bearer <key>`. Отдаётся сознательно: панель настроек
+          показывает его и даёт скопировать — ключ для того и заводится. Ротация
+          — POST /settings/regenerate-api-key.
+        example: d2f1c0a4-5b6e-4a7c-8d9e-0f1a2b3c4d5e
+        type: string
       authEnabled:
         example: false
         type: boolean
@@ -3772,16 +4604,16 @@ definitions:
         $ref: '#/definitions/api.DNSRouteSettingsDTO'
       download:
         $ref: '#/definitions/api.DownloadSettingsDTO'
-      entwareAuthEnabled:
-        description: |-
-          EntwareAuthEnabled allows login with Entware system credentials
-          (/opt/etc/shadow) verified locally, without the NDMS /auth call.
-        example: false
-        type: boolean
       geoFile:
         $ref: '#/definitions/api.GeoFileSettingsDTO'
       logging:
         $ref: '#/definitions/api.LoggingSettingsDTO'
+      mcpEnabled:
+        description: |-
+          McpEnabled turns on the Model Context Protocol endpoint at /mcp.
+          Off by default; keys are managed via /mcp/keys*.
+        example: false
+        type: boolean
       monitoringExcludedTunnels:
         example:
         - tn-1
@@ -3789,9 +4621,22 @@ definitions:
         items:
           type: string
         type: array
+      obfuscatorKmodTripped:
+        description: ObfuscatorKmodTripped — причина, по которой сторож выключил kernel-релей.
+        example: ""
+        type: string
+      obfuscatorRelayProcess:
+        description: ObfuscatorRelayProcess — Phobos-релей принудительно процессом
+          (выключатель ядра).
+        example: false
+        type: boolean
       pingCheck:
         $ref: '#/definitions/api.PingCheckSettingsDTO'
       schemaVersion:
+        description: |-
+          SchemaVersion повторяет тег storage.Settings ВМЕСТЕ с omitempty:
+          страница шлёт тело ответа обратно PATCH-ем, а поле патчабельное, так
+          что "schemaVersion":0 в ответе уехал бы в хранилище.
         example: 16
         type: integer
       server:
@@ -3888,9 +4733,6 @@ definitions:
     type: object
   api.SignatureGenerateRequest:
     properties:
-      mtu:
-        example: 1280
-        type: integer
       protocol:
         example: quic_initial
         type: string
@@ -4019,6 +4861,11 @@ definitions:
         type: string
       strategy:
         example: prefer_ipv4
+        type: string
+      timeout:
+        description: Timeout is the per-query DNS timeout (Go duration, sing-box 1.14).
+          Empty = engine default (10s).
+        example: 5s
         type: string
     type: object
   api.SingboxDNSGlobalsResponse:
@@ -5004,6 +5851,13 @@ definitions:
       action:
         example: route
         type: string
+      awgm_managed:
+        description: |-
+          AwgmManaged marks a rule generated by awg-manager. Such a rule is
+          rewritten on the next reconcile and the bulk endpoints refuse it, so a
+          client must not offer it for editing or selection.
+        example: selective-ip
+        type: string
       domain_suffix:
         example:
         - .example.com
@@ -5047,6 +5901,14 @@ definitions:
       source_ip_cidr:
         example:
         - 192.168.1.100/32
+        items:
+          type: string
+        type: array
+      source_mac_address:
+        description: SourceMACAddress matches the LAN device MAC (sing-box 1.14, kernel
+          neighbor table).
+        example:
+        - aa:bb:cc:dd:ee:ff
         items:
           type: string
         type: array
@@ -5191,6 +6053,17 @@ definitions:
         items:
           type: string
         type: array
+      cacheFileLocation:
+        description: |-
+          CacheFileLocation — место хранения cache.db sing-box: "flash" —
+          /opt/etc/awg-manager/singbox/cache.db, "tmp" — /tmp/singbox-cache.db в RAM,
+          записи кэша перестают изнашивать флеш, но кэш не переживает перезагрузку.
+          Пусто — не задано: путь из 00-base.json как есть (см. cacheDbPath в статусе).
+        enum:
+        - flash
+        - tmp
+        example: flash
+        type: string
       deviceMode:
         enum:
         - policy
@@ -5226,11 +6099,13 @@ definitions:
       fakeipStack:
         description: |-
           --- fakeip-tun engine settings (user-editable) ---
-          FakeIPStack selects the sing-tun stack: "gvisor" (default) or "system".
+          FakeIPStack selects the sing-tun stack for both tun modes (fakeip-tun и
+          policy-tun). Empty (default) = собственный стек sing-tun: ключ `stack` в
+          конфиг не пишется. "system" — legacy, удаляется в sing-box 1.17.
+          "gvisor" и "mixed" приводятся к пустому: бинарь собран без with_gvisor.
         enum:
-        - gvisor
         - system
-        example: gvisor
+        example: ""
         type: string
       ingressInterfaces:
         description: |-
@@ -5288,6 +6163,13 @@ definitions:
       snifferEnabled:
         example: true
         type: boolean
+      udpNatMax:
+        description: |-
+          UDPNATMax caps UDP NAT sessions on the tproxy-in / tun-in / QoS inbounds
+          (sing-box 1.14, LRU eviction). 0 = engine default (4096-16384 by memory).
+          Range: 0..65536.
+        example: 4096
+        type: integer
       udpTimeout:
         description: |-
           UDPTimeout sets the UDP session timeout for the tproxy-in / fakeip tun-in
@@ -5324,6 +6206,12 @@ definitions:
       active:
         example: true
         type: boolean
+      cacheDbPath:
+        description: |-
+          CacheDBPath — эффективный путь cache.db: по cacheFileLocation, при пустой
+          настройке — из 00-base.json (рукописный путь сохраняется).
+        example: /opt/etc/awg-manager/singbox/cache.db
+        type: string
       crashCount:
         description: 'CrashCount — падения sing-box за последние 10 минут (issue #456).'
         example: 2
@@ -5510,6 +6398,15 @@ definitions:
     type: object
   api.SingboxRouterWANInterfaceDTO:
     properties:
+      absent:
+        example: false
+        type: boolean
+      foreign:
+        description: |-
+          Foreign — отмеченный сторонний интерфейс (issue #935); Absent — его
+          сейчас нет в системе (интерфейс ядра без устройства).
+        example: false
+        type: boolean
       id:
         example: PPPoE0
         type: string
@@ -5522,6 +6419,9 @@ definitions:
       priority:
         example: 700000
         type: integer
+      type:
+        example: PPP
+        type: string
       up:
         example: true
         type: boolean
@@ -5838,6 +6738,9 @@ definitions:
         items:
           $ref: '#/definitions/api.SubscriptionInfoItemDTO'
         type: array
+      isFile:
+        example: false
+        type: boolean
       isInline:
         example: false
         type: boolean
@@ -5874,6 +6777,9 @@ definitions:
         items:
           type: string
         type: array
+      path:
+        example: /opt/etc/awg-manager/sub.txt
+        type: string
       proxyIndex:
         example: 1
         type: integer
@@ -6290,6 +7196,9 @@ definitions:
       supportsPingCheck:
         example: true
         type: boolean
+      supportsWireguardASC3:
+        example: false
+        type: boolean
       totalMemoryMB:
         example: 512
         type: integer
@@ -6565,6 +7474,12 @@ definitions:
       description:
         example: Home Server
         type: string
+      external:
+        description: |-
+          External — "phobos": интерфейс создан установщиком Phobos
+          (description Phobos-…) и установка на месте; не наш, не перенимается.
+        example: phobos
+        type: string
       id:
         example: Wireguard0
         type: string
@@ -6776,6 +7691,9 @@ definitions:
       lastHandshake:
         example: "2024-01-15T10:30:00Z"
         type: string
+      locked:
+        example: false
+        type: boolean
       mtu:
         example: 1420
         type: integer
@@ -6785,6 +7703,8 @@ definitions:
       ndmsName:
         example: Wireguard0
         type: string
+      obfuscator:
+        $ref: '#/definitions/api.ObfuscatorItemDTO'
       pingCheck:
         $ref: '#/definitions/api.TunnelPingCheckStatus'
       resolvedIspInterface:
@@ -6807,6 +7727,9 @@ definitions:
         - disabled
         example: connected
         type: string
+      statusDetails:
+        example: обфускатор не запущен
+        type: string
       txBytes:
         example: 5242880
         type: integer
@@ -6827,6 +7750,23 @@ definitions:
           $ref: '#/definitions/api.TunnelListItemDTO'
         type: array
       success:
+        example: true
+        type: boolean
+    type: object
+  api.TunnelLockResponse:
+    properties:
+      data:
+        $ref: '#/definitions/api.TunnelLockResultData'
+      success:
+        example: true
+        type: boolean
+    type: object
+  api.TunnelLockResultData:
+    properties:
+      id:
+        example: tun_abc123
+        type: string
+      locked:
         example: true
         type: boolean
     type: object
@@ -6880,6 +7820,9 @@ definitions:
       tunnelName:
         example: My VPN
         type: string
+      tunnelRunning:
+        example: true
+        type: boolean
     type: object
   api.TunnelReferencedDetails:
     properties:
@@ -7074,12 +8017,33 @@ definitions:
     type: object
   api.UpdatePeerRequestDTO:
     properties:
+      clientAllowedIPs:
+        description: |-
+          ClientAllowedIPs — строка AllowedIPs в .conf клиента (CIDR через запятую,
+          пусто — весь трафик). Отсутствие поля или null — не менять.
+        example: 10.10.0.0/24, 192.168.1.0/24
+        type: string
       description:
         example: My Phone
         type: string
       dns:
         example: 8.8.8.8
         type: string
+      remoteSubnets:
+        description: |-
+          RemoteSubnets — сети за клиентом, IPv4 CIDR (#713); полная замена списка:
+          отсутствие поля или null — не менять; пустой список — снять все.
+        example:
+        - 192.168.77.0/24
+        items:
+          type: string
+        type: array
+      signature:
+        allOf:
+        - $ref: '#/definitions/api.PeerSignatureDTO'
+        description: |-
+          Signature: nil — сигнатуру пира не трогать; объект — заменить все пять
+          полей и профиль целиком (пустые поля объекта стирают старые байты).
       tunnelIP:
         example: 10.10.0.2/32
         type: string
@@ -7137,6 +8101,12 @@ definitions:
         example: stable
         type: string
       checkEnabled:
+        example: true
+        type: boolean
+      statsEnabled:
+        description: |-
+          StatsEnabled — анонимная статистика установок: случайный ID установки
+          и флаги используемых механизмов в запросе проверки обновлений.
         example: true
         type: boolean
     type: object
@@ -7355,17 +8325,46 @@ definitions:
         items:
           type: string
         type: array
+      clientAllowedIPs:
+        description: |-
+          ClientAllowedIPs / RemoteSubnets — сети клиента (#713); есть только у
+          пиров с локальным секретом. TunnelIP — адрес из секрета: у пира с
+          сетями за клиентом в allowedIPs больше одного кандидата, и фронт не
+          должен угадывать; у чужих пиров пусто — фронт применяет эвристику.
+        example: 10.0.1.0/24, 192.168.1.0/24
+        type: string
       confAvailable:
         example: true
         type: boolean
       description:
         example: Phone
         type: string
+      dns:
+        description: |-
+          DNS — резолвер пира для `.conf` (#933). Пусто = «подставить LAN-адрес
+          роутера»; хранится в секрете, поэтому есть только у пиров с локальным
+          секретом — как и сигнатура.
+        example: 192.168.1.1
+        type: string
       enabled:
         example: true
         type: boolean
       endpoint:
         example: 1.2.3.4:12345
+        type: string
+      i1:
+        description: |-
+          Сигнатура пира (CONTEXT.md «Сигнатура AWG»). Есть только у пиров с
+          локальным секретом: у чужих её негде хранить.
+        example: <b 0xc0>
+        type: string
+      i2:
+        type: string
+      i3:
+        type: string
+      i4:
+        type: string
+      i5:
         type: string
       lastHandshake:
         example: "2024-01-15T10:30:00Z"
@@ -7376,9 +8375,21 @@ definitions:
       publicKey:
         example: DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=
         type: string
+      remoteSubnets:
+        example:
+        - 192.168.77.0/24
+        items:
+          type: string
+        type: array
       rxBytes:
         example: 1048576
         type: integer
+      signatureProfile:
+        example: quic_initial
+        type: string
+      tunnelIP:
+        example: 10.0.1.2/32
+        type: string
       txBytes:
         example: 524288
         type: integer
@@ -7504,6 +8515,163 @@ definitions:
         type: string
       size:
         type: integer
+    type: object
+  ftlink.DecodeResponse:
+    properties:
+      data:
+        $ref: '#/definitions/ftlink.LinkPayload'
+      success:
+        example: true
+        type: boolean
+    type: object
+  ftlink.KCP:
+    properties:
+      acknodelay:
+        type: boolean
+      interval:
+        type: integer
+      mtu:
+        type: integer
+      nc:
+        type: integer
+      nodelay:
+        type: integer
+      rcvwnd:
+        type: integer
+      resend:
+        type: integer
+      sndwnd:
+        type: integer
+    type: object
+  ftlink.LinkPayload:
+    properties:
+      bond:
+        description: upstream 4.0+
+        type: boolean
+      cid:
+        description: -client-id — owner must allowlist this in clients.json
+        type: string
+      dns:
+        type: string
+      dnss:
+        type: string
+      kcp:
+        allOf:
+        - $ref: '#/definitions/ftlink.KCP'
+        description: 'upstream 3.2+: ARQ profile for -mode tcp'
+      key:
+        type: string
+      listen:
+        type: string
+      mcap:
+        type: boolean
+      mode:
+        type: string
+      mtu:
+        description: 'awg-manager extensions, not part of the upstream spec:'
+        type: integer
+      "n":
+        description: -n, parallel TURN streams
+        type: integer
+      name:
+        description: comment for the owner's own clients.json entry
+        type: string
+      obf:
+        type: string
+      peer:
+        type: string
+      provider:
+        type: string
+      spc:
+        description: -streams-per-cred
+        type: integer
+      timing:
+        description: 'upstream 4.0+: -obf-timing в мс'
+        type: integer
+      transport:
+        type: string
+      v:
+        type: integer
+      vk:
+        description: 'upstream 4.0+: ссылка на звонок, идёт в -links'
+        type: string
+      wg:
+        description: optional bundled WireGuard client config
+        type: string
+    type: object
+  ftlink.decodeRequest:
+    properties:
+      link:
+        type: string
+    type: object
+  install.InstallMessage:
+    properties:
+      message:
+        example: installed
+        type: string
+    type: object
+  install.InstallResponse:
+    properties:
+      data:
+        $ref: '#/definitions/install.InstallMessage'
+      success:
+        example: true
+        type: boolean
+    type: object
+  install.InstallStatus:
+    properties:
+      binariesPresent:
+        description: |-
+          BinariesPresent — нужные бинари лежат на диске. Признак принадлежит
+          ПОДСИСТЕМЕ, а не инстансу: полоса установки судит по нему, и без него она
+          брала `binaryPresent` первого клиентского инстанса — у подсистемы без
+          клиентов продукт объявлялся неустановленным, а «Установить» работала
+          вхолостую (бинари-то на месте).
+        type: boolean
+      installAvailable:
+        description: |-
+          InstallAvailable — для этой арки есть пин и подключён загрузчик:
+          установка в один клик возможна.
+        type: boolean
+      installVersion:
+        description: InstallVersion — версия, которую поставит установка.
+        type: string
+      installedVersion:
+        description: InstalledVersion — версия, установленная сейчас.
+        type: string
+      installing:
+        description: Installing — установка идёт прямо сейчас (кнопка блокируется).
+        type: boolean
+      instances:
+        description: |-
+          Instances — сколько инстансов подсистемы существует сейчас, включая
+          выключенные. Фронт гасит по нему «Удалить» и объясняет почему, не
+          дожидаясь 409 от ручки.
+        type: integer
+      routerClock:
+        description: RouterClock — часы роутера для сверки с метками в журнале форка.
+        type: string
+      serverSupported:
+        description: |-
+          ServerSupported — собирается ли сервер под эту архитектуру (или уже
+          лежит на диске). На mips/mipsel wdtt-сервера нет, UI прячет вкладку.
+        type: boolean
+      updateAvailable:
+        description: UpdateAvailable — бинарей нет либо они не те, что в пине.
+        type: boolean
+    type: object
+  install.InstallStatusResponse:
+    properties:
+      data:
+        $ref: '#/definitions/install.InstallStatus'
+      success:
+        example: true
+        type: boolean
+    type: object
+  install.installRequest:
+    properties:
+      subsystem:
+        type: string
     type: object
   mihomonative.Rule:
     properties:
@@ -7723,6 +8891,10 @@ definitions:
       cmdline:
         type: string
       cpuPercent:
+        description: доля всего процессора (все ядра), 0..100
+        type: number
+      cpuTimeSec:
+        description: utime+stime с запуска процесса
         type: number
       exe:
         type: string
@@ -7732,10 +8904,19 @@ definitions:
         type: boolean
       isSelf:
         type: boolean
+      memoryFile:
+        description: |-
+          RssFile, bytes: чистые страницы бинарей и библиотек — ядро выбрасывает
+          их при нехватке памяти, размер зависит от page cache
+        type: integer
+      memoryOwn:
+        description: 'RssAnon+RssShmem, bytes: память, которую ядро без swap не отдаст'
+        type: integer
       memoryPercent:
+        description: MemoryOwn от MemTotal
         type: number
       memoryRss:
-        description: bytes
+        description: bytes, VmRSS = memoryOwn + memoryFile
         type: integer
       memoryVsize:
         description: bytes
@@ -7809,6 +8990,233 @@ definitions:
         type: string
       statusText:
         type: string
+    type: object
+  subscription.RefreshResponse:
+    properties:
+      data:
+        $ref: '#/definitions/subscription.RefreshResult'
+      success:
+        example: true
+        type: boolean
+    type: object
+  subscription.RefreshResult:
+    properties:
+      key:
+        example: wdtt-client:default
+        type: string
+      message:
+        type: string
+      payload:
+        $ref: '#/definitions/wdttlink.ImportPayload'
+    type: object
+  wdttlink.DecodeResponse:
+    properties:
+      data:
+        $ref: '#/definitions/wdttlink.LinkDecodeResult'
+      success:
+        example: true
+        type: boolean
+    type: object
+  wdttlink.EnsureWGResponse:
+    properties:
+      data:
+        $ref: '#/definitions/wdttlink.EnsureWGTunnelResponse'
+      success:
+        example: true
+        type: boolean
+    type: object
+  wdttlink.EnsureWGTunnelResponse:
+    properties:
+      created:
+        type: boolean
+      message:
+        type: string
+      tunnelId:
+        type: string
+      tunnelName:
+        type: string
+    type: object
+  wdttlink.ImportPayload:
+    properties:
+      connMode:
+        type: string
+      deviceId:
+        type: string
+      listen:
+        type: string
+      name:
+        type: string
+      password:
+        type: string
+      peer:
+        type: string
+      subUrl:
+        type: string
+      vkHashes:
+        items:
+          type: string
+        type: array
+      wg:
+        description: optional bundled WireGuard client config
+        type: string
+      workers:
+        type: integer
+    type: object
+  wdttlink.ImportResponse:
+    properties:
+      data:
+        $ref: '#/definitions/wdttlink.ImportResult'
+      success:
+        example: true
+        type: boolean
+    type: object
+  wdttlink.ImportResult:
+    properties:
+      key:
+        example: wdtt-client:default
+        type: string
+      payload:
+        $ref: '#/definitions/wdttlink.ImportPayload'
+    type: object
+  wdttlink.LinkDecodeResult:
+    properties:
+      profile:
+        $ref: '#/definitions/wdttlink.ImportPayload'
+      subscription:
+        $ref: '#/definitions/wdttlink.SubscriptionPreview'
+    type: object
+  wdttlink.LinkRequest:
+    properties:
+      clientId:
+        type: string
+      mode:
+        type: string
+      mtu:
+        type: integer
+      "n":
+        type: integer
+      name:
+        type: string
+      password:
+        type: string
+      peer:
+        type: string
+      provider:
+        type: string
+      serverId:
+        type: string
+      streamsPerCred:
+        type: integer
+      transport:
+        type: string
+      vkHashes:
+        items:
+          type: string
+        type: array
+      wg:
+        type: string
+    type: object
+  wdttlink.LinkResponse:
+    properties:
+      data:
+        $ref: '#/definitions/wdttlink.LinkResult'
+      success:
+        example: true
+        type: boolean
+    type: object
+  wdttlink.LinkResult:
+    properties:
+      clientId:
+        type: string
+      link:
+        example: wdtt://…
+        type: string
+      linkQwdtt:
+        example: qwdtt://…
+        type: string
+      peer:
+        example: 1.2.3.4:56002
+        type: string
+    type: object
+  wdttlink.SubscriptionPreview:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      profiles:
+        items:
+          $ref: '#/definitions/wdttlink.ImportPayload'
+        type: array
+      subUrl:
+        type: string
+      trafficLimitMb:
+        type: number
+      trafficUsedMb:
+        type: number
+      updatedAt:
+        type: string
+    type: object
+  wdttlink.linkRequestBody:
+    properties:
+      id:
+        type: string
+      link:
+        type: string
+      name:
+        type: string
+    type: object
+  wdttusers.Reload:
+    enum:
+    - delivered
+    - serverStopped
+    - failed
+    type: string
+    x-enum-varnames:
+    - ReloadDelivered
+    - ReloadServerStopped
+    - ReloadFailed
+  wdttusers.UserEntry:
+    properties:
+      comment:
+        type: string
+      isAuto:
+        description: |-
+          IsAuto — абонент приехал посевом из старого wdtt.json, а не заведён в
+          панели (ServerUser.Auto): единственный, кто сегодня ставит признак, —
+          instancestore/seed.go. Фронт по нему подсказывает, откуда абонент взялся.
+        type: boolean
+      password:
+        type: string
+      vkHash:
+        type: string
+    type: object
+  wdttusers.UsersStatus:
+    properties:
+      available:
+        description: |-
+          Available — passwords.json прочитан. Пусто до первого старта сервера:
+          список при этом всё равно отдаётся, из записи инстанса.
+        type: boolean
+      reload:
+        allOf:
+        - $ref: '#/definitions/wdttusers.Reload'
+        description: |-
+          Reload — результат доставки SIGHUP для ЭТОЙ мутации. Заполняют только
+          ручки, переписывающие passwords.json (добавление, удаление); у чтения и
+          переименования пусто.
+      users:
+        items:
+          $ref: '#/definitions/wdttusers.UserEntry'
+        type: array
+    type: object
+  wdttusers.UsersStatusResponse:
+    properties:
+      data:
+        $ref: '#/definitions/wdttusers.UsersStatus'
+      success:
+        example: true
+        type: boolean
     type: object
 info:
   contact: {}
@@ -8164,116 +9572,381 @@ paths:
       summary: Set access policy standalone mode
       tags:
       - access-policy
-  /amnezia-premium/account-info:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Portal session id returned by login
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/api.AmneziaPremiumAccountInfoRequest'
+  /amnezia/premium/catalog:
+    get:
+      description: 'Данные подписки и список стран. Ответ собирается по белому списку:
+        ключ подписки, сессия портала и прочие поля ответа портала наружу не выходят.'
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.AmneziaPremiumAccountInfoResponse'
+            $ref: '#/definitions/api.AmneziaPremiumCatalogResponse'
         "400":
           description: Bad Request
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
-      security:
-      - CookieAuth: []
-      summary: Get Amnezia Premium account info
-      tags:
-      - amnezia-premium
-  /amnezia-premium/download-config:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Portal session id and country code
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/api.AmneziaPremiumDownloadConfigRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/api.AmneziaPremiumDownloadConfigResponse'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-      security:
-      - CookieAuth: []
-      summary: Download Amnezia Premium config
-      tags:
-      - amnezia-premium
-  /amnezia-premium/login:
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Premium vpn:// key
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/api.AmneziaPremiumLoginRequest'
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/api.AmneziaPremiumLoginResponse'
-        "400":
-          description: Bad Request
+        "405":
+          description: Method Not Allowed
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "422":
           description: Unprocessable Entity
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Каталог подписки Amnezia Premium
+      tags:
+      - amnezia-premium
+  /amnezia/premium/config:
+    post:
+      consumes:
+      - application/json
+      description: 'Расходная операция: тратит слот устройств подписки. Параллельный
+        запрос той же страны отвергается (409); разные страны идут параллельно. Ключ
+        подписки в ответе не возвращается и вырезается из самой конфигурации.'
+      parameters:
+      - description: Код страны
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumConfigRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumConfigResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Получить конфигурацию страны Amnezia Premium
+      tags:
+      - amnezia-premium
+  /amnezia/premium/declared-country:
+    get:
+      description: 'Страна, ИЗ которой пользователь подключается: портал требует её
+        в каждой выдаче конфигурации. Пустое значение — выбора ещё не было (непригодное
+        хранимое значение отдаётся так же).'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumDeclaredCountryResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Сохранённая страна подключения Amnezia
+      tags:
+      - amnezia-premium
+    post:
+      consumes:
+      - application/json
+      description: 'Допустимы только два значения портала: ru (Россия) и ag (другие
+        страны и регионы). Пустое и любое иное — отказ.'
+      parameters:
+      - description: 'Страна подключения: ru или ag'
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumDeclaredCountryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumDeclaredCountryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
         "500":
           description: Internal Server Error
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
       - CookieAuth: []
-      summary: Login to Amnezia Premium portal
+      summary: Задать страну подключения Amnezia
+      tags:
+      - amnezia-premium
+  /amnezia/premium/key:
+    delete:
+      description: Стирает сохранённый шифротекст, забывает ключ в памяти демона и
+        роняет сессию портала.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumKeyResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Удалить ключ подписки Amnezia Premium
+      tags:
+      - amnezia-premium
+    get:
+      description: stored — сохранённый шифротекст есть; usable — он расшифровывается
+        секретом устройства. Сам ключ не возвращается.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumKeyResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Состояние ключа подписки Amnezia Premium
+      tags:
+      - amnezia-premium
+    post:
+      consumes:
+      - application/json
+      description: Проверяет ключ входом в портал Amnezia. При store=true сохраняет
+        его зашифрованным секретом устройства; без поля store ключ не сохраняется.
+        Ключ и сессия портала в ответе не возвращаются.
+      parameters:
+      - description: Ключ подписки, флаг сохранения и remember для портала
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumKeyResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Проверить и сохранить ключ подписки Amnezia Premium
+      tags:
+      - amnezia-premium
+  /amnezia/premium/mirror:
+    get:
+      description: 'Отдаёт адрес, по которому панель реально ходит: хранимое пустое
+        (и непригодное) значение означает адрес по умолчанию.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumMirrorResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Действующий адрес зеркала Amnezia
+      tags:
+      - amnezia-premium
+    post:
+      consumes:
+      - application/json
+      description: Пустое значение и присланный адрес по умолчанию хранятся пустыми
+        (так адрес продолжает ротироваться с релизом). Непригодное хранимое значение
+        заменяется присланным. В ответе — действующий адрес.
+      parameters:
+      - description: Адрес зеркала; пустое значение — зеркало по умолчанию
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumMirrorRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumMirrorResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Задать адрес зеркала Amnezia
+      tags:
+      - amnezia-premium
+  /amnezia/premium/revoke:
+    post:
+      consumes:
+      - application/json
+      description: Возвращает слот устройств подписки. Ломает работающий туннель этой
+        страны — подтверждение обязано быть на стороне интерфейса. Параллельный запрос
+        той же страны (отзыв или выдача) отвергается (409).
+      parameters:
+      - description: Код страны
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.AmneziaPremiumRevokeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AmneziaPremiumRevokeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Отозвать конфигурацию страны Amnezia Premium
       tags:
       - amnezia-premium
   /auth/login:
     post:
       consumes:
       - application/json
-      description: Authenticates with Keenetic credentials (or, when entwareAuthEnabled,
-        Entware system credentials verified locally first); sets HttpOnly session
-        cookie awg_session. Every failed attempt in which credentials were checked
-        (including a local Entware check while the router is unreachable) is delayed
-        300ms and counted; after 5 such failures per client IP the endpoint responds
-        429 for 30 seconds. Router-unavailable failures without any credential check
-        are not counted.
+      description: Authenticates by the chosen method (router — Keenetic credentials,
+        the default; entware — Entware system credentials verified locally); sets
+        HttpOnly session cookie awg_session. Every failed attempt in which credentials
+        were checked is delayed 300ms and counted; after 5 such failures per client
+        IP the endpoint responds 429 for 30 seconds. Unavailable router or Entware
+        shadow db is not counted (503). A correct Entware password that is too weak
+        is refused with 403.
       parameters:
-      - description: Router (or Entware) login and password
+      - description: Login, password and method
         in: body
         name: body
         required: true
@@ -8292,6 +9965,10 @@ paths:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "401":
           description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "429":
@@ -8327,8 +10004,7 @@ paths:
       - auth
   /auth/status:
     get:
-      description: Unauthenticated endpoint. Also reports entwareAuthEnabled so the
-        login form can adjust its copy.
+      description: Unauthenticated endpoint.
       produces:
       - application/json
       responses:
@@ -8347,6 +10023,44 @@ paths:
       summary: Auth status
       tags:
       - auth
+  /awg/analyze:
+    post:
+      consumes:
+      - application/json
+      description: Классификация версии, нормализованные поля без ключевого материала,
+        ошибки совместимости с модулем и предупреждения о версии модуля. tunnelId
+        подставляет PrivateKey/PresharedKey из хранилища, если их нет в тексте.
+      parameters:
+      - description: Текст conf и опциональный tunnelId
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.AwgAnalyzeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.AwgAnalyzeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Анализ AWG/WireGuard .conf
+      tags:
+      - tunnels
   /awg3-endpoints:
     get:
       produces:
@@ -8810,6 +10524,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
         "409":
           description: Conflict
           schema:
@@ -8842,6 +10560,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
         "500":
           description: Internal Server Error
           schema:
@@ -8868,6 +10590,10 @@ paths:
             $ref: '#/definitions/api.APIEnvelope'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "500":
@@ -9863,6 +11589,92 @@ paths:
       summary: Import tunnel config
       tags:
       - import
+  /interfaces/foreign/candidates:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.APIEnvelope'
+            - properties:
+                data:
+                  items:
+                    $ref: '#/definitions/api.ForeignIfaceCandidate'
+                  type: array
+              type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Кандидаты в сторонние интерфейсы
+      tags:
+      - interfaces
+  /interfaces/foreign/mark:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Имя интерфейса ядра
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.ForeignIfaceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            allOf:
+            - $ref: '#/definitions/api.APIEnvelope'
+            - properties:
+                data:
+                  $ref: '#/definitions/api.ForeignIfaceMarkResponse'
+              type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Отметить сторонний интерфейс
+      tags:
+      - interfaces
+  /interfaces/foreign/unmark:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Имя интерфейса ядра
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.ForeignIfaceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIEnvelope'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      summary: Снять отметку стороннего интерфейса
+      tags:
+      - interfaces
   /logs:
     get:
       description: Returns log entries from the selected bucket. `bucket=app` (default)
@@ -10393,6 +12205,11 @@ paths:
         name: pubkey
         required: true
         type: string
+      - description: Хост для [Peer] Endpoint вместо WAN/KeenDNS (прокси-обвязки шлют
+          127.0.0.1)
+        in: query
+        name: endpoint
+        type: string
       produces:
       - application/json
       responses:
@@ -10400,12 +12217,8 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/api.ServersAllResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+        "400":
+          description: Any failure (code DELETE_PEER_FAILED)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
@@ -10416,8 +12229,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates fields (name, allowed-ips, ...) of the peer identified
-        by pubkey on the named managed server.
+      description: |-
+        Updates fields (name, allowed-ips, ...) of the peer identified by pubkey on the named managed server.
+        The signature field: absent — the peer signature is left untouched; present — it replaces all five packets and the profile.
+        clientAllowedIPs and remoteSubnets: absent or null keeps the stored value; "" / [] clears it (removes all subnets behind the client). With LAN segments set, subnets behind the client are permitted into those segments; a segment missing on the router fails with LAN_SEGMENTS_FAILED.
       parameters:
       - description: Server id
         in: path
@@ -10443,15 +12258,7 @@ paths:
           schema:
             $ref: '#/definitions/api.ServersAllResponse'
         "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+          description: Any failure, including a peer missing on the router (code NOT_FOUND)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
@@ -10525,16 +12332,43 @@ paths:
           schema:
             $ref: '#/definitions/api.ServersAllResponse'
         "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+          description: Any failure, including a peer missing on the router (code NOT_FOUND)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
       - CookieAuth: []
       summary: Toggle managed-server peer enabled
+      tags:
+      - managed-servers
+  /managed-servers/{id}/peers/presets:
+    get:
+      description: routerOnly — server subnet plus LAN bridges (LANSegments or all);
+        exceptRouter — everything else plus /32 of the resolver and ::/0.
+      parameters:
+      - description: Server id
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Peer DNS as typed in the form; empty — server DNS, then router
+          LAN IP
+        in: query
+        name: dns
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.PeerPresetsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Peer AllowedIPs presets
       tags:
       - managed-servers
   /managed-servers/{id}/policy:
@@ -10813,6 +12647,103 @@ paths:
       summary: Restore drifted managed servers
       tags:
       - managed
+  /mcp/keys:
+    get:
+      description: Names and timestamps of the bearer keys accepted by the /mcp endpoint.
+        Hashes and plaintexts are never returned.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.McpKeysListResponse'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: List MCP keys
+      tags:
+      - mcp
+  /mcp/keys/create:
+    post:
+      consumes:
+      - application/json
+      description: Generates a new `awgm_…` bearer key for the /mcp endpoint. The
+        plaintext is returned only in this response; store it in the MCP client configuration.
+      parameters:
+      - description: Key name (1..64 chars)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.McpKeyCreateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.McpKeyCreatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Create MCP key
+      tags:
+      - mcp
+  /mcp/keys/revoke:
+    post:
+      consumes:
+      - application/json
+      description: Deletes a key; clients using it are rejected on their next request.
+      parameters:
+      - description: Key id
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.McpKeyRevokeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.McpKeyRevokedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Revoke MCP key
+      tags:
+      - mcp
   /mihomo/native/rules/unsupported:
     get:
       description: Returns a snapshot of rules with unsupported types and a revision
@@ -11569,7 +13500,10 @@ paths:
       - proxyrt
   /proxyrt/instances/{key}:
     delete:
-      description: Порядок сноса (teardown → ожидание → запись → уборка) держит менеджер.
+      description: |-
+        Порядок сноса самого инстанса (teardown → ожидание → запись → уборка) держит менеджер.
+        Связанные AWG-туннели снимает сам handler, ДО удаления записи, и отчитывается
+        о них в теле ответа. Отказ уборки туннелей удаление инстанса не отменяет.
       parameters:
       - description: Ключ инстанса (роль:id)
         in: path
@@ -11582,7 +13516,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/api.OkResponse'
+            $ref: '#/definitions/api.ProxyDeleteResponse'
         "404":
           description: Not Found
           schema:
@@ -11590,14 +13524,14 @@ paths:
         "422":
           description: Unprocessable Entity
           schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
+            $ref: '#/definitions/api.ProxyDeleteErrorEnvelope'
         "503":
           description: Service Unavailable
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
       - CookieAuth: []
-      summary: Удалить прокси-инстанс
+      summary: Удалить прокси-инстанс вместе со связанными AWG-туннелями
       tags:
       - proxyrt
     get:
@@ -11698,6 +13632,265 @@ paths:
       security:
       - CookieAuth: []
       summary: Разбудить реконсиляцию инстанса
+      tags:
+      - proxyrt
+  /proxyrt/instances/{key}/ensure-wg-tunnel:
+    post:
+      description: |-
+        409 WDTT_WG_NOT_READY означает «конфиг ещё не приехал от сервера» —
+        это ожидание, а не сбой: ручку зовёт автоэффект страницы.
+        409 WDTT_WG_ADDRESS_CONFLICT — адрес, выданный wdtt-server, уже занят другим туннелем
+        (два сервера со старым wdtt-server выдают одинаковые адреса, #869); туннель не создаётся.
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttlink.EnsureWGResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Завести AWG-туннель под WireGuard-конфиг клиента
+      tags:
+      - proxyrt
+  /proxyrt/instances/{key}/link:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      - description: Параметры ссылки
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/wdttlink.LinkRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttlink.LinkResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Выдать ссылку абоненту серверного инстанса
+      tags:
+      - proxyrt
+  /proxyrt/instances/{key}/subscription/refresh:
+    post:
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/subscription.RefreshResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Обновить подписку клиента
+      tags:
+      - proxyrt
+  /proxyrt/instances/{key}/users:
+    delete:
+      consumes:
+      - application/json
+      description: |-
+        Ручки состава: чтение, добавление, удаление всех, удаление и
+        переименование одного. Поле reload заполняют только мутации состава.
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttusers.UsersStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Абоненты wdtt-сервера
+      tags:
+      - proxyrt
+    get:
+      consumes:
+      - application/json
+      description: |-
+        Ручки состава: чтение, добавление, удаление всех, удаление и
+        переименование одного. Поле reload заполняют только мутации состава.
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttusers.UsersStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Абоненты wdtt-сервера
+      tags:
+      - proxyrt
+    post:
+      consumes:
+      - application/json
+      description: |-
+        Ручки состава: чтение, добавление, удаление всех, удаление и
+        переименование одного. Поле reload заполняют только мутации состава.
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttusers.UsersStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Абоненты wdtt-сервера
+      tags:
+      - proxyrt
+  /proxyrt/instances/{key}/users/{password}:
+    delete:
+      consumes:
+      - application/json
+      description: |-
+        Ручки состава: чтение, добавление, удаление всех, удаление и
+        переименование одного. Поле reload заполняют только мутации состава.
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttusers.UsersStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Абоненты wdtt-сервера
+      tags:
+      - proxyrt
+    patch:
+      consumes:
+      - application/json
+      description: |-
+        Ручки состава: чтение, добавление, удаление всех, удаление и
+        переименование одного. Поле reload заполняют только мутации состава.
+      parameters:
+      - description: Ключ инстанса (роль:id)
+        in: path
+        name: key
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/wdttusers.UsersStatusResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Абоненты wdtt-сервера
       tags:
       - proxyrt
   /proxyrt/seed/listen-moves:
@@ -12159,12 +14352,8 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/api.ServersAllResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+        "400":
+          description: Any failure, including an unknown peer (code NOT_FOUND)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
@@ -12175,8 +14364,9 @@ paths:
     put:
       consumes:
       - application/json
-      description: Changes a peer's allowed-IP and/or description on the named WireGuard
-        server. Returns the fresh servers snapshot.
+      description: |-
+        Changes a peer's allowed-IP and/or description on the named WireGuard server. Returns the fresh servers snapshot.
+        clientAllowedIPs and remoteSubnets: absent or null keeps the stored value; "" / [] clears it (removes all subnets behind the client).
       parameters:
       - description: Interface name (e.g. Wireguard0)
         in: path
@@ -12202,15 +14392,7 @@ paths:
           schema:
             $ref: '#/definitions/api.ServersAllResponse'
         "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+          description: Any failure, including a peer missing on the router (code NOT_FOUND)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
@@ -12232,6 +14414,11 @@ paths:
         in: path
         name: pubkey
         required: true
+        type: string
+      - description: Хост для [Peer] Endpoint вместо WAN/KeenDNS (прокси-обвязки шлют
+          127.0.0.1)
+        in: query
+        name: endpoint
         type: string
       produces:
       - application/json
@@ -12283,17 +14470,43 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/api.ServersAllResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
+        "400":
+          description: Any failure, including a peer missing on the router (code NOT_FOUND)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
       - CookieAuth: []
       summary: Toggle server peer
+      tags:
+      - servers
+  /servers/{name}/peers/presets:
+    get:
+      description: routerOnly — server subnet plus all LAN bridges; exceptRouter —
+        everything else plus /32 of the resolver and ::/0.
+      parameters:
+      - description: Interface name (e.g. Wireguard0)
+        in: path
+        name: name
+        required: true
+        type: string
+      - description: Peer DNS as typed in the form; empty — router LAN IP
+        in: query
+        name: dns
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.PeerPresetsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Peer AllowedIPs presets
       tags:
       - servers
   /servers/{name}/policy:
@@ -12532,8 +14745,10 @@ paths:
       - servers
   /settings/get:
     get:
-      description: Returns the full Settings object (server, pingCheck, logging, dnsRoute,
-        managed, apiKey, ...).
+      description: 'Returns the settings whitelist (SettingsData): server, pingCheck,
+        logging, updates, download, dnsRoute, geoFile, apiKey and the rest of the
+        fields the UI reads. Server-internal state (managed servers, peer secrets,
+        sing-box router, OpkgTun ownership) is NOT part of the response.'
       produces:
       - application/json
       responses:
@@ -12552,6 +14767,45 @@ paths:
       security:
       - CookieAuth: []
       summary: Get settings
+      tags:
+      - settings
+  /settings/obfuscator-relay:
+    post:
+      consumes:
+      - application/json
+      description: 'Sets the Phobos relay backend: process=true forces the userspace
+        relay, process=false returns to the awgm_relay kernel module (and clears the
+        watchdog trip). Live Phobos relays are restarted on the new backend. Returns
+        the updated Settings.'
+      parameters:
+      - description: Relay backend
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.ObfuscatorRelayRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SettingsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "405":
+          description: Method Not Allowed
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Switch Phobos relay backend
       tags:
       - settings
   /settings/regenerate-api-key:
@@ -12589,7 +14843,8 @@ paths:
         atomically. ApiKey preserved when omitted (rotate via /settings/regenerate-api-key).
         singboxRouter.routingMode and singboxRouter.enabled are ignored: the routing
         mode changes only via POST /singbox/router/mode, enable/disable only via the
-        dedicated endpoints.'
+        dedicated endpoints. obfuscatorRelayProcess is ignored: switch it via POST
+        /settings/obfuscator-relay.'
       parameters:
       - description: Settings patch — any subset of fields
         in: body
@@ -12650,7 +14905,7 @@ paths:
       consumes:
       - application/json
       parameters:
-      - description: Protocol and optional MTU
+      - description: Protocol — один из quic_initial, stun, dns, dtls, sip
         in: body
         name: request
         required: true
@@ -12845,7 +15100,7 @@ paths:
         pending → active. Отключённый слот включается ПОСЛЕ успешного apply (провал
         валидации оставляет слот припаркованным, старый конфиг не воскресает). В 200-ответе
         могут быть advisory-предупреждения (warnings). Применение — debounced SIGHUP;
-        добавление/удаление tun-inbound вызовет полный рестарт sing-box.
+        при tun-inbound на бинаре, отличном от пиннутого, — полный рестарт sing-box.
       produces:
       - application/json
       responses:
@@ -13050,8 +15305,8 @@ paths:
       - singbox
   /singbox/fakeip/config/dns/globals:
     get:
-      description: Returns the global DNS settings (final, strategy) for the fakeip-tun
-        slot.
+      description: Returns the global DNS settings (final, strategy, timeout) for
+        the fakeip-tun slot.
       produces:
       - application/json
       responses:
@@ -13075,10 +15330,10 @@ paths:
     post:
       consumes:
       - application/json
-      description: Persists the global DNS settings (final, strategy) for the fakeip-tun
-        slot.
+      description: Persists the global DNS settings (final, strategy, timeout) for
+        the fakeip-tun slot.
       parameters:
-      - description: final + strategy
+      - description: final + strategy + timeout
         in: body
         name: body
         required: true
@@ -13111,10 +15366,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: Persists the global DNS settings (final, strategy) for the fakeip-tun
-        slot.
+      description: Persists the global DNS settings (final, strategy, timeout) for
+        the fakeip-tun slot.
       parameters:
-      - description: final + strategy
+      - description: final + strategy + timeout
         in: body
         name: body
         required: true
@@ -14071,15 +16326,10 @@ paths:
   /singbox/router/bindable-interfaces:
     get:
       description: Returns router interfaces (minus our own and AWG/WG auto-covered)
-        that a direct outbound can bind to. With scope=all the interfaces already
-        taken by a direct outbound are kept — subscriptions and manual tunnels may
-        share them. Fields id and priority are not populated for this endpoint (only
+        that a direct outbound can bind to, including those already bound by another
+        outbound — a duplicate bind is harmless, and which binds to hide is the picker's
+        call (#961). Fields id and priority are not populated for this endpoint (only
         name, label, up are meaningful).
-      parameters:
-      - description: all — keep interfaces already bound by a direct outbound
-        in: query
-        name: scope
-        type: string
       produces:
       - application/json
       responses:
@@ -14245,8 +16495,8 @@ paths:
       - singbox-router
   /singbox/router/dns/globals:
     get:
-      description: 'Returns the global DNS settings: `final` (default server tag)
-        and `strategy` (ipv4_only / prefer_ipv4 / etc.).'
+      description: 'Returns the global DNS settings: `final` (default server tag),
+        `strategy` (ipv4_only / prefer_ipv4 / etc.) and `timeout` (per-query DNS timeout).'
       produces:
       - application/json
       responses:
@@ -14270,10 +16520,10 @@ paths:
     post:
       consumes:
       - application/json
-      description: 'Persists the global DNS settings: `final` (default server tag)
-        and `strategy` (ipv4_only / prefer_ipv4 / etc.).'
+      description: 'Persists the global DNS settings: `final` (default server tag),
+        `strategy` (ipv4_only / prefer_ipv4 / etc.) and `timeout` (per-query DNS timeout).'
       parameters:
-      - description: final + strategy
+      - description: final + strategy + timeout
         in: body
         name: body
         required: true
@@ -14306,10 +16556,10 @@ paths:
     put:
       consumes:
       - application/json
-      description: 'Persists the global DNS settings: `final` (default server tag)
-        and `strategy` (ipv4_only / prefer_ipv4 / etc.).'
+      description: 'Persists the global DNS settings: `final` (default server tag),
+        `strategy` (ipv4_only / prefer_ipv4 / etc.) and `timeout` (per-query DNS timeout).'
       parameters:
-      - description: final + strategy
+      - description: final + strategy + timeout
         in: body
         name: body
         required: true
@@ -14870,27 +17120,6 @@ paths:
       security:
       - CookieAuth: []
       summary: List SagerNet sing-geosite catalog
-      tags:
-      - singbox-router
-  /singbox/router/ingress-eligible-interfaces:
-    get:
-      description: Returns router interfaces eligible for sing-box ingress-scope (bindable
-        minus WAN minus LAN bridges). Used by the ingress multiselect in singbox-router
-        settings.
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/api.SingboxRouterWANInterfacesListResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-      security:
-      - CookieAuth: []
-      summary: List ingress-eligible interfaces
       tags:
       - singbox-router
   /singbox/router/inspect:
@@ -16288,9 +18517,9 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates subscription from URL or inline share links. Returns 422
-        VALIDATION_FAILED when the merged sing-box config is rejected by `sing-box
-        check` (e.g. reality outbound without uTLS).
+      description: Creates subscription from URL, inline share links or a file on
+        the router. Returns 422 VALIDATION_FAILED when the merged sing-box config
+        is rejected by `sing-box check` (e.g. reality outbound without uTLS).
       parameters:
       - description: create request
         in: body
@@ -16902,11 +19131,12 @@ paths:
       consumes:
       - application/json
       description: |-
-        Read-only fetch + parse of a subscription URL. Returns the
+        Read-only fetch + parse of a subscription URL, or of a file
+        on the router when `path` is set instead of `url`. Returns the
         parsed members (with subID-independent keys) so the import
         wizard can offer per-server exclusion before creation.
       parameters:
-      - description: URL and optional headers
+      - description: URL or router file path, plus optional headers
         in: body
         name: body
         required: true
@@ -16920,7 +19150,7 @@ paths:
           schema:
             $ref: '#/definitions/api.APIEnvelope'
         "400":
-          description: Bad Request
+          description: path outside the allowed roots (PATH_DENIED)
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "502":
@@ -16929,7 +19159,7 @@ paths:
             $ref: '#/definitions/api.APIErrorEnvelope'
       security:
       - CookieAuth: []
-      summary: Preview a subscription URL without creating it
+      summary: Preview a subscription source without creating it
       tags:
       - subscriptions
   /singbox/subscriptions/refresh:
@@ -19342,30 +21572,6 @@ paths:
       summary: Composite tunnels snapshot
       tags:
       - tunnels
-  /tunnels/create:
-    post:
-      consumes:
-      - application/json
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/api.APIEnvelope'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/api.APIErrorEnvelope'
-      security:
-      - CookieAuth: []
-      summary: Create tunnel
-      tags:
-      - tunnels
   /tunnels/delete:
     post:
       description: |-
@@ -19388,6 +21594,10 @@ paths:
             $ref: '#/definitions/api.TunnelDeleteResponse'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "409":
@@ -19503,6 +21713,81 @@ paths:
       summary: List tunnels
       tags:
       - tunnels
+  /tunnels/lock:
+    post:
+      description: |-
+        Включает или снимает защиту туннеля от изменений: у защищённого туннеля Stop, ToggleEnabled,
+        ToggleDefaultRoute, Update, Delete и Replace отвечают 403. Постановка замка на зеркальную запись
+        wdtt-raw отвергается 409 (WDTT_RAW_OWNED, WDTT_RAW_OWNER_UNKNOWN) — замок ставится на инстансе;
+        снятие проходит.
+      parameters:
+      - description: Tunnel id
+        in: query
+        name: id
+        required: true
+        type: string
+      - description: Включить (true) или снять (false) защиту
+        in: query
+        name: locked
+        required: true
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.TunnelLockResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Set tunnel lock
+      tags:
+      - tunnels
+  /tunnels/orphans/delete:
+    post:
+      consumes:
+      - application/json
+      description: Removes an OpkgTun interface that belongs to no awg-manager record.
+        The orphan status is re-checked server-side immediately before removal.
+      parameters:
+      - description: Interface name, e.g. opkgtun10
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.DeleteOrphanIfaceRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.OkResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+      security:
+      - CookieAuth: []
+      summary: Delete an orphaned OpkgTun interface
+      tags:
+      - tunnels
   /tunnels/pingcheck:
     get:
       parameters:
@@ -19609,6 +21894,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
         "409":
           description: Conflict
           schema:
@@ -19674,6 +21963,14 @@ paths:
             $ref: '#/definitions/api.APIEnvelope'
         "400":
           description: Bad Request
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.APIErrorEnvelope'
+        "409":
+          description: Conflict
           schema:
             $ref: '#/definitions/api.APIErrorEnvelope'
         "500":

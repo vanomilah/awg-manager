@@ -98,3 +98,27 @@ func TestAtomicWriteRemovesTempFileOnRenameError(t *testing.T) {
 		t.Fatalf("temp files left after rename error: %v", matches)
 	}
 }
+
+// Read-only каталог + существующий 0644-файл: tmp+rename обязан отказать
+// (нельзя создать tmp), прямая запись тихо переписала бы файл. Старое содержимое цело.
+func TestAtomicWrite_ReadOnlyDirRefusesAndKeepsOld(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(path, []byte("OLD"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failWrites(t, dir) // root-skip внутри
+	err := AtomicWrite(path, []byte("NEW"))
+	// Проверяется ПОВЕДЕНИЕ (отказ + старое содержимое цело), а не текст:
+	// временный файл теперь создаётся через os.CreateTemp, и в каталоге
+	// только для чтения спотыкается уже создание, а не запись.
+	if err == nil {
+		t.Fatalf("запись в каталог только для чтения обязана быть ошибкой")
+	}
+	if !strings.Contains(err.Error(), "temp file") {
+		t.Fatalf("err = %v, ожидалась ошибка вокруг временного файла", err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "OLD" {
+		t.Fatalf("старое содержимое затёрто: %q", b)
+	}
+}

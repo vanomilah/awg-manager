@@ -21,6 +21,30 @@ var (
 	store   *query.SystemInfoStore
 )
 
+// SourceRCI и SourceNdmc — значения Source().
+const (
+	SourceRCI  = "rci"
+	SourceNdmc = "ndmc"
+	// SourceFile — версия взята из /etc/components.xml. Она ЧАСТИЧНАЯ: релиз
+	// и hw_id есть, списка компонентов нет, дозагрузка у ndm продолжается.
+	SourceFile = "components.xml"
+)
+
+// Source сообщает, каким каналом получена версия, или "" если она неизвестна.
+// Нужен, чтобы переход на запасной канал был ВИДЕН: молчаливый успех запасного
+// пути ничем не отличался бы от обычного, а он означает, что RCI не ответил.
+// Своего состояния не держит — спрашивает store, где источник лежит рядом с
+// данными и разойтись с ними не может.
+func Source() string {
+	storeMu.RLock()
+	s := store
+	storeMu.RUnlock()
+	if s == nil {
+		return ""
+	}
+	return s.Source()
+}
+
 // Init initialises the version store reference and blocks until the
 // underlying SystemInfoStore is loaded or the timeout expires. Retries
 // every second on failure (e.g. NDMS not yet up at boot).
@@ -29,7 +53,13 @@ func Init(ctx context.Context, sysInfo *query.SystemInfoStore, timeout time.Dura
 	store = sysInfo
 	storeMu.Unlock()
 
-	deadline := time.After(timeout)
+	// Дедлайн держим явным временем, а не каналом в select. В select он
+	// конкурировал с тикером, и когда готовы оба (RCI висит дольше тикa —
+	// у HTTP-клиента свой бэкстоп 30 с), Go выбирает ветку СЛУЧАЙНО. Из-за
+	// этого запасной канал ценой 70 мс открывался через непредсказуемое
+	// число 30-секундных попыток, а сообщение «not available after 1s»
+	// врало про фактические 18 с.
+	deadlineAt := time.Now().Add(timeout)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
@@ -38,9 +68,29 @@ func Init(ctx context.Context, sysInfo *query.SystemInfoStore, timeout time.Dura
 	}
 
 	for {
-		select {
-		case <-deadline:
+		if !time.Now().Before(deadlineAt) {
+			// RCI молчит — спрашиваем ndm вторым каналом. Он ходит через
+			// unix-сокет, то есть не зависит ни от HTTP на :79, ни от того,
+			// чем этот :79 занят.
+			if v, err := versionFromNdmc(ctx); err == nil {
+				sysInfo.Adopt(v, SourceNdmc)
+				return nil
+			}
+			// Обе службы молчат — остаётся файл. Он лежит локально и отвечает,
+			// даже когда ndm не поднялся вовсе, а несёт всё, чем демон
+			// распоряжается на старте: релиз, hw_id и состав компонентов
+			// (см. components_xml.go). Поэтому «версии нет» — теперь
+			// действительно последний исход, а не первый же отказ :79.
+			//
+			// Порядок именно такой: файл не должен перебивать живой ответ
+			// службы, он лишь страхует её молчание.
+			if v, err := versionFromComponentsXML(); err == nil {
+				sysInfo.Adopt(v, SourceFile)
+				return nil
+			}
 			return fmt.Errorf("NDMS not available after %s", timeout)
+		}
+		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
@@ -118,13 +168,35 @@ func SupportsWireguardASC() bool {
 }
 
 // SupportsWireguardASC3 сообщает, понимает ли ASC прошивки параметры
-// AmneziaWG 3.0/3.1 (защита заголовков, случайные хвосты). Ни одна выпущенная
-// прошивка их не понимает: ASC на 5.01 останавливается на 2.0, и конфиг 3.x
-// уезжает в NDMS обрезанным. Поддержку Keenetic ведёт в своём wireguard и
-// обещает в одной из 5.02.A — как станет известен конкретный релиз, здесь
-// появится проверка рядом с isAtLeast501A3.
+// AmneziaWG 3.0/3.1 (защита заголовков, случайные хвосты). Появилось в
+// 5.02.A.11: импорт .conf 3.1 проходит без «skipping unrecognized parameter»,
+// метод ASC принимает и отдаёт header-protection-key, пары *-start/*-end,
+// random-trailers и disable-cookies (стенд 5.02.A.11.0-1, 25.09.2026).
 func SupportsWireguardASC3() bool {
-	return false
+	info := Get()
+	if info == nil || info.Release == "" {
+		return false
+	}
+	return isAtLeast502A11(info.Release)
+}
+
+// SupportsRCIToken сообщает, есть ли у прошивки токены доступа к RCI: они
+// появились в 5.2 (NDM-4515, 5.2 Alpha 1), до 5.02 их нет вовсе. Версия
+// неизвестна — false: до ndmsinfo.Init ходим без токена.
+func SupportsRCIToken() bool {
+	info := Get()
+	if info == nil || info.Release == "" {
+		return false
+	}
+	return isAtLeast502(info.Release)
+}
+
+func isAtLeast502(release string) bool {
+	return releaseAtLeast(release, 2, 0)
+}
+
+func isAtLeast502A11(release string) bool {
+	return releaseAtLeast(release, 2, 11)
 }
 
 // SupportsHRanges returns true if the current NDMS release supports
@@ -142,6 +214,12 @@ func SupportsHRanges() bool {
 // 5.01.B+ (beta+), 5.01.03+ (release), or any 5.02+ / 6.x+. Both ASC
 // support and H-range support landed in that cut; share one check.
 func isAtLeast501A3(release string) bool {
+	return releaseAtLeast(release, 1, 3)
+}
+
+// releaseAtLeast — релиз 5.<minor>.A.<alpha> или новее: любая бета/релиз
+// той же 5.<minor>, любая следующая 5.x и 6.x+.
+func releaseAtLeast(release string, minMinor, minAlpha int) bool {
 	parts := strings.Split(release, ".")
 	if len(parts) < 3 {
 		return false
@@ -151,10 +229,10 @@ func isAtLeast501A3(release string) bool {
 	if major > 5 {
 		return true
 	}
-	if major < 5 || minor < 1 {
+	if major < 5 || minor < minMinor {
 		return false
 	}
-	if minor > 1 {
+	if minor > minMinor {
 		return true
 	}
 	stage := parts[2]
@@ -163,7 +241,7 @@ func isAtLeast501A3(release string) bool {
 			return false
 		}
 		alphaNum, _ := strconv.Atoi(parts[3])
-		return alphaNum >= 3
+		return alphaNum >= minAlpha
 	}
 	return true
 }

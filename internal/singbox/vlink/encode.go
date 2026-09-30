@@ -152,6 +152,11 @@ func encodeHysteria2(ob map[string]any, label string) (string, error) {
 	}
 	host, _ := ob["server"].(string)
 	if host == "" {
+		// У узла с реле адреса нет по построению, и схема ссылки hysteria2://
+		// не умеет описать ни адрес реле, ни его STUN-серверы.
+		if _, viaRealm := ob["realm"]; viaRealm {
+			return "", errors.New("vlink: hysteria2: realm has no share-link form")
+		}
 		return "", errors.New("vlink: hysteria2: missing server")
 	}
 	port := intFromAny(ob["server_port"])
@@ -187,6 +192,24 @@ func encodeHysteria2(ob map[string]any, label string) (string, error) {
 	if hop, _ := ob["hop_interval"].(string); hop != "" {
 		q.Set("hop_interval", hop)
 	}
+	// Ниже — ключи, имена которых совпадают с ключами аутбаунда: у схемы
+	// hysteria2:// своих параметров под них нет, а терять настройки при
+	// экспорте значит отдавать умолчания вместо описанного узла (F363).
+	for _, key := range []string{"hop_interval_max", "bbr_profile", "idle_timeout", "keep_alive_period"} {
+		if v, _ := ob[key].(string); v != "" {
+			q.Set(key, v)
+		}
+	}
+	for _, key := range []string{"stream_receive_window", "connection_receive_window", "max_concurrent_streams"} {
+		if n := intFromAny(ob[key]); n > 0 {
+			q.Set(key, strconv.Itoa(n))
+		}
+	}
+	for _, key := range []string{"disable_path_mtu_discovery", "disable_chrome_parrot", "brutal_debug"} {
+		if ob[key] == true {
+			q.Set(key, "1")
+		}
+	}
 	if obfs, _ := ob["obfs"].(map[string]any); obfs != nil {
 		if t, _ := obfs["type"].(string); t != "" {
 			q.Set("obfs", t)
@@ -194,15 +217,24 @@ func encodeHysteria2(ob map[string]any, label string) (string, error) {
 		if pw, _ := obfs["password"].(string); pw != "" {
 			q.Set("obfs-password", pw)
 		}
+		if n := intFromAny(obfs["min_packet_size"]); n > 0 {
+			q.Set("obfs-min-packet-size", strconv.Itoa(n))
+		}
+		if n := intFromAny(obfs["max_packet_size"]); n > 0 {
+			q.Set("obfs-max-packet-size", strconv.Itoa(n))
+		}
 	}
-	if brutal, _ := ob["brutal"].(map[string]any); brutal != nil {
+	// brutal движок включает по ненулевому up_mbps (sing-quic: actualTx > 0 →
+	// BrutalSender); down_mbps — объявленная серверу скорость приёма, она
+	// работает и на BBR. Поэтому congestion=brutal пишется только под up_mbps,
+	// а значения — каждое само по себе (F360, F363).
+	up, down := intFromAny(ob["up_mbps"]), intFromAny(ob["down_mbps"])
+	if up > 0 {
 		q.Set("congestion", "brutal")
-		if up := intFromAny(brutal["up_mbps"]); up > 0 {
-			q.Set("brutal_up", strconv.Itoa(up))
-		}
-		if down := intFromAny(brutal["down_mbps"]); down > 0 {
-			q.Set("brutal_down", strconv.Itoa(down))
-		}
+		q.Set("brutal_up", strconv.Itoa(up))
+	}
+	if down > 0 {
+		q.Set("brutal_down", strconv.Itoa(down))
 	}
 
 	u.RawQuery = q.Encode()
@@ -300,6 +332,19 @@ func encodeMieru(ob map[string]any, label string) (string, error) {
 	return u.String(), nil
 }
 
+// outboundTLSEnabled — включён ли у аутбаунда TLS или Reality.
+func outboundTLSEnabled(ob map[string]any) bool {
+	tls, _ := ob["tls"].(map[string]any)
+	if tls == nil {
+		return false
+	}
+	if tls["enabled"] == true {
+		return true
+	}
+	reality, _ := tls["reality"].(map[string]any)
+	return reality != nil && reality["enabled"] == true
+}
+
 func streamQueryFromOutbound(ob map[string]any) (url.Values, error) {
 	q := url.Values{}
 
@@ -336,7 +381,28 @@ func streamQueryFromOutbound(ob map[string]any) (url.Values, error) {
 				q.Set("serviceName", svc)
 			}
 		case "http":
-			network = "h2"
+			// Транспорт http БЕЗ TLS — это HTTP/1.1-обфускация заголовком, то
+			// есть tcp+headerType=http у ссылки; h2 у чужих клиентов
+			// подразумевает TLS, и ссылка с ним не заработает. Зеркало ветки
+			// разбора в stream.go (#904, F322).
+			if outboundTLSEnabled(ob) {
+				network = "h2"
+			} else {
+				network = "tcp"
+				q.Set("type", "tcp") // headerType без своего транспорта чужой парсер не поймёт
+				q.Set("headerType", "http")
+			}
+			// Метод пишем всегда, когда транспорт без TLS: пустое поле у
+			// sing-box означает PUT (client.go), а обратный разбор ссылки
+			// подставляет GET — без явного значения метод мутировал бы на
+			// круге экспорт→импорт.
+			method, _ := transport["method"].(string)
+			switch {
+			case method != "":
+				q.Set("method", method)
+			case network == "tcp":
+				q.Set("method", "PUT")
+			}
 			if path, _ := transport["path"].(string); path != "" {
 				q.Set("path", path)
 			}
@@ -388,8 +454,7 @@ func streamQueryFromOutbound(ob map[string]any) (url.Values, error) {
 	if tls, _ := ob["tls"].(map[string]any); tls != nil {
 		reality, _ := tls["reality"].(map[string]any)
 		hasReality := reality != nil && reality["enabled"] == true
-		hasTLS := tls["enabled"] == true
-		if hasReality || hasTLS {
+		if outboundTLSEnabled(ob) {
 			if hasReality {
 				q.Set("security", "reality")
 				if pk, _ := reality["public_key"].(string); pk != "" {
@@ -397,6 +462,9 @@ func streamQueryFromOutbound(ob map[string]any) (url.Values, error) {
 				}
 				if sid, _ := reality["short_id"].(string); sid != "" {
 					q.Set("sid", sid)
+				}
+				if reality["support_x25519mlkem768"] == true {
+					q.Set("support-x25519mlkem768", "true")
 				}
 			} else {
 				q.Set("security", "tls")

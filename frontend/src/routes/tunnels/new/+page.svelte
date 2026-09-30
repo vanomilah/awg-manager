@@ -8,13 +8,16 @@
 	import TunnelConfigImportPanel, {
 		type TunnelImportTab
 	} from '$lib/components/tunnels/TunnelConfigImportPanel.svelte';
+	import type { ManualObfuscator } from '$lib/components/tunnels/ObfuscatorImportForm.svelte';
 	import { decodeVpnLink, isVpnLink, vpnLinkUnsupportedPortalReason } from '$lib/utils/vpnlink';
 	import { nativewgUnavailableHint } from '$lib/utils/backendAvailability';
 	import { api } from '$lib/api/client';
+	import { tunnelNameError } from '$lib/utils/tunnelName';
 	import type { SystemInfo } from '$lib/types';
 
 	function normalizeTunnelImportTab(raw: string | null): TunnelImportTab {
 		if (raw === 'file' || raw === 'paste' || raw === 'vpn') return raw;
+		if (raw === 'phobos' || raw === 'clusterm') return raw;
 		if (raw === 'link' || raw === 'premium') return 'vpn';
 		return 'file';
 	}
@@ -29,6 +32,17 @@
 	let linkPreview = $state('');
 	let systemInfo = $state<SystemInfo | null>(null);
 	let selectedBackend = $state<'nativewg' | 'kernel'>('nativewg');
+	let obfInstallUrl = $state('');
+	let obfManual = $state<ManualObfuscator>({
+		target: '',
+		key: '',
+		masking: 'STUN',
+		maxDummy: 4,
+		idleTimeout: 0
+	});
+
+	let isObf = $derived(activeTab === 'phobos' || activeTab === 'clusterm');
+	let nameError = $derived(tunnelNameError(importName));
 
 	let nativewgHint = $derived(
 		systemInfo !== null && !systemInfo.backendAvailability?.nativewg
@@ -70,12 +84,25 @@
 	/** Импорт из сырого текста (.conf или vpn:// с клиентским конфигом). Обновляет importContent после успешного декода vpn:// */
 	async function executeImport(rawContent: string) {
 		let content = rawContent.trim();
-		if (!content) {
-			notifications.error('Вставьте содержимое конфигурации, загрузите файл или вставьте vpn:// ссылку');
+		if (nameError) return;
+		if (!content && !(activeTab === 'phobos' && obfInstallUrl.trim())) {
+			notifications.error(
+				isObf
+					? 'Вставьте конфиг, ссылку phobos:// или ссылку установки'
+					: 'Вставьте содержимое конфигурации, загрузите файл или вставьте vpn:// ссылку'
+			);
 			return;
 		}
 
-		if (isVpnLink(content)) {
+		// Вкладка Phobos: конфиг без [instance] — это обычный WireGuard, из него
+		// получился бы туннель без релея, падающий на старте с чужой ошибкой.
+		// Install-ссылку проверяет бэкенд — её содержимого мы здесь не видим.
+		if (activeTab === 'phobos' && content && !content.toLowerCase().startsWith('phobos://') && !/^\s*\[instance\]/im.test(content)) {
+			notifications.error('Нужен конфиг Phobos с секцией [instance] или ссылка phobos://');
+			return;
+		}
+
+		if (!isObf && isVpnLink(content)) {
 			const unsupported = vpnLinkUnsupportedPortalReason(content);
 			if (unsupported) {
 				notifications.error(unsupported);
@@ -97,7 +124,13 @@
 
 		loading = true;
 		try {
-			const tunnel = await tunnels.importConfig(content, importName, selectedBackend);
+			const tunnel = await tunnels.importConfig({
+				content: content || undefined,
+				name: importName,
+				backend: isObf ? 'nativewg' : selectedBackend,
+				installUrl: activeTab === 'phobos' ? obfInstallUrl.trim() || undefined : undefined,
+				obfuscator: activeTab === 'clusterm' ? { flavor: 'clusterm', ...obfManual } : undefined
+			});
 			if (tunnel.warnings?.length) {
 				tunnel.warnings.forEach(w => notifications.warning(w));
 			}
@@ -112,13 +145,6 @@
 
 	async function handleImport() {
 		await executeImport(importContent);
-	}
-
-	async function handlePremiumCountryConfig(config: string, meta: { suggestedName?: string }) {
-		if (!importName && meta.suggestedName) {
-			importName = meta.suggestedName;
-		}
-		await executeImport(config);
 	}
 
 </script>
@@ -138,13 +164,16 @@
 	<div class="top-row">
 		<input type="text" id="import-name" class="name-input" bind:value={importName} placeholder="Мой VPN">
 		<div class="btn-import-wrap">
-			<Button variant="primary" size="md" onclick={handleImport} disabled={!importContent.trim()} loading={loading}>
+			<Button variant="primary" size="md" onclick={handleImport} disabled={!!nameError || (!importContent.trim() && !(activeTab === 'phobos' && obfInstallUrl.trim()))} loading={loading}>
 				Импортировать
 			</Button>
 		</div>
 	</div>
+	<p class="error-text" class:visible={!!nameError}>{nameError}</p>
 
+	{#if !isObf || nativewgHint}
 	<div class="backend-selector">
+		{#if !isObf}
 		<span class="field-label">Режим работы</span>
 		<div class="backend-options">
 			<button
@@ -172,10 +201,12 @@
 				<span class="backend-desc">Через OpkgTun и модуль ядра, с поддержкой AWG 3.0</span>
 			</button>
 		</div>
+		{/if}
 		{#if nativewgHint}
 			<p class="backend-hint">{nativewgHint}</p>
 		{/if}
 	</div>
+	{/if}
 
 	<TunnelConfigImportPanel
 		variant="page"
@@ -183,16 +214,20 @@
 		bind:activeTab
 		bind:vpnPasteInput
 		bind:linkPreview
+		obfuscatorTabs
+		bind:obfInstallUrl
+		bind:obfManual
 		onfileloaded={(file) => handleFileLoaded(file)}
 		onregularconfig={(meta) => {
 			if (meta.suggestedName && !importName) importName = meta.suggestedName;
 		}}
-		oncountryconfig={handlePremiumCountryConfig}
 	/>
 
-	<p class="form-hint">
-		Поддерживаются WireGuard и AmneziaWG конфигурации с параметрами Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5; вкладка vpn:// распознаёт клиентский конфиг в ссылке или ключ Premium (запрос списка стран через прокси cp.amnezia.org).
-	</p>
+	{#if !isObf}
+		<p class="form-hint">
+			Поддерживаются WireGuard и AmneziaWG конфигурации с параметрами Jc, Jmin, Jmax, S1-S4, H1-H4, I1-I5; вкладка vpn:// распознаёт клиентский конфиг в ссылке; ключ Amnezia Premium обслуживает отдельный мастер подписки.
+		</p>
+	{/if}
 </div>
 </PageContainer>
 

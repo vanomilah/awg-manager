@@ -473,6 +473,11 @@ func (pm *ProxyManager) RemoveProxy(ctx context.Context, index int) error {
 
 func (pm *ProxyManager) removeProxyLocked(ctx context.Context, index int) error {
 	name := fmt.Sprintf("%s%d", proxyIfacePrefix, index)
+	if pm.queries != nil && pm.queries.Interfaces != nil {
+		if rec, err := pm.queries.Interfaces.Refresh(ctx, name); err == nil && rec == nil {
+			return nil
+		}
+	}
 	down := pm.downProxy
 	if down == nil {
 		down = pm.commands.Proxies.ProxyDown

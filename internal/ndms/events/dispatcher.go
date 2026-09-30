@@ -172,7 +172,7 @@ func (d *Dispatcher) apply(ctx context.Context, e Event) {
 		case EventIfLayerChanged:
 			d.queries.Interfaces.OnLayerChanged(e.ID, e.Layer, e.Level)
 		case EventIfIPChanged:
-			d.queries.Interfaces.OnIPChanged(e.ID, e.Address, e.Up, e.Connected)
+			d.queries.Interfaces.OnIPChanged(e.ID, e.Address)
 		}
 	}
 
@@ -197,6 +197,13 @@ func (d *Dispatcher) apply(ctx context.Context, e Event) {
 	case EventIfLayerChanged:
 		if d.queries.Peers != nil {
 			d.queries.Peers.Invalidate(e.ID)
+		}
+		// Смена уровня меняет Status интерфейса, а по нему отбирается состав
+		// для поллера метрик (`Status == "up"`). Без сброса список системных
+		// туннелей жил бы до TTL, и поллер минутами не видел бы поднявшийся
+		// или упавший туннель (F364).
+		if d.queries.WGServers != nil {
+			d.queries.WGServers.InvalidateAll()
 		}
 		if e.Layer == "conf" && d.queries.RunningConfig != nil {
 			d.queries.RunningConfig.InvalidateAll()

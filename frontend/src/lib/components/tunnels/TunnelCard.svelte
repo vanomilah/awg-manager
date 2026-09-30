@@ -2,12 +2,14 @@
 	import { untrack } from 'svelte';
 	import { Eye, EyeOff } from 'lucide-svelte';
 	import type { TunnelListItem } from '$lib/types';
-	import { Toggle, TrafficSparkline, TrafficChart, VersionBadge, StatusDot } from '$lib/components/ui';
+	import { Toggle, TrafficSparkline, TrafficChart, VersionBadge, StatusDot, Badge } from '$lib/components/ui';
 	import DefaultRouteBadge from './DefaultRouteBadge.svelte';
 	import ProxyOwnedBadge from './ProxyOwnedBadge.svelte';
 	import { TunnelListActions } from '$lib/components/ui';
 	import TunnelPingButton from '$lib/components/tunnels/TunnelPingButton.svelte';
 	import TunnelTitleRow from '$lib/components/tunnels/TunnelTitleRow.svelte';
+	import TunnelLockGlyph from './TunnelLockGlyph.svelte';
+	import { tunnelLockAvailable } from './tunnelPageSelectors';
 	import { awgLedToStatusDot } from '$lib/utils/statusDot';
 	import { tunnels } from '$lib/stores/tunnels';
 	import { api } from '$lib/api/client';
@@ -36,6 +38,7 @@
 		onToggleOnOff?: () => void;
 		ondelete?: () => void;
 		ondetail?: (id: string) => void;
+		onLockClick?: () => void;
 		autoConnectivityNonce?: number;
 		autoConnectivityDelayMs?: number;
 	}
@@ -48,13 +51,17 @@
 		onToggleOnOff,
 		ondelete,
 		ondetail,
+		onLockClick,
 		autoConnectivityNonce = 0,
 		autoConnectivityDelayMs = 0,
 	}: Props = $props();
 
 	// ─── Toggle / status logic ─────────────────────────────────────
 	let isOn = $derived(['running', 'starting', 'broken'].includes(tunnel.status));
-	let toggleDisabled = $derived(toggleLoading || tunnel.hasAddressConflict === true || !!tunnel.toggleLocked);
+	let locked = $derived(!!tunnel.locked);
+	let lockAvailable = $derived(tunnelLockAvailable(tunnel));
+	let toggleDisabled = $derived(toggleLoading || tunnel.hasAddressConflict === true || locked || !!tunnel.toggleLocked);
+	const lockedTitle = 'Туннель защищён от изменений';
 
 	let lockLoading = $state(false);
 	async function handleToggleLock(): Promise<void> {
@@ -204,7 +211,7 @@
 			case 'needs_stop':
 				return 'Остановка';
 			case 'broken':
-				return '';
+				return tunnel.statusDetails ?? '';
 			case 'disabled':
 				return 'Выключен';
 			default:
@@ -312,34 +319,22 @@
 						<VersionBadge kind="backend" value={tunnel.backend} />
 					{/if}
 					<ProxyOwnedBadge {tunnel} />
+					{#if tunnel.obfuscator}
+						<Badge variant="info" size="sm">{tunnel.obfuscator.flavor === 'phobos' ? 'Phobos' : 'ClusterM'}</Badge>
+						{#if tunnel.obfuscator.relay === 'kernel'}
+							<Badge variant="success" size="sm">ядро</Badge>
+						{/if}
+					{/if}
 				</div>
 			</div>
 			<div class="dense-toolbar" title={statusHint || undefined}>
 				<!-- row 1: toggle -->
 				<div class="dense-toolbar-top">
-					<button
-						type="button"
-						class="tunnel-lock-btn tunnel-lock-btn--compact"
-						class:tunnel-lock-btn--locked={tunnel.toggleLocked}
-						disabled={lockLoading}
-						title={tunnel.toggleLocked ? 'Тумблер заблокирован — нажмите для разблокировки' : 'Заблокировать тумблер вкл/выкл'}
-						aria-label={tunnel.toggleLocked ? 'Разблокировать тумблер' : 'Заблокировать тумблер'}
-						onclick={handleToggleLock}
-					>
-						{#if lockLoading}
-							<span class="tunnel-lock-btn__spinner"></span>
-						{:else if tunnel.toggleLocked}
-							<svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-								<path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/>
-							</svg>
-						{:else}
-							<svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-								<path d="M10 2a5 5 0 00-5 5v2a2 2 0 00-2 2v5a2 2 0 002 2h10a2 2 0 002-2v-5a2 2 0 00-2-2H7V7a3 3 0 015.905-.75 1 1 0 001.937-.5A5.002 5.002 0 0010 2z"/>
-							</svg>
-						{/if}
-					</button>
+					{#if lockAvailable}
+						<TunnelLockGlyph {locked} size="sm" onclick={() => onLockClick?.()} />
+					{/if}
 					<span
-						title={tunnel.toggleLocked ? 'Тумблер заблокирован' : (tunnel.hasAddressConflict ? 'Конфликт адресов — другой туннель с таким же IP уже запущен' : undefined)}
+						title={locked ? lockedTitle : tunnel.toggleLocked ? 'Тумблер заблокирован' : (tunnel.hasAddressConflict ? 'Конфликт адресов — другой туннель с таким же IP уже запущен' : undefined)}
 					>
 						<Toggle
 							checked={isOn}
@@ -398,6 +393,12 @@
 							<VersionBadge kind="awg" value={tunnel.awgVersion} />
 						{/if}
 						<ProxyOwnedBadge {tunnel} />
+						{#if tunnel.obfuscator}
+							<Badge variant="info" size="sm">{tunnel.obfuscator.flavor === 'phobos' ? 'Phobos' : 'ClusterM'}</Badge>
+							{#if tunnel.obfuscator.relay === 'kernel'}
+								<Badge variant="success" size="sm">ядро</Badge>
+							{/if}
+						{/if}
 					</div>
 					{#if view === 'compact' && headerStatusHint}
 						<span class="status-hint status-hint-left">{headerStatusHint}</span>
@@ -406,29 +407,11 @@
 
 				<div class="head-right">
 					<div class="led-toggle">
-						<button
-							type="button"
-							class="tunnel-lock-btn"
-							class:tunnel-lock-btn--locked={tunnel.toggleLocked}
-							disabled={lockLoading}
-							title={tunnel.toggleLocked ? 'Тумблер заблокирован — нажмите для разблокировки' : 'Заблокировать тумблер вкл/выкл'}
-							aria-label={tunnel.toggleLocked ? 'Разблокировать тумблер' : 'Заблокировать тумблер'}
-							onclick={handleToggleLock}
-						>
-							{#if lockLoading}
-								<span class="tunnel-lock-btn__spinner"></span>
-							{:else if tunnel.toggleLocked}
-								<svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-									<path fill-rule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clip-rule="evenodd"/>
-								</svg>
-							{:else}
-								<svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-									<path d="M10 2a5 5 0 00-5 5v2a2 2 0 00-2 2v5a2 2 0 002 2h10a2 2 0 002-2v-5a2 2 0 00-2-2H7V7a3 3 0 015.905-.75 1 1 0 001.937-.5A5.002 5.002 0 0010 2z"/>
-								</svg>
-							{/if}
-						</button>
+						{#if lockAvailable}
+							<TunnelLockGlyph {locked} onclick={() => onLockClick?.()} />
+						{/if}
 						<span
-							title={tunnel.toggleLocked ? 'Тумблер заблокирован' : (tunnel.hasAddressConflict ? 'Конфликт адресов — другой туннель с таким же IP уже запущен' : undefined)}
+							title={locked ? lockedTitle : tunnel.toggleLocked ? 'Тумблер заблокирован' : (tunnel.hasAddressConflict ? 'Конфликт адресов — другой туннель с таким же IP уже запущен' : undefined)}
 						>
 							<Toggle
 								checked={isOn}
@@ -616,9 +599,12 @@
 			<TunnelListActions
 				variant="labeled"
 				editHref="/tunnels/{tunnel.id}"
+				editDisabled={locked}
+				editTitle={locked ? lockedTitle : 'Изменить'}
 				onTest={() => (diagnosticsOpen = true)}
 				onDelete={() => ondelete?.()}
-				deleteDisabled={deleteLoading}
+				deleteDisabled={deleteLoading || locked}
+				deleteTitle={locked ? lockedTitle : 'Удалить'}
 				deleting={deleteLoading}
 			/>
 		</div>
@@ -826,6 +812,22 @@
 		display: flex;
 		align-items: center;
 		/* gap: 2px; */
+	}
+
+	/* Причина «сломан» приходит текстом произвольной длины: без потолка она
+	   растягивает правую колонку заголовка и режет имя туннеля. */
+	.card.view-dense .dense-toolbar-bottom :global(.ping-btn) {
+		max-width: 5.5rem;
+		white-space: normal;
+		text-align: right;
+		line-height: 1.15;
+	}
+
+	.card.view-compact .connectivity-row :global(.ping-btn) {
+		max-width: 8rem;
+		white-space: normal;
+		text-align: right;
+		line-height: 1.2;
 	}
 
 	.meta-tags-dense {

@@ -3,9 +3,11 @@ package updater
 import (
 	"bytes"
 	"context"
+	"net/http"
 
 	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/sys/appver"
 )
 
 const (
@@ -84,12 +86,14 @@ func (d *loggingDownloader) logWarn(action, target, prefix string, route downloa
 	d.log.Warn(action, target, prefix+routePart+": "+target+": "+err.Error())
 }
 
-func fetchLatestPackageWithDownloader(ctx context.Context, dl Downloader, pkgsURL, packageName string, cmp func(a, b string) int) (PackageEntry, error) {
+func fetchLatestPackageWithDownloader(ctx context.Context, dl Downloader, pkgsURL, packageName string, cmp func(a, b string) int, stats http.Header) (PackageEntry, error) {
 	if dl == nil {
 		dl = newDefaultDownloader()
 	}
 	body, _, err := dl.ReadAll(ctx, downloader.Request{
 		Purpose:      "awgm-update-check",
+		UserAgent:    appver.UA(),
+		Headers:      stats,
 		URL:          pkgsURL,
 		MaxBodyBytes: packagesMaxBytes,
 		Timeout:      repoTimeout,

@@ -1,9 +1,14 @@
 package diagnostics
 
 import (
+	"context"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hoaxisr/awg-manager/internal/sys/httpclient"
 )
 
 func TestRunOptions_RestartCycleOnlyWhenIncludeRestart(t *testing.T) {
@@ -151,6 +156,69 @@ func TestAnonymize_AWGProxyModule_MasksRawListIPs(t *testing.T) {
 	}
 }
 
+func TestCollectAWGMRelayModule_ParsesVersionAndSlots(t *testing.T) {
+	r := &Runner{
+		readAWGMRelayVersion: func() ([]byte, error) { return []byte("0.1.1\n"), nil },
+		readAWGMRelayList: func() ([]byte, error) {
+			return []byte("127.0.0.1:41000 1.2.3.4:51000 transform=phobos masking=none rx=0 tx=0 rx_pkt=0 tx_pkt=0 parse_err=0 rxq_drop=0 trunc=0\n" +
+				"127.0.0.1:41001 5.6.7.8:51001 transform=phobos masking=none rx=0 tx=0 rx_pkt=0 tx_pkt=0 parse_err=0 rxq_drop=0 trunc=0\n"), nil
+		},
+	}
+
+	mod := r.collectAWGMRelayModule()
+
+	if !mod.Loaded {
+		t.Fatal("Loaded=false, want true")
+	}
+	if mod.Version != "0.1.1" {
+		t.Errorf("Version=%q, want %q", mod.Version, "0.1.1")
+	}
+	if mod.Slots != 2 {
+		t.Errorf("Slots=%d, want 2", mod.Slots)
+	}
+	// Модуль не выводит ключ обфускации — проверка страхует от регресса
+	// модуля (если он вдруг начнёт писать key= в /proc/awgm_relay/list).
+	if strings.Contains(mod.RawList, "key=") {
+		t.Errorf("RawList contains %q, kernel module must never expose keys: %q", "key=", mod.RawList)
+	}
+}
+
+func TestCollectAWGMRelayModule_NotLoadedOnMissingProc(t *testing.T) {
+	r := &Runner{
+		readAWGMRelayVersion: func() ([]byte, error) { return nil, errors.New("no such file") },
+		readAWGMRelayList:    func() ([]byte, error) { return nil, errors.New("no such file") },
+	}
+
+	mod := r.collectAWGMRelayModule()
+
+	if mod.Loaded {
+		t.Error("Loaded=true, want false when /proc/awgm_relay/version is absent")
+	}
+	if mod.Slots != 0 || mod.RawList != "" {
+		t.Errorf("expected zero-value module, got %+v", mod)
+	}
+}
+
+func TestAnonymize_AWGMRelay_MasksRawListIPs(t *testing.T) {
+	report := &Report{
+		AWGMRelay: AWGMRelayModule{
+			Loaded:  true,
+			Version: "0.1.1",
+			RawList: "127.0.0.1:41000 176.109.110.182:51000 transform=phobos masking=none rx=0 tx=0 rx_pkt=0 tx_pkt=0 parse_err=0 rxq_drop=0 trunc=0\n",
+			Slots:   1,
+		},
+	}
+	anonymize(report)
+
+	if strings.Contains(report.AWGMRelay.RawList, "176.109.110.182") {
+		t.Errorf("RawList still contains public IP: %q", report.AWGMRelay.RawList)
+	}
+	// Private IP (127.0.0.1, локальный listen-сокет релея) MUST remain.
+	if !strings.Contains(report.AWGMRelay.RawList, "127.0.0.1") {
+		t.Errorf("expected 127.0.0.1 to remain in RawList (private IPs must not be masked): %q", report.AWGMRelay.RawList)
+	}
+}
+
 func TestRouteDevFromIPRouteGet(t *testing.T) {
 	tests := []struct {
 		name string
@@ -191,5 +259,45 @@ func TestRouteDevFromIPRouteGet(t *testing.T) {
 				t.Errorf("routeDevFromIPRouteGet(%q) = %q; want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// F128 (#867): «Связность через туннель» ходила по default route (WAN) и
+// всегда давала pass с WAN-адресом роутера. Запрос обязан быть привязан к
+// интерфейсу туннеля, имя резолвится DNS-серверами туннеля, а отказ — fail.
+func TestTunnelConnectivity_BindsToTunnelInterface(t *testing.T) {
+	orig := httpDo
+	t.Cleanup(func() { httpDo = orig })
+	var got httpclient.CallConfig
+	httpDo = func(_ context.Context, cfg httpclient.CallConfig) (*httpclient.Result, error) {
+		got = cfg
+		return &httpclient.Result{Body: "203.0.113.9\n"}, nil
+	}
+	r := &Runner{}
+	ti := TunnelInfo{ID: "awg10", Status: "running", InterfaceName: "opkgtun10",
+		Settings: TunnelSettings{DNS: "1.1.1.1, 8.8.8.8", AllowedIPs: []string{"0.0.0.0/0", "::/0"}}}
+	res := r.testTunnelConnectivity(context.Background(), ti)
+	if res.Status != StatusPass || !strings.Contains(res.Detail, "203.0.113.9") {
+		t.Fatalf("status=%s detail=%q", res.Status, res.Detail)
+	}
+	if got.Interface != "opkgtun10" {
+		t.Fatalf("запрос не привязан к туннелю: Interface=%q", got.Interface)
+	}
+	if !slices.Equal(got.DNSServers, []string{"1.1.1.1", "8.8.8.8"}) {
+		t.Fatalf("DNS туннеля не переданы: %v", got.DNSServers)
+	}
+
+	httpDo = func(_ context.Context, _ httpclient.CallConfig) (*httpclient.Result, error) {
+		return nil, errors.New("dial tcp4 203.0.113.1:443: i/o timeout")
+	}
+	res = r.testTunnelConnectivity(context.Background(), ti)
+	if res.Status != StatusFail || !strings.Contains(res.Detail, "i/o timeout") {
+		t.Fatalf("отказ через туннель не fail: status=%s detail=%q", res.Status, res.Detail)
+	}
+
+	// Узкие AllowedIPs: peer не покрывает адрес сервиса, пробу дропнет само ядро.
+	ti.Settings.AllowedIPs = []string{"10.0.0.0/8"}
+	if res = r.testTunnelConnectivity(context.Background(), ti); res.Status != StatusSkip {
+		t.Fatalf("узкие AllowedIPs должны давать skip: status=%s detail=%q", res.Status, res.Detail)
 	}
 }

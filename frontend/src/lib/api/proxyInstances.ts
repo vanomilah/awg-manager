@@ -14,7 +14,7 @@
 //   POST   /wdtt/clients                    → POST /proxyrt/instances        (kind=wdtt-client)
 //   PUT    /wdtt/clients/{id}               → PATCH /proxyrt/instances/wdtt-client:{id}
 //   PATCH  /wdtt/clients/{id}               → PATCH /proxyrt/instances/wdtt-client:{id}   (name)
-//   DELETE /wdtt/clients/{id}               → POST …/linked-tunnels/clear + DELETE /proxyrt/instances/wdtt-client:{id}
+//   DELETE /wdtt/clients/{id}               → DELETE /proxyrt/instances/wdtt-client:{id} (связи снимает бэкенд)
 //   POST   /wdtt/clients/{id}/start|stop    → PATCH /proxyrt/instances/wdtt-client:{id}   ({enabled})
 //   POST   /wdtt/clients/{id}/ensure-wg-tunnel → POST /proxyrt/instances/wdtt-client:{id}/ensure-wg-tunnel
 //   POST   /wdtt/clients/{id}/ensure-raw-tunnel → УДАЛЕНА (зеркальную запись ведёт движок)
@@ -48,6 +48,7 @@ import type {
   FreeTurnCaptchaOverview,
   FreeTurnClientConfig,
   FreeTurnConfig,
+  FreeTurnKCP,
   FreeTurnProcessStatus,
   FreeTurnServerConfig,
   FreeTurnStatus,
@@ -91,6 +92,7 @@ export interface ProxyResourceView {
   status: string;
   detail?: string;
   error?: string;
+  attrs?: Record<string, string>;
 }
 
 /** Шаг последнего плана реконсиляции. */
@@ -126,8 +128,9 @@ export interface ProxySeedView {
    */
   skipped?: ProxySkippedSourceView[];
   /**
-   * Инстансы, которым посев сменил listen-адрес, разводя конфликт за порт:
-   * дефолт у обеих подсистем был один и тот же. Молчать об этом нельзя — у
+   * Инстансы, которым СМЕНИЛИ listen-адрес, разводя конфликт за порт.
+   * Источников четыре: посев (дефолт у обеих подсистем был один и тот же),
+   * боот (порт отняла чужая запись), создание и правка инстанса. Молчать об этом нельзя — у
    * человека снаружи мог быть настроен клиент на прежний порт.
    */
   movedListen?: ProxyListenMoveView[];
@@ -139,7 +142,7 @@ export interface ProxySkippedSourceView {
   reason?: string;
 }
 
-/** Один переезд listen-адреса, сделанный посевом. */
+/** Один переезд listen-адреса (посев, боот, создание или правка). */
 export interface ProxyListenMoveView {
   instance: string;
   name?: string;
@@ -171,6 +174,9 @@ export interface ProxyListData {
   seed: ProxySeedView;
   instances: ProxyInstanceView[];
 }
+
+/** Подсистема, которой ставят/снимают бинари ручками /proxyrt/install*. */
+export type ProxySubsystem = 'wdtt' | 'freeturn' | 'obf-phobos' | 'obf-clusterm';
 
 /** Ответ GET /proxyrt/install/status — семь полей install-блока старого статуса. */
 export interface ProxyInstallStatus {
@@ -337,6 +343,23 @@ export function toWdttServerConfig(v: ProxyInstanceView): WdttServerConfig {
   };
 }
 
+// kcp приезжает ссылкой freeturn:// и хранится как есть; null в PATCH снимает.
+function kcpOf(c: Cfg): FreeTurnKCP | undefined {
+  const k = c["kcp"];
+  if (!k || typeof k !== "object") return undefined;
+  const o = k as Cfg;
+  return {
+    nodelay: num(o, "nodelay") ?? 0,
+    interval: num(o, "interval") ?? 0,
+    resend: num(o, "resend") ?? 0,
+    nc: num(o, "nc") ?? 0,
+    sndwnd: num(o, "sndwnd") ?? 0,
+    rcvwnd: num(o, "rcvwnd") ?? 0,
+    mtu: num(o, "mtu") ?? 0,
+    acknodelay: bool(o, "acknodelay") === true,
+  };
+}
+
 export function toFreeTurnClientConfig(
   v: ProxyInstanceView,
 ): FreeTurnClientConfig {
@@ -356,7 +379,9 @@ export function toFreeTurnClientConfig(
       (str(c, "obfProfile") as FreeTurnClientConfig["obfProfile"]) ?? "none",
     obfKey: "",
     obfKeySet: bool(c, "obfKeySet") === true,
+    obfTimingMs: num(c, "obfTimingMs") ?? 0,
     streamsPerCred: num(c, "streamsPerCred") ?? 0,
+    kcp: kcpOf(c),
     platform:
       (str(c, "platform") as FreeTurnClientConfig["platform"]) ?? "desktop",
     dnsMode: (str(c, "dnsMode") as FreeTurnClientConfig["dnsMode"]) ?? "auto",
@@ -377,6 +402,9 @@ export function toFreeTurnServerConfig(
     enabled: v.enabled,
     listen: str(c, "listen") ?? "",
     connect: str(c, "connect") ?? "",
+    // НЕ путать с linkPeer wdtt-сервера выше: там это поле ЗАПИСИ (память о
+    // последней выдаче), здесь — настройка в конфиге, которую правит владелец.
+    linkPeer: str(c, "linkPeer") ?? "",
     mode: (str(c, "mode") as FreeTurnServerConfig["mode"]) ?? "udp",
     obfProfile:
       (str(c, "obfProfile") as FreeTurnServerConfig["obfProfile"]) ?? "none",
@@ -468,6 +496,14 @@ function toProcessStatus(
   };
 }
 
+/** Посторонний ACL на интерфейсе сервера (`ndms_access` ресурс движка). */
+function foreignAclsOf(v: ProxyInstanceView): string[] | undefined {
+  const raw = v.state?.resources?.find((r) => r.id === "ndms_access")?.attrs?.[
+    "foreign-acl"
+  ];
+  return raw ? raw.split(",") : undefined;
+}
+
 function toWdttProcessStatus(
   v: ProxyInstanceView,
   nowMs: number,
@@ -481,6 +517,7 @@ function toWdttProcessStatus(
     rawIface: str(c, "rawIface"),
     ndmsIface: str(c, "ndmsIface"),
     rawNdmsIface: str(c, "rawNdmsIface"),
+    foreignAcls: foreignAclsOf(v),
   };
 }
 
@@ -681,7 +718,9 @@ export function toFreeTurnClientPatch(cfg: FreeTurnClientConfig): Cfg {
     mode: cfg.mode ?? "udp",
     bond: cfg.bond === true,
     obfProfile: cfg.obfProfile ?? "none",
+    obfTimingMs: cfg.obfTimingMs ?? 0,
     streamsPerCred: cfg.streamsPerCred ?? 0,
+    kcp: cfg.kcp ?? null,
     platform: cfg.platform ?? "",
     dnsMode: cfg.dnsMode ?? "",
     dnsServers: cfg.dnsServers ?? "",
@@ -699,6 +738,7 @@ export function toFreeTurnServerPatch(cfg: FreeTurnServerConfig): Cfg {
   const out: Cfg = {
     listen: cfg.listen ?? "",
     connect: cfg.connect ?? "",
+    linkPeer: cfg.linkPeer ?? "",
     mode: cfg.mode ?? "udp",
     obfProfile: cfg.obfProfile ?? "none",
     clientsFile: cfg.clientsFile ?? "",

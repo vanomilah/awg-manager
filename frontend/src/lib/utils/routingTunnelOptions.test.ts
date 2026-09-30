@@ -30,6 +30,16 @@ describe('routingTunnelLabel', () => {
 	it('returns name only when iface missing', () => {
 		expect(routingTunnelLabel(t({ id: 'awg1', name: 'VPN', type: 'managed' }))).toBe('VPN');
 	});
+
+	it('marks system opkgtun without carrier and NDMS address', () => {
+		expect(
+			routingTunnelLabel(t({ id: 'system:OpkgTun7', name: 'csqtt', iface: 'OpkgTun7', type: 'system', status: 'down', available: true, warning: 'нет адреса в NDMS' })),
+		).toBe('csqtt (OpkgTun7) — нет несущей (нет адреса в NDMS)');
+	});
+
+	it('managed stopped tunnel label unchanged', () => {
+		expect(routingTunnelLabel(t({ id: 'awg10', name: 'WARP', iface: 'opkgtun10', type: 'managed', status: 'down', available: true }))).toBe('WARP (opkgtun10)');
+	});
 });
 
 describe('routingTunnelGroup', () => {
@@ -42,6 +52,17 @@ describe('routingTunnelGroup', () => {
 			routingTunnelGroup(t({ id: 'system:Wireguard0', name: 'WG', type: 'system' })),
 		).toBe('Системные WireGuard');
 		expect(routingTunnelGroup(t({ id: 'system:Proxy0', name: 'P', type: 'system' }))).toBe('Прокси');
+	});
+
+	it('puts WireGuard servers into their own group after system WireGuard', () => {
+		const server = t({ id: 'system:Wireguard1', name: 'S', type: 'system', server: true });
+		expect(routingTunnelGroup(server)).toBe('Серверы WireGuard');
+		const opts = buildRoutingTunnelDropdownOptions([
+			server,
+			t({ id: 'system:Proxy0', name: 'P', type: 'system' }),
+			t({ id: 'system:Wireguard0', name: 'WG', type: 'system' }),
+		]);
+		expect(opts.map((o) => o.group)).toEqual(['Системные WireGuard', 'Серверы WireGuard', 'Прокси']);
 	});
 
 	it('classifies ISP WAN as Провайдер', () => {

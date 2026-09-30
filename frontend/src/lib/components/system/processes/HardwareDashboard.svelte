@@ -12,6 +12,13 @@
 	}
 
 	let { snapshot }: Props = $props();
+
+	// Занято (Total − Available) + освобождаемый кэш (Available − Free) +
+	// свободно (Free) = Total: сегменты полосы не перекрываются. Cached сюда
+	// не годится — в нём tmpfs, который ядро не отдаст и который уже в «Занято».
+	const reclaimable = $derived(
+		snapshot?.memory ? Math.max(0, snapshot.memory.available - snapshot.memory.free) : 0
+	);
 </script>
 
 <Card padding="md">
@@ -106,7 +113,7 @@
 						<div class="core-header-line">
 							<span class="core-idx">ОЗУ</span>
 							<span class="core-details-text">
-								Занято: {formatBytes(snapshot.memory.used)} · Кэш: {formatBytes(snapshot.memory.cached + snapshot.memory.buffers)} · Свободно: {formatBytes(snapshot.memory.available)}
+								Занято: {formatBytes(snapshot.memory.used)} · Кэш: {formatBytes(reclaimable)} · Свободно: {formatBytes(snapshot.memory.free)}
 							</span>
 							<span class="core-percentage mem-pct-txt">
 								{snapshot.memory.usagePercent.toFixed(1)}%
@@ -120,8 +127,8 @@
 							></div>
 							<div
 								class="bar-seg mem-cached-seg"
-								style="width: {Math.min(100 - (snapshot.memory.used / snapshot.memory.total) * 100, (snapshot.memory.cached / snapshot.memory.total) * 100)}%"
-								title="Кэш и буферы: {formatBytes(snapshot.memory.cached + snapshot.memory.buffers)}"
+								style="width: {(reclaimable / snapshot.memory.total) * 100}%"
+								title="Кэш, который ядро освободит по требованию: {formatBytes(reclaimable)}"
 							></div>
 						</div>
 					</div>

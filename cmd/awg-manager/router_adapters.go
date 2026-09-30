@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,10 +14,10 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/ndms"
 	ndmscommand "github.com/hoaxisr/awg-manager/internal/ndms/command"
 	ndmsquery "github.com/hoaxisr/awg-manager/internal/ndms/query"
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/singbox/dnsrewrite"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router"
 	"github.com/hoaxisr/awg-manager/internal/tunnel/sysinfo"
-	"github.com/hoaxisr/awg-manager/internal/tunnel/wan"
 )
 
 // Compile-time guarantees that the adapters satisfy their router-side
@@ -32,7 +34,6 @@ var (
 // router doesn't import accesspolicy types directly.
 type routerAccessPolicyAdapter struct {
 	svc accesspolicy.Service
-	wan *wan.Model
 }
 
 func (a *routerAccessPolicyAdapter) GetPolicyMark(ctx context.Context, name string) (string, error) {
@@ -45,6 +46,10 @@ func (a *routerAccessPolicyAdapter) ListPolicyExits(ctx context.Context, iface s
 
 func (a *routerAccessPolicyAdapter) PermitInterface(ctx context.Context, name, iface string, order int) error {
 	return a.svc.PermitInterface(ctx, name, iface, order)
+}
+
+func (a *routerAccessPolicyAdapter) DenyInterface(ctx context.Context, name, iface string) error {
+	return a.svc.DenyInterface(ctx, name, iface)
 }
 
 func (a *routerAccessPolicyAdapter) AssignDevice(ctx context.Context, mac, name string) error {
@@ -99,33 +104,14 @@ func (a *routerAccessPolicyAdapter) ListPolicies(ctx context.Context) ([]router.
 }
 
 func (a *routerAccessPolicyAdapter) CreatePolicy(ctx context.Context, description string) (router.PolicyInfo, error) {
-	// NDMS won't issue a fwmark for a policy that has no permitted
-	// interface, so we MUST resolve a default WAN before creating the
-	// policy. Failing fast here yields a clean diagnostic for the user
-	// instead of a half-broken policy that later fails on Enable with
-	// the cryptic ErrPolicyMissing.
-	if a.wan == nil {
-		return router.PolicyInfo{}, fmt.Errorf("WAN model unavailable; cannot auto-permit a default WAN for new policy")
-	}
-	iface, ok := a.wan.PreferredUp()
-	if !ok {
-		return router.PolicyInfo{}, fmt.Errorf("no WAN interface is up; bring up a WAN connection before creating a router policy")
-	}
-	ndmsID := a.wan.IDFor(iface)
-	if ndmsID == "" {
-		return router.PolicyInfo{}, fmt.Errorf("WAN interface %q has no NDMS id; cannot auto-permit", iface)
-	}
-
+	// Выходы политике здесь не выдаются: они зависят от режима захвата и
+	// ставятся при его включении (router/policy_wan.go). Прежний permit WAN с
+	// order 100 на 5.01 отвергался (order — позиция в списке, на пустой
+	// политике допустим только 0) и оставлял политику-сироту, а в policy-tun
+	// WAN вторым выходом — обход туннеля (F440). Метку NDMS выдаёт и без permit.
 	p, err := a.svc.Create(ctx, description)
 	if err != nil {
 		return router.PolicyInfo{}, err
-	}
-	if err := a.svc.PermitInterface(ctx, p.Name, ndmsID, 100); err != nil {
-		// Best-effort cleanup: the policy was created but is now stuck
-		// without a permit. Surface the error so the user knows; the
-		// orphaned policy stays in NDMS for them to clean up via the
-		// Access Policies UI.
-		return router.PolicyInfo{}, fmt.Errorf("permit WAN %s on policy %s: %w", ndmsID, p.Name, err)
 	}
 	mark, _ := a.svc.GetPolicyMark(ctx, p.Name)
 	return router.PolicyInfo{
@@ -152,9 +138,10 @@ type routerWANInterfaceAdapter struct {
 	// interfaces. Only set on the bindable-interfaces instance; nil on the
 	// WAN instance. Used by ListBindable to surface native SOCKS proxies (#323).
 	nativeProxies func(context.Context) ([]string, error)
-	// occupiedBinds returns kernel names already bound by an existing direct
-	// outbound, excluded from the bindable list. Bindable-instance only (#323).
-	occupiedBinds func(context.Context) (map[string]bool, error)
+	// foreign — отметки «Сторонний интерфейс»; sysNet — /sys/class/net.
+	// Только у экземпляра списка привязки (issue #935).
+	foreign func() []string
+	sysNet  string
 }
 
 func (a *routerWANInterfaceAdapter) ListWAN(ctx context.Context) ([]router.WANInterfaceInfo, error) {
@@ -267,11 +254,11 @@ var _ router.OpkgTunIndexLister = (*routerOpkgTunIndexAdapter)(nil)
 // удержанный номер», поэтому запись NDMS без устройства сюда попадать не
 // должна: иначе смерть интерфейса после краха читалась бы как жизнь.
 //
-// NDMSOpkgTunPins — номера, удерживаемые записями NDMS. Проверено на стенде
-// 5.01.C.3.0-1: `ndmc -c "interface OpkgTun12"` создаёт и запись, и устройство,
-// но после `ip link del opkgtun12` запись живёт дальше со `state: error`, а в
-// /sys устройства нет. Такой номер занят — выдать его нельзя, хотя интерфейс
-// мёртв.
+// Номера, удерживаемые ЗАПИСЯМИ NDMS, собирает отдельный поставщик занятости
+// (ndmsHolders) поверх того же store. Проверено на стенде 5.01.C.3.0-1:
+// `ndmc -c "interface OpkgTun12"` создаёт и запись, и устройство, но после
+// `ip link del opkgtun12` запись живёт дальше со `state: error`, а в /sys
+// устройства нет. Такой номер занят — выдать его нельзя, хотя интерфейс мёртв.
 type routerOpkgTunIndexAdapter struct {
 	store *ndmsquery.InterfaceStore
 	// listSys — чтение kernel-половины; поле ради тестируемости отказа.
@@ -290,26 +277,11 @@ func (a *routerOpkgTunIndexAdapter) LiveOpkgTunIndices(context.Context) (map[int
 		// «все номера свободны».
 		return nil, fmt.Errorf("list system interfaces: %w", err)
 	}
-	return router.UnionOpkgTunIndices(sysNums, nil), nil
-}
-
-// NDMSOpkgTunPins — поставщик пинов по записям NDMS.
-//
-// Берётся List, а НЕ ListAll: последний по своему назначению выбрасывает наши
-// интерфейсы (opkgtun*, awgm* — interfaces.go:591), то есть ровно то, ради чего
-// занятость и собирается. Имя берётся из ID и приводится к нижнему регистру:
-// NDMS знает интерфейс только как "OpkgTun10" (поля kernel-имени у него нет —
-// проверено на железе), а ExtractInterfaceNumber заякорен на "^opkgtun\d+$".
-func (a *routerOpkgTunIndexAdapter) NDMSOpkgTunPins(ctx context.Context) (map[int]bool, error) {
-	all, err := a.store.List(ctx)
-	if err != nil {
-		return nil, err
+	live := make(map[int]bool, len(sysNums))
+	for _, n := range sysNums {
+		live[n] = true
 	}
-	names := make([]string, 0, len(all))
-	for _, i := range all {
-		names = append(names, strings.ToLower(i.ID))
-	}
-	return router.UnionOpkgTunIndices(nil, names), nil
+	return live, nil
 }
 
 // opkgTunScanner returns the router Deps.OpkgTunScan hook: NDMS OpkgTun
@@ -332,10 +304,11 @@ func opkgTunScanner(store *ndmsquery.InterfaceStore) func(ctx context.Context, d
 	}
 }
 
-// ListBindable returns router interfaces a user can bind a direct outbound to:
+// ListBindable returns router interfaces a user can bind an outbound to:
 // egress-capable (security-level "public"), minus our own auto-managed
 // interfaces — except KeenOS-native proxies (kernel t2sN whose NDMS ProxyN is
 // not ours), which are rescued from the auto-managed exclusion (#323).
+// Interfaces already bound by an outbound are kept (#709, #961).
 func (a *routerWANInterfaceAdapter) ListBindable(ctx context.Context) ([]router.WANInterfaceInfo, error) {
 	ifaces, err := a.store.ListAll(ctx)
 	if err != nil {
@@ -351,49 +324,78 @@ func (a *routerWANInterfaceAdapter) ListBindable(ctx context.Context) ([]router.
 			}
 		}
 	}
-	// Interfaces already bound by an existing direct outbound — don't offer
-	// them again. On lookup error treat as none (a duplicate bind is harmless,
-	// so fail toward offering rather than hiding).
-	occupied := map[string]bool{}
-	if a.occupiedBinds != nil {
-		if set, e := a.occupiedBinds(ctx); e == nil {
-			occupied = set
-		}
-	}
-	return filterBindable(ifaces, native, occupied), nil
+	return a.withForeign(ctx, filterBindable(ifaces, native)), nil
 }
 
-// ListAllBindable returns all egress-capable router interfaces (security-level "public"
-// minus our own auto-managed ones) without excluding occupied direct binds (#709).
-// Used by subscriptions and manual proxy tunnels which can share interfaces with direct outbounds.
-func (a *routerWANInterfaceAdapter) ListAllBindable(ctx context.Context) ([]router.WANInterfaceInfo, error) {
-	ifaces, err := a.store.ListAll(ctx)
-	if err != nil {
-		return nil, err
+// withForeign дописывает отмеченные сторонние интерфейсы (issue #935) в
+// список привязки: foreign задан только у экземпляра списка привязки, ошибка
+// NDMS не прячет отметки — они показываются без подписи.
+func (a *routerWANInterfaceAdapter) withForeign(ctx context.Context, out []router.WANInterfaceInfo) []router.WANInterfaceInfo {
+	if a.foreign == nil {
+		return out
 	}
-	native := map[string]bool{}
-	if a.nativeProxies != nil {
-		if names, e := a.nativeProxies(ctx); e == nil {
-			for _, n := range names {
-				native[n] = true
-			}
+	marked := a.foreign()
+	if len(marked) == 0 {
+		return out
+	}
+	list, err := a.store.List(ctx)
+	if err != nil {
+		list = nil // отмеченные всё равно показываем — без подписи NDMS
+	}
+	return append(out, foreignBindable(marked, list, a.sysNet)...)
+}
+
+// foreignBindable — отмеченные сторонние интерфейсы для списка привязки
+// (issue #935). ListAll их не отдаёт (opkgtun* режет isOwnTunnel, интерфейса
+// ядра NDMS не знает), поэтому добавляем отдельно. Состояние: OpkgTun — по
+// link из NDMS (connected события не обновляют — OnLayerChanged ведёт только
+// Link/State/IPv4), интерфейс ядра — по /sys/class/net.
+func foreignBindable(marked []string, list []ndms.Interface, sysNet string) []router.WANInterfaceInfo {
+	// Запись NDMS для opkgtunN ищется по НОМЕРУ (IndexOf от ID записи):
+	// SystemName бывает пустым — wireToInterface обнуляет непохожее имя, а
+	// батч-резолвер молча пропускает сбои.
+	byIdx := make(map[int]ndms.Interface, len(list))
+	for _, i := range list {
+		if n, ok := opkgtun.IndexOf(i.ID); ok {
+			byIdx[n] = i
 		}
 	}
-	return filterBindable(ifaces, native, nil), nil
+	out := make([]router.WANInterfaceInfo, 0, len(marked))
+	for _, name := range marked {
+		info := router.WANInterfaceInfo{Name: name, Label: name, Foreign: true}
+		n, isOpkg := opkgtun.IndexOf(name)
+		if rec, ok := byIdx[n]; isOpkg && ok {
+			info.ID = rec.ID
+			info.Type = rec.Type
+			if rec.Description != "" {
+				info.Label = rec.Description
+			}
+			info.Up = rec.Link == "up"
+		} else if _, err := os.Stat(filepath.Join(sysNet, name)); err != nil {
+			info.Absent = true
+		} else {
+			info.Up = sysCarrier(sysNet, name)
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 // filterBindable keeps egress interfaces (security-level "public") minus our
-// own auto-managed ones and minus already-bound interfaces, rescuing
-// KeenOS-native proxies in the native set.
-func filterBindable(ifaces []ndms.AllInterface, native, occupied map[string]bool) []router.WANInterfaceInfo {
+// own auto-managed ones, rescuing KeenOS-native proxies in the native set.
+func filterBindable(ifaces []ndms.AllInterface, native map[string]bool) []router.WANInterfaceInfo {
 	out := make([]router.WANInterfaceInfo, 0, len(ifaces))
 	for _, iface := range ifaces {
-		// Egress only: drops LAN bridges, Wi-Fi APs, switch ports, LAN VLANs.
+		// Egress only: drops LAN bridges, switch ports, LAN VLANs.
 		if iface.SecurityLevel != "public" {
 			continue
 		}
-		// Already bound by an existing direct outbound — skip the duplicate.
-		if occupied[iface.Name] {
+		// Точка доступа (и радио под ней) — не выход в интернет, хотя NDMS
+		// ставит ей security-level public (стенд 5.02.A.11: AccessPoint0
+		// public). После детерминированного дедупа ListAll (F475) ra0 шёл
+		// бы в список привязки всегда. Wi-Fi-клиент (WifiStation) — выход,
+		// его оставляем.
+		if iface.Type == "AccessPoint" || iface.Type == "WifiMaster" {
 			continue
 		}
 		// Our own auto-managed interfaces already have outbounds; exclude them

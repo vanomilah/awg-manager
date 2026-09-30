@@ -20,23 +20,27 @@ type FakeIPTunSpec struct {
 	Inet6Range string // fakeip v6 pool (empty to omit v6)
 	CachePath  string //
 	RealServer string // real upstream resolver, e.g. "1.1.1.1"
-	// Stack selects the sing-tun stack: "gvisor" (default; empty → gvisor) or
-	// "system". When "system" the builder forces gso:false on the tun inbound —
-	// the only stable system-stack combo on this router's kernel (4.9), where the
-	// system stack with GSO panics sing-tun under load (PoC-proven 2026-06-13).
+	// Stack selects the sing-tun stack: пусто → ключ не пишется, движок берёт
+	// собственный стек sing-tun; legacy — "gvisor", "system", "mixed".
 	Stack string
 	// UDPTimeout is the UDP-NAT expiration for the tun inbound (Go duration
 	// string). Empty → DefaultUDPTimeout via resolveUDPTimeout. Without it
 	// sing-box falls back to its built-in C.UDPTimeout (5m), so a user who set a
 	// longer timeout still lost UDP sessions at exactly 5 minutes in fakeip mode.
 	UDPTimeout string
+	// UDPNATMax is the udp_nat_max cap for the tun inbound (sing-box 1.14).
+	// 0 → engine auto (4096-16384 by memory), key omitted.
+	UDPNATMax int
+	// ExternalConfiguration — см. Inbound.ExternalConfiguration; false для
+	// бинаря, который ключа не знает (не пиннутый).
+	ExternalConfiguration bool
 }
 
 // boolPtr returns a pointer to v. The tun inbound's auto_route / auto_redirect /
-// strict_route / endpoint_independent_nat fields are *bool so that an explicit
-// false survives JSON marshaling (omitempty on a plain bool would drop it, and
-// sing-box would then apply its own non-false defaults — e.g. auto_route true,
-// which is exactly what fakeip-tun must NOT enable because NDMS owns routing).
+// strict_route fields are *bool so that an explicit false survives JSON
+// marshaling (omitempty on a plain bool would drop it, and sing-box would then
+// apply its own non-false defaults — e.g. auto_route true, which is exactly
+// what fakeip-tun must NOT enable because NDMS owns routing).
 func boolPtr(v bool) *bool { return &v }
 
 // ensureFakeIPOverlay injects/normalizes the ENGINE-LOCKED bits of fakeip-tun
@@ -62,26 +66,27 @@ func ensureFakeIPOverlay(cfg *RouterConfig, spec FakeIPTunSpec) {
 	if spec.TunAddr6 != "" {
 		addrs = append(addrs, spec.TunAddr6)
 	}
-	stack := spec.Stack
-	if stack == "" {
-		stack = "gvisor"
-	}
 	udpTimeout := resolveUDPTimeout(spec.UDPTimeout)
+	// gso и endpoint_independent_nat здесь больше не выставляются: sing-box
+	// ≥1.13 удалил `gso` (true — фатальная ошибка при старте, false молча
+	// игнорируется; GSO движок теперь включает сам, и только при
+	// flow-outbound'ах вида wireguard/tailscale/bridge с TCP, которых у наших
+	// слотов нет), а `endpoint_independent_nat` удалён в 1.14 — по умолчанию
+	// `udp_mapping`/`udp_filtering` уже endpoint_independent.
 	in := Inbound{
-		Type:                   "tun",
-		Tag:                    "tun-in",
-		InterfaceName:          spec.Iface,
-		Address:                addrs,
-		MTU:                    spec.MTU,
-		AutoRoute:              boolPtr(false),
-		AutoRedirect:           boolPtr(false),
-		StrictRoute:            boolPtr(false),
-		Stack:                  stack,
-		EndpointIndependentNAT: boolPtr(false),
-		UDPTimeout:             udpTimeout,
-	}
-	if stack == "system" {
-		in.GSO = boolPtr(false)
+		Type:          "tun",
+		Tag:           "tun-in",
+		InterfaceName: spec.Iface,
+		Address:       addrs,
+		MTU:           spec.MTU,
+		AutoRoute:     boolPtr(false),
+		AutoRedirect:  boolPtr(false),
+		StrictRoute:   boolPtr(false),
+		Stack:         spec.Stack,
+		UDPTimeout:    udpTimeout,
+		UDPNATMax:     spec.UDPNATMax,
+
+		ExternalConfiguration: spec.ExternalConfiguration,
 	}
 	upsertInbound(cfg, in)
 
@@ -105,6 +110,7 @@ func ensureFakeIPOverlay(cfg *RouterConfig, spec FakeIPTunSpec) {
 	cfg.Experimental = &Experimental{CacheFile: &CacheFile{
 		Enabled:     true,
 		StoreFakeIP: true,
+		StoreDNS:    StoreDNSForCachePath(spec.CachePath),
 		Path:        spec.CachePath,
 	}}
 

@@ -22,6 +22,7 @@
 	let showConfirm = $state(false);
 	let showChangelog = $state(false);
 	let savingAutoInstall = $state(false);
+	let savingStats = $state(false);
 
 	let localIntervalDays = $state(settings.updates.autoInstallIntervalDays || 7);
 	let localTime = $state(settings.updates.autoInstallTime || '05:00');
@@ -114,6 +115,21 @@
 
 		notifications.error('Сервер не ответил после обновления');
 		upgrading = false;
+	}
+
+	async function toggleStats(enabled: boolean) {
+		savingStats = true;
+		try {
+			settings = await api.updateSettings({
+				...settings,
+				updates: { ...settings.updates, statsEnabled: enabled },
+			});
+			setGlobalSettings(settings);
+		} catch (e) {
+			notifications.error(`Статистика установок: ${downloadErrorToText(e)}`);
+		} finally {
+			savingStats = false;
+		}
 	}
 
 	async function toggleAutoInstall(enabled: boolean) {
@@ -273,6 +289,21 @@
 		</div>
 	{/if}
 {/if}
+
+<div class="setting-row toggle-inline-row">
+	<div class="flex flex-col gap-1">
+		<span class="font-medium">Анонимная статистика</span>
+		<span class="setting-description">
+			При проверке обновлений отправлять случайный ID установки и какие механизмы
+			маршрутизации включены (только да/нет). Без адресов, имён и настроек.
+		</span>
+	</div>
+	<Toggle
+		checked={settings.updates.statsEnabled}
+		onchange={toggleStats}
+		disabled={savingStats}
+	/>
+</div>
 
 <Modal
 	open={showConfirm}

@@ -40,17 +40,23 @@ type MemoryInfo struct {
 
 // ProcessItem describes a single Linux process.
 type ProcessItem struct {
-	PID           int     `json:"pid"`
-	PPID          int     `json:"ppid"`
-	User          string  `json:"user"`
-	Priority      int     `json:"priority"`
-	Nice          int     `json:"nice"`
-	Threads       int     `json:"threads"`
-	State         string  `json:"state"` // "R", "S", "D", "Z", "T"
-	CPUPercent    float64 `json:"cpuPercent"`
-	MemoryRSS     uint64  `json:"memoryRss"`   // bytes
-	MemoryVSize   uint64  `json:"memoryVsize"` // bytes
-	MemoryPercent float64 `json:"memoryPercent"`
+	PID        int     `json:"pid"`
+	PPID       int     `json:"ppid"`
+	User       string  `json:"user"`
+	Priority   int     `json:"priority"`
+	Nice       int     `json:"nice"`
+	Threads    int     `json:"threads"`
+	State      string  `json:"state"`      // "R", "S", "D", "Z", "T"
+	CPUPercent float64 `json:"cpuPercent"` // доля всего процессора (все ядра), 0..100
+	CPUTimeSec float64 `json:"cpuTimeSec"` // utime+stime с запуска процесса
+	MemoryRSS  uint64  `json:"memoryRss"`  // bytes, VmRSS = memoryOwn + memoryFile
+	// RssAnon+RssShmem, bytes: память, которую ядро без swap не отдаст
+	MemoryOwn uint64 `json:"memoryOwn"`
+	// RssFile, bytes: чистые страницы бинарей и библиотек — ядро выбрасывает
+	// их при нехватке памяти, размер зависит от page cache
+	MemoryFile    uint64  `json:"memoryFile"`
+	MemoryVSize   uint64  `json:"memoryVsize"`   // bytes
+	MemoryPercent float64 `json:"memoryPercent"` // MemoryOwn от MemTotal
 	Name          string  `json:"name"`
 	Cmdline       string  `json:"cmdline"`
 	Exe           string  `json:"exe,omitempty"`
@@ -103,14 +109,32 @@ func (s cpuSample) active() uint64 {
 	return s.user + s.nice + s.system + s.irq + s.softirq + s.steal
 }
 
+// minSampleInterval — замер не чаще кнопок интервала в панели (самая частая —
+// 5 с): каждый замер — полный проход по /proc на роутере. Частые запросы (две
+// вкладки, ручное «Обновить») получают прошлый снимок. Порог на секунду меньше
+// кнопки: при равных 5 с дрожание сети и таймера браузера отдавало бы кэш
+// примерно каждому второму штатному тику.
+const minSampleInterval = 4 * time.Second
+
+// staleSample — прошлый замер старше этого не годится в базу для дельты:
+// панель закрыли и открыли позже, и CPU % показал бы среднее за всё время
+// простоя. Самая редкая кнопка интервала — 30 с.
+const staleSample = time.Minute
+
+// userHZ — единица utime/stime в /proc/PID/stat. Фиксирована ядром (USER_HZ)
+// для всех архитектур, от CONFIG_HZ не зависит.
+const userHZ = 100
+
 // Sampler collects snapshots from /proc.
 type Sampler struct {
 	mu           sync.Mutex
 	procDir      string
+	last         *SystemSnapshot // отдаётся наружу общим указателем — после публикации не менять
 	lastSample   time.Time
 	lastCPUs     map[string]cpuSample
 	lastProcCPUs map[int]uint64 // PID -> (utime + stime)
 	uidCache     map[int]string
+	warmup       time.Duration // пауза между базовым и рабочим замером без свежей базы
 }
 
 // NewSampler creates a Sampler.
@@ -120,6 +144,7 @@ func NewSampler() *Sampler {
 		lastCPUs:     make(map[string]cpuSample),
 		lastProcCPUs: make(map[int]uint64),
 		uidCache:     make(map[int]string),
+		warmup:       time.Second,
 	}
 }
 
@@ -129,6 +154,9 @@ func (s *Sampler) Snapshot() (*SystemSnapshot, error) {
 	defer s.mu.Unlock()
 
 	now := time.Now()
+	if s.last != nil && now.Sub(s.lastSample) < minSampleInterval {
+		return s.last, nil
+	}
 	procDir := s.procDir
 	if procDir == "" {
 		procDir = "/proc"
@@ -156,7 +184,16 @@ func (s *Sampler) Snapshot() (*SystemSnapshot, error) {
 		snap.Memory = mem
 	}
 
-	// 4. CPU Stat
+	// 4. CPU Stat. Без свежей базы (первый замер или панель долго была
+	// закрыта) дельту не посчитать — снимаем базу и ждём warmup, чтобы и
+	// первый кадр показывал текущую загрузку, а не среднее с загрузки роутера.
+	if now.Sub(s.lastSample) >= staleSample {
+		if base, err := readCPUStat(filepath.Join(procDir, "stat")); err == nil {
+			s.lastCPUs = base
+			s.lastProcCPUs = readProcTicks(procDir)
+			time.Sleep(s.warmup)
+		}
+	}
 	currentCPUs, err := readCPUStat(filepath.Join(procDir, "stat"))
 	if err == nil {
 		// Calculate CPU core percentages
@@ -177,14 +214,11 @@ func (s *Sampler) Snapshot() (*SystemSnapshot, error) {
 				core.Idle = clampPercent(float64(cur.idle-prev.idle) / deltaTotal * 100)
 				core.IoWait = clampPercent(float64(cur.iowait-prev.iowait) / deltaTotal * 100)
 				core.Usage = clampPercent(float64(cur.active()-prev.active()) / deltaTotal * 100)
-			} else {
-				// Initial / fallback
-				t := float64(cur.total())
-				if t > 0 {
-					core.Usage = clampPercent(float64(cur.active()) / t * 100)
-				}
 			}
 			snap.Cores = append(snap.Cores, core)
+			if id != "total" {
+				snap.CPUCount++
+			}
 		}
 		s.lastCPUs = currentCPUs
 
@@ -196,6 +230,7 @@ func (s *Sampler) Snapshot() (*SystemSnapshot, error) {
 	}
 
 	s.lastSample = now
+	s.last = snap
 	return snap, nil
 }
 
@@ -208,7 +243,6 @@ func (s *Sampler) readProcesses(procDir string, totalMem uint64, totalCpuDelta u
 	newProcCPUs := make(map[int]uint64, len(entries))
 	procs := make([]ProcessItem, 0, len(entries))
 	summary := ProcSummary{}
-	numCPUs := countOnlineCPUs(s.lastCPUs)
 	selfPID := os.Getpid()
 
 	for _, e := range entries {
@@ -251,11 +285,17 @@ func (s *Sampler) readProcesses(procDir string, totalMem uint64, totalCpuDelta u
 			Name:        pStat.comm,
 			MemoryRSS:   pStat.rssBytes,
 			MemoryVSize: pStat.vsizeBytes,
+			CPUTimeSec:  float64(pStat.utime+pStat.stime) / userHZ,
 			IsSelf:      pid == selfPID,
 		}
 
+		st := readProcStatus(filepath.Join(procDir, e.Name(), "status"))
+		item.User = s.userName(st.uid)
+		item.MemoryOwn = st.anonBytes + st.shmemBytes
+		item.MemoryFile = st.fileBytes
+
 		if totalMem > 0 {
-			item.MemoryPercent = clampPercent(float64(item.MemoryRSS) / float64(totalMem) * 100)
+			item.MemoryPercent = clampPercent(float64(item.MemoryOwn) / float64(totalMem) * 100)
 		}
 
 		// Calculate process CPU %
@@ -265,8 +305,7 @@ func (s *Sampler) readProcesses(procDir string, totalMem uint64, totalCpuDelta u
 		prevTicks, hasPrev := s.lastProcCPUs[pid]
 		if hasPrev && currentTicks >= prevTicks && totalCpuDelta > 0 {
 			deltaProcess := float64(currentTicks - prevTicks)
-			cpuPct := (deltaProcess / float64(totalCpuDelta)) * 100 * float64(numCPUs)
-			item.CPUPercent = clampPercent(cpuPct)
+			item.CPUPercent = clampPercent(deltaProcess / float64(totalCpuDelta) * 100)
 		}
 
 		// Cmdline
@@ -286,9 +325,6 @@ func (s *Sampler) readProcesses(procDir string, totalMem uint64, totalCpuDelta u
 		exeLink, _ := os.Readlink(filepath.Join(procDir, e.Name(), "exe"))
 		item.Exe = exeLink
 
-		// User
-		item.User = s.getUserForPID(procDir, pid)
-
 		// Critical check
 		item.IsCritical = IsCriticalProcess(item.Name, item.Exe)
 
@@ -300,44 +336,90 @@ func (s *Sampler) readProcesses(procDir string, totalMem uint64, totalCpuDelta u
 		procs = append(procs, item)
 	}
 
-	// Default sort by CPU % descending, then Memory RSS descending
+	// Default sort by CPU % descending, then own memory descending
 	sort.Slice(procs, func(i, j int) bool {
 		if procs[i].CPUPercent != procs[j].CPUPercent {
 			return procs[i].CPUPercent > procs[j].CPUPercent
 		}
-		return procs[i].MemoryRSS > procs[j].MemoryRSS
+		return procs[i].MemoryOwn > procs[j].MemoryOwn
 	})
 
 	return procs, summary, newProcCPUs
 }
 
-func (s *Sampler) getUserForPID(procDir string, pid int) string {
-	statusBytes, err := os.ReadFile(filepath.Join(procDir, strconv.Itoa(pid), "status"))
+// readProcTicks собирает utime+stime всех процессов — база для дельты CPU.
+func readProcTicks(procDir string) map[int]uint64 {
+	entries, err := os.ReadDir(procDir)
 	if err != nil {
-		return "root"
+		return make(map[int]uint64)
 	}
-	uid := 0
-	for _, line := range strings.Split(string(statusBytes), "\n") {
-		if strings.HasPrefix(line, "Uid:") {
-			fields := strings.Fields(line)
-			if len(fields) >= 2 {
-				uid, _ = strconv.Atoi(fields[1])
-			}
-			break
+	ticks := make(map[int]uint64, len(entries))
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if st, err := parseProcStat(filepath.Join(procDir, e.Name(), "stat")); err == nil {
+			ticks[pid] = st.utime + st.stime
 		}
 	}
+	return ticks
+}
 
+type procStatus struct {
+	uid        int
+	anonBytes  uint64
+	fileBytes  uint64
+	shmemBytes uint64
+}
+
+// readProcStatus разбирает /proc/PID/status: владельца и разбивку RSS.
+// Строки Rss* есть с ядра 4.5, на роутерах ядро 4.9. У потоков ядра их нет —
+// память нулевая, как и есть.
+func readProcStatus(statusPath string) procStatus {
+	var st procStatus
+	data, err := os.ReadFile(statusPath)
+	if err != nil {
+		return st
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		fields := strings.Fields(val)
+		if len(fields) == 0 {
+			continue
+		}
+		switch key {
+		case "Uid":
+			st.uid, _ = strconv.Atoi(fields[0])
+		case "RssAnon":
+			st.anonBytes = parseKB(fields[0])
+		case "RssFile":
+			st.fileBytes = parseKB(fields[0])
+		case "RssShmem":
+			st.shmemBytes = parseKB(fields[0])
+		}
+	}
+	return st
+}
+
+func parseKB(s string) uint64 {
+	kb, _ := strconv.ParseUint(s, 10, 64)
+	return kb * 1024
+}
+
+func (s *Sampler) userName(uid int) string {
 	if name, ok := s.uidCache[uid]; ok {
 		return name
 	}
-
-	name := "root"
-	if uid == 0 {
+	name := strconv.Itoa(uid)
+	switch uid {
+	case 0:
 		name = "root"
-	} else if uid == 65534 {
+	case 65534:
 		name = "nobody"
-	} else {
-		name = strconv.Itoa(uid)
 	}
 	s.uidCache[uid] = name
 	return name
@@ -370,6 +452,11 @@ func (s *Sampler) KillProcess(pid int, sigName string) error {
 		return fmt.Errorf("find process %d: %w", pid, err)
 	}
 
+	// Панель обновляет список сразу после снятия процесса — прошлый снимок
+	// показал бы его живым ещё до minSampleInterval.
+	s.mu.Lock()
+	s.last = nil
+	s.mu.Unlock()
 	return proc.Signal(sig)
 }
 
@@ -571,19 +658,6 @@ func sortedCPUIDs(cpus map[string]cpuSample) []string {
 		return idxI < idxJ
 	})
 	return append(ids, cores...)
-}
-
-func countOnlineCPUs(cpus map[string]cpuSample) int {
-	c := 0
-	for k := range cpus {
-		if k != "total" && strings.HasPrefix(k, "cpu") {
-			c++
-		}
-	}
-	if c <= 0 {
-		return 1
-	}
-	return c
 }
 
 func clampPercent(v float64) float64 {

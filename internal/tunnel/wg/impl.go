@@ -27,6 +27,15 @@ func (c *ClientImpl) SetConf(ctx context.Context, iface, confPath string) error 
 	return nil
 }
 
+// SyncConf reconciles a live interface with a configuration file.
+func (c *ClientImpl) SyncConf(ctx context.Context, iface, confPath string) error {
+	result, err := exec.Run(ctx, "/opt/sbin/awg", "syncconf", iface, confPath)
+	if err != nil {
+		return fmt.Errorf("awg syncconf %s: %w", iface, exec.FormatError(result, err))
+	}
+	return nil
+}
+
 // Show retrieves the current state of an interface.
 func (c *ClientImpl) Show(ctx context.Context, iface string) (*ShowResult, error) {
 	result, err := exec.Run(ctx, "/opt/sbin/awg", "show", iface)
@@ -50,6 +59,37 @@ func (c *ClientImpl) GetPeerPublicKey(ctx context.Context, iface string) (string
 		return "", nil
 	}
 	return result.PeerPublicKey, nil
+}
+
+// LatestHandshake — см. Client.LatestHandshake.
+func (c *ClientImpl) LatestHandshake(ctx context.Context, iface string) (time.Time, error) {
+	result, err := exec.Run(ctx, "/opt/sbin/awg", "show", iface, "latest-handshakes")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("awg show %s latest-handshakes: %w", iface, exec.FormatError(result, err))
+	}
+	if result == nil {
+		return time.Time{}, fmt.Errorf("awg show %s latest-handshakes returned nil", iface)
+	}
+	return parseLatestHandshakes(result.Stdout), nil
+}
+
+// parseLatestHandshakes разбирает строки «<peer-pubkey>\t<epoch>» и отдаёт
+// самый свежий штамп; 0 или пустой вывод — нулевое время.
+func parseLatestHandshakes(out string) time.Time {
+	var best int64
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil && v > best {
+			best = v
+		}
+	}
+	if best == 0 {
+		return time.Time{}
+	}
+	return time.Unix(best, 0)
 }
 
 // parseShowOutput parses the output of awg show.
@@ -122,6 +162,10 @@ func parseField(line, field string) string {
 // parseHandshakeTime parses handshake time from awg show output.
 // Format: "X minutes, Y seconds ago" or "X hours, Y minutes ago" etc.
 func parseHandshakeTime(s string) time.Time {
+	// wireguard-tools печатает «Now», когда с рукопожатия не прошло секунды.
+	if strings.EqualFold(strings.TrimSpace(s), "now") {
+		return time.Now()
+	}
 	if s == "" || s == "none" {
 		return time.Time{}
 	}

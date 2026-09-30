@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,7 +17,8 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/logging"
-	ndmsquery "github.com/hoaxisr/awg-manager/internal/ndms/query"
+	"github.com/hoaxisr/awg-manager/internal/obfuscator"
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/captcha"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/ftlink"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/install"
@@ -39,9 +39,15 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/proxyrt/roles/wdttserver"
 	"github.com/hoaxisr/awg-manager/internal/server"
 	"github.com/hoaxisr/awg-manager/internal/storage"
+	"github.com/hoaxisr/awg-manager/internal/sys/appver"
 	"github.com/hoaxisr/awg-manager/internal/sys/exec"
+	"github.com/hoaxisr/awg-manager/internal/sys/kmod"
+	"github.com/hoaxisr/awg-manager/internal/sys/routerclock"
 	"github.com/hoaxisr/awg-manager/internal/testing"
 	"github.com/hoaxisr/awg-manager/internal/traffic"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/nwg"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/ops"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/service"
 )
 
 // Проводка прокси-рантайма: аллокаторы номеров и портов, посев, менеджер,
@@ -104,154 +110,62 @@ func (b *proxyLinkBook) snapshot(key string) (awgmproto.State, bool) {
 	if !ok {
 		return awgmproto.State{}, false
 	}
-	return snap.State, true
+	return agedState(snap, time.Now()), true
+}
+
+// agedState — состояние снимка с аптаймом на момент now. Снимок обновляет
+// только прогон реконсиляции: у серверов он идёт раз в 15 с (перепроверка
+// правил), у клиентов — лишь в окне старта, дальше наблюдений нет. Без
+// поправки аптайм клиента застывал на последнем наблюдении, а наблюдение
+// сразу после старта (uptime_s=0) и вовсе стирало его из ответа (F465, #950).
+func agedState(snap control.Snapshot, now time.Time) awgmproto.State {
+	st := snap.State
+	if st.PID > 0 {
+		st.UptimeS += int64(now.Sub(snap.At) / time.Second)
+	}
+	return st
 }
 
 // ── занятость номеров OpkgTun ────────────────────────────────────
 
-// opkgOccupancyAllOwners — занятость пула OpkgTun: живое (только /sys) плюс пины
-// ЧЕТЫРЁХ владельцев — записи AWG-туннелей, удерживающая запись настроек,
-// записи NDMS и записи прокси-инстансов.
+// proxyRecordIfaces — имена, которые держит запись, по ПОЛЮ записи.
+// Поле — вторая половина ключа владельца (opkgtun.ProxyHolder):
+// у сервера половин две, и номер каждой закреплён за своим ключом, иначе
+// освобождение одной снимало бы пин другой. У клиента поле пустое.
 //
-// Состав — контракт для ВСЕХ, кто выдаёт номера (прокси, туннели), а не только
-// для прокси: на mips/mipsel пул общий, и поставщик, выпавший у одного
-// вызывающего, отдаёт ему чужой занятый номер как свободный.
-//
-// Состав собран здесь, а не в месте вызова, потому что он и есть контракт:
-// выпавший поставщик не ломает ни сборку, ни один прогон — он просто отдаёт
-// чужой номер как свободный, и коллизия всплывает интерфейсом, который увели
-// у соседней подсистемы.
-//
-// Записи NDMS приходят ОТДЕЛЬНЫМ поставщиком, а не половиной живого: после
-// `ip link del opkgtunN` запись живёт дальше со state error, устройства нет.
-// Номер занят, интерфейс мёртв, и одна карта на оба вопроса врёт.
-func opkgOccupancyAllOwners(live storage.OpkgTunIndexLister, ndmsPins storage.OpkgTunPins,
-	awg *storage.AWGTunnelStore, settings *storage.SettingsStore, store *instancestore.Store,
-) storage.OpkgTunPins {
-	return storage.OpkgTunOccupancy(live,
-		awg.OpkgTunPinsOf,
-		settings.OpkgTunPinsOf,
-		ndmsPins,
-		proxyRecordPins(store),
-	)
-}
-
-// routerForeignOpkgPins — пины ЧУЖИХ владельцев для режимов роутера: записи
-// туннелей, записи NDMS без живого устройства и записи прокси-инстансов. Своя
-// удерживающая запись сюда не входит намеренно — она приходит из настроек, и
-// подмешивание её перепинило бы роутер сам на себя (см. Deps.OpkgTunPins).
-func routerForeignOpkgPins(awg *storage.AWGTunnelStore, ndmsPins storage.OpkgTunPins,
-	store *instancestore.Store,
-) storage.OpkgTunPins {
-	return storage.MergeOpkgTunPins(awg.OpkgTunPinsOf, ndmsPins, proxyRecordPins(store))
-}
-
-// proxyRecordPins — четвёртый поставщик пинов пула OpkgTun: записи
-// прокси-инстансов. Три остальных (записи туннелей, удерживающая запись
-// настроек, записи NDMS) приходят готовыми из internal/storage и адаптера
-// NDMS — здесь только своё.
-func proxyRecordPins(store *instancestore.Store) storage.OpkgTunPins {
-	return func(context.Context) (map[int]bool, error) {
-		st, err := store.Load()
-		if err != nil {
-			return nil, err
-		}
-		pins := map[int]bool{}
-		for _, rec := range st.Records {
-			for _, name := range proxyRecordIfaces(rec) {
-				if idx, ok := opkgTunIndex(name); ok {
-					pins[idx] = true
-				}
-			}
-		}
-		return pins, nil
-	}
-}
-
-// proxyRecordIfaces — NDMS-имена, которые держит запись. У сервера их два:
-// WG-половина и raw-половина.
-func proxyRecordIfaces(rec instancestore.Record) []string {
+// Имя каждой пары (NDMS + kernel) выбирается как в halfIndex менеджера
+// (internal/proxyrt/manager): NDMS-имя, а если оно не разбирается — kernel.
+// Иначе запись с одной kernel-половиной (wg-клиент, позже ушедший в raw)
+// пинилась бы менеджером на номер, которого занятость не видит (F494).
+// Половины битой пары с РАЗНЫМИ номерами дают одно NDMS-имя: два номера
+// под одним ключом владельца конфликтовали бы.
+func proxyRecordIfaces(rec instancestore.Record) []recordHalf {
 	switch {
 	case rec.WdttClient != nil:
-		return []string{rec.WdttClient.NdmsIface}
+		c := rec.WdttClient
+		return []recordHalf{{iface: pairName(c.NdmsIface, c.RawIface)}}
 	case rec.WdttServer != nil:
-		return []string{rec.WdttServer.NdmsIface, rec.WdttServer.RawNdmsIface}
+		s := rec.WdttServer
+		return []recordHalf{
+			{field: "wg", iface: pairName(s.NdmsIface, s.WgIface)},
+			{field: "raw", iface: pairName(s.RawNdmsIface, s.RawIface)},
+		}
 	}
 	return nil
 }
 
-// proxyOwnPin — пин, принадлежащий ИМЕННО этому владельцу, и признак того,
-// есть ли у владельца запись вообще. Владелец бывает трёх форм: key
-// (raw-клиент), key+"/wg" и key+"/raw" (половины сервера) — суффикс выбирает
-// ПОЛЕ записи. Второй пин той же записи собственным НЕ считается: это другой
-// интерфейс, и коллизия с ним запрещена.
-func proxyOwnPin(recs []instancestore.Record, owner string) (idx int, ok, haveRecord bool) {
-	key, field := owner, ""
-	if i := strings.LastIndex(owner, "/"); i >= 0 {
-		key, field = owner[:i], owner[i+1:]
+// pairName — разбираемое имя пары: NDMS, иначе kernel (порядок halfIndex).
+func pairName(ndms, kernel string) string {
+	if _, ok := opkgtun.IndexOf(ndms); ok {
+		return ndms
 	}
-	for _, rec := range recs {
-		if rec.Key() != key {
-			continue
-		}
-		switch {
-		case field == "" && rec.WdttClient != nil:
-			idx, ok = opkgTunIndex(rec.WdttClient.NdmsIface)
-		case field == "wg" && rec.WdttServer != nil:
-			idx, ok = opkgTunIndex(rec.WdttServer.NdmsIface)
-		case field == "raw" && rec.WdttServer != nil:
-			idx, ok = opkgTunIndex(rec.WdttServer.RawNdmsIface)
-		}
-		return idx, ok, true
-	}
-	return 0, false, false
+	return kernel
 }
 
-// proxyAllocIndex — формула taken для manager.Deps.AllocIndex и SeedDeps:
-// общая занятость МИНУС собственные пины владельца.
-//
-// Собственный пин берётся из ЗАПИСИ владельца, а при её отсутствии — из
-// заявленного pinned. Развилка не косметическая: пока записи нет (посев),
-// живой интерфейс с этим номером принадлежит тому же инстансу, и без
-// вычитания усыновление превратилось бы в перепин с повисшими permit'ами
-// пользователя. Как только запись есть, своим считается ровно пин ЕЁ поля:
-// заявка на чужой номер (в том числе на вторую половину собственного
-// сервера) собственной не становится.
-//
-// Fail-closed: отказ любого поставщика занятости — отказ аллокации. Неполная
-// картина читается как «номер свободен», а это единственное направление
-// ошибки, дающее коллизию интерфейсов.
-func proxyAllocIndex(ctx context.Context, alloc *proxyrt.Allocator, min int,
-	occupancy storage.OpkgTunPins, store *instancestore.Store,
-) func(owner string, pinned int, havePin bool) (int, error) {
-	return func(owner string, pinned int, havePin bool) (int, error) {
-		taken, err := occupancy(ctx)
-		if err != nil {
-			return 0, err
-		}
-		st, err := store.Load()
-		if err != nil {
-			return 0, err
-		}
-		switch idx, ok, haveRecord := proxyOwnPin(st.Records, owner); {
-		case ok:
-			delete(taken, idx)
-		case !haveRecord && havePin:
-			// Записи ещё нет — это посев: заявленный пин прочитан из СТАРОГО
-			// конфига того же инстанса, и живой интерфейс с этим номером —
-			// его собственный.
-			delete(taken, pinned)
-		}
-		// Сентинел «пина нет» — min-1, а не ноль: на mips диапазон начинается
-		// с нуля, и ноль там законный пин (alloc.go сверяет pinned с
-		// диапазоном, всё вне него игнорируя).
-		p := min - 1
-		if havePin {
-			p = pinned
-		}
-		return alloc.AllocIndex(owner, p, taken)
-	}
-}
+// recordHalf — половина записи: поле ключа владельца и её NDMS-имя. Срез, а не
+// карта: у битой записи сервера оба имени могут совпасть, и победитель на
+// карте определялся бы обходом, то есть менялся от запуска к запуску.
+type recordHalf struct{ field, iface string }
 
 // proxyAllocListen — выдача локального listen-порта клиенту. РЕЗЕРВИРУЮЩАЯ:
 // свой аллокатор с собственным ключом владельца (key+"/listen"), а не скан
@@ -279,14 +193,12 @@ func proxyAllocListen(ctx context.Context, alloc *proxyrt.Allocator,
 		if err != nil {
 			return "", fmt.Errorf("занятость портов: %w", err)
 		}
-		// Текущий порт идёт закреплением: AllocIndex вернёт его, если он в
-		// диапазоне и свободен, иначе выдаст первый свободный. Значение вне
-		// пула аллокатор игнорирует — им же гасится «порта нет вовсе».
-		pinned := roles.ListenPortMin - 1
-		if port, ok := localhostPort(current); ok {
-			pinned = port
-		}
-		p, err := alloc.AllocIndex(ownerKey, pinned, taken)
+		// Текущий порт идёт закреплением: AllocPort вернёт его, если он годен,
+		// иначе выдаст первый свободный. Годность — дело аллокатора: правило
+		// диапазона живёт при его окне, и вторая копия правила здесь разошлась
+		// бы с ним ровно так, как разошлись копии карты в #891.
+		port, havePin := localhostPort(current)
+		p, err := alloc.AllocPort(ownerKey, port, havePin, taken)
 		if err != nil {
 			return "", fmt.Errorf("нет свободного порта в %d..%d: %w",
 				roles.ListenPortMin, roles.ListenPortMax, err)
@@ -295,17 +207,20 @@ func proxyAllocListen(ctx context.Context, alloc *proxyrt.Allocator,
 	}
 }
 
-// proxyReleasePins — возврат свежих аллокаций и снятие вклада инстанса из
+// proxyReleasePins — возврат свежего listen-порта и снятие вклада инстанса из
 // ведомости INPUT-портов.
 //
-// Без аргументов — no-op: Update зовёт с nil на любом отказе. Неизвестные
-// владельцы терпятся молча: Delete зовёт четыре ключа вслепую.
-func proxyReleasePins(ctx context.Context, opkg, port *proxyrt.Allocator,
+// Номера OpkgTun сюда больше не входят: их держит резервация пула, и
+// закрывает её сам менеджер — на любом исходе, включая успешный. Имя оставлено
+// прежним: его знают все вызывающие, а «возврат пинов» по смыслу не изменился.
+//
+// Без аргументов — no-op: Update зовёт с пустым списком на отказе без
+// аллокаций. Неизвестные владельцы терпятся молча: Delete зовёт ключи вслепую.
+func proxyReleasePins(ctx context.Context, port *proxyrt.Allocator,
 	book *proxyFWBook, journal instance.Journal,
 ) func(ownerKeys ...string) {
 	return func(ownerKeys ...string) {
 		for _, k := range ownerKeys {
-			opkg.Release(k)
 			port.Release(k)
 		}
 		if len(ownerKeys) == 0 {
@@ -399,7 +314,7 @@ func readTail(path string, maxBytes int64, lines int) string {
 
 // ── связанные AWG-туннели ────────────────────────────────────────
 
-// proxyLinkedCleaner — wdttlink.LinkedCleaner для ОДНОЙ роли: поле связи у
+// proxyLinkedCleaner — api.LinkedTunnelCleaner для ОДНОЙ роли: поле связи у
 // подсистем разное, и один уборщик на обе выбрать его не может.
 type proxyLinkedCleaner struct {
 	store   *storage.AWGTunnelStore
@@ -427,8 +342,10 @@ func (c proxyLinkedCleaner) DeleteLinked(ctx context.Context, clientID string) (
 			continue
 		}
 		// Зеркальная запись raw-клиента — проекция ЖИВОГО инстанса, чьи связи
-		// сейчас снимают (уборщика зовёт только ручка clear по существующей
-		// записи). Снести её здесь значило бы соврать: ближайшее объявление
+		// сейчас снимают. Уборщика зовёт ОДИН путь — удаление инстанса, — и
+		// зовёт по ЕЩЁ СУЩЕСТВУЮЩЕЙ записи: связи снимаются ДО того, как
+		// запись исчезнет (api/proxy_instances.go, remove).
+		// Снести её здесь значило бы соврать: ближайшее объявление
 		// создаст запись заново, но с дефолтами, и настройки карточки пропадут
 		// молча (амендмент F2). Уносит запись удаление инстанса — через
 		// зеркало.
@@ -481,11 +398,12 @@ func proxyTunnelLinkedTo(tun storage.AWGTunnel, field api.LinkedField, clientID 
 // перепутать было негде.
 func proxyLinkedCleaners(store *storage.AWGTunnelStore, svc api.TunnelService,
 	traffic *traffic.History, pub proxyrt.Publisher,
-) map[instancestore.Kind]wdttlink.LinkedCleaner {
-	out := map[instancestore.Kind]wdttlink.LinkedCleaner{}
-	for _, kind := range []instancestore.Kind{
-		instancestore.KindWdttClient, instancestore.KindFreeTurnClient,
-	} {
+) map[instancestore.Kind]api.LinkedTunnelCleaner {
+	out := map[instancestore.Kind]api.LinkedTunnelCleaner{}
+	// Перечень — из канонического источника (instancestore.ClientKinds), а не
+	// свой: новая клиентская роль, забытая здесь, осталась бы без уборщика
+	// молча.
+	for _, kind := range instancestore.ClientKinds() {
 		out[kind] = proxyLinkedCleaner{store: store, svc: svc,
 			field: proxyLinkedField(kind), traffic: traffic, pub: pub}
 	}
@@ -524,10 +442,10 @@ func (t proxyTunnelImporter) Delete(ctx context.Context, tunnelID string) error 
 	return t.svc.Delete(ctx, tunnelID)
 }
 
-func (t proxyTunnelImporter) Import(ctx context.Context, conf, name string) (string, string, error) {
+func (t proxyTunnelImporter) Import(ctx context.Context, conf, name, clientID string) (string, string, error) {
 	// Бэкенд пустой — тот же аргумент, что у старой ручки: его выбирает сама
-	// служба по прошивке.
-	res, err := t.svc.Import(ctx, conf, name, "")
+	// служба по прошивке. Связь едет в ту же запись (см. TunnelImporter.Import).
+	res, err := t.svc.Import(ctx, conf, name, "", service.ImportLink{WdttClientID: clientID})
 	if err != nil {
 		return "", "", err
 	}
@@ -536,6 +454,14 @@ func (t proxyTunnelImporter) Import(ctx context.Context, conf, name string) (str
 
 func (t proxyTunnelImporter) Start(ctx context.Context, tunnelID string) error {
 	return t.svc.Start(ctx, tunnelID)
+}
+
+func (t proxyTunnelImporter) SyncDescription(ctx context.Context, tunnelID, prevName, name string) {
+	t.svc.SyncDescription(ctx, tunnelID, prevName, name)
+}
+
+func (t proxyTunnelImporter) AddressConflicts(address string) []string {
+	return service.StoredAddressConflicts(t.store, address, "")
 }
 
 func (t proxyTunnelImporter) ForgetTraffic(tunnelID string) {
@@ -555,18 +481,6 @@ func (t proxyTunnelImporter) PublishList(context.Context) {
 // его Post, и продуктовые пакеты держат обёртки над ним. Развязать иначе
 // нечем; ссылка проставляется сразу после manager.New и до первого Boot.
 type proxyManagerRef struct{ mgr *manager.Manager }
-
-// proxySubsystemOf — подсистема роли. Нужна гейту удаления бинарей: снимать
-// их можно, только если инстансов ЭТОЙ подсистемы не осталось.
-func proxySubsystemOf(kind instancestore.Kind) install.Subsystem {
-	switch kind {
-	case instancestore.KindWdttClient, instancestore.KindWdttServer:
-		return install.SubsystemWdtt
-	case instancestore.KindFreeTurnClient, instancestore.KindFreeTurnServer:
-		return install.SubsystemFreeTurn
-	}
-	return ""
-}
 
 // proxyRecords — wdttlink.RecordSource поверх менеджера.
 type proxyRecords struct{ ref *proxyManagerRef }
@@ -609,7 +523,8 @@ func (d proxyBinaryDownloader) DownloadFile(ctx context.Context, url, destPath s
 	}
 	_, err := d.svc.DownloadFile(ctx, downloader.FileRequest{
 		Request: downloader.Request{
-			Purpose: "proxy-binary", URL: url, Timeout: 5 * time.Minute,
+			Purpose: "proxy-binary", UserAgent: appver.UA(),
+			URL: url, Timeout: 5 * time.Minute,
 		},
 		DestPath: destPath, TempPath: destPath,
 		MaxFileBytes: maxBytes, Mode: 0o644, Atomic: false,
@@ -627,12 +542,6 @@ func proxyIfaceExists(name string) bool {
 	}
 	_, err := os.Stat(filepath.Join("/sys/class/net", name))
 	return err == nil
-}
-
-// proxyEnableForward — включение маршрутизации вместе с правилами сервера
-// (паритет старого entware-пути).
-func proxyEnableForward() error {
-	return os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644)
 }
 
 // proxyRunHook — прогон netfilter.d-хука по одной таблице сразу после записи:
@@ -694,6 +603,19 @@ func (a *app) proxyTunnels() api.TunnelService {
 func (a *app) proxyExternalIP(ctx context.Context) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// Имя KeenDNS предпочитается измеренному адресу — ровно так же, как в
+	// Endpoint'е клиентских .conf (internal/api/server_peers.go), иначе на один
+	// вопрос «какой у нас внешний адрес» панель отвечала бы по-разному в
+	// соседних окнах (F389). Имени оно и лучше: переживает смену адреса у
+	// провайдера, а вписанный в ссылку IP — нет.
+	//
+	// ТОЛЬКО при прямом доступе: в прочих режимах имя ведёт на прокси NDMS, а
+	// тот проксирует HTTP, не произвольный порт раздачи.
+	if a.ndmsQueries != nil && a.ndmsQueries.KeenDNS != nil {
+		if info, err := a.ndmsQueries.KeenDNS.Get(ctx); err == nil && info.DirectAccess() {
+			return info.Domain, nil
+		}
+	}
 	var fallback testing.WANIPFallback
 	var wanKernel string
 	if a.ndmsQueries != nil {
@@ -786,7 +708,7 @@ func (r *proxyAdoptedRole) Resources(intent proxyrt.Intent, cfg any, obs proxyrt
 	if intent == proxyrt.IntentEnabled {
 		if err := r.gate.ensure(); err != nil {
 			return []proxyrt.Resource{proxyBlocked{id: proxyUsersResource,
-				reason: fmt.Errorf("абоненты сервера не усыновлены: %w", err)}}
+				reason: fmt.Errorf("цикл абонентов сервера не пройден: %w", err)}}
 		}
 	}
 	return r.inner.Resources(intent, cfg, obs)
@@ -816,17 +738,12 @@ func (a *app) wireProxyrt() {
 	// сериализацию записи по разным замкам.
 	store := a.proxyStore
 
-	// (1) Аллокаторы: номера OpkgTun и локальные listen-порты клиентов.
-	opkgMin, opkgMax, _ := roles.OpkgIndexRange(runtime.GOARCH)
-	opkgAlloc := proxyrt.NewAllocator(proxyrt.IndexRange{Min: opkgMin, Max: opkgMax})
-	portAlloc := proxyrt.NewAllocator(proxyrt.IndexRange{
+	// (1) Аллокатор локальных listen-портов клиентов. Номера OpkgTun своего
+	// аллокатора у прокси больше не имеют: их выдаёт общий пул (a.opkgPool),
+	// потому что пул делят четыре подсистемы и отдельная очередь у каждой
+	// означала отсутствие атомарности.
+	portAlloc := proxyrt.NewAllocator(proxyrt.PortRange{
 		Min: roles.ListenPortMin, Max: roles.ListenPortMax})
-
-	// (2) Занятость пула OpkgTun (состав и его цена — opkgOccupancyAllOwners).
-	ndmsIfaces := &routerOpkgTunIndexAdapter{store: a.ndmsQueries.Interfaces}
-	occupancy := opkgOccupancyAllOwners(ndmsIfaces, ndmsIfaces.NDMSOpkgTunPins,
-		a.awgStore, a.settingsStore, store)
-	allocIndex := proxyAllocIndex(a.shutdownCtx, opkgAlloc, opkgMin, occupancy, store)
 	allocListen := proxyAllocListen(a.shutdownCtx, portAlloc, store, a.awgStore)
 
 	// (3) Посев из конфигов старого мира.
@@ -836,8 +753,8 @@ func (a *app) wireProxyrt() {
 			FreeturnPath: filepath.Join(a.dataDir, "freeturn.json"),
 			RuntimeDir:   filepath.Join(a.dataDir, "run"),
 			LivePermits:  livePermitsFor(a.ndmsQueries.Policies),
-			AllocIndex:   allocIndex,
-			GOARCH:       runtime.GOARCH,
+			OpkgTunPool:  a.opkgPool,
+			Journal:      journal.Warn,
 		})
 	}
 
@@ -849,7 +766,7 @@ func (a *app) wireProxyrt() {
 	sweeper := proxyrt.NewSweeper(
 		proxySweepScanner{ifaces: a.ndmsQueries.Interfaces},
 		proxySweepRemover{cmds: cmds},
-		opkgAlloc, instance.SweepLabels(), opkgTunIndex)
+		instance.SweepLabels())
 
 	// (5) Состояние реконсиляции — его читает ручка списка инстансов.
 	states := proxyrt.NewStateStore(a.eventBus, nil)
@@ -880,19 +797,114 @@ func (a *app) wireProxyrt() {
 		// холодном старте роутера оно длится минутами. Со стора же читаются и
 		// записи без воркера (отказ фабрики в Create).
 		InstanceCount: func(name install.Subsystem) (int, error) {
+			// Обфускатор не заводит прокси-инстансов: его бинарь держат
+			// туннели с этой разновидностью релея — по ним и гейт удаления.
+			if flavor, ok := obfFlavor(name); ok {
+				tuns, err := a.awgStore.List()
+				if err != nil {
+					return 0, err
+				}
+				n := 0
+				for i := range tuns {
+					if tuns[i].Obfuscator != nil && tuns[i].Obfuscator.Flavor == flavor {
+						n++
+					}
+				}
+				return n, nil
+			}
 			st, err := store.Load()
 			if err != nil {
 				return 0, err
 			}
 			n := 0
 			for _, rec := range st.Records {
-				if proxySubsystemOf(rec.Kind) == name {
+				if install.SubsystemOf(rec.Kind) == name {
 					n++
 				}
 			}
 			return n, nil
 		},
+		// F98: ручная установка снимает ожидание бута. Горутиной: Boot
+		// сериализован bootMu и может тянуться, а ответ UI ждать не должен.
+		Installed: func(install.Subsystem) { go a.proxyRuntimeNudge("install", proxyrt.EventBoot) },
 	})
+
+	obfLog := logging.NewScopedLogger(a.loggingService, logging.GroupTunnel, logging.SubOps)
+	// Релей wg-obfuscator: один процесс на туннель, бинарь докачивается тем
+	// же установщиком, что и прокси.
+	obfRunner := obfuscator.NewRunner(obfuscator.RunnerDeps{
+		BinaryFor: func(ctx context.Context, flavor string) (string, error) {
+			return installSvc.EnsureInstalled(ctx, "obf-"+flavor)
+		},
+		Log: obfLog,
+	})
+	// Kernel-релей awgm_relay.ko для Phobos (спека §4). Старт демона до
+	// первого Start: сторож → сверка версии модуля → уборка сирот.
+	relayKmod := nwg.NewRelayKmod(a.loggingService, obfuscator.Arm, obfuscator.DisarmAfter)
+	lastOops := a.settingsStore.ObfuscatorKmodOopsHash()
+	reason, hash := obfuscator.WatchdogCheck(lastOops)
+	applyObfWatchdog(reason, hash, lastOops, a.settingsStore.TripObfuscatorKmod,
+		a.settingsStore.SetObfuscatorKmodOopsHash, &a.obfKmodTripped, obfLog)
+	relayKmod.ReconcileVersion(context.Background())
+	kernelRelay := obfuscator.NewKernelRunner(obfuscator.KernelDeps{
+		Ensure: relayKmod.Ensure, ProcWrite: func(p string, b []byte) error { return os.WriteFile(p, b, 0) },
+		ProcRead: kmod.ReadProc, Log: obfLog,
+	})
+	useKernel := obfUseKernel(a.settingsStore.IsObfuscatorRelayProcess, relayKmod.Available, &a.obfKmodTripped)
+	a.obfDispatcher = obfuscator.NewDispatcher(obfRunner, kernelRelay, useKernel, obfLog)
+	a.nwgOp.SetObfuscator(a.obfDispatcher)
+	// Два туннеля могут смотреть на один IP сервера: host-route до него общий,
+	// и Stop одного не имеет права обрубить второй. Бэкенд значения не имеет —
+	// обфусцированный nativewg ставит ту же запись `ip route host`, что и
+	// kernel-туннель (nwg.addObfHostRoute против ops.addKernelHostRoute), так
+	// что предикат обязан видеть оба: до этого каждый ref-count считал только
+	// своих и снимал чужое.
+	routeHeldByOther := func(excludeID, ip string) bool {
+		if ip == "" {
+			return false
+		}
+		list, err := a.awgStore.List()
+		if err != nil {
+			return false
+		}
+		for i := range list {
+			t := &list[i]
+			if t.ID != excludeID && t.Enabled && t.ResolvedEndpointIP == ip {
+				return true
+			}
+		}
+		return false
+	}
+	a.nwgOp.SetObfuscatorRouteSharing(routeHeldByOther)
+	// На OS4 endpoint-маршрутами оператор не управляет — там подключать нечего.
+	if os5, ok := a.operator.(*ops.OperatorOS5Impl); ok {
+		os5.SetEndpointRouteSharing(routeHeldByOther)
+	}
+	// Усыновить релеи живых включённых туннелей, сирот погасить.
+	keep := func(id string) bool {
+		t, err := a.awgStore.Get(id)
+		return err == nil && t != nil && t.Obfuscator != nil && t.Enabled
+	}
+	if adopted := obfRunner.AdoptAll(keep); len(adopted) > 0 {
+		obfLog.Info("obfuscator", "", "усыновлены процессы: "+strings.Join(adopted, ", "))
+	}
+	// Слоты awgm_relay — по тому же критерию, но ключ слота — локальный порт.
+	keepPort := func(port int) bool {
+		list, err := a.awgStore.List()
+		if err != nil {
+			return true // не знаем — не трогаем
+		}
+		for i := range list {
+			t := &list[i]
+			if t.Enabled && t.Obfuscator != nil && t.Obfuscator.LocalPort == port {
+				return true
+			}
+		}
+		return false
+	}
+	if removed := kernelRelay.Sweep(keepPort); len(removed) > 0 {
+		obfLog.Info("obfuscator", "", fmt.Sprintf("сняты сироты awgm_relay: %v", removed))
+	}
 
 	records := proxyRecords{ref: ref}
 	mutator := proxyMutator{ref: ref}
@@ -916,13 +928,18 @@ func (a *app) wireProxyrt() {
 		PostSeed: proxyPostSeed(a.exitMirror, proxyIPT{}, cmds, a.ndmsQueries.Interfaces,
 			proxyKillBinaries(installSvc),
 			func() error { return instancestore.ClearCleanupPending(store) }),
-		AllocIndex:   allocIndex,
-		AllocListen:  allocListen,
-		ReleasePins:  proxyReleasePins(a.shutdownCtx, opkgAlloc, portAlloc, book, journal),
-		WaitDisabled: proxyWaitDisabled(states),
+		EnsureBinaries: proxyEnsureBinaries(installSvc, journal),
+		OpkgTunPool:    a.opkgPool,
+		AllocListen:    allocListen,
+		ReleasePins:    proxyReleasePins(a.shutdownCtx, portAlloc, book, journal),
+		WaitDisabled:   proxyWaitDisabled(states),
 		RecordsChanged: func(reason string) {
 			a.eventBus.PublishInvalidated(events.ResourceProxyInstances, reason)
 		},
+		RemoveRuntime: proxyRemoveRuntime(roles.RuntimeDir, func(k instancestore.Kind) string {
+			b, _ := installSvc.Binary(k)
+			return b
+		}),
 	})
 	ref.mgr = mgr
 	a.proxyMgr = mgr
@@ -931,13 +948,17 @@ func (a *app) wireProxyrt() {
 	logTail := proxyLogTail(mgr.Records)
 	snapshots := wdttlink.Snapshots(links.snapshot)
 
+	// Уборщик связанных туннелей — один на систему; потребитель у него теперь
+	// тоже один: путь удаления инстанса. Ручка linked-tunnels/clear снесена
+	// вместе со своим единственным вызывающим на фронте (PF24).
+	linkedCleaners := proxyLinkedCleaners(a.awgStore, a.proxyTunnels(), a.trafficHistory, a.eventBus)
+
 	linkHandler := wdttlink.NewHandler(wdttlink.Deps{
 		Records:   records,
 		Mutator:   mutator,
 		Snapshots: snapshots,
 		Tunnels: proxyTunnelImporter{store: a.awgStore, svc: a.proxyTunnels(),
 			traffic: a.trafficHistory, pub: a.eventBus},
-		Cleaners: proxyLinkedCleaners(a.awgStore, a.proxyTunnels(), a.trafficHistory, a.eventBus),
 		Builders: map[instancestore.Kind]wdttlink.LinkBuilder{
 			instancestore.KindWdttServer: wdttlink.NewBuilder(wdttlink.BuilderDeps{
 				Vetting:    wdttusers.Vetting{},
@@ -965,6 +986,7 @@ func (a *app) wireProxyrt() {
 		Log:              logTail,
 		BinaryInfo:       installSvc.Binary,
 		OpkgTunSupported: opkgTunSupported,
+		Cleaners:         linkedCleaners,
 		OnWdttServerUpdated: func(ctx context.Context, key string) {
 			if rec, ok := records.Get(key); ok {
 				_ = users.Materialize(rec)
@@ -988,7 +1010,6 @@ func (a *app) wireProxyrt() {
 			allowlist: allowlist.Serve,
 			link:      linkHandler.Link,
 			ensureWG:  linkHandler.EnsureWGTunnel,
-			clear:     linkHandler.ClearLinkedTunnels,
 			refresh:   subs.Serve,
 		}.handler(),
 		ListenMoves:        instances.AckListenMoves,
@@ -1012,16 +1033,20 @@ func (a *app) wireProxyrt() {
 		a.proxyRuntimeNudge(reason, proxyrt.EventWANUp)
 	})
 
+	// F497: клиентские маршруты на system:-выходе теряются на down/up
+	// интерфейса — ядро снимает default dev, и переприменить их некому.
+	a.srv.SetIPv4RunningHook(func(ndmsID string) {
+		ctx, cancel := context.WithTimeout(a.shutdownCtx, 30*time.Second)
+		defer cancel()
+		a.systemClientRoutes().reapply(ctx, ndmsID)
+	})
+
 	// (9) Боот — горутиной ПОСЛЕ старта HTTP: на бооте роутера RCI ещё
 	// недоступен, а блокировать здесь значит не поднять веб-морду вовсе.
 	// Ретрай зовут фазы боота и хуки wan-up через proxyRuntimeNudge; Boot
 	// идемпотентен — живые инстансы не пересоздаются — и сериализован сам с
 	// собой (manager.bootMu).
-	go func() {
-		if err := mgr.Boot(a.shutdownCtx); err != nil {
-			journal.Warn("boot", "proxy", "прокси-рантайм не поднялся: "+err.Error())
-		}
-	}()
+	go a.proxyRuntimeNudge("wiring", proxyrt.EventBoot)
 
 	// (10) Сторожевой таймер автопереподключения клиентов (FreeTurn / WDTT).
 	wd := watchdog.New(watchdog.Deps{
@@ -1068,6 +1093,12 @@ func (a *app) proxyRuntimeNudge(reason string, kind proxyrt.EventKind) {
 		return
 	}
 	bootedNow, err := proxyNudge(a.shutdownCtx, a.proxyMgr, kind)
+	// F98: без бинарей по пину бут отложен, старое поколение живо —
+	// повторяем с backoff; WAN-up-нудж и ручная установка ускоряют.
+	armBinariesRetry(&a.binariesRetryOnce, err, func() {
+		go proxyBinariesRetry(a.shutdownCtx, a.proxyMgr, proxyBinariesRetryDelays, proxyWait,
+			func(reason string) { a.proxyRuntimeNudge(reason, proxyrt.EventBoot) })
+	})
 	if a.bootLog == nil {
 		return
 	}
@@ -1146,7 +1177,20 @@ func (a *app) proxyFactory(ref *proxyManagerRef, journal *logging.ScopedLogger,
 			Alive: childproc.MatchesBinary,
 		})
 		links.put(key, link)
-		runner := procres.NewRunner(binary, strings.TrimSuffix(sock, ".sock")+".pid", nil)
+		paths, err := proxyRuntimePathsFor(roles.RuntimeDir, rec.Kind, rec.ID)
+		if err != nil {
+			return nil, err
+		}
+		// FREETURN_STATE_DIR — патч 8 форка freeturn: client_config.json и
+		// vk_persona.json уходят в tmpfs, а не в /opt/bin рядом с бинарём.
+		// Каталог per-instance: файл персоны привязан к client-id, общий
+		// каталог двух инстансов сбрасывал бы поколение друг другу.
+		// TZ роутера — POSIX-строка из /etc/TZ (F145): без неё штампы журналов
+		// детей отстают на смещение зоны, а tzfix форка freeturn читает именно её.
+		// Считается на каждый Start: зону на роутере можно сменить между рестартами.
+		runner := procres.NewRunner(binary, paths.pid, func() []string {
+			return routerclock.WithTZFromRouter([]string{"FREETURN_STATE_DIR=" + paths.state})
+		})
 
 		var role proxyrt.Role
 		var cfg func() any
@@ -1177,18 +1221,15 @@ func (a *app) proxyFactory(ref *proxyManagerRef, journal *logging.ScopedLogger,
 				Instance: rec.ID, Binary: binary,
 				PinnedSHA256: installSvc.PinnedSHA256(rec.Kind),
 				Link:         link, Runner: runner, Gate: gate,
-				Cmds:          proxyNDMSCommands{InterfaceCommands: a.ndmsCommands.Interfaces, routes: a.ndmsCommands.Routes},
-				Query:         proxyNDMSQuery{ifaces: a.ndmsQueries.Interfaces, rc: a.ndmsQueries.RunningConfig},
-				IPT:           proxyIPT{},
-				FW:            book.forInstance(key),
-				RunHook:       proxyRunHook,
-				EnableForward: proxyEnableForward,
-				IfaceExists:   proxyIfaceExists,
-				KernelWAN:     proxyKernelWAN(a.ndmsQueries.Interfaces),
-				PolicyMark:    proxyPolicyMark(ndmsquery.NewPolicyMarkStore(a.ndmsTransportClient, nil)),
-				Access: proxyAccessApplier{svc: a.managedService,
-					ifaces: a.ndmsCommands.Interfaces},
-				Ingress: proxyIngressEnsurer{settings: a.settingsStore, router: a.routerSvc},
+				Cmds:        proxyNDMSCommands{InterfaceCommands: a.ndmsCommands.Interfaces, routes: a.ndmsCommands.Routes},
+				Query:       proxyNDMSQuery{ifaces: a.ndmsQueries.Interfaces, rc: a.ndmsQueries.RunningConfig},
+				IPT:         proxyIPT{},
+				FW:          book.forInstance(key),
+				RunHook:     proxyRunHook,
+				IfaceExists: proxyIfaceExists,
+				KernelWAN:   proxyKernelWAN(a.ndmsQueries.Interfaces),
+				Access:      proxyAccessApplier{svc: a.managedService},
+				Ingress:     proxyIngressEnsurer{settings: a.settingsStore, router: a.routerSvc},
 			})
 			if err != nil {
 				return nil, err
@@ -1254,7 +1295,6 @@ type proxyrtDispatch struct {
 	allowlist func(w http.ResponseWriter, r *http.Request, key string, sub []string)
 	link      func(w http.ResponseWriter, r *http.Request, key string)
 	ensureWG  func(w http.ResponseWriter, r *http.Request, key string)
-	clear     func(w http.ResponseWriter, r *http.Request, key string)
 	refresh   func(w http.ResponseWriter, r *http.Request, key string)
 }
 
@@ -1284,10 +1324,9 @@ func (d proxyrtDispatch) handler() http.HandlerFunc {
 		case "ensure-wg-tunnel":
 			d.ensureWG(w, r, key)
 		case "linked-tunnels":
-			if sub == "clear" {
-				d.clear(w, r, key)
-				return
-			}
+			// Своей ручки у связей больше нет: снимает их путь удаления
+			// инстанса (PF24). Путь остаётся ради честного 404 на старый
+			// адрес, а не «эндпоинт молча делает что-то другое».
 			d.instances(w, r)
 		case "subscription":
 			if sub == "refresh" {
@@ -1300,4 +1339,15 @@ func (d proxyrtDispatch) handler() http.HandlerFunc {
 			d.instances(w, r)
 		}
 	}
+}
+
+// obfFlavor — разновидность релея, чьи бинари держит подсистема установщика.
+func obfFlavor(name install.Subsystem) (string, bool) {
+	switch name {
+	case install.SubsystemObfPhobos:
+		return storage.ObfuscatorFlavorPhobos, true
+	case install.SubsystemObfClusterM:
+		return storage.ObfuscatorFlavorClusterM, true
+	}
+	return "", false
 }

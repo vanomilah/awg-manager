@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/downloader"
+	"github.com/hoaxisr/awg-manager/internal/sys/appver"
 	"github.com/hoaxisr/awg-manager/internal/sys/semver"
 )
 
@@ -53,14 +54,11 @@ func versionComparator(channel string) func(a, b string) int {
 	return semver.Compare
 }
 
-// Check queries the entware repo's Packages.gz for the latest awg-manager
-// version and returns update info including the .ipk download URL if a newer
-// version is available. Uses the stable channel.
-func Check(ctx context.Context, currentVersion string) *UpdateInfo {
-	return checkWithDownloader(ctx, currentVersion, channelStable, newDefaultDownloader())
-}
-
-func checkWithDownloader(ctx context.Context, currentVersion, channel string, dl Downloader) *UpdateInfo {
+// checkWithDownloader queries the entware repo's Packages.gz for the latest
+// awg-manager version and returns update info including the .ipk download URL
+// if a newer version is available.
+// stats — заголовки анонимной статистики (Service.statsHeaders), nil — без них.
+func checkWithDownloader(ctx context.Context, currentVersion, channel string, dl Downloader, stats http.Header) *UpdateInfo {
 	info := &UpdateInfo{
 		CurrentVersion: currentVersion,
 		CheckedAt:      time.Now(),
@@ -71,7 +69,7 @@ func checkWithDownloader(ctx context.Context, currentVersion, channel string, dl
 	archDir := archSuffixToRepoDir(archSuffix())
 	pkgsURL := fmt.Sprintf("%s/%s/Packages.gz", base, archDir)
 
-	pkg, err := fetchLatestPackageWithDownloader(ctx, dl, pkgsURL, pkgName, cmp)
+	pkg, err := fetchLatestPackageWithDownloader(ctx, dl, pkgsURL, pkgName, cmp, stats)
 	if err != nil {
 		info.Error = fmt.Sprintf("entware repo: %s", err)
 		return info
@@ -141,6 +139,7 @@ func upgradeWithDownloader(ctx context.Context, downloadURL, wantSHA256 string, 
 	_, err = dl.DownloadFile(ctx, downloader.FileRequest{
 		Request: downloader.Request{
 			Purpose:      "awgm-update-ipk",
+			UserAgent:    appver.UA(),
 			URL:          downloadURL,
 			Method:       http.MethodGet,
 			Timeout:      downloadTimeout,

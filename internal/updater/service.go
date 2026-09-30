@@ -33,6 +33,10 @@ type Service struct {
 	// sing-box binary. nil when not wired (e.g. plain unit tests) — the
 	// sing-box auto-install path is then simply skipped.
 	singboxUpdater SingboxUpdater
+	// features — источник флагов для анонимной статистики (stats.go); под mu.
+	features func() Features
+	// instanceID — ID установки, прочитанный или заведённый первой проверкой; под mu.
+	instanceID string
 }
 
 // New creates a new updater service. dataDir is used for the auto-install
@@ -144,7 +148,7 @@ func (s *Service) doCheck() {
 	ctx := context.Background()
 	ch := s.channel()
 	s.changelog.SetURL(changelogURLForChannel(ch))
-	info := checkWithDownloader(ctx, s.version, ch, s.downloader)
+	info := checkWithDownloader(ctx, s.version, ch, s.downloader, s.statsHeaders())
 
 	s.mu.Lock()
 	s.cached = info
@@ -184,7 +188,7 @@ func (s *Service) CheckNow(ctx context.Context) *UpdateInfo {
 
 	ch := s.channel()
 	s.changelog.SetURL(changelogURLForChannel(ch))
-	info := checkWithDownloader(ctx, s.version, ch, s.downloader)
+	info := checkWithDownloader(ctx, s.version, ch, s.downloader, s.statsHeaders())
 
 	// A user-forced refresh should also invalidate the changelog cache so
 	// the next "Что нового" click hits the repo server for fresh content.

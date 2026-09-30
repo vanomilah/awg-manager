@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/ndms"
 	"github.com/hoaxisr/awg-manager/internal/sys/ndmsinfo"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
 )
@@ -43,18 +44,26 @@ func extractASCSignatures(raw json.RawMessage) (i1, i2, i3, i4, i5 string, _ err
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return "", "", "", "", "", err
 	}
-	get := func(key string) string {
+	get := func(key string) (string, error) {
 		v, ok := obj[key]
 		if !ok || isASCRequiredValueEmpty(v) {
-			return ""
+			return "", nil
 		}
 		var s string
 		if err := json.Unmarshal(v, &s); err != nil {
-			return ""
+			return "", fmt.Errorf("asc param %s must be a string", key)
 		}
-		return s
+		return s, nil
 	}
-	return get("i1"), get("i2"), get("i3"), get("i4"), get("i5"), nil
+	var out [5]string
+	for i, key := range []string{"i1", "i2", "i3", "i4", "i5"} {
+		s, err := get(key)
+		if err != nil {
+			return "", "", "", "", "", err
+		}
+		out[i] = s
+	}
+	return out[0], out[1], out[2], out[3], out[4], nil
 }
 
 func stripASCSignatures(raw json.RawMessage) (json.RawMessage, error) {
@@ -147,6 +156,19 @@ func validateASCParamsRequired(raw json.RawMessage) error {
 		return ASCValidationError{Issues: []ASCValidationIssue{
 			{Field: "asc", Message: "payload is empty"},
 		}}
+	}
+
+	// i1..i5 нестрокового типа extractASCSignatures глотал в "" — сигнатура
+	// исчезала молча. null и "" допустимы: так NDMS отдаёт пустое поле.
+	for _, k := range []string{"i1", "i2", "i3", "i4", "i5"} {
+		v, ok := obj[k]
+		if !ok || isASCRequiredValueEmpty(v) {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			return fmt.Errorf("asc param %s must be a string", k)
+		}
 	}
 
 	if isASCDisabledState(obj) {
@@ -246,6 +268,17 @@ func (s *Service) applyASCParams(ctx context.Context, ifaceName string, raw json
 
 	stripped, err := stripASCSignatures(raw)
 	if err != nil {
+		return err
+	}
+	// Форма managed шлёт только поля 2.0, а запись без 3.x их снимает (5.02.A.11).
+	if s.queries == nil || s.queries.WGServers == nil {
+		return fmt.Errorf("cannot read ASC params: WGServers query store is not initialized")
+	}
+	current, err := s.queries.WGServers.ASC3Fields(ctx, ifaceName)
+	if err != nil {
+		return err
+	}
+	if stripped, err = ndms.KeepASC3(stripped, current); err != nil {
 		return err
 	}
 	if err := s.rciSetASCParams(ctx, ifaceName, stripped); err != nil {

@@ -16,8 +16,12 @@
 //   After Prism, injects data.tunnels: "" → Direct (count = stats.direct) plus
 //   MOCK_AWG_TUNNELS rows with counts split from stats.tunneled so the tunnel chip
 //   row matches diagnostics UI (same as a real router).
-// - Amnezia Premium CP: POST /amnezia-premium/login | account-info | download-config
-//   (paths without /api — Vite rewrite). Stub session + two countries + .conf text.
+// - Amnezia Premium: GET/POST/DELETE /amnezia/premium/key, GET /amnezia/premium/catalog,
+//   POST /amnezia/premium/config, POST /amnezia/premium/revoke,
+//   GET/POST /amnezia/premium/mirror, GET/POST /amnezia/premium/declared-country
+//   (paths without /api — Vite rewrite).
+//   Ключ подписки
+//   живёт в памяти мока, как на роутере: браузер его обратно не получает.
 // - Diagnostics «Окружение: GET /dns-check/client (Test-Phone @ 192.168.1.42,
 //   policy Policy1), /system/hydraroute-status, plus existing /routing/*, /tunnels/all,
 //   /proxy/*, /singbox/subscriptions.
@@ -43,6 +47,11 @@
  * - POST /__mock/singbox-install-fail {"enabled": true|false};
  * - POST /__mock/singbox-running {"running": true|false} — живость sing-box в
  *   GET /singbox/status (env MOCK_SINGBOX_DOWN=1 выключает её на старте).
+ * - POST /__mock/hydraroute-installed {"installed": true|false} — установлен ли
+ *   HydraRoute в GET /system/hydraroute-status (env MOCK_HYDRAROUTE_ABSENT=1
+ *   снимает на старте). Нужен, чтобы посмотреть карточку интеграций в
+ *   состоянии «ничего не установлено»: там у HydraRoute вместо «Открыть»
+ *   ссылка «Инструкция →».
  *
  * Default upstream: http://127.0.0.1:8080 (Prism). Listen: 8081.
  */
@@ -84,13 +93,21 @@ const DEFAULT_MOCK_STATE = Object.freeze({
 	downloadRouteTag: 'direct',
 	updateChannel: 'stable',
 	updateCheckEnabled: true,
+	mcpEnabled: false,
 });
 
 const MOCK_CAPABILITY_GROUPS = Object.freeze([
 	{
 		id: 'core',
 		label: 'Settings, updates, downloads',
-		endpoints: ['GET /settings/get', 'POST /settings/update', 'GET /download/outbounds'],
+		endpoints: [
+			'GET /settings/get',
+			'POST /settings/update',
+			'GET /download/outbounds',
+			'GET /mcp/keys',
+			'POST /mcp/keys/create',
+			'POST /mcp/keys/revoke',
+		],
 	},
 	{
 		id: 'observability',
@@ -131,6 +148,7 @@ const MOCK_CAPABILITY_GROUPS = Object.freeze([
 			'POST /__mock/reset',
 			'POST /__mock/singbox-install-fail',
 			'POST /__mock/singbox-running',
+			'POST /__mock/hydraroute-installed',
 			'POST /__mock/download-faults',
 			'POST /__mock/keenetic-os',
 		],
@@ -144,6 +162,11 @@ let singboxLogLevel = DEFAULT_MOCK_STATE.singboxLogLevel;
 let downloadRouteTag = DEFAULT_MOCK_STATE.downloadRouteTag;
 let updateChannel = DEFAULT_MOCK_STATE.updateChannel;
 let updateCheckEnabled = DEFAULT_MOCK_STATE.updateCheckEnabled;
+let mcpEnabled = DEFAULT_MOCK_STATE.mcpEnabled;
+// MCP keys are pure proxy state (Prism has no memory); plaintext is returned
+// once by create, exactly like the real backend.
+let mockMcpKeys = [];
+let mockMcpKeySeq = 0;
 
 // Service-download fault injection: every "download via route" endpoint
 // (geo.dat, AWGM update, DNSRoute lists, Amnezia Premium, sing-box binary,
@@ -167,8 +190,11 @@ function getRuntimeState() {
 		downloadRouteTag,
 		updateChannel,
 		updateCheckEnabled,
+		mcpEnabled,
+		mcpKeys: mockMcpKeys.length,
 		singboxInstallShouldFail,
 		singboxRunning,
+		hydraRouteInstalled,
 		downloadFaultsEnabled,
 		downloadFaultProbability,
 		logsCleared: { ...bucketCleared },
@@ -183,8 +209,12 @@ function resetRuntimeControls() {
 	downloadRouteTag = DEFAULT_MOCK_STATE.downloadRouteTag;
 	updateChannel = DEFAULT_MOCK_STATE.updateChannel;
 	updateCheckEnabled = DEFAULT_MOCK_STATE.updateCheckEnabled;
+	mcpEnabled = DEFAULT_MOCK_STATE.mcpEnabled;
+	mockMcpKeys = [];
+	mockMcpKeySeq = 0;
 	singboxInstallShouldFail = process.env.MOCK_SINGBOX_INSTALL_FAIL === '1';
 	singboxRunning = process.env.MOCK_SINGBOX_DOWN !== '1';
+	hydraRouteInstalled = process.env.MOCK_HYDRAROUTE_ABSENT !== '1';
 	downloadFaultsEnabled = process.env.MOCK_DOWNLOAD_FAULTS !== '0';
 	downloadFaultProbability = parseProbability(process.env.MOCK_DOWNLOAD_FAULT_PROB, 0.4);
 	bucketCleared.app = false;
@@ -193,6 +223,8 @@ function resetRuntimeControls() {
 	mockSystemAscByTunnel = createInitialMockSystemAscByTunnel();
 	mockFreeturn = createInitialMockFreeturn();
 	mockWdtt = applyAllExpired(createInitialMockWdtt());
+	mockPremiumKey.stored = false;
+	mockPremiumKey.usable = false;
 	applyDefaultMockKeeneticProfile();
 }
 const MOCK_DOWNLOAD_OUTBOUNDS = [
@@ -369,6 +401,9 @@ const MOCK_AWG_TUNNELS = [
 		mtu: 1380,
 		startedAt: '',
 		backend: 'nativewg',
+		// Обфусцированный туннель: WireGuard ходит в локальный релей, сервер
+		// задаётся параметрами обфускатора (вкладка «Обфускатор» в редакторе).
+		obfuscator: { flavor: 'phobos', target: 'vpn.example.com:51824', key: 'k', masking: 'STUN', maxDummy: 4, localPort: 39000 },
 		connectivityCheck: { method: 'http' },
 		pingCheck: { status: 'alive', restartCount: 0, failCount: 0, failThreshold: 3 },
 	},
@@ -392,6 +427,10 @@ const MOCK_AWG_TUNNELS = [
 		mtu: 1420,
 		startedAt: new Date(Date.now() - 900_000).toISOString(),
 		backend: 'kernel',
+		// Обфусцированный туннель, у которого не поднялся релей: причину
+		// состояния бэкенд отдаёт только у таких туннелей.
+		obfuscator: { flavor: 'clusterm', target: 'uk-lon.demo.example:51824', key: 'k', masking: 'AUTO', maxDummy: 0, localPort: 39001 },
+		statusDetails: 'обфускатор не запущен',
 		connectivityCheck: { method: 'http' },
 		pingCheck: { status: 'failed', restartCount: 3, failCount: 3, failThreshold: 3 },
 	},
@@ -548,6 +587,28 @@ function mockImportKernelTunnel(name, link = {}) {
 const MOCK_AWG_SELF_CHECK_FAIL = new Set(['awg-demo-fin', 'awg-demo-5']);
 
 const MOCK_SYSTEM_TUNNELS = [
+	{
+		id: 'Wireguard8',
+		interfaceName: 'nwg8',
+		description: 'Phobos-router',
+		status: 'up',
+		connected: true,
+		mtu: 1420,
+		// Интерфейс завёл установщик Phobos: awg-manager им не управляет.
+		external: 'phobos',
+		address: '10.30.0.2',
+		mask: '255.255.255.255',
+		uptime: 1_800,
+		peer: {
+			publicKey: mockPubkey(97),
+			endpoint: '127.0.0.1:39002',
+			via: 'ISP0',
+			rxBytes: 1_048_576,
+			txBytes: 524_288,
+			lastHandshake: new Date(Date.now() - 30_000).toISOString(),
+			online: true,
+		},
+	},
 	{
 		id: 'Wireguard6',
 		interfaceName: 'nwg0',
@@ -797,6 +858,39 @@ const MOCK_EXTERNAL_TUNNELS = [
 		lastHandshake: '',
 		rxBytes: 1_200_000,
 		txBytes: 640_000,
+	},
+	// Интерфейсы OpkgTun, которыми панель не владеет. Расклад повторяет разбор
+	// с роутера: opkgtun13 — чужой AWG-туннель (его МОЖНО принять), opkgtun11 —
+	// устройство, поднятое мимо NDMS, и его адрес совпал с адресом
+	// действующего туннеля (заряженный конфликт, принимать нечего).
+	{
+		interfaceName: 'opkgtun13',
+		removable: true,
+		tunnelNumber: 13,
+		isAWG: true,
+		publicKey: mockPubkey(83),
+		endpoint: '198.51.100.44:51820',
+		lastHandshake: '40 сек назад',
+		rxBytes: 820_000,
+		txBytes: 310_000,
+		description: 'ForeignAWG',
+		addresses: ['10.8.1.7'],
+		ndmsRecord: true,
+		kernelDevice: true,
+	},
+	{
+		interfaceName: 'opkgtun11',
+		removable: true,
+		tunnelNumber: 11,
+		isAWG: false,
+		lastHandshake: '',
+		rxBytes: 0,
+		txBytes: 0,
+		description: '',
+		addresses: ['10.8.1.3'],
+		conflictsWith: 'DE Frankfurt',
+		ndmsRecord: false,
+		kernelDevice: true,
 	},
 ];
 
@@ -2014,13 +2108,19 @@ let mockSubID = mockSubscriptions.length;
 
 /** Align list/get payloads with production SubscriptionDTO (incl. isInline). */
 function toMockSubscriptionDTO(sub) {
-	const url = sub.url ?? '';
-	const isInline = sub.isInline ?? !String(url).trim();
+	// Источник — ровно один: путь к файлу вытесняет url и снимает isInline,
+	// как в Go (subscription.Subscription.IsFile).
+	const path = sub.path ?? '';
+	const isFile = !!String(path).trim();
+	const url = isFile ? '' : (sub.url ?? '');
+	const isInline = isFile ? false : (sub.isInline ?? !String(url).trim());
 	const mode = sub.mode ?? 'selector';
 	const dto = {
 		...sub,
 		url,
 		isInline,
+		path,
+		isFile,
 		mode,
 		enabled: sub.enabled !== false,
 		headers: sub.headers ?? [],
@@ -2039,13 +2139,17 @@ function newSub(input) {
 	const id = `sub-${mockSubID.toString().padStart(8, '0')}`;
 	const shortID = id.slice(0, 8);
 	const memberTags = [`sub-${shortID}-aaaa`, `sub-${shortID}-bbbb`];
-	const url = input.url ?? (input.inline ? '' : 'https://test');
-	const isInline = !!input.inline || !String(url).trim();
+	const path = String(input.path ?? '').trim();
+	const isFile = !!path;
+	const url = isFile ? '' : (input.url ?? (input.inline ? '' : 'https://test'));
+	const isInline = isFile ? false : !!input.inline || !String(url).trim();
 	return {
 		id,
 		label: input.label || 'Test',
 		url,
 		isInline,
+		path,
+		isFile,
 		headers: input.headers || [],
 		refreshHours: input.refreshHours || 0,
 		lastFetched: new Date().toISOString(),
@@ -2658,12 +2762,39 @@ const mockDnsProxyInfo = {
 };
 
 /** HydraRoute Neo в блоке AWGM (GET /system/hydraroute-status). */
-const mockHydraRouteStatus = {
+const mockHydraRouteStatusInstalled = {
 	installed: true,
 	running: true,
 	version: '2.4.1',
 	pid: 2345,
 	processState: 'running',
+};
+
+const mockHydraRouteStatusAbsent = {
+	installed: false,
+	running: false,
+	processState: 'not_installed',
+};
+
+let hydraRouteInstalled = process.env.MOCK_HYDRAROUTE_ABSENT !== '1';
+
+// Каталоги файлового менеджера: ключ — путь, значение — ответ /system/files/list.
+// Запись «..» ведёт себя как у бэкенда (internal/sys/files.List): она есть в
+// каждом каталоге, а прыжок за пределы корня отбивается уже на листинге.
+const MOCK_FILE_TREE = {
+	'/opt/etc': [
+		{ name: '..', path: '/opt', isDir: true, size: 0, mode: '', modTime: '' },
+		{ name: 'awg-manager', path: '/opt/etc/awg-manager', isDir: true, size: 0, mode: 'drwxr-xr-x', modTime: '2026-09-20T10:00:00Z' },
+		{ name: 'sub.txt', path: '/opt/etc/sub.txt', isDir: false, size: 512, mode: '-rw-r--r--', modTime: '2026-09-20T10:05:00Z' },
+	],
+	'/opt/etc/awg-manager': [
+		{ name: '..', path: '/opt/etc', isDir: true, size: 0, mode: '', modTime: '' },
+		{ name: 'subscription.txt', path: '/opt/etc/awg-manager/subscription.txt', isDir: false, size: 1024, mode: '-rw-r--r--', modTime: '2026-09-21T18:30:00Z' },
+	],
+	'/tmp': [
+		{ name: '..', path: '/', isDir: true, size: 0, mode: '', modTime: '' },
+		{ name: 'servers.txt', path: '/tmp/servers.txt', isDir: false, size: 256, mode: '-rw-r--r--', modTime: '2026-09-22T08:00:00Z' },
+	],
 };
 
 const mockRoutingDnsRoutes = [
@@ -3305,6 +3436,8 @@ function createInitialMockFreeturn() {
 		],
 		// serverId -> { enabled, clientsFile, clients: [{clientId, comment}] }
 		allowlists: {},
+		// Выданные ссылки абонентов: serverId → { cid → freeturn://… } (#919).
+		links: {},
 		clientSeq: 2,
 		serverSeq: 1,
 	};
@@ -3352,13 +3485,29 @@ function mockFreeturnAllowlist(serverId) {
 	return mockFreeturn.allowlists[serverId];
 }
 
+/** Выданные ссылки одного сервера: ключ — Client ID в нижнем регистре, как у бэкенда. */
+function mockFreeturnLinks(serverId) {
+	if (!mockFreeturn.links[serverId]) mockFreeturn.links[serverId] = {};
+	return mockFreeturn.links[serverId];
+}
+
 /**
  * Статус списка ровно как у бэкенда (`loadAllowlistStatus`): включённость —
  * это НАЛИЧИЕ пути к файлу, а у выключенного списка состав не отдаётся.
+ * Записям подставляется выданная ссылка — это делает `Service.fillLinks`.
  */
-function mockFreeturnAllowlistStatus(al) {
+function mockFreeturnAllowlistStatus(al, serverId) {
 	const enabled = !!al.clientsFile;
-	return { enabled, clientsFile: al.clientsFile, clients: enabled ? al.clients : [] };
+	const links = mockFreeturnLinks(serverId);
+	const withLink = (c) => {
+		const link = links[c.clientId.toLowerCase()];
+		return link ? { ...c, link } : { ...c };
+	};
+	return {
+		enabled,
+		clientsFile: al.clientsFile,
+		clients: enabled ? al.clients.map(withLink) : [],
+	};
 }
 
 // ── WDTT — клиенты и серверы. Prism отдаёт на wdtt-эндпоинты пустые 200
@@ -4367,9 +4516,12 @@ const DOWNLOAD_FAULT_ROUTES = [
 	{ method: 'POST', path: '/hydraroute/geo-files/update', style: 'envelope', code: 'GEO_UPDATE_ERROR' },
 	{ method: 'POST', path: '/hydraroute/geo-files/add', style: 'envelope', code: 'GEO_DOWNLOAD_ERROR' },
 	{ method: 'POST', path: '/dns-routes/refresh', style: 'envelope', code: 'DNS_ROUTE_REFRESH_ERROR' },
-	{ method: 'POST', path: '/amnezia-premium/login', style: 'envelope', code: 'AMNEZIA_CP_NETWORK' },
-	{ method: 'POST', path: '/amnezia-premium/account-info', style: 'envelope', code: 'AMNEZIA_CP_NETWORK' },
-	{ method: 'POST', path: '/amnezia-premium/download-config', style: 'envelope', code: 'AMNEZIA_CP_NETWORK' },
+	{ method: 'POST', path: '/amnezia/premium/key', style: 'envelope', code: 'AMNEZIA_PREMIUM_KEY_REJECTED' },
+	{ method: 'GET', path: '/amnezia/premium/catalog', style: 'envelope', code: 'AMNEZIA_PREMIUM_UNAVAILABLE' },
+	{ method: 'POST', path: '/amnezia/premium/config', style: 'envelope', code: 'AMNEZIA_PREMIUM_OUTCOME_UNKNOWN' },
+	{ method: 'POST', path: '/amnezia/premium/revoke', style: 'envelope', code: 'AMNEZIA_PREMIUM_UNAVAILABLE' },
+	{ method: 'GET', path: '/amnezia/premium/mirror', style: 'envelope', code: 'AMNEZIA_PREMIUM_MIRROR_UNAVAILABLE' },
+	{ method: 'GET', path: '/amnezia/premium/declared-country', style: 'envelope', code: 'AMNEZIA_PREMIUM_UNAVAILABLE' },
 	{ method: 'POST', path: '/singbox/install', style: 'envelope', code: 'SINGBOX_INSTALL_ERROR' },
 	{ method: 'POST', path: '/singbox/update', style: 'envelope', code: 'SINGBOX_UPDATE_ERROR' },
 	// NB: /download/outbounds is route *discovery*, not a download — never fault
@@ -4904,12 +5056,100 @@ function randomizeDelays() {
 	}
 }
 
-const MOCK_AMNEZIA_PREMIUM_SID = 'mock-v_sid-amnezia-premium-dev';
+// Ключ подписки живёт ТОЛЬКО в памяти мока — ровно как на роутере, где он
+// лежит зашифрованным в настройках и наружу не выходит. Наружу уезжает лишь
+// состояние: сохранён / читается ли.
+const mockPremiumKey = { stored: false, usable: false, session: false };
+
+// Адрес зеркала Amnezia. ХРАНИМОЕ значение, а не действующее: пустое означает
+// «зеркало по умолчанию», ровно как в storage.EffectiveAmneziaMirrorURL. Без
+// состояния здесь запрос уходил наверх в Prism и получал статический пример из
+// swagger — поле в мастере рисовалось, но сценарий «сохранил → перезагрузил
+// страницу → адрес на месте» проверить было нечем (F278).
+const MOCK_AMNEZIA_MIRROR_DEFAULT = 'https://storage.googleapis.com/amnezia/cp?m-path=/ru';
+let mockPremiumMirrorStored = '';
+// Страна подключения: пусто = выбора не было, как на чистом роутере. Портал
+// требует её в каждой выдаче, поэтому мок обязан отказывать так же — иначе
+// dev-режим показывал бы путь, которого в бою нет.
+let mockPremiumDeclaredCountry = '';
+const MOCK_PREMIUM_DECLARED_COUNTRIES = ['ru', 'ag'];
+
+/** Действующий адрес: пустое и непригодное хранимое означают дефолт. */
+function mockPremiumMirrorEffective() {
+	const v = mockPremiumMirrorStored.trim();
+	return v === '' || validateMockMirrorURL(v) !== null ? MOCK_AMNEZIA_MIRROR_DEFAULT : v;
+}
+
+/**
+ * Те же правила, что у storage.ValidateAmneziaMirrorURL: пусто годно (дефолт),
+ * иначе абсолютный https-адрес без user:pass@ и без #фрагмента, не длиннее
+ * 2048 байт. Мок повторяет ОТКАЗЫ, а не только успех: иначе ветку ошибки в
+ * мастере без роутера не пройти.
+ */
+function validateMockMirrorURL(raw) {
+	const v = String(raw ?? '').trim();
+	if (v === '') return null;
+	if (Buffer.byteLength(v, 'utf8') > 2048) return 'адрес зеркала Amnezia длиннее 2048 байт';
+	let u;
+	try {
+		u = new URL(v);
+	} catch {
+		return 'адрес зеркала Amnezia непригоден';
+	}
+	if (u.protocol !== 'https:' || !u.host) return 'адрес зеркала Amnezia должен быть абсолютным https-адресом';
+	if (u.username || u.password) return 'адрес зеркала Amnezia не должен содержать user:pass@';
+	if (v.includes('#')) return 'адрес зеркала Amnezia не должен содержать #фрагмент';
+	return null;
+}
+
+// Страны мока покрывают три метки строки: свежую, устаревшую и vless-only
+// (последнюю мастер обязан скрыть — забрать её нечем).
 const MOCK_AMNEZIA_PREMIUM_COUNTRIES = [
-	{ server_country_code: 'ru', server_country_name: 'Russia (mock)' },
-	{ server_country_code: 'nl', server_country_name: 'Netherlands (mock)' },
-	{ server_country_code: 'ee', server_country_name: 'Estonia (mock stale)' },
+	{ server_country_code: 'nl', server_country_name: 'Netherlands (mock)', available_protocols: ['awg', 'vless'] },
+	{ server_country_code: 'ch', server_country_name: 'Switzerland (mock) [P2P]', available_protocols: ['awg'] },
+	{ server_country_code: 'ee', server_country_name: 'Estonia (mock stale)', available_protocols: ['awg'] },
+	{ server_country_code: 'jp', server_country_name: 'Japan (mock vless-only)', available_protocols: ['vless'] },
 ];
+
+const MOCK_AMNEZIA_PREMIUM_ISSUED = [
+	{
+		server_country_code: 'nl',
+		worker_last_updated: '2026-02-03T13:49:07.090912Z',
+		last_downloaded: '2026-08-30T11:02:40.000000Z',
+		source_type: 'country_config',
+	},
+	{
+		// Портал обновил конфигурацию позже нашей выдачи → метка «конфиг устарел».
+		server_country_code: 'ee',
+		worker_last_updated: '2026-04-30T17:34:17.821424Z',
+		last_downloaded: '2026-04-23T16:07:43.367914Z',
+		source_type: 'country_config',
+	},
+	{
+		// gateway_account — активное устройство: в счётчик подтверждения идёт оно.
+		server_country_code: 'nl',
+		worker_last_updated: '2026-02-03T13:49:07.090912Z',
+		last_downloaded: '2026-08-30T11:02:40.000000Z',
+		source_type: 'gateway_account',
+	},
+];
+
+/** Срок подписки — через 45 суток от «сейчас», чтобы карточка была зелёной. */
+function mockPremiumEndDate() {
+	return new Date(Date.now() + 45 * 86400000).toISOString();
+}
+
+function sendPremiumKeyState(res, saveError = '') {
+	sendData(res, { stored: mockPremiumKey.stored, usable: mockPremiumKey.usable, saveError });
+}
+
+function sendPremiumNoKey(res) {
+	send(res, 400, {
+		error: true,
+		message: 'Ключ подписки Amnezia не задан',
+		code: 'AMNEZIA_PREMIUM_NO_KEY',
+	});
+}
 
 function buildMockAmneziaPremiumConf(countryCode) {
 	const cc = String(countryCode || 'xx').toLowerCase();
@@ -5028,6 +5268,53 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'GET' && path === '/mcp/keys') {
+		sendData(res, { keys: mockMcpKeys.map(({ id, name, createdAt, readOnly, lastUsedAt }) => ({ id, name, createdAt, readOnly: !!readOnly, ...(lastUsedAt ? { lastUsedAt } : {}) })) });
+		return;
+	}
+	if (req.method === 'POST' && path === '/mcp/keys/create') {
+		const text = await readRequestText(req);
+		let name = '';
+		let readOnly = false;
+		try {
+			const body = JSON.parse(text || '{}');
+			name = String(body.name ?? '').trim();
+			readOnly = body.readOnly === true;
+		} catch {
+			sendInvalidRequest(res, 'invalid JSON');
+			return;
+		}
+		if (!name || name.length > 64) {
+			sendBackendError(res, 'key name is required (1..64 chars)', 'MCP_KEY_INVALID_NAME', 400);
+			return;
+		}
+		mockMcpKeySeq += 1;
+		const key = { id: `mockkey-${mockMcpKeySeq}`, name, createdAt: new Date().toISOString(), readOnly, lastUsedAt: '' };
+		mockMcpKeys.push(key);
+		console.log(`[mock-proxy] MCP key created: ${name}`);
+		sendData(res, { id: key.id, name: key.name, createdAt: key.createdAt, readOnly: key.readOnly, key: `awgm_mock_${mockMcpKeySeq}_${Math.random().toString(36).slice(2, 12)}` });
+		return;
+	}
+	if (req.method === 'POST' && path === '/mcp/keys/revoke') {
+		const text = await readRequestText(req);
+		let id = '';
+		try {
+			id = String(JSON.parse(text || '{}').id ?? '');
+		} catch {
+			sendInvalidRequest(res, 'invalid JSON');
+			return;
+		}
+		const idx = mockMcpKeys.findIndex((k) => k.id === id);
+		if (idx < 0) {
+			sendBackendError(res, 'key not found', 'MCP_KEY_NOT_FOUND', 404);
+			return;
+		}
+		mockMcpKeys.splice(idx, 1);
+		console.log(`[mock-proxy] MCP key revoked: ${id}`);
+		sendData(res, { revoked: true });
+		return;
+	}
+
 	if (req.method === 'GET' && path === '/settings/get') {
 		fetchJSON('/settings/get').then(({ status, body }) => {
 			if (body && typeof body === 'object' && body.data) {
@@ -5045,6 +5332,7 @@ const server = http.createServer(async (req, res) => {
 				}
 				body.data.updates.channel = updateChannel;
 				body.data.updates.checkEnabled = updateCheckEnabled;
+				body.data.mcpEnabled = mcpEnabled;
 			}
 			send(res, status, body);
 		});
@@ -5180,6 +5468,9 @@ const server = http.createServer(async (req, res) => {
 						updateCheckEnabled = payload.updates.checkEnabled;
 					}
 				}
+				if (typeof payload.mcpEnabled === 'boolean') {
+					mcpEnabled = payload.mcpEnabled;
+				}
 				const { status, body } = await fetchJSON('/settings/get');
 				if (body && typeof body === 'object' && body.data) {
 					body.data.usageLevel = usageLevel;
@@ -5196,10 +5487,11 @@ const server = http.createServer(async (req, res) => {
 					}
 					body.data.updates.channel = updateChannel;
 					body.data.updates.checkEnabled = updateCheckEnabled;
+					body.data.mcpEnabled = mcpEnabled;
 				}
 				send(res, status, body);
 				console.log(
-					`[mock-proxy] usageLevel → ${usageLevel}, singboxLogLevel → ${singboxLogLevel}, downloadRouteTag → ${downloadRouteTag}, updateChannel → ${updateChannel}`,
+					`[mock-proxy] usageLevel → ${usageLevel}, singboxLogLevel → ${singboxLogLevel}, downloadRouteTag → ${downloadRouteTag}, updateChannel → ${updateChannel}, mcpEnabled → ${mcpEnabled}`,
 				);
 			} catch (e) {
 				send(res, 500, { success: false, error: String(e) });
@@ -5208,116 +5500,238 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
-	if (req.method === 'POST' && path === '/amnezia-premium/login') {
-		let raw = '';
-		req.on('data', (c) => (raw += c));
-		req.on('end', () => {
-			try {
-				const payload = JSON.parse(raw || '{}');
-				const key = String(payload.vpnKey ?? '').trim();
+	// Ключ подписки: состояние (GET), вход с сохранением (POST), забыть (DELETE).
+	if (path === '/amnezia/premium/key') {
+		if (req.method === 'GET') {
+			sendPremiumKeyState(res);
+			return;
+		}
+		if (req.method === 'DELETE') {
+			mockPremiumKey.stored = false;
+			mockPremiumKey.usable = false;
+			// «Забыть» забывает и сессионный ключ — как DeleteKey на бэкенде:
+			// иначе после удаления каталог продолжал бы отвечать.
+			mockPremiumKey.session = false;
+			console.log('[mock-proxy] amnezia/premium/key: ключ забыт');
+			sendPremiumKeyState(res);
+			return;
+		}
+		if (req.method === 'POST') {
+			readRequestText(req).then((raw) => {
+				let payload;
+				try {
+					payload = JSON.parse(raw || '{}');
+				} catch {
+					send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+					return;
+				}
+				const key = String(payload.key ?? '').trim();
 				if (!key) {
-					send(res, 400, {
+					sendPremiumNoKey(res);
+					return;
+				}
+				// Отказ по ключу — отдельный код: мастер на нём зовёт ввести другой.
+				if (key.includes('reject')) {
+					send(res, 422, {
 						error: true,
-						message: 'vpnKey обязателен',
-						code: 'MISSING_VPN_KEY',
+						message: 'Портал Amnezia отклонил ключ подписки (mock)',
+						code: 'AMNEZIA_PREMIUM_KEY_REJECTED',
 					});
 					return;
 				}
-				// Локальный стаб: реальный cp.amnezia.org может вернуть 422 на неверный ключ —
-				// здесь принимаем любой непустой ключ (не только vpn://), чтобы UI на :5173
-				// не блокировать разработку тестовой строкой.
-				console.log('[mock-proxy] amnezia-premium/login ok (stub sid)');
-				send(res, 200, { success: true, data: { sid: MOCK_AMNEZIA_PREMIUM_SID } });
-			} catch {
-				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
-			}
+				// store — судьба секрета, и умолчание у него закрытое, как на бэкенде.
+				mockPremiumKey.stored = payload.store === true;
+				mockPremiumKey.session = true;
+				mockPremiumKey.usable = mockPremiumKey.stored;
+				console.log(`[mock-proxy] amnezia/premium/key: вход ок, store=${mockPremiumKey.stored}`);
+				sendPremiumKeyState(res);
+			});
+			return;
+		}
+		send(res, 405, { error: true, message: 'Метод не поддерживается', code: 'METHOD_NOT_ALLOWED' });
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/amnezia/premium/catalog') {
+		// Ключ доступен и без сохранения: при store=false он живёт в памяти демона
+		// (sessionKey на бэкенде), и каталог обязан работать — иначе мок ломает
+		// главный путь мастера «ввёл ключ, не запоминая → каталог».
+		if (!mockPremiumKey.stored && !mockPremiumKey.session) {
+			sendPremiumNoKey(res);
+			return;
+		}
+		sendData(res, {
+			planName: 'Amnezia Premium (mock)',
+			subscriptionEndDate: mockPremiumEndDate(),
+			activeDeviceCount: MOCK_AMNEZIA_PREMIUM_ISSUED.filter(
+				(c) => c.source_type === 'gateway_account',
+			).length,
+			maxDeviceCount: 7,
+			countries: MOCK_AMNEZIA_PREMIUM_COUNTRIES.map((c) => ({
+				code: c.server_country_code,
+				name: c.server_country_name,
+				protocols: c.available_protocols,
+			})),
+			issuedConfigs: MOCK_AMNEZIA_PREMIUM_ISSUED.map((c) => ({
+				countryCode: c.server_country_code,
+				lastIssuedAt: c.last_downloaded,
+				portalUpdatedAt: c.worker_last_updated,
+				sourceType: c.source_type,
+			})),
 		});
 		return;
 	}
 
-	if (req.method === 'POST' && path === '/amnezia-premium/account-info') {
-		let raw = '';
-		req.on('data', (c) => (raw += c));
-		req.on('end', () => {
+	if (req.method === 'POST' && path === '/amnezia/premium/config') {
+		readRequestText(req).then((raw) => {
+			let payload;
 			try {
-				const payload = JSON.parse(raw || '{}');
-				const sid = String(payload.sid ?? '').trim();
-				if (sid !== MOCK_AMNEZIA_PREMIUM_SID) {
-					send(res, 401, {
-						error: true,
-						message: 'Сессия Amnezia Premium недействительна (mock)',
-						code: 'AMNEZIA_CP_ERROR',
-					});
-					return;
-				}
-				send(res, 200, {
-					success: true,
-					data: {
-						http_status: 200,
-						available_countries: MOCK_AMNEZIA_PREMIUM_COUNTRIES,
-						issued_configs: [
-							{
-								server_country_code: 'nl',
-								server_country_name: 'Netherlands (mock issued)',
-								worker_last_updated: '2026-02-03T13:49:07.090912Z',
-								last_downloaded: new Date().toISOString(),
-								source_type: 'country_config',
-								os_version: 'Web',
-								installation_uuid: '00000000-0000-4000-8000-000000000001',
-							},
-							{
-								server_country_code: 'ee',
-								server_country_name: 'Estonia (mock stale)',
-								worker_last_updated: '2026-04-30T17:34:17.821424Z',
-								last_downloaded: '2026-04-23T16:07:43.367914Z',
-								source_type: 'country_config',
-								os_version: 'Web',
-								installation_uuid: '00000000-0000-4000-8000-000000000002',
-							},
-						],
-						subscription_status: 'active',
-						vpn_key: 'vpn://mock',
-					},
-				});
+				payload = JSON.parse(raw || '{}');
 			} catch {
 				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+				return;
 			}
+			// Как и у каталога: ключ без сохранения живёт в памяти демона, и
+			// выдача обязана работать. Проверка только по stored ломала бы
+			// главный путь «ввёл ключ, не запоминая → выдал конфигурацию».
+			if (!mockPremiumKey.stored && !mockPremiumKey.session) {
+				sendPremiumNoKey(res);
+				return;
+			}
+			const countryCode = String(payload.countryCode ?? '').trim().toLowerCase();
+			if (!countryCode) {
+				send(res, 400, {
+					error: true,
+					message: 'Страна не выбрана',
+					code: 'AMNEZIA_PREMIUM_NO_COUNTRY',
+				});
+				return;
+			}
+			if (!mockPremiumDeclaredCountry) {
+				send(res, 400, {
+					error: true,
+					message: 'Не выбрана страна, из которой вы подключаетесь',
+					code: 'AMNEZIA_PREMIUM_NO_DECLARED_COUNTRY',
+				});
+				return;
+			}
+			// Выданное запоминается: без этого метка «конфиг уже выдавался» и
+			// кнопка отзыва в dev-режиме не проверяются — список выданных
+			// оставался бы фикстурой, не реагирующей на действия.
+			const now = new Date().toISOString();
+			MOCK_AMNEZIA_PREMIUM_ISSUED.push({
+				server_country_code: countryCode,
+				worker_last_updated: now,
+				last_downloaded: now,
+				source_type: 'country_config',
+			});
+			console.log(`[mock-proxy] amnezia/premium/config ${countryCode}`);
+			sendData(res, { countryCode, config: buildMockAmneziaPremiumConf(countryCode) });
 		});
 		return;
 	}
 
-	if (req.method === 'POST' && path === '/amnezia-premium/download-config') {
-		let raw = '';
-		req.on('data', (c) => (raw += c));
-		req.on('end', () => {
+	if (path === '/amnezia/premium/declared-country') {
+		if (req.method === 'GET') {
+			sendData(res, { declaredCountryCode: mockPremiumDeclaredCountry });
+			return;
+		}
+		if (req.method !== 'POST') {
+			send(res, 405, { error: true, message: 'method not allowed', code: 'METHOD_NOT_ALLOWED' });
+			return;
+		}
+		readRequestText(req).then((raw) => {
+			let payload;
 			try {
-				const payload = JSON.parse(raw || '{}');
-				const sid = String(payload.sid ?? '').trim();
-				const countryCode = String(payload.countryCode ?? '').trim().toLowerCase();
-				if (sid !== MOCK_AMNEZIA_PREMIUM_SID) {
-					send(res, 401, {
-						error: true,
-						message: 'Сессия Amnezia Premium недействительна (mock)',
-						code: 'AMNEZIA_CP_ERROR',
-					});
-					return;
-				}
-				if (!countryCode) {
-					send(res, 400, {
-						error: true,
-						message: 'sid и countryCode обязательны',
-						code: 'MISSING_FIELDS',
-					});
-					return;
-				}
-				console.log(`[mock-proxy] amnezia-premium/download-config ${countryCode}`);
-				send(res, 200, {
-					success: true,
-					data: { config: buildMockAmneziaPremiumConf(countryCode) },
-				});
+				payload = JSON.parse(raw || '{}');
 			} catch {
 				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+				return;
 			}
+			const code = String(payload.declaredCountryCode ?? '').trim().toLowerCase();
+			if (!MOCK_PREMIUM_DECLARED_COUNTRIES.includes(code)) {
+				send(res, 400, {
+					error: true,
+					message: 'Страна подключения должна быть "ru" (Россия) или "ag" (другие страны и регионы)',
+					code: 'AMNEZIA_PREMIUM_NO_DECLARED_COUNTRY',
+				});
+				return;
+			}
+			mockPremiumDeclaredCountry = code;
+			console.log(`[mock-proxy] amnezia/premium/declared-country: ${code}`);
+			sendData(res, { declaredCountryCode: code });
+		});
+		return;
+	}
+
+	if (path === '/amnezia/premium/mirror') {
+		if (req.method === 'GET') {
+			sendData(res, { mirrorUrl: mockPremiumMirrorEffective() });
+			return;
+		}
+		if (req.method !== 'POST') {
+			send(res, 405, { error: true, message: 'method not allowed', code: 'METHOD_NOT_ALLOWED' });
+			return;
+		}
+		readRequestText(req).then((raw) => {
+			let payload;
+			try {
+				payload = JSON.parse(raw || '{}');
+			} catch {
+				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+				return;
+			}
+			// Нормализация ДО проверки, как на бэкенде: присланный дефолт
+			// схлопывается в пустое, и «вернуть по умолчанию» не оседает в
+			// хранимом значении отдельной строкой.
+			let sent = String(payload.mirrorUrl ?? '').trim();
+			if (sent === MOCK_AMNEZIA_MIRROR_DEFAULT) sent = '';
+			const bad = validateMockMirrorURL(sent);
+			if (bad !== null) {
+				send(res, 400, { error: true, message: bad, code: 'INVALID_AMNEZIA_MIRROR_URL' });
+				return;
+			}
+			mockPremiumMirrorStored = sent;
+			console.log(`[mock-proxy] amnezia/premium/mirror сохранён: ${sent === '' ? '(дефолт)' : sent}`);
+			// Отдаётся ДЕЙСТВУЮЩИЙ адрес, а не присланный: пустое присланное
+			// означает дефолт, и ответ обязан его назвать.
+			sendData(res, { mirrorUrl: mockPremiumMirrorEffective() });
+		});
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/amnezia/premium/revoke') {
+		readRequestText(req).then((raw) => {
+			let payload;
+			try {
+				payload = JSON.parse(raw || '{}');
+			} catch {
+				send(res, 400, { error: true, message: 'invalid JSON', code: 'INVALID_JSON' });
+				return;
+			}
+			if (!mockPremiumKey.stored && !mockPremiumKey.session) {
+				sendPremiumNoKey(res);
+				return;
+			}
+			const countryCode = String(payload.countryCode ?? '').trim().toLowerCase();
+			if (!countryCode) {
+				send(res, 400, {
+					error: true,
+					message: 'Страна не выбрана',
+					code: 'AMNEZIA_PREMIUM_NO_COUNTRY',
+				});
+				return;
+			}
+			// Снимается ТОЛЬКО выданная нами конфигурация страны: устройство
+			// приложения (gateway_account) живёт за другой ручкой портала, и
+			// мок обязан вести себя так же, иначе в dev-режиме отзыв выглядел
+			// бы всесильным.
+			const idx = MOCK_AMNEZIA_PREMIUM_ISSUED.findIndex(
+				(c) => c.server_country_code === countryCode && c.source_type === 'country_config',
+			);
+			if (idx >= 0) MOCK_AMNEZIA_PREMIUM_ISSUED.splice(idx, 1);
+			console.log(`[mock-proxy] amnezia/premium/revoke ${countryCode} (найдено: ${idx >= 0})`);
+			sendData(res, { countryCode });
 		});
 		return;
 	}
@@ -5340,7 +5754,8 @@ const server = http.createServer(async (req, res) => {
 				return;
 			}
 			const content = String(body.content ?? '');
-			if (!content) {
+			// Мастер обфускатора шлёт ссылку вместо текста: конфиг качает бэкенд.
+			if (!content && !String(body.installUrl ?? '').trim()) {
 				sendBackendError(res, 'missing config content', 'MISSING_CONTENT');
 				return;
 			}
@@ -6035,8 +6450,35 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	// Файловый менеджер: Prism отдаёт по этим ручкам один синтетический пример
+	// без каталогов, поэтому пикер файла подписки на нём не проверить.
+	if (req.method === 'GET' && path === '/system/files/roots') {
+		send(res, 200, {
+			success: true,
+			data: [
+				{ path: '/opt/etc', label: 'Entware /opt/etc', readOnly: false },
+				{ path: '/tmp', label: 'Временные /tmp', readOnly: false },
+			],
+		});
+		return;
+	}
+
+	if (req.method === 'GET' && path === '/system/files/list') {
+		const dir = new URL(req.url, 'http://x').searchParams.get('path') || '/opt/etc';
+		const entries = MOCK_FILE_TREE[dir];
+		if (!entries) {
+			send(res, 400, { success: false, error: { code: 'PATH_DENIED', message: 'path outside the allowed roots' } });
+			return;
+		}
+		send(res, 200, { success: true, data: { path: dir, entries } });
+		return;
+	}
+
 	if (req.method === 'GET' && path === '/system/hydraroute-status') {
-		send(res, 200, { success: true, data: mockHydraRouteStatus });
+		send(res, 200, {
+			success: true,
+			data: hydraRouteInstalled ? mockHydraRouteStatusInstalled : mockHydraRouteStatusAbsent,
+		});
 		return;
 	}
 
@@ -6284,6 +6726,18 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	if (req.method === 'POST' && path === '/__mock/hydraroute-installed') {
+		try {
+			const body = await readJsonBody(req);
+			hydraRouteInstalled = body.installed !== false;
+			send(res, 200, { ok: true, hydraRouteInstalled });
+			console.log(`[mock-proxy] hydraRouteInstalled → ${hydraRouteInstalled}`);
+		} catch (e) {
+			send(res, 400, { error: String(e) });
+		}
+		return;
+	}
+
 	if (req.method === 'POST' && path === '/__mock/singbox-install-fail') {
 		try {
 			const body = await readJsonBody(req);
@@ -6316,6 +6770,66 @@ const server = http.createServer(async (req, res) => {
 
 	if (req.method === 'GET' && path === '/diagnostics/dns-proxy') {
 		send(res, 200, { success: true, data: mockDnsProxyInfo });
+		return;
+	}
+
+	// Поток диагностики: короткий детерминированный прогон. На Prism его не
+	// увидеть вовсе — SSE тот не умеет, — а без него вкладка «Проверки» в моке
+	// пустая.
+	if (req.method === 'GET' && path === '/diagnostics/stream') {
+		res.writeHead(200, {
+			'Content-Type': 'text/event-stream',
+			'Cache-Control': 'no-cache',
+			Connection: 'keep-alive',
+		});
+
+		const steps = [
+			['phase', { phase: 'global_tests', label: 'Базовые проверки...' }],
+			['test', { test: { name: 'wan_connectivity', description: 'WAN up с gateway', status: 'pass', detail: 'default via 192.168.1.1 dev eth3', level: 'basic' } }],
+			['test', { test: { name: 'ndms_health', description: 'NDMS отвечает', status: 'pass', detail: '5.1.5', level: 'basic' } }],
+			['test', { test: { name: 'endpoint_reachable', description: 'Ping endpoint', status: 'warn', detail: 'Ping 203.0.113.7: нет ответа (ICMP часто закрыт на VPS — см. awg_handshake)', level: 'basic' } }],
+			['phase', { phase: 'cross_tunnel_tests', label: 'Проверка маршрутов...' }],
+			['test', { test: { name: 'route_leak_check', description: 'Осиротевшие маршруты', status: 'pass', detail: 'Нет осиротевших маршрутов', level: 'detailed' } }],
+			['done', {
+				summary: { total: 5, passed: 3, failed: 0, skipped: 0, hasReport: true },
+			}],
+		];
+
+		let i = 0;
+		const iv = setInterval(() => {
+			if (i >= steps.length) {
+				clearInterval(iv);
+				res.end();
+				return;
+			}
+			const [event, payload] = steps[i++];
+			res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`);
+		}, 350);
+
+		const cleanup = () => clearInterval(iv);
+		req.on('close', cleanup);
+		req.on('error', cleanup);
+		return;
+	}
+
+	// Удаление осиротевшего интерфейса. Сиротство перепроверяется здесь так же,
+	// как на бэкенде: кнопка могла быть нажата по устаревшему отчёту.
+	if (req.method === 'POST' && path === '/tunnels/orphans/delete') {
+		const body = await readJsonBody(req);
+		const iface = String(body?.iface ?? '');
+		const idx = MOCK_EXTERNAL_TUNNELS.findIndex(
+			(t) => t.interfaceName.toLowerCase() === iface.toLowerCase(),
+		);
+		if (idx === -1) {
+			send(res, 409, {
+				error: true,
+				message: `${iface} больше не сирота — у номера есть владелец. Обновите диагностику.`,
+				code: 'NOT_ORPHAN',
+			});
+			return;
+		}
+		MOCK_EXTERNAL_TUNNELS.splice(idx, 1);
+		send(res, 200, { success: true, data: { ok: true } });
 		return;
 	}
 
@@ -7356,6 +7870,36 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	// Превью источника подписки (url или файл на роутере): Prism отдаёт по этой
+	// ручке пустой APIEnvelope, а мастеру нужен список членов с уникальными key.
+	if (req.method === 'POST' && path === '/singbox/subscriptions/preview') {
+		let raw = '';
+		req.on('data', (c) => (raw += c));
+		req.on('end', () => {
+			let body = {};
+			try {
+				body = JSON.parse(raw || '{}');
+			} catch (e) {
+				send(res, 400, { success: false, error: { code: 'INVALID_REQUEST', message: String(e) } });
+				return;
+			}
+			const src = String(body.path || body.url || '').trim();
+			if (!src) {
+				send(res, 400, { success: false, error: { code: 'MISSING_SOURCE', message: 'url or path required' } });
+				return;
+			}
+			send(res, 200, {
+				success: true,
+				data: [
+					{ key: 'prev01', label: '🇺🇸 LA-1 (mock)', protocol: 'vless', server: 'la1.mock.local', port: 443, sni: 'la1.mock.local', transport: 'ws', security: 'tls' },
+					{ key: 'prev02', label: '🇩🇪 FRA-1 (mock)', protocol: 'vless', server: 'fra1.mock.local', port: 443, sni: 'fra1.mock.local', transport: 'tcp', security: 'tls' },
+					{ key: 'prev03', label: '🇯🇵 TYO-1 (mock)', protocol: 'trojan', server: 'tyo1.mock.local', port: 443, sni: 'tyo1.mock.local', transport: 'tcp', security: 'tls' },
+				],
+			});
+		});
+		return;
+	}
+
 	if (req.method === 'POST' && path === '/singbox/subscriptions/create') {
 		let raw = '';
 		req.on('data', (c) => (raw += c));
@@ -7415,7 +7959,9 @@ const server = http.createServer(async (req, res) => {
 			id: sub.id,
 			label: sub.label,
 			url: sub.url,
-			isInline: !sub.url,
+			isInline: !sub.url && !sub.path,
+			path: sub.path ?? '',
+			isFile: !!sub.path,
 			headers: sub.headers ?? [],
 			refreshHours: sub.refreshHours ?? 0,
 			lastFetched: sub.lastFetched ?? '',
@@ -8414,7 +8960,26 @@ const server = http.createServer(async (req, res) => {
 			});
 			return;
 		}
-		sendBackendError(res, `subsystem "${subsystem}": ожидали wdtt|freeturn`, 'BAD_REQUEST');
+		// Обфускаторы: «инстансы» подсистемы — туннели этой разновидности.
+		if (subsystem === 'obf-phobos' || subsystem === 'obf-clusterm') {
+			const flavor = subsystem === 'obf-phobos' ? 'phobos' : 'clusterm';
+			sendData(res, {
+				binariesPresent: true,
+				installAvailable: true,
+				installVersion: flavor === 'phobos' ? '1.4.0' : '0.9.3',
+				installedVersion: flavor === 'phobos' ? '1.4.0' : '0.9.2',
+				updateAvailable: flavor === 'clusterm',
+				installing: false,
+				instances: MOCK_AWG_TUNNELS.filter((t) => t.obfuscator?.flavor === flavor).length,
+				routerClock: mockRouterClock(),
+			});
+			return;
+		}
+		sendBackendError(
+			res,
+			`subsystem "${subsystem}": ожидали wdtt|freeturn|obf-phobos|obf-clusterm`,
+			'BAD_REQUEST',
+		);
 		return;
 	}
 
@@ -8642,7 +9207,10 @@ const server = http.createServer(async (req, res) => {
 			if (req.method === 'DELETE') {
 				const list = proxyListFor(kind);
 				list.splice(list.indexOf(inst), 1);
-				if (kind === 'freeturn-server') delete mockFreeturn.allowlists[inst.id];
+				if (kind === 'freeturn-server') {
+					delete mockFreeturn.allowlists[inst.id];
+					delete mockFreeturn.links[inst.id];
+				}
 				sendData(res, { ok: true });
 				return;
 			}
@@ -8717,7 +9285,14 @@ const server = http.createServer(async (req, res) => {
 				if (kind === 'freeturn-server') {
 					const srv = inst.config;
 					const port = Number(String(srv.listen ?? '').split(':').pop()) || 56000;
-					const peer = `203.0.113.10:${port}`;
+					// Цепочка та же, что у бэкенда (#933): запрос → настройка
+					// linkPeer → внешний IP. Мок, не знающий настройки, показывал
+					// бы в окне выдачи один адрес, а в ссылке другой — ровно то
+					// расхождение мок↔бэкенд, что стоило лишних кругов в #919.
+					const chosen = String(opts.peer ?? '').trim() || String(srv.linkPeer ?? '').trim();
+					const peer = chosen
+						? (/:\d+$/.test(chosen) ? chosen : `${chosen}:${port}`)
+						: `203.0.113.10:${port}`;
 					const payload = {
 						v: 1,
 						provider: opts.provider || 'vk',
@@ -8730,6 +9305,8 @@ const server = http.createServer(async (req, res) => {
 						...(opts.wg ? { wg: opts.wg } : {}),
 					};
 					const link = 'freeturn://' + Buffer.from(JSON.stringify(payload)).toString('base64');
+					// Ссылку эта ручка НЕ запоминает — как и ftlink.BuildLink: её
+					// хранит внесение в список (#919, F370).
 					sendData(res, { link, peer, ...(opts.clientId ? { clientId: opts.clientId } : {}) });
 					return;
 				}
@@ -8945,7 +9522,7 @@ const server = http.createServer(async (req, res) => {
 			const al = mockFreeturnAllowlist(inst.id);
 			if (clientId === null) {
 				if (req.method === 'GET') {
-					sendData(res, mockFreeturnAllowlistStatus(al));
+					sendData(res, mockFreeturnAllowlistStatus(al, inst.id));
 					return;
 				}
 				if (req.method === 'POST') {
@@ -8963,7 +9540,12 @@ const server = http.createServer(async (req, res) => {
 						if (!al.clients.some((c) => c.clientId === cid)) {
 							al.clients.push({ clientId: cid, comment: body.comment?.trim() || undefined });
 						}
-						sendData(res, { ...mockFreeturnAllowlistStatus(al), needsRestart });
+						// Ссылка приходит в теле и живёт столько же, сколько запись
+						// (#919). Пустая прежнюю не стирает: переименование идёт этой
+						// же ручкой и ссылки не несёт.
+						const withLink = String(body.link ?? '').trim();
+						if (withLink) mockFreeturnLinks(inst.id)[cid.toLowerCase()] = withLink;
+						sendData(res, { ...mockFreeturnAllowlistStatus(al, inst.id), needsRestart });
 					} catch (e) {
 						sendInvalidRequest(res, e);
 					}
@@ -8983,6 +9565,7 @@ const server = http.createServer(async (req, res) => {
 			}
 			if (req.method === 'DELETE') {
 				al.clients = al.clients.filter((c) => c.clientId !== clientId);
+				delete mockFreeturnLinks(inst.id)[clientId.toLowerCase()];
 				sendData(res, { message: 'removed' });
 				return;
 			}
@@ -9057,7 +9640,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
 	console.log(`mock-proxy on http://127.0.0.1:${PORT} → ${UPSTREAM} (usageLevel=${usageLevel})`);
-	console.log('[mock-proxy] controls: GET /__mock/capabilities, GET /__mock/tunnels, POST /__mock/reset-runtime, POST /__mock/singbox-install-fail, POST /__mock/singbox-running, POST /__mock/download-faults, POST /__mock/keenetic-os');
+	console.log('[mock-proxy] controls: GET /__mock/capabilities, GET /__mock/tunnels, POST /__mock/reset-runtime, POST /__mock/singbox-install-fail, POST /__mock/singbox-running, POST /__mock/hydraroute-installed, POST /__mock/download-faults, POST /__mock/keenetic-os');
 	console.log(`[mock-proxy] keenetic-os: ${mockKeeneticProfile.key} (supportsExtendedASC=${mockKeeneticProfile.extended}; default: 5.1, force: MOCK_KEENETIC_OS=5.0|5.1, switch: POST /__mock/keenetic-os)`);
 	console.log(`[mock-proxy] download faults: enabled=${downloadFaultsEnabled} p=${downloadFaultProbability} (disable: MOCK_DOWNLOAD_FAULTS=0)`);
 });

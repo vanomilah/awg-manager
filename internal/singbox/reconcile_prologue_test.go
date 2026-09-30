@@ -21,7 +21,7 @@ func TestPatchers_WarnOnBrokenFile_SilentOnMissing(t *testing.T) {
 		{"patch-base-clash-port", func(p string, l *slog.Logger) { patchBaseClashPort(p, 0, l) }},
 		{"patch-base-log-level", func(p string, l *slog.Logger) { patchBaseLogLevel(p, "info", l) }},
 		{"patch-base-direct-outbound", func(p string, l *slog.Logger) { patchBaseDirectOutbound(p, l) }},
-		{"patch-base-cache-file", func(p string, l *slog.Logger) { patchBaseCacheFilePath(p, l) }},
+		{"patch-base-cache-file", func(p string, l *slog.Logger) { patchBaseCacheFilePath(p, "", l) }},
 		{"strip-base-owned-blocks", func(p string, l *slog.Logger) { patchTunnelsSlotStripBaseOwnedBlocks(p, l) }},
 		{"remove-route-final", func(p string, l *slog.Logger) { removeFinalFromBase(p, l) }},
 		{"remove-dns-final", func(p string, l *slog.Logger) { removeDNSFinalFromBase(p, l) }},
@@ -83,6 +83,29 @@ func TestStripStrayDirectPlaceholder_WarnsOnBrokenSlot(t *testing.T) {
 	stripStrayDirectPlaceholder(dir, log)
 	if !strings.Contains(buf.String(), "WARN") || !strings.Contains(buf.String(), "strip-stray-direct") {
 		t.Fatalf("want WARN with step %q, got: %s", "strip-stray-direct", buf.String())
+	}
+}
+
+// stripLegacyTunStack тоже каталожный: битый слот — Warn с именем шага,
+// пустой каталог — тишина. Имя шага в Warn проверяется отдельно: подмена
+// константы на чужую (strip-stray-direct) увела бы диагностику к другому шагу.
+func TestStripLegacyTunStack_WarnsOnBrokenSlot(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	dir := t.TempDir()
+
+	stripLegacyTunStack(dir, log)
+	if strings.Contains(buf.String(), "WARN") {
+		t.Fatalf("empty dir must be silent, got: %s", buf.String())
+	}
+
+	buf.Reset()
+	if err := os.WriteFile(filepath.Join(dir, "21-fakeip.json"), []byte("{oops"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stripLegacyTunStack(dir, log)
+	if !strings.Contains(buf.String(), "WARN") || !strings.Contains(buf.String(), "strip-legacy-tun-stack") {
+		t.Fatalf("want WARN with step %q, got: %s", "strip-legacy-tun-stack", buf.String())
 	}
 }
 

@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 
+	"github.com/hoaxisr/awg-manager/internal/peersubnet"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
@@ -69,6 +71,10 @@ func (s *Service) restoreWithMode(ctx context.Context, in []ManagedServerExport,
 		s.appLog.Warn("managed-restore-preflight-conflict", fmt.Sprintf("%d servers", len(in)), "Batch preflight found conflicts; restore aborted")
 		return batchConflicts
 	}
+	// F508: сети за клиентом из бэкапа проверяются по занятым и ставятся под
+	// той же блокировкой, что правки пиров. Берётся здесь, на весь проход:
+	// мьютекс нерекурсивный, а restorePeerSubnets зовётся из глубины.
+	defer s.LockPeerSubnets()()
 	out := make([]RestoreOutcome, 0, len(in))
 	for _, sv := range in {
 		out = append(out, s.restoreOne(ctx, sv, opts, driftMode))
@@ -111,7 +117,16 @@ func (s *Service) restoreOne(ctx context.Context, sv ManagedServerExport, opts R
 	}
 
 	existingStorage, hasStorage := s.findStorageOccupant(sv.InterfaceName)
-	liveExists, liveSameIdentity := s.liveInterfaceIdentity(ctx, sv)
+	liveExists, liveSameIdentity, err := s.liveInterfaceIdentity(ctx, sv)
+	if err != nil {
+		// Сбой чтения — не «слот занят другим сервером»: ложный конфликт увёл
+		// бы пользователя в перенумерацию живого сервера.
+		outcome.Action = "failed"
+		outcome.Error = fmt.Sprintf("не удалось прочитать конфигурацию %s: %v", sv.InterfaceName, err)
+		s.sysLog().Error("managed restore live read failed", "interface", sv.InterfaceName, "error", err)
+		s.appLog.Error("managed-restore-read-failed", sv.InterfaceName, outcome.Error)
+		return outcome
+	}
 	storageSameIdentity := hasStorage && samePubKey(existingStorage, sv)
 	// Same-server identity + live interface → merge missing peers.
 	if storageSameIdentity && liveSameIdentity {
@@ -122,15 +137,6 @@ func (s *Service) restoreOne(ctx context.Context, sv ManagedServerExport, opts R
 			s.appLog.Warn("managed-restore-merge-conflict", sv.InterfaceName, fmt.Sprintf("Merge preflight found %d conflict(s)", len(conflicts)))
 			return outcome
 		}
-		if len(sv.ASC) > 0 {
-			if err := s.applyASCOnMerge(ctx, existingStorage.InterfaceName, sv.ASC); err != nil {
-				outcome.Action = "failed"
-				outcome.Error = err.Error()
-				s.sysLog().Error("managed restore merge ASC apply failed", "interface", sv.InterfaceName, "error", err)
-				s.appLog.Error("managed-restore-merge-failed", sv.InterfaceName, "Failed to apply ASC params on merge path")
-				return outcome
-			}
-		}
 		added, err := s.applyMergePeers(ctx, existingStorage, sv)
 		if err != nil {
 			outcome.Action = "failed"
@@ -138,6 +144,18 @@ func (s *Service) restoreOne(ctx context.Context, sv ManagedServerExport, opts R
 			s.sysLog().Error("managed restore merge failed", "interface", sv.InterfaceName, "error", err)
 			s.appLog.Error("managed-restore-merge-failed", sv.InterfaceName, "Failed to merge missing peers into existing live server")
 			return outcome
+		}
+		// ASC после пиров — сигнатура из ASC-снапшота должна дойти и до
+		// пиров, добавленных этим же мержем.
+		if len(sv.ASC) > 0 {
+			if err := s.applyASCOnMerge(ctx, existingStorage.InterfaceName, sv.ASC); err != nil {
+				outcome.Action = "failed"
+				outcome.AddedPeers = added
+				outcome.Error = "peers merged, ASC params apply failed: " + err.Error()
+				s.sysLog().Error("managed restore merge ASC apply failed", "interface", sv.InterfaceName, "addedPeers", added, "error", err)
+				s.appLog.Error("managed-restore-merge-failed", sv.InterfaceName, "Peers merged, but ASC params apply failed")
+				return outcome
+			}
 		}
 		outcome.Action = "merged"
 		outcome.AddedPeers = added
@@ -285,32 +303,41 @@ func (s *Service) findStorageOccupant(ifaceName string) (storage.ManagedServer, 
 	return *existing, true
 }
 
-func (s *Service) liveInterfaceIdentity(ctx context.Context, sv ManagedServerExport) (exists bool, same bool) {
+// liveInterfaceIdentity: есть ли живой интерфейс в слоте и тот ли это сервер.
+// err — сбой чтения (список интерфейсов или конфигурация существующего
+// Wireguard); отсутствие интерфейса ошибкой не считается.
+func (s *Service) liveInterfaceIdentity(ctx context.Context, sv ManagedServerExport) (exists bool, same bool, err error) {
 	if s.queries == nil || s.queries.Interfaces == nil {
-		return false, false
+		return false, false, nil
 	}
 	iface, err := s.queries.Interfaces.Get(ctx, sv.InterfaceName)
-	if err != nil || iface == nil {
-		return false, false
+	if err != nil {
+		return false, false, err // сбой чтения — не «слот свободен»
+	}
+	if iface == nil { // Get: (nil, nil) — интерфейса нет
+		return false, false, nil
 	}
 	if !strings.EqualFold(iface.Type, "wireguard") {
-		return true, false
+		return true, false, nil
 	}
 	if s.queries.WGServers == nil {
-		return true, false
+		return true, false, nil
 	}
 	liveWG, err := s.queries.WGServers.Get(ctx, sv.InterfaceName)
-	if err != nil || liveWG == nil {
-		return true, false
+	if err != nil {
+		return true, false, err
+	}
+	if liveWG == nil {
+		return true, false, nil
 	}
 	backupPub, err := derivePublicKeyFromPrivate(sv.PrivateKey)
 	if err != nil {
-		return true, false
+		return true, false, nil
 	}
 	if backupPub == "" || strings.TrimSpace(liveWG.PublicKey) == "" {
-		return true, false
+		return true, false, nil
 	}
-	return true, strings.TrimSpace(liveWG.PublicKey) == backupPub
+	return true, strings.TrimSpace(liveWG.PublicKey) == backupPub, nil
 }
 
 func derivePublicKeyFromPrivate(privateKey string) (string, error) {
@@ -368,9 +395,6 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 	}
 	sv.NATStaticWANs = wans
 	sv.NATStaticWAN = ""
-	if err := s.applyLANSegmentsRaw(ctx, target, sv.Address, sv.Mask, sv.LANSegments); err != nil {
-		return true, fmt.Errorf("set LAN segments: %w", err)
-	}
 	if err := s.applyPolicy(ctx, target, sv.Policy); err != nil {
 		return true, fmt.Errorf("set policy: %w", err)
 	}
@@ -379,7 +403,12 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 			return true, fmt.Errorf("set ASC params: %w", err)
 		}
 	}
-	for _, peer := range sv.Peers {
+	// Пиры клонируем: слайс общий с входным sv, а мы его правим (сети за
+	// клиентом, сигнатуры ниже).
+	peers := slices.Clone(sv.Peers)
+	var taken []peersubnet.Occupied
+	for i := range peers {
+		peer := &peers[i]
 		ip, _, err := net.ParseCIDR(peer.TunnelIP)
 		if err != nil {
 			return true, fmt.Errorf("peer tunnel IP %q: %w", peer.TunnelIP, err)
@@ -387,30 +416,30 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 		if err := s.rciAddPeer(ctx, target, peer.PublicKey, peer.PresharedKey, peer.Description, ip.String(), peer.Enabled); err != nil {
 			return true, fmt.Errorf("add peer %s: %w", peer.PublicKey, err)
 		}
+		s.restorePeerSubnets(ctx, target, peer, &taken)
+	}
+	// ACL сегментов — после пиров: план берёт сети за клиентом, принятые
+	// restorePeerSubnets, а не все из бэкапа.
+	if err := s.applyLANSegmentsRaw(ctx, target, sv.Address, sv.Mask, sv.LANSegments, serverPeerSubnets(peers)); err != nil {
+		return true, fmt.Errorf("set LAN segments: %w", err)
 	}
 	// Persist to settings.json under the (possibly renamed) target.
 	saved := sv
 	saved.InterfaceName = target
 	saved.ASC = nil
+	// Сигнатура из ASC-снимка старого бэкапа принадлежала серверу — раздаём
+	// её пирам, у которых своей нет, и у сервера не сохраняем (V36).
+	saved.Peers = peers
 	if len(sv.ASC) > 0 {
-		if i1, i2, i3, i4, i5, err := extractASCSignatures(sv.ASC); err == nil {
-			if i1 != "" {
-				saved.I1 = i1
-			}
-			if i2 != "" {
-				saved.I2 = i2
-			}
-			if i3 != "" {
-				saved.I3 = i3
-			}
-			if i4 != "" {
-				saved.I4 = i4
-			}
-			if i5 != "" {
-				saved.I5 = i5
-			}
+		i1, i2, i3, i4, i5, err := extractASCSignatures(sv.ASC)
+		if err != nil {
+			return true, fmt.Errorf("parse ASC signatures: %w", err)
+		}
+		if i1 != "" || i2 != "" || i3 != "" || i4 != "" || i5 != "" {
+			saved.LegacyI1, saved.LegacyI2, saved.LegacyI3, saved.LegacyI4, saved.LegacyI5 = i1, i2, i3, i4, i5
 		}
 	}
+	storage.MovePeerSignaturesFromServer(&saved)
 	switch persistMode {
 	case persistUpdateExisting:
 		s.sysLog().Debug("managed restore persisting mode", "target", target, "mode", "update-existing")
@@ -447,13 +476,72 @@ func (s *Service) applyOne(ctx context.Context, target string, sv ManagedServerE
 	return true, nil
 }
 
-// mergePeers adds peers from sv that are not already present (by public
-// key) on the live existing server. Returns the count actually added.
-func (s *Service) preflightMergePeers(existing storage.ManagedServer, sv ManagedServerExport) []string {
-	have := make(map[string]struct{}, len(existing.Peers))
-	for _, p := range existing.Peers {
-		have[p.PublicKey] = struct{}{}
+// restorePeerSubnets ставит сети за клиентом пересозданного из бэкапа пира —
+// best-effort, как соседние шаги восстановления. Сети из бэкапа проверяются
+// как при правке (занятые, кроме самого пира; пересечения внутри списка):
+// конфликтующие не ставятся и из записи убираются с предупреждением. Не
+// встали — из записи убираем все: карточка не должна показывать сети,
+// которых на роутере нет. Вызывающий держит LockPeerSubnets.
+//
+// taken — сети, уже принятые у предыдущих пиров этого сервера в этом же
+// восстановлении: новый сервер ещё не в записи, и OccupiedSubnets allow-ips
+// его пиров не видит, а RemoteSubnets соседей пишутся после цикла. Принятые
+// здесь сети дописываются в taken.
+func (s *Service) restorePeerSubnets(ctx context.Context, iface string, peer *storage.ManagedPeer, taken *[]peersubnet.Occupied) {
+	if len(peer.RemoteSubnets) == 0 {
+		return
 	}
+	name := peerName(peer.Description, peer.PublicKey)
+	occupied, err := s.OccupiedSubnets(ctx, PeerRef{Iface: iface, PubKey: peer.PublicKey})
+	if err != nil {
+		s.appLog.Warn("managed-restore-peer-subnets", iface,
+			fmt.Sprintf("сети за клиентом пира «%s» не проверены и сняты с записи: %v", name, err))
+		peer.RemoteSubnets = nil
+		return
+	}
+	occupied = append(occupied, *taken...)
+	var accepted []string
+	var acceptedNets []peersubnet.Occupied
+	for _, sn := range peer.RemoteSubnets {
+		v, err := peersubnet.ValidateRemoteSubnets([]string{sn}, occupied)
+		if err != nil {
+			s.appLog.Warn("managed-restore-peer-subnets", iface,
+				fmt.Sprintf("сеть за клиентом пира «%s» не восстановлена и снята с записи: %v", name, err))
+			continue
+		}
+		for _, c := range v {
+			_, n, _ := net.ParseCIDR(c)
+			o := peersubnet.Occupied{Net: n, Label: peerLabel(peer.Description, peer.PublicKey, iface)}
+			occupied = append(occupied, o)
+			acceptedNets = append(acceptedNets, o)
+		}
+		accepted = append(accepted, v...)
+	}
+	peer.RemoteSubnets = accepted
+	if len(accepted) == 0 {
+		return
+	}
+	router, err := s.peerRouter()
+	if err == nil {
+		var hosts []net.IP
+		if ip, _, perr := net.ParseCIDR(peer.TunnelIP); perr == nil {
+			hosts = append(hosts, ip)
+		}
+		err = peersubnet.Reconcile(ctx, router, iface, peer.PublicKey, hosts, peer.RemoteSubnets)
+	}
+	if err != nil {
+		s.appLog.Warn("managed-restore-peer-subnets", iface,
+			fmt.Sprintf("сети за клиентом пира «%s» не восстановлены и сняты с записи: %v", name, err))
+		peer.RemoteSubnets = nil
+		return
+	}
+	*taken = append(*taken, acceptedNets...)
+}
+
+// preflightMergePeers проверяет входящих пиров merge-пути: пустой и битый
+// ключ, дубли ключей и адресов, попадание адреса в подсеть сервера. Уже
+// присутствующих пиров не смотрит — их отсеивает applyMergePeers.
+func (s *Service) preflightMergePeers(existing storage.ManagedServer, sv ManagedServerExport) []string {
 	var conflicts []string
 	incomingPub := make(map[string]struct{}, len(sv.Peers))
 	incomingIP := make(map[string]struct{}, len(sv.Peers))
@@ -472,6 +560,12 @@ func (s *Service) preflightMergePeers(existing storage.ManagedServer, sv Managed
 			conflicts = append(conflicts, fmt.Sprintf("duplicate peer public key in import: %s", pub))
 		}
 		incomingPub[pub] = struct{}{}
+		// Ключ из чужого бэкапа доезжал до NDMS как есть, а журналы резали
+		// его как pubkey[:8] и роняли процесс. Форма ключа — 32 байта base64.
+		if b, err := base64.StdEncoding.DecodeString(pub); err != nil || len(b) != 32 {
+			conflicts = append(conflicts, fmt.Sprintf("invalid peer public key: %s", shortKey(pub)))
+			continue
+		}
 		ip, _, err := net.ParseCIDR(peer.TunnelIP)
 		if err != nil {
 			conflicts = append(conflicts, fmt.Sprintf("peer tunnel IP %q: %v", peer.TunnelIP, err))
@@ -485,9 +579,6 @@ func (s *Service) preflightMergePeers(existing storage.ManagedServer, sv Managed
 		if err := validatePeerTunnelIP(serverSubnet, serverIP, ip); err != nil {
 			conflicts = append(conflicts, fmt.Sprintf("peer %s %v", pub, err))
 		}
-		if _, exists := have[pub]; exists {
-			continue
-		}
 	}
 	return conflicts
 }
@@ -498,8 +589,18 @@ func (s *Service) applyMergePeers(ctx context.Context, existing storage.ManagedS
 		have[p.PublicKey] = struct{}{}
 	}
 	added := 0
-	var addedKeys []string
 	var missingPeers []storage.ManagedPeer
+	var taken []peersubnet.Occupied
+	// Откат снимает и маршруты сетей за клиентом: allow-ips уходят с пиром, а
+	// маршруты с меткой остались бы сиротами. Метки ищутся на роутере у каждого
+	// пира — и у того, чьи сети restorePeerSubnets снял с записи после
+	// незавершённого отката. Без Commands (nil) сетей поставить было нечем.
+	rollback := func() {
+		router, _ := s.peerRouter()
+		for _, p := range missingPeers {
+			s.rollbackAddedPeer(ctx, "managed-restore-merge", existing.InterfaceName, p.PublicKey, p.Description, router)
+		}
+	}
 	for _, peer := range sv.Peers {
 		if _, ok := have[peer.PublicKey]; ok {
 			continue
@@ -509,12 +610,11 @@ func (s *Service) applyMergePeers(ctx context.Context, existing storage.ManagedS
 			return added, fmt.Errorf("peer tunnel IP %q: %w", peer.TunnelIP, err)
 		}
 		if err := s.rciAddPeer(ctx, existing.InterfaceName, peer.PublicKey, peer.PresharedKey, peer.Description, ip.String(), peer.Enabled); err != nil {
-			for _, k := range addedKeys {
-				_ = s.rciRemovePeer(ctx, existing.InterfaceName, k)
-			}
+			rollback()
 			return added, fmt.Errorf("add peer %s: %w", peer.PublicKey, err)
 		}
-		addedKeys = append(addedKeys, peer.PublicKey)
+		// peer — копия элемента sv.Peers: правка сетей входной бэкап не трогает.
+		s.restorePeerSubnets(ctx, existing.InterfaceName, &peer, &taken)
 		missingPeers = append(missingPeers, peer)
 		have[peer.PublicKey] = struct{}{}
 		added++
@@ -523,14 +623,24 @@ func (s *Service) applyMergePeers(ctx context.Context, existing storage.ManagedS
 		s.sysLog().Debug("managed restore merge found no missing peers", "interface", existing.InterfaceName)
 		return 0, nil
 	}
+	// Сети за клиентом добавленных пиров — в ACL LAN-сегментов, best-effort,
+	// как и сами сети при восстановлении.
+	undoACL := func(context.Context) {}
+	if aclEdit, err := s.planPeerSubnetsACL(ctx, &existing, serverPeerSubnets(missingPeers), nil, append(serverPeerSubnets(existing.Peers), serverPeerSubnets(missingPeers)...)); err != nil {
+		s.appLog.Warn("managed-restore-peer-subnets", existing.InterfaceName, "сети за клиентом не открыты в LAN-сегменты: "+err.Error())
+	} else if undoACL, err = s.applyPeerSubnetsACL(ctx, &existing, aclEdit); err != nil {
+		undoACL = func(context.Context) {}
+		s.appLog.Warn("managed-restore-peer-subnets", existing.InterfaceName, "сети за клиентом не открыты в LAN-сегменты: "+err.Error())
+	}
 	if err := s.settings.UpdateManagedServer(existing.InterfaceName, func(target *storage.ManagedServer) error {
 		target.Peers = append(target.Peers, missingPeers...)
 		return nil
 	}); err != nil {
-		s.sysLog().Warn("managed restore merge storage update failed; rolling back peers", "interface", existing.InterfaceName, "addedPeers", len(addedKeys), "error", err)
-		for _, k := range addedKeys {
-			_ = s.rciRemovePeer(ctx, existing.InterfaceName, k)
-		}
+		s.sysLog().Warn("managed restore merge storage update failed; rolling back peers", "interface", existing.InterfaceName, "addedPeers", len(missingPeers), "error", err)
+		rbCtx, cancel := detachedCtx(ctx)
+		undoACL(rbCtx)
+		cancel()
+		rollback()
 		return added, fmt.Errorf("persist merged peer: %w", err)
 	}
 	s.sysLog().Info("managed restore merge persisted", "interface", existing.InterfaceName, "addedPeers", added)
@@ -543,16 +653,18 @@ func (s *Service) applyASCOnMerge(ctx context.Context, ifaceName string, asc jso
 	}
 	i1, i2, i3, i4, i5, err := extractASCSignatures(asc)
 	if err != nil {
-		s.sysLog().Warn("managed restore merge ASC signatures parse failed", "interface", ifaceName, "error", err)
-		s.appLog.Warn("managed-restore-merge-asc-signatures", ifaceName, "ASC applied, but I1-I5 signatures could not be persisted: "+err.Error())
+		s.sysLog().Error("managed restore merge ASC signatures parse failed", "interface", ifaceName, "error", err)
+		s.appLog.Error("managed-restore-merge-asc-signatures", ifaceName, "ASC applied, but I1-I5 signatures could not be parsed: "+err.Error())
+		return fmt.Errorf("parse ASC signatures on merge: %w", err)
+	}
+	if i1 == "" && i2 == "" && i3 == "" && i4 == "" && i5 == "" {
 		return nil
 	}
+	// Сигнатура из ASC-снимка достаётся пирам без своей (V36); у сервера
+	// она не оседает.
 	if err := s.settings.UpdateManagedServer(ifaceName, func(target *storage.ManagedServer) error {
-		target.I1 = i1
-		target.I2 = i2
-		target.I3 = i3
-		target.I4 = i4
-		target.I5 = i5
+		target.LegacyI1, target.LegacyI2, target.LegacyI3, target.LegacyI4, target.LegacyI5 = i1, i2, i3, i4, i5
+		storage.MovePeerSignaturesFromServer(target)
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persist ASC signatures on merge: %w", err)

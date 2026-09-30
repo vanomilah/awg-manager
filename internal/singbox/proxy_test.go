@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/ndms"
+	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 )
 
 func TestProxyManagerNextFreeIndexReservesAcrossConcurrentCallers(t *testing.T) {
@@ -308,3 +309,42 @@ func TestProxyManagerListProxyObservations_ResolvesEmptySystemName(t *testing.T)
 	}
 }
 
+// F546: снятие отсутствующего ProxyN не шлёт в NDMS ничего — `interface
+// ProxyN down` по отсутствующему имени создаёт запись (стенд 5.01.C.6), а
+// точечный show interface пишет E «unable to find» в журнал NDMS. commands
+// nil: любая команда уронила бы тест.
+func TestProxyManager_RemoveProxy_AbsentSendsNothing(t *testing.T) {
+	fg := query.NewFakeGetter()
+	fg.SetJSON("/show/interface/", `{"Proxy0":{"id":"Proxy0","type":"Proxy"}}`)
+	q := query.NewQueries(query.Deps{Getter: fg, Logger: query.NopLogger()})
+	pm := NewProxyManager(q, nil)
+
+	if err := pm.RemoveProxy(context.Background(), 5); err != nil {
+		t.Fatalf("RemoveProxy(5): %v", err)
+	}
+	if n := fg.PostInterfaceCalls("Proxy5"); n != 0 {
+		t.Fatalf("show interface Proxy5 ушёл %d раз", n)
+	}
+}
+
+// NextFreeIndex обязан считать занятыми ЧУЖИЕ ProxyN (пользовательский Proxy0 —
+// не наш) и переданные reserved; иначе перезапись пользовательского прокси.
+func TestProxyManager_NextFreeIndex_SkipsForeignProxyAndReserved(t *testing.T) {
+	fg := query.NewFakeGetter()
+	fg.SetJSON("/show/interface/", `{
+		"Proxy0":{"id":"Proxy0","type":"Proxy","description":"user's own"},
+		"Proxy1":{"id":"Proxy1","type":"Proxy","description":"awgm"},
+		"Bridge0":{"id":"Bridge0","type":"Bridge"},
+		"ProxyX":{"id":"ProxyX","type":"Proxy"}
+	}`)
+	q := query.NewQueries(query.Deps{Getter: fg, Logger: query.NopLogger()})
+	pm := NewProxyManager(q, nil)
+
+	idx, err := pm.NextFreeIndex(context.Background(), map[int]bool{2: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx != 3 {
+		t.Fatalf("NextFreeIndex = %d, want 3 (0,1 заняты NDMS, 2 — reserved)", idx)
+	}
+}

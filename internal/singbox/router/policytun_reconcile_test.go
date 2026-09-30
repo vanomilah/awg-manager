@@ -3,11 +3,13 @@ package router
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
@@ -20,10 +22,10 @@ import (
 // ---------------------------------------------------------------------------
 
 type fakeRunningConfig struct {
-	lines       []string
-	fresh       []string // если задано — что отдаёт чтение ПОСЛЕ инвалидации (протухший кэш)
-	reads       int
-	invalidated int
+	lines   []string
+	fresh   []string // если задано — что отдаёт свежее чтение (протухший кэш)
+	reads   int
+	fetched int
 }
 
 func (f *fakeRunningConfig) Lines(context.Context) ([]string, error) {
@@ -31,11 +33,12 @@ func (f *fakeRunningConfig) Lines(context.Context) ([]string, error) {
 	return f.lines, nil
 }
 
-func (f *fakeRunningConfig) InvalidateAll() {
-	f.invalidated++
+func (f *fakeRunningConfig) Fetch(context.Context) ([]string, error) {
+	f.fetched++
 	if f.fresh != nil {
 		f.lines = f.fresh
 	}
+	return f.lines, nil
 }
 
 // healthyPolicyTunRC — running-config провижининга «всё на месте»: дефолты
@@ -288,10 +291,30 @@ func TestReconcilePolicyTun_ReaddsMissingDefaultRoute(t *testing.T) {
 	if h.log.has("SetIPv6DefaultRoute:OpkgTun0") {
 		t.Errorf("присутствующий v6-дефолт трогать не нужно: %v", h.log.calls)
 	}
-	// Нездоровое состояние → кэш running-config сбрасывается, чтобы решение
+	// Нездоровое состояние → running-config перечитывается, чтобы решение
 	// принималось по свежим данным.
-	if rc.invalidated == 0 {
-		t.Error("при дрейфе кэш running-config обязан инвалидироваться")
+	if rc.fetched == 0 {
+		t.Error("при дрейфе running-config обязан перечитываться свежим")
+	}
+}
+
+// Позитив к предыдущему тесту: v6-дефолт ПРОПАЛ (wantV6 — пул FakeIPPool6 задан
+// обвязкой) → переустанавливается. Раньше проверялся только негатив, и
+// `if wantV6 && !v6` → `if false` оставался зелёным.
+func TestReconcilePolicyTun_ReaddsMissingIPv6DefaultRoute(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	rc := &fakeRunningConfig{lines: []string{
+		"interface OpkgTun0", "    ip global 65500", "!",
+		"ip policy Policy0", "    permit global OpkgTun0",
+	}}
+	h.svc.deps.RunningConfig = rc
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !h.log.has("SetIPv6DefaultRoute:OpkgTun0") {
+		t.Errorf("пропавший v6-дефолт обязан быть переустановлен: %v", h.log.calls)
 	}
 }
 
@@ -340,6 +363,161 @@ func TestReconcile_DispatchesPolicyTun(t *testing.T) {
 	}
 }
 
+// Запись дефолта в running-config есть, а маршрута в таблице целевой политики
+// НЕТ: NDMS убрал его на флапе интерфейса (перезапуск движка при живом tun —
+// это Stop+Start) и не переизбрал. Проверка по тексту конфига видит полное
+// здоровье, поэтому раньше режим висел мёртвым до ручного off→on (#932).
+func TestReconcilePolicyTun_ReassertsDefaultRouteMissingFromPolicyTable(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	// Выходов нет — значит дефолта через наш интерфейс нет ни в одной таблице.
+	h.svc.deps.Policies = &fakeAccessPolicyProvider{}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !h.log.has("SetDefaultRoute:OpkgTun0") {
+		t.Errorf("дефолт, пропавший из таблицы политики, обязан быть переустановлен: %v", h.log.calls)
+	}
+}
+
+// Зеркало предыдущего: маршрут в таблице политики стоит → ставить нечего.
+// Без этой пары «переустанавливать всегда» прошло бы первый тест и стирало бы
+// флеш каждые 30 секунд (каждая постановка тянет сохранение конфигурации).
+func TestReconcilePolicyTun_NoReassertWhenPolicyTableHasDefault(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	h.svc.deps.Policies = &fakeAccessPolicyProvider{
+		exits: []query.PolicyDefaultExit{{Name: "Policy0", Mark: "0xffffaaa"}},
+	}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if h.log.has("SetDefaultRoute:OpkgTun0") {
+		t.Errorf("стоящий дефолт переустанавливать нельзя: %v", h.log.calls)
+	}
+}
+
+// Дефолт ведёт в наш интерфейс, но у ЧУЖОЙ политики: устройства сидят в целевой,
+// и её таблица пуста — лечим. Без этого теста `len(exits) > 0` вместо сверки
+// имени прошло бы обе проверки выше (тот же класс, что три теста про permit в
+// чужой политике).
+func TestReconcilePolicyTun_ReassertsWhenDefaultBelongsToForeignPolicy(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	h.svc.deps.Policies = &fakeAccessPolicyProvider{
+		exits: []query.PolicyDefaultExit{{Name: "Policy1", Mark: "0xffffaab"}},
+	}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !h.log.has("SetDefaultRoute:OpkgTun0") {
+		t.Errorf("дефолт чужой политики не считается нашим: %v", h.log.calls)
+	}
+}
+
+// «Не знаем» ≠ «пропал»: на отказе RCI, без выбранной политики и без провайдера
+// мутаций быть не должно. Цена ошибки в каждом — запись startup-config каждые
+// 30 секунд круглосуточно.
+func TestReconcilePolicyTun_NoReassertWhenExitsUnknown(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		policy   string
+		provider AccessPolicyProvider
+	}{
+		{"отказ RCI", "Policy0", &fakeAccessPolicyProvider{exitsErr: errors.New("injected: RCI")}},
+		{"политика не выбрана", "", &fakeAccessPolicyProvider{}},
+		{"провайдера нет", "Policy0", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPolicyTunEnableHarness(t, "")
+			sr := provisionPolicyTunForReconcile(t, h)
+			sr.PolicyName = tc.policy
+			h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+			if tc.provider != nil {
+				h.svc.deps.Policies = tc.provider
+			}
+			h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+			if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+				t.Fatalf("reconcilePolicyTun: %v", err)
+			}
+			if h.log.has("SetDefaultRoute:OpkgTun0") {
+				t.Errorf("на «не знаем» мутаций быть не должно: %v", h.log.calls)
+			}
+		})
+	}
+}
+
+// Мёртвый tun (carrier=0) — не кандидат, маршрута в таблице нет закономерно, и
+// постановка записи его не вернёт. Лечение движка — работа healDetachedTun.
+func TestReconcilePolicyTun_NoReassertWhileTunDown(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	h.svc.deps.Policies = &fakeAccessPolicyProvider{}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+	stubTunReadyProbe(t, func(string) bool { return false })
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if h.log.has("SetDefaultRoute:OpkgTun0") {
+		t.Errorf("при нулевом carrier ставить маршрут бессмысленно: %v", h.log.calls)
+	}
+}
+
+// Ограничитель: состояние, где постановка бессильна (выборы в политике выиграл
+// другой выход, пустая марка), стоит РОВНО столько записей, сколько разрешено, —
+// а не по одной за тик навсегда. И наоборот: как только маршрут появился,
+// счётчик сбрасывается и следующий инцидент получает все попытки снова.
+func TestReconcilePolicyTun_ReassertIsBounded(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	pol := &fakeAccessPolicyProvider{}
+	h.svc.deps.Policies = pol
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+	ticks := policyTunRouteHealAttempts[len(policyTunRouteHealAttempts)-1] + 5
+	for i := 0; i < ticks; i++ {
+		if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+			t.Fatalf("reconcilePolicyTun (тик %d): %v", i, err)
+		}
+	}
+	if got, want := h.log.count("SetDefaultRoute:OpkgTun0"), len(policyTunRouteHealAttempts); got != want {
+		t.Fatalf("за %d тиков постановок %d, разрешено %d: %v", ticks, got, want, h.log.calls)
+	}
+
+	// Маршрут появился → счётчик сброшен; следующая пропажа снова лечится с
+	// первого тика. Без сброса ре-ассерт после исчерпания умер бы навсегда.
+	pol.exits = []query.PolicyDefaultExit{{Name: "Policy0", Mark: "0xffffaaa"}}
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (маршрут вернулся): %v", err)
+	}
+	pol.exits = nil
+	h.log.calls = nil
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (новая пропажа): %v", err)
+	}
+	if !h.log.has("SetDefaultRoute:OpkgTun0") {
+		t.Errorf("после возврата маршрута попытки обязаны начаться заново: %v", h.log.calls)
+	}
+}
+
 // Пропал `ip global` → интерфейс исчез из списка выходов политики; ставим снова.
 func TestReconcilePolicyTun_ReassertsIPGlobal(t *testing.T) {
 	h := newPolicyTunEnableHarness(t, "")
@@ -380,8 +558,8 @@ func TestReconcilePolicyTun_NoMutationWhenNoDrift(t *testing.T) {
 	if len(h.log.calls) != 0 {
 		t.Errorf("здоровый тик обязан быть без мутаций NDMS, получено %v", h.log.calls)
 	}
-	if rc.invalidated != 0 {
-		t.Errorf("здоровое состояние не должно сбрасывать кэш running-config (invalidated=%d)", rc.invalidated)
+	if rc.fetched != 0 {
+		t.Errorf("здоровое состояние не должно перечитывать running-config (fetched=%d)", rc.fetched)
 	}
 }
 
@@ -537,6 +715,245 @@ func TestReconcilePolicyTun_NoReprovisionWhenInboundPresent(t *testing.T) {
 	}
 	if h.log.has("SetAddress:OpkgTun0:172.18.0.1:255.255.255.252") {
 		t.Errorf("здоровое состояние переустанавливать нельзя: %v", h.log.calls)
+	}
+}
+
+// policy-tun пишет тот же 20-router.json, что и tproxy, но идёт своим путём
+// реконсиляции (reconcilePolicyTun, а не reconcileInstalled) — без отдельного
+// вызова heal1140SlotMigration здесь слот, поднятый до миграции на sing-box
+// 1.14, остался бы на старой форме до первой ручной правки маршрутизации.
+// Мирроит TestHeal1140SlotMigration_RewritesLegacySlot (router-slot ветка).
+func TestReconcilePolicyTun_Heal1140SlotMigration(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+
+	legacy := `{
+		"inbounds": [{
+			"type": "tun", "tag": "tun-in", "interface_name": "OpkgTun0",
+			"address": ["172.18.0.1/30"], "mtu": 1400, "stack": "gvisor",
+			"udp_timeout": "5m0s", "auto_route": false, "auto_redirect": false,
+			"strict_route": false, "gso": false, "endpoint_independent_nat": false
+		}],
+		"outbounds": [{"type": "direct", "tag": "direct"}],
+		"route": {
+			"rule_set": [{
+				"tag": "geosite-x", "type": "remote", "format": "binary",
+				"url": "https://example.com/x.srs", "update_interval": "24h",
+				"download_detour": "direct"
+			}],
+			"rules": [{"action": "route", "rule_set": ["geosite-x"], "outbound": "direct"}],
+			"final": "direct"
+		}
+	}`
+	activePath := filepath.Join(h.dir, "20-router.json")
+	if err := os.WriteFile(activePath, []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+
+	raw, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	for _, want := range []string{`"http_clients"`, `"http_client"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("migrated slot missing %s: %s", want, raw)
+		}
+	}
+	for _, gone := range []string{"download_detour", "gso", "endpoint_independent_nat"} {
+		if strings.Contains(string(raw), gone) {
+			t.Errorf("migrated slot still has legacy key %q: %s", gone, raw)
+		}
+	}
+
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (второй тик): %v", err)
+	}
+
+	after, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("второй тик переписал уже мигрированный слот (before=%v after=%v)", before.ModTime(), after.ModTime())
+	}
+}
+
+// F114: смена udpTimeout/udpNatMax в настройках доезжает до tun-in без
+// Disable/Enable — до фикса tun-in строится только на enable
+// (ensurePolicyTunInbound), и UpdateSettings оставался мёртвым до
+// перезапуска режима.
+func TestReconcilePolicyTun_HealsUDPSettings(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+
+	sr.UDPTimeout = "10m0s"
+	sr.UDPNATMax = 8192
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+
+	cfg, err := h.svc.loadAppliedRouterConfig()
+	if err != nil {
+		t.Fatalf("loadAppliedRouterConfig: %v", err)
+	}
+	var tun *Inbound
+	for i := range cfg.Inbounds {
+		if cfg.Inbounds[i].Tag == "tun-in" {
+			tun = &cfg.Inbounds[i]
+		}
+	}
+	if tun == nil {
+		t.Fatal("tun-in инбаунд отсутствует")
+	}
+	if tun.UDPTimeout != "10m0s" || tun.UDPNATMax != 8192 {
+		t.Errorf("tun-in UDPTimeout=%q UDPNATMax=%d, want 10m0s/8192", tun.UDPTimeout, tun.UDPNATMax)
+	}
+	ruleOK := false
+	for _, r := range cfg.Route.Rules {
+		if isSystemUDPTimeoutRule(r) {
+			ruleOK = r.UDPTimeout == "10m0s"
+		}
+	}
+	if !ruleOK {
+		t.Error("route-options правило udp_timeout не обновлено до 10m0s")
+	}
+
+	activePath := filepath.Join(h.dir, "20-router.json")
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (второй тик): %v", err)
+	}
+	after, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("второй тик без изменений переписал слот (before=%v after=%v)", before.ModTime(), after.ModTime())
+	}
+}
+
+// Смена стека в настройках доезжает до tun-in policy-tun без Disable/Enable:
+// в fakeip-режиме её доносит reapplyFakeIPOverlay, а здесь overlay не
+// перегенерируется — без heal селектор стека в карточке режима был бы мёртвым.
+func TestReconcilePolicyTun_HealsStack(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+
+	// Провижининг оставил стек по умолчанию (пустой = собственный стек
+	// sing-tun); пользователь откатывается на legacy-gvisor.
+	sr.FakeIPStack = "gvisor"
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if got := policyTunInbound(t, h).Stack; got != "gvisor" {
+		t.Errorf("tun-in stack = %q, want gvisor", got)
+	}
+
+	// И обратно: пустое значение обязано СНЯТЬ ключ, а не остаться gvisor'ом.
+	sr.FakeIPStack = ""
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (обратно): %v", err)
+	}
+	if got := policyTunInbound(t, h).Stack; got != "" {
+		t.Errorf("tun-in stack = %q, want пустой", got)
+	}
+	raw, err := os.ReadFile(filepath.Join(h.dir, "20-router.json"))
+	if err != nil {
+		t.Fatalf("read active: %v", err)
+	}
+	if strings.Contains(string(raw), `"stack"`) {
+		t.Errorf("ключ stack остался в слоте: %s", raw)
+	}
+}
+
+// policyTunInbound возвращает tun-in из применённого слота.
+func policyTunInbound(t *testing.T, h *policyTunEnableHarness) *Inbound {
+	t.Helper()
+	cfg, err := h.svc.loadAppliedRouterConfig()
+	if err != nil {
+		t.Fatalf("loadAppliedRouterConfig: %v", err)
+	}
+	for i := range cfg.Inbounds {
+		if cfg.Inbounds[i].Tag == "tun-in" {
+			return &cfg.Inbounds[i]
+		}
+	}
+	t.Fatal("tun-in инбаунд отсутствует")
+	return nil
+}
+
+// F114 fix round 1: guard в healTunSettings обязан ловить не только
+// расхождение полей tun-in, но и пропавшее/устаревшее route-options
+// правило — иначе при уже верных полях инбаунда heal no-op'ится навсегда,
+// хотя правило снято. Инбаунд не трогаем (sr не меняем — дефолт "5m0s"),
+// вырезаем ТОЛЬКО правило.
+func TestReconcilePolicyTun_HealsMissingUDPTimeoutRule(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+
+	cfg, err := h.svc.loadAppliedRouterConfig()
+	if err != nil {
+		t.Fatalf("loadAppliedRouterConfig: %v", err)
+	}
+	cfg.EnsureUDPTimeoutRule("") // снимает правило, ничего не добавляя
+	if err := h.svc.persistConfigDirect(context.Background(), cfg); err != nil {
+		t.Fatalf("persistConfigDirect: %v", err)
+	}
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+
+	after, err := h.svc.loadAppliedRouterConfig()
+	if err != nil {
+		t.Fatalf("loadAppliedRouterConfig (после): %v", err)
+	}
+	ruleOK := false
+	for _, r := range after.Route.Rules {
+		if isSystemUDPTimeoutRule(r) {
+			ruleOK = r.UDPTimeout == "5m0s"
+		}
+	}
+	if !ruleOK {
+		t.Error("route-options правило udp_timeout не восстановлено")
+	}
+
+	activePath := filepath.Join(h.dir, "20-router.json")
+	before, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (второй тик): %v", err)
+	}
+	afterStat, err := os.Stat(activePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if !afterStat.ModTime().Equal(before.ModTime()) {
+		t.Errorf("второй тик без изменений переписал слот (before=%v after=%v)", before.ModTime(), afterStat.ModTime())
 	}
 }
 
@@ -982,7 +1399,104 @@ func TestGetStatus_PolicyTun(t *testing.T) {
 		t.Errorf("сообщение должно называть интерфейс: %q", iss.Message)
 	}
 
+	// Рантайм NDMS маршрута не показывает (#932): статус обязан сказать
+	// «не работает» и объяснить, а не рапортовать здоровье по тексту конфига.
+	// Счётчик — вывод последнего тика реконсиля; GetStatus сам NDMS не
+	// спрашивает (его опрашивают часто, а /show/ip/policy не кэшируется).
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	// Политика в СТОРЕ, а не только в sr: GetStatus читает настройки сам, и без
+	// неё проверялось бы состояние, которого продакшен не производит — при
+	// пустом PolicyName счётчик не растёт никогда.
+	h.withPolicy(t, "Policy0")
+	h.svc.policyTunRouteStrikes.Store(1)
+	stLost, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if stLost.Active {
+		t.Error("маршрута в таблице политики нет — Active обязан быть false")
+	}
+	lost := issueOfKind(stLost.Issues, issuePolicyTunRouteLost)
+	if lost == nil {
+		t.Fatalf("ожидался issue %q: %+v", issuePolicyTunRouteLost, stLost.Issues)
+	}
+	if lost.Severity != "error" {
+		t.Errorf("severity = %q, want error: это полный отказ режима", lost.Severity)
+	}
+	if !strings.Contains(lost.Message, "переустанавливаю") {
+		t.Errorf("пока попытки не исчерпаны, сообщение говорит что лечение идёт: %q", lost.Message)
+	}
+	// Сообщение обязано называть ОБА имени: без них пользователю негде искать.
+	if !strings.Contains(lost.Message, "OpkgTun0") || !strings.Contains(lost.Message, "Policy0") {
+		t.Errorf("сообщение должно называть интерфейс и политику: %q", lost.Message)
+	}
+
+	// Попытки исчерпаны — формулировка обязана меняться: «лечится» и «лечение
+	// не помогло» для пользователя разные миры.
+	// На последней РАЗРЕШЁННОЙ попытке постановка сделана в этом же тике, её
+	// результат виден только на следующем — сдаваться рано.
+	h.svc.policyTunRouteStrikes.Store(int64(policyTunRouteHealAttempts[len(policyTunRouteHealAttempts)-1]))
+	stLast, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if last := issueOfKind(stLast.Issues, issuePolicyTunRouteLost); last == nil ||
+		!strings.Contains(last.Message, "переустанавливаю") {
+		t.Errorf("на последней попытке рано объявлять неудачу: %+v", stLast.Issues)
+	}
+
+	h.svc.policyTunRouteStrikes.Store(int64(policyTunRouteHealAttempts[len(policyTunRouteHealAttempts)-1]) + 1)
+	stGaveUp, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	gaveUp := issueOfKind(stGaveUp.Issues, issuePolicyTunRouteLost)
+	if gaveUp == nil {
+		t.Fatalf("ожидался issue %q: %+v", issuePolicyTunRouteLost, stGaveUp.Issues)
+	}
+	if !strings.Contains(gaveUp.Message, "не помогла") {
+		t.Errorf("после исчерпания попыток сообщение должно это сказать: %q", gaveUp.Message)
+	}
+
+	// Жалоб нет → ни issue, ни поражения в статусе.
+	h.svc.policyTunRouteStrikes.Store(0)
+	stOK, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if !stOK.Active {
+		t.Error("маршрут на месте — Active")
+	}
+	if issueOfKind(stOK.Issues, issuePolicyTunRouteLost) != nil {
+		t.Errorf("жалоб нет — issue не нужен: %+v", stOK.Issues)
+	}
+
+	// Интерфейс не разрешён в политике → дефолта через него нет ПО ОПРЕДЕЛЕНИЮ,
+	// и два замечания описывали бы одну причину. Остаётся то, которое говорит,
+	// что чинить.
+	h.svc.policyTunRouteStrikes.Store(1)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: []string{
+		"interface OpkgTun0", "    ip global 65500", "!",
+		"ip route default OpkgTun0",
+		"ipv6 route default OpkgTun0",
+	}}
+	stUnbound, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if issueOfKind(stUnbound.Issues, issuePolicyTunUnbound) == nil {
+		t.Fatalf("ожидался issue %q: %+v", issuePolicyTunUnbound, stUnbound.Issues)
+	}
+	if issueOfKind(stUnbound.Issues, issuePolicyTunRouteLost) != nil {
+		t.Errorf("при отсутствующем permit'е второе замечание — дубль причины: %+v", stUnbound.Issues)
+	}
+	h.svc.policyTunRouteStrikes.Store(0)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+
 	// Выключенный движок не светит ни одного policy-tun поля (урок PE-G).
+	// Счётчик при этом НЕНУЛЕВОЙ: гейт по Enabled обязан быть настоящим, а не
+	// держаться на том, что жалоб не осталось.
+	h.svc.policyTunRouteStrikes.Store(1)
 	all, _ := h.store.Load()
 	all.SingboxRouter.Enabled = false
 	if err := h.store.Update(func(cur *storage.Settings) error { *cur = *all; return nil }); err != nil {
@@ -997,6 +1511,115 @@ func TestGetStatus_PolicyTun(t *testing.T) {
 	}
 	if issueOfKind(st3.Issues, issuePolicyTunUnbound) != nil {
 		t.Error("выключенный движок не должен ругаться на политику")
+	}
+	if issueOfKind(st3.Issues, issuePolicyTunRouteLost) != nil {
+		t.Error("выключенный движок не должен ругаться на маршрут")
+	}
+}
+
+// «Не знаем» (отказ RCI) счётчик НЕ трогает. Обнуление здесь стоило бы дважды:
+// статус мигал бы на каждом флапе RCI, а лестница попыток не набиралась бы
+// никогда — каждая вторая пропажа шла бы как первая, и постановка (а с ней
+// запись startup-config) повторялась бы вдвое чаще потолка.
+func TestReconcilePolicyTun_UnknownExitsKeepStrikes(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	pol := h.withPolicy(t, "Policy0")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+	// Тик с пропавшим маршрутом — счётчик пошёл.
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if got := h.svc.policyTunRouteStrikes.Load(); got != 1 {
+		t.Fatalf("после пропажи счётчик = %d, want 1", got)
+	}
+
+	// Следующий тик — RCI отказал. Ни роста, ни сброса.
+	pol.exitsErr = errors.New("injected: RCI")
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (отказ RCI): %v", err)
+	}
+	if got := h.svc.policyTunRouteStrikes.Load(); got != 1 {
+		t.Errorf("на «не знаем» счётчик = %d, want 1 (замереть, а не сброситься)", got)
+	}
+}
+
+// Выключение и включение режима — то самое лечение, которое мы советуем при
+// #932. Оно обязано снимать жалобы: иначе пользователь, сделавший ровно то, что
+// сказано, видит в панели «переустановка не помогла».
+func TestPolicyTun_EnableDisableResetStrikes(t *testing.T) {
+	t.Run("выключение", func(t *testing.T) {
+		h := newPolicyTunEnableHarness(t, "")
+		provisionPolicyTunForReconcile(t, h)
+		h.svc.policyTunRouteStrikes.Store(8)
+		if err := h.svc.Disable(context.Background()); err != nil {
+			t.Fatalf("Disable: %v", err)
+		}
+		if got := h.svc.policyTunRouteStrikes.Load(); got != 0 {
+			t.Errorf("после выключения счётчик = %d, want 0", got)
+		}
+	})
+	t.Run("включение", func(t *testing.T) {
+		h := newPolicyTunEnableHarness(t, "")
+		h.svc.policyTunRouteStrikes.Store(8)
+		if err := h.svc.Enable(context.Background()); err != nil {
+			t.Fatalf("Enable: %v", err)
+		}
+		if got := h.svc.policyTunRouteStrikes.Load(); got != 0 {
+			t.Errorf("после включения счётчик = %d, want 0", got)
+		}
+	})
+}
+
+// Сквозная связка продюсера с потребителем: тик реконсиля НЕ находит маршрут в
+// рантайме → статус говорит «не работает» и объясняет. Без этого теста счётчик
+// в тестах всегда ставился руками, и мутация «carrier=0 больше не обнуляет
+// счётчик» оставалась зелёной.
+func TestReconcilePolicyTun_LostRouteSurfacesInStatus(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	h.svc.deps.XtDscpProbe = func(context.Context) bool { return false }
+	pol := h.withPolicy(t, "Policy0")
+	sr := provisionPolicyTunForReconcile(t, h)
+	sr.PolicyName = "Policy0"
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+
+	// Выходов нет — рантайм маршрута не показывает.
+	pol.exits = nil
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	h.svc.deps.IPTables = errProbeIPTables()
+	st, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if st.Active {
+		t.Error("тик не нашёл маршрута — статус обязан сказать «не работает»")
+	}
+	if issueOfKind(st.Issues, issuePolicyTunRouteLost) == nil {
+		t.Errorf("ожидался issue %q: %+v", issuePolicyTunRouteLost, st.Issues)
+	}
+
+	// Маршрут вернулся → следующий тик снимает и поражение, и замечание.
+	pol.exits = []query.PolicyDefaultExit{{Name: "Policy0", Mark: "0xffffaaa"}}
+	h.svc.deps.IPTables = (&ingressRecorder{natDump: "-P PREROUTING ACCEPT\n"}).tables()
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (маршрут вернулся): %v", err)
+	}
+	h.svc.deps.IPTables = errProbeIPTables()
+	st2, err := h.svc.GetStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetStatus: %v", err)
+	}
+	if !st2.Active {
+		t.Error("маршрут вернулся — статус обязан это увидеть")
+	}
+	if issueOfKind(st2.Issues, issuePolicyTunRouteLost) != nil {
+		t.Errorf("маршрут вернулся — замечание обязано уйти: %+v", st2.Issues)
 	}
 }
 
@@ -1319,13 +1942,13 @@ func TestReconcilePolicyTun_QoSKeenDNSCIDRChanged_Reinstalls(t *testing.T) {
 	all, _ := h.store.Load()
 	sr, _ := NormalizeSingboxRouterSettings(all.SingboxRouter)
 
-	h.svc.setKeenDNSBypass([]string{"78.47.125.180"})
+	h.svc.setKeenDNSBypass([]string{"198.51.100.180"})
 
 	installs, last := tickPolicyTunQoS(t, h, sr)
 	if installs != 1 {
 		t.Fatalf("появление адреса KeenDNS обязано переустановить правила: installs = %d, want 1", installs)
 	}
-	if !strings.Contains(last, "78.47.125.180/32") {
+	if !strings.Contains(last, "198.51.100.180/32") {
 		t.Errorf("адрес KeenDNS не попал в правила обхода:\n%s", last)
 	}
 
@@ -1354,5 +1977,416 @@ func TestReconcilePolicyTun_QoSSpecModeFlagChanged_Reinstalls(t *testing.T) {
 	installs, _ := tickPolicyTunQoS(t, h, sr)
 	if installs != 1 {
 		t.Fatalf("спек, отличающийся режимным флагом, обязан переустанавливаться: installs = %d, want 1", installs)
+	}
+}
+
+// One-shot ассерт permit-ACL гейтится успехом пробы живости интерфейса: если
+// проба упала, интерфейса может не быть вовсе, и permit-список уехал бы в
+// конфиг роутера осиротевшим — снять его потом нечем.
+func TestReconcilePolicyTun_SkipsPermitACLWhenProbeFailed(t *testing.T) {
+	rcLines := []string{
+		"interface OpkgTun0", "    ip global 65500", "!",
+		"ip policy Policy0", "    permit global OpkgTun0",
+	}
+	t.Run("проба упала — ACL не ставится", func(t *testing.T) {
+		h := newPolicyTunEnableHarness(t, "")
+		sr := provisionPolicyTunForReconcile(t, h)
+		h.svc.deps.RunningConfig = &fakeRunningConfig{lines: rcLines}
+		h.svc.deps.OpkgTunIndices = &recIndices{err: errors.New("probe")}
+		h.svc.policyTunACLAsserted = false
+
+		if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+			t.Fatalf("reconcilePolicyTun: %v", err)
+		}
+		if h.log.has("SetPermitACL:OpkgTun0") {
+			t.Errorf("permit-ACL поставлен при упавшей пробе: %v", h.log.calls)
+		}
+		if h.svc.policyTunACLAsserted {
+			t.Error("флаг one-shot взведён без успешной постановки ACL")
+		}
+		// v6-близнец гейта — своя строка кода и свой флаг: обвязка задаёт
+		// FakeIPPool6, значит TunAddr6 непуст и по адресу разрешать есть что.
+		if h.log.has("SetPermitACLv6:OpkgTun0") {
+			t.Errorf("v6-permit-ACL поставлен при упавшей пробе: %v", h.log.calls)
+		}
+		if h.svc.policyTunACLv6Asserted {
+			t.Error("v6-флаг one-shot взведён без успешной постановки ACL")
+		}
+	})
+	t.Run("проба прошла — ACL ставится", func(t *testing.T) {
+		h := newPolicyTunEnableHarness(t, "")
+		sr := provisionPolicyTunForReconcile(t, h)
+		h.svc.deps.RunningConfig = &fakeRunningConfig{lines: rcLines}
+		h.svc.policyTunACLAsserted = false
+
+		if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+			t.Fatalf("reconcilePolicyTun: %v", err)
+		}
+		if !h.log.has("SetPermitACL:OpkgTun0") {
+			t.Errorf("permit-ACL не поставлен при здоровой пробе: %v", h.log.calls)
+		}
+		if !h.svc.policyTunACLAsserted {
+			t.Error("флаг one-shot не взведён после успешной постановки ACL")
+		}
+		if !h.log.has("SetPermitACLv6:OpkgTun0") {
+			t.Errorf("v6-permit-ACL не поставлен при здоровой пробе: %v", h.log.calls)
+		}
+		if !h.svc.policyTunACLv6Asserted {
+			t.Error("v6-флаг one-shot не взведён после успешной постановки ACL")
+		}
+	})
+}
+
+// stubTunKernelAddrs подменяет чтение адресов интерфейса из ядра.
+func stubTunKernelAddrs(t *testing.T, addrs ...string) {
+	t.Helper()
+	old := tunKernelAddrs
+	tunKernelAddrs = func(string) ([]netip.Addr, error) {
+		out := make([]netip.Addr, 0, len(addrs))
+		for _, a := range addrs {
+			out = append(out, netip.MustParseAddr(a))
+		}
+		return out, nil
+	}
+	t.Cleanup(func() { tunKernelAddrs = old })
+}
+
+// Адрес tun'а держит NDMS, а прежний sing-tun снимает его при Close, и NDMS
+// сам не возвращает (стенд 25.09.2026) — reconcile повторяет адрес через NDMS.
+func TestReconcilePolicyTun_ReassertsMissingTunAddress(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	stubTunKernelAddrs(t, "fe80::1") // только link-local: оба наших адреса сняты
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !h.log.has("SetAddress:OpkgTun0:172.18.0.1:255.255.255.252") {
+		t.Errorf("IPv4 не повторён через NDMS: %v", h.log.calls)
+	}
+	if !h.log.has("SetIPv6Address:OpkgTun0:fdfe:dcba:9876::1") {
+		t.Errorf("IPv6 не повторён через NDMS: %v", h.log.calls)
+	}
+}
+
+// Адреса на месте — RCI не трогаем: reconcile тикает каждые 30 с.
+func TestReconcilePolicyTun_NoAddressCallWhenPresent(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	stubTunKernelAddrs(t, "172.18.0.1", "fdfe:dcba:9876::1")
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	for _, c := range h.log.calls {
+		if strings.HasPrefix(c, "SetAddress:") || strings.HasPrefix(c, "SetIPv6Address:") {
+			t.Errorf("адрес на месте, но был вызов %q", c)
+		}
+	}
+}
+
+// stubExternalFlipFast убирает паузы опроса адреса после перехода на флаг.
+func stubExternalFlipFast(t *testing.T) {
+	t.Helper()
+	old := externalFlipInterval
+	externalFlipInterval = 0
+	t.Cleanup(func() { externalFlipInterval = old })
+}
+
+// external_configuration зависит от бинаря, а бинарь меняется обновлением без
+// перевключения режима — heal доводит флаг в обе стороны.
+func TestReconcilePolicyTun_HealsExternalConfiguration(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	stubExternalFlipFast(t)
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	sb := h.svc.deps.Singbox.(*fakeSingbox)
+
+	if policyTunInbound(t, h).ExternalConfiguration {
+		t.Fatal("фикстура: не пиннутый бинарь — флага быть не должно")
+	}
+	sb.tunHotReload = true
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !policyTunInbound(t, h).ExternalConfiguration {
+		t.Error("пиннутый бинарь: флаг не выставлен")
+	}
+	sb.tunHotReload = false
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if policyTunInbound(t, h).ExternalConfiguration {
+		t.Error("чужой бинарь: флаг обязан сняться, иначе check отвергнет конфиг")
+	}
+}
+
+// Включение сразу пишет флаг по бинарю — иначе первый же тик переписал бы слот
+// и дёрнул лишний reload.
+func TestPolicyTunEnable_WritesExternalConfiguration(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+	if err := h.svc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if !policyTunInbound(t, h).ExternalConfiguration {
+		t.Error("включение не записало external_configuration")
+	}
+}
+
+// Переход на флаг при живом tun: старый инстанс снимает IPv4 на SIGHUP, NDMS
+// его не возвращает — ждать следующего тика (30 с) нельзя. Тик, включивший
+// флаг, применяет конфиг сразу и возвращает адрес, как только тот пропал.
+func TestReconcilePolicyTun_ExternalFlipRestoresAddressSameTick(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	stubExternalFlipFast(t)
+	calls := 0
+	old := tunKernelAddrs
+	tunKernelAddrs = func(string) ([]netip.Addr, error) {
+		calls++
+		if calls <= 2 { // тиковый healTunAddress и первый опрос: адрес ещё на месте
+			return []netip.Addr{netip.MustParseAddr("172.18.0.1"), netip.MustParseAddr("fdfe:dcba:9876::1")}, nil
+		}
+		return []netip.Addr{netip.MustParseAddr("fdfe:dcba:9876::1")}, nil // старый инстанс снял v4
+	}
+	t.Cleanup(func() { tunKernelAddrs = old })
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !h.log.has("SetAddress:OpkgTun0:172.18.0.1:255.255.255.252") {
+		t.Errorf("адрес не возвращён в том же тике: %v", h.log.calls)
+	}
+	if calls != 3 {
+		t.Errorf("опрос обязан остановиться на возврате адреса: calls=%d", calls)
+	}
+
+	// Флаг уже стоит — следующий тик не опрашивает.
+	calls = 0
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (2): %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("без перехода опроса быть не должно: calls=%d", calls)
+	}
+
+	// Heal по другому полю при уже стоящем флаге — тоже не переход.
+	calls = 0
+	sr.UDPTimeout = "7m0s"
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (3): %v", err)
+	}
+	if got := policyTunInbound(t, h).UDPTimeout; got != "7m0s" {
+		t.Fatalf("фикстура: heal udp_timeout не прошёл, %q", got)
+	}
+	if calls != 1 {
+		t.Errorf("heal без смены флага не должен опрашивать адрес: calls=%d", calls)
+	}
+}
+
+// Версия бинаря временно не определилась — это не «чужой бинарь»: снять флаг
+// значило бы перезапустить стек tun, а через минуту вернуть его вторым
+// переходом. Флаг остаётся, каким был.
+func TestReconcilePolicyTun_UnknownVersionKeepsExternalConfiguration(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sb := h.svc.deps.Singbox.(*fakeSingbox)
+	sb.tunHotReload = true
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	if !policyTunInbound(t, h).ExternalConfiguration {
+		t.Fatal("фикстура: включение на пиннутом бинаре пишет флаг")
+	}
+
+	sb.tunHotReload, sb.versionUnknown = false, true
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if !policyTunInbound(t, h).ExternalConfiguration {
+		t.Error("неизвестная версия сняла флаг")
+	}
+
+	sb.versionUnknown = false // версия известна и не пиннутая — снимаем
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun (2): %v", err)
+	}
+	if policyTunInbound(t, h).ExternalConfiguration {
+		t.Error("известная чужая версия обязана снять флаг")
+	}
+}
+
+// stubExternalFlipApply считает применения конфига при переходе на флаг.
+func stubExternalFlipApply(t *testing.T, err error) *int {
+	t.Helper()
+	n := 0
+	old := externalFlipApply
+	externalFlipApply = func(*ServiceImpl) error { n++; return err }
+	t.Cleanup(func() { externalFlipApply = old })
+	return &n
+}
+
+// stubAddrsSequence: первые present вызовов адреса на месте, дальше v4 снят.
+func stubAddrsSequence(t *testing.T, present int, onCall func(n int)) *int {
+	t.Helper()
+	calls := 0
+	old := tunKernelAddrs
+	tunKernelAddrs = func(string) ([]netip.Addr, error) {
+		calls++
+		if onCall != nil {
+			onCall(calls)
+		}
+		if calls <= present {
+			return []netip.Addr{netip.MustParseAddr("172.18.0.1"), netip.MustParseAddr("fdfe:dcba:9876::1")}, nil
+		}
+		return []netip.Addr{netip.MustParseAddr("fdfe:dcba:9876::1")}, nil
+	}
+	t.Cleanup(func() { tunKernelAddrs = old })
+	return &calls
+}
+
+// Переход обязан применить конфиг сразу (иначе SIGHUP придёт debounce'ом уже
+// после опроса), а без ушедшего SIGHUP — не опрашивать: адрес снимать некому,
+// а 15 с под transitionMu задержали бы смену режима.
+func TestReconcilePolicyTun_ExternalFlipAppliesOrSkipsPolling(t *testing.T) {
+	cases := []struct {
+		name      string
+		applyErr  error
+		running   bool
+		wantApply int
+		wantCalls int
+	}{
+		{"применено — опрос до возврата", nil, true, 1, 3},
+		{"применение отвергнуто — без опроса", errors.New("validation failed"), true, 1, 1},
+		{"движок остановлен — без применения и опроса", nil, false, 0, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPolicyTunEnableHarness(t, "")
+			sr := provisionPolicyTunForReconcile(t, h)
+			h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+			stubExternalFlipFast(t)
+			applies := stubExternalFlipApply(t, tc.applyErr)
+			calls := stubAddrsSequence(t, 2, nil)
+			sb := h.svc.deps.Singbox.(*fakeSingbox)
+			sb.tunHotReload = true
+			running := tc.running
+			sb.isRunningFn = func() (bool, int) { return running, 1234 }
+
+			if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+				t.Fatalf("reconcilePolicyTun: %v", err)
+			}
+			if *applies != tc.wantApply {
+				t.Errorf("применений = %d, want %d", *applies, tc.wantApply)
+			}
+			if *calls != tc.wantCalls {
+				t.Errorf("чтений адреса = %d, want %d", *calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// Снятие флага (бинарь известен и не пиннутый) — не переход: старый инстанс с
+// флагом адрес не снимает, опрашивать нечего.
+func TestReconcilePolicyTun_ExternalUnflipDoesNotPoll(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sb := h.svc.deps.Singbox.(*fakeSingbox)
+	sb.tunHotReload = true
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	stubExternalFlipFast(t)
+	applies := stubExternalFlipApply(t, nil)
+	calls := stubAddrsSequence(t, 1000, nil)
+
+	sb.tunHotReload = false
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	if policyTunInbound(t, h).ExternalConfiguration {
+		t.Fatal("фикстура: флаг обязан сняться")
+	}
+	if *applies != 0 || *calls != 1 {
+		t.Errorf("снятие флага запустило переход: применений %d, чтений %d", *applies, *calls)
+	}
+}
+
+// Отказ RCI при возврате адреса не заканчивает опрос: адрес пробуется снова,
+// а не ждёт следующего тика.
+func TestReconcilePolicyTun_ExternalFlipRetriesFailedRestore(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	stubExternalFlipFast(t)
+	stubExternalFlipApply(t, nil)
+	stubAddrsSequence(t, 2, func(n int) {
+		if n == 3 {
+			h.opkg.failAt = "SetAddress" // первая попытка возврата падает
+		} else if n == 4 {
+			h.opkg.failAt = ""
+		}
+	})
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	n := 0
+	for _, c := range h.log.calls {
+		if c == "SetAddress:OpkgTun0:172.18.0.1:255.255.255.252" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("попыток возврата = %d, want 2 (повтор после отказа): %v", n, h.log.calls)
+	}
+}
+
+// Проба живости упала — чужой интерфейс на нашем индексе не отсечён, адрес не
+// трогаем (needsReprovision на ошибке пробы молчит).
+func TestReconcilePolicyTun_NoAddressHealWhenProbeFails(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	sr := provisionPolicyTunForReconcile(t, h)
+	h.svc.deps.RunningConfig = &fakeRunningConfig{lines: healthyPolicyTunRC("OpkgTun0")}
+	h.svc.deps.OpkgTunIndices = &recIndices{err: errors.New("rci timeout")}
+	stubTunKernelAddrs(t) // адресов нет вовсе
+
+	if err := h.svc.reconcilePolicyTun(context.Background(), sr); err != nil {
+		t.Fatalf("reconcilePolicyTun: %v", err)
+	}
+	for _, c := range h.log.calls {
+		if strings.HasPrefix(c, "SetAddress:") || strings.HasPrefix(c, "SetIPv6Address:") {
+			t.Errorf("адрес ставился без подтверждённой живости: %q", c)
+		}
+	}
+}
+
+// Устаревший черновик слота 20 несёт снимок флага на момент создания —
+// применение черновика не должно перекидывать флаг мимо тика.
+func TestApplyStaging_KeepsAppliedTunExternalConfiguration(t *testing.T) {
+	h := newPolicyTunEnableHarness(t, "")
+	h.svc.deps.Singbox.(*fakeSingbox).tunHotReload = true
+	if err := h.svc.Enable(context.Background()); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+	if !policyTunInbound(t, h).ExternalConfiguration {
+		t.Fatal("фикстура: флаг после включения")
+	}
+	raw, err := h.svc.deps.Orch.LoadApplied(orchestrator.SlotRouter)
+	if err != nil {
+		t.Fatalf("LoadApplied: %v", err)
+	}
+	stale := strings.Replace(string(raw), `"external_configuration": true`, `"external_configuration": false`, 1)
+	if err := h.svc.deps.Orch.SaveDraft(orchestrator.SlotRouter, []byte(stale)); err != nil {
+		t.Fatalf("SaveDraft: %v", err)
+	}
+
+	if _, err := h.svc.ApplyStaging(context.Background()); err != nil {
+		t.Fatalf("ApplyStaging: %v", err)
+	}
+	if !policyTunInbound(t, h).ExternalConfiguration {
+		t.Error("черновик перекинул флаг мимо тика")
 	}
 }

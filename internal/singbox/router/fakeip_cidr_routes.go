@@ -34,6 +34,7 @@ func loopSafeProxyRule(r Rule) bool {
 	return isProxyRoute(r) &&
 		r.Type == "" && r.Mode == "" && len(r.Rules) == 0 &&
 		len(r.DomainSuffix) == 0 && len(r.Domain) == 0 && len(r.SourceIPCIDR) == 0 &&
+		len(r.SourceMACAddress) == 0 &&
 		len(r.Port) == 0 && r.Protocol == "" && r.IPIsPrivate == nil &&
 		len(r.Inbound) == 0 && r.Network == "" && r.UDPTimeout == "" &&
 		r.AwgmManaged == ""
@@ -282,8 +283,8 @@ func desiredTunCIDRs(cfg *RouterConfig) (v4 []string, v6 []string) {
 }
 
 // addCIDRRoute installs one specific dst route to the tun. v4 routes carry the
-// CIDR comment (recognizable in NDMS config); the v6 form emits only
-// network+interface (see StaticRouteSpec.V6).
+// CIDR comment (recognizable in NDMS config); the v6 form differs — see
+// StaticRouteSpec.V6.
 func (s *ServiceImpl) addCIDRRoute(ctx context.Context, ndmsName, cidr string, v6 bool) error {
 	if v6 {
 		return s.deps.StaticRoutes.AddStaticRoute(ctx, StaticRouteSpec{

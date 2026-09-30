@@ -24,6 +24,14 @@ export interface MihomoStatus {
 	settingsError?: string;
 }
 
+/**
+ * TCP/IP-стек tun-инбаунда. Пустая строка — не «не задано», а «ключ stack в
+ * конфиг не писать»: sing-box берёт собственный стек sing-tun (дефолт с 1.15).
+ * 'system' — legacy, удаляется в sing-box 1.17. 'gvisor' и 'mixed' пропали
+ * вместе с тегом with_gvisor в нашей сборке: бэкенд приводит их к пустому.
+ */
+export type TunStack = '' | 'system';
+
 export interface SingboxRouterSettings {
 	routingEngine?: 'sing-box' | 'mihomo';
 	enabled: boolean;
@@ -56,10 +64,10 @@ export interface SingboxRouterSettings {
 	ingressInterfaces?: string[];
 	// fakeip-tun engine settings (user-editable; round-trip via GET/PUT
 	// /singbox/router/settings). Defaults mirror DefaultFakeIPTunParams:
-	//   fakeipStack: gvisor (system → lower throughput, backend forces gso:false)
+	//   fakeipStack: '' (ключ stack не пишется → собственный стек sing-tun)
 	//   fakeipPool4: "198.18.0.0/15", fakeipPool6: "fc00::/18" ("" disables v6)
 	//   fakeipMtu: 1500. All omitempty on the wire → absent on legacy payloads.
-	fakeipStack?: 'gvisor' | 'system';
+	fakeipStack?: TunStack;
 	fakeipPool4?: string;
 	fakeipPool6?: string;
 	fakeipMtu?: number;
@@ -70,6 +78,8 @@ export interface SingboxRouterSettings {
 	// UDP session timeout for tproxy-in. Go duration string (e.g. "3m0s", "10m0s").
 	// Empty = backend default (3m0s). Increase to fix dropped sessions in games.
 	udpTimeout?: string;
+	// Потолок UDP-NAT-сессий (sing-box 1.14). 0/undefined = движок выбирает сам.
+	udpNatMax?: number;
 	/**
 	 * policy-tun: перевести выбранные сегменты на static-NAT, чтобы sing-box
 	 * видел реальные адреса клиентов вместо адреса tun-шлюза. Требует непустого
@@ -88,6 +98,13 @@ export interface SingboxRouterSettings {
 	 * wire → absent on legacy/mock payloads (treat undefined as []).
 	 */
 	qosClasses?: SingboxQosClass[];
+	/**
+	 * Место хранения кэша sing-box (cache.db) (issue #842).
+	 * 'flash' — на флеш-памяти (/opt/etc/awg-manager/singbox/cache.db).
+	 * 'tmp' — в оперативной памяти (/tmp/singbox-cache.db, tmpfs/RAM) для защиты Flash.
+	 * Отсутствует — не задано: путь из 00-base.json как есть (см. Status.cacheDbPath).
+	 */
+	cacheFileLocation?: 'flash' | 'tmp';
 	keeneticCloudTunnel?: boolean;
 	keeneticCloudOutbound?: string;
 	proxyGroups?: ProxyGroup[];
@@ -152,6 +169,11 @@ export interface SingboxRouterWANInterface {
 	label: string;
 	up: boolean;
 	priority: number;
+	/** Интерфейс сторонней программы, не наш (issue #935). */
+	foreign?: boolean;
+	/** Сторонний интерфейс отмечен, но в системе сейчас отсутствует. */
+	absent?: boolean;
+	type?: string;
 }
 
 export interface SingboxRouterIssue {
@@ -200,6 +222,8 @@ export interface SingboxRouterStatus {
 	fakeipDns?: string;
 	/** Адрес tun-шлюза (хост /30, e.g. «172.18.0.1») в режиме fakeip-tun. */
 	fakeipTunAddr?: string;
+	/** Эффективный путь cache.db: по cacheFileLocation, при пустой настройке — из 00-base.json. */
+	cacheDbPath?: string;
 	/**
 	 * Kernel-имя tun-интерфейса режима policy-tun (e.g. "opkgtun0"). Пусто вне
 	 * policy-tun и при выключенном движке.
@@ -301,6 +325,8 @@ export interface SingboxRouterRule {
 	domain_suffix?: string[];
 	ip_cidr?: string[];
 	source_ip_cidr?: string[];
+	// MAC LAN-устройства (sing-box 1.14). Сужающий матчер, как source_ip_cidr.
+	source_mac_address?: string[];
 	port?: number[];
 	rule_set?: string[];
 	inbound?: string[];
@@ -320,6 +346,10 @@ export interface SingboxRouterRule {
 	network?: string;
 	// `udp_timeout` route option carried by the system `route-options` rule.
 	udp_timeout?: string;
+	// Set on rules awg-manager generates itself. The backend rewrites them
+	// on the next reconcile and refuses them in bulk-outbound, so the UI
+	// must not offer them for selection.
+	awgm_managed?: string;
 	// A `logical` rule combines its nested `rules` by `mode`. The backend
 	// stores «пресет ИЛИ свои адреса» in this form (see flattenRouterRule):
 	// sing-box would otherwise AND a rule_set with the rule's own addresses
@@ -603,6 +633,8 @@ export interface SingboxRouterDNSRule {
 export interface SingboxRouterDNSGlobals {
 	final: string;
 	strategy: SingboxRouterDNSStrategy;
+	// Таймаут DNS-запроса (Go duration, sing-box 1.14). '' = 10s движка.
+	timeout?: string;
 }
 
 /** Режим DNS-пресета: '' — выключен. */

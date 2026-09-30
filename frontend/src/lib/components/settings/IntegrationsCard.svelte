@@ -1,5 +1,13 @@
 <script lang="ts">
-	import type { SingboxStatus, HydraRouteStatus, MihomoStatus, XrayStatus, OperationalState, TelemtStatus } from '$lib/types';
+	import type {
+		SingboxStatus,
+		HydraRouteStatus,
+		MihomoStatus,
+		XrayStatus,
+		OperationalState,
+		TelemtStatus,
+	} from '$lib/types';
+	import type { ProxySubsystem } from '$lib/api/proxyInstances';
 	import { Button, ConfirmModal, Input, Modal, StatusDot } from '$lib/components/ui';
 	import SettingsSectionLabel from './SettingsSectionLabel.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -11,7 +19,7 @@
 
 	/** Строка подсистемы прокси: её бинари ставятся и снимаются целиком. */
 	export interface ProxyBinaryRow {
-		key: 'wdtt' | 'freeturn';
+		key: ProxySubsystem;
 		label: string;
 		/** Бинари подсистемы лежат на диске. */
 		present: boolean;
@@ -756,7 +764,7 @@
 							<Button variant="primary" size="sm" loading={p.busy} onclick={p.oninstall}>
 								Обновить
 							</Button>
-						{:else}
+						{:else if !p.key.startsWith('obf-')}
 							<Button variant="secondary" size="sm" href="/proxy">Открыть</Button>
 						{/if}
 						<Button
@@ -827,14 +835,18 @@
 				{:else if hydraStatusLoading}
 					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
 				{:else}
+					<!-- HydraRoute ставится не отсюда: своего установщика у нас нет, ссылка ведёт
+					     на инструкцию проекта. Кнопка поэтому и подписана иначе, и выглядит иначе,
+					     чем «Установить» у остальных интеграций — те действительно ставят. -->
 					<Button
 						variant="outline-primary"
 						size="sm"
 						href="https://github.com/Ground-Zerro/HydraRoute"
 						target="_blank"
 						rel="noopener noreferrer"
+						title="Инструкция по установке HydraRoute на GitHub (откроется в новой вкладке)"
 					>
-						Установить
+						Инструкция →
 					</Button>
 				{/if}
 			</div>
@@ -1082,12 +1094,22 @@
 		grid-column: 1 / -1;
 	}
 
-	/* Same action-button floor as settings actions-card (fits «Обновление…»). */
+	/* Same action-button floor as settings actions-card (fits «Обновление…»):
+	   ширина не прыгает, когда подпись уезжает в «Установка…»/«Обновление…».
+	   Одиночная кнопка в .integration-actions получает тот же пол — иначе
+	   «Установить» у sing-box (прямой ребёнок строки) шире, чем у прокси-
+	   бинарей (обёрнуты в группу), хотя это одно и то же действие. Пары
+	   кнопок («Открыть» + «Удалить») пол не получают: там ширину задаёт
+	   содержимое, а 7.5rem на каждую распирало бы строку. */
 	@media (min-width: 641px) {
+		.setting-row > :global(.btn),
+		.integration-actions > :global(.btn:only-child) {
+			min-width: 7.5rem;
+		}
+
 		.setting-row > :global(.btn) {
 			justify-self: end;
 			align-self: center;
-			min-width: 7.5rem;
 		}
 	}
 
@@ -1133,10 +1155,14 @@
 				gap: 0.625rem;
 			}
 
+			.setting-row > :global(.btn),
+			.integration-actions > :global(.btn:only-child) {
+				min-width: 7.5rem;
+			}
+
 			.setting-row > :global(.btn) {
 				justify-self: end;
 				align-self: center;
-				min-width: 7.5rem;
 			}
 		}
 	}

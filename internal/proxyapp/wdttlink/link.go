@@ -1,6 +1,6 @@
 // Package wdttlink — продуктовая логика ссылок WDTT поверх нового рантайма:
 // разбор wdtt:// / qwdtt:// / подписок, сборка ссылки абоненту, связанный
-// WireGuard-туннель и очистка связей.
+// WireGuard-туннель.
 //
 // Пакет — КОПИЯ работающей логики из умирающего internal/wdtt (link.go,
 // wgconf.go, используемые части names.go и ports.go): оригиналы живут до
@@ -19,12 +19,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
-)
 
-// lookupIP — seam для резолвера (подменяется в тестах).
-var lookupIP = net.LookupIP
+	"github.com/hoaxisr/awg-manager/internal/sys/httpclient"
+)
 
 const (
 	SchemeWdtt  = "wdtt://"
@@ -590,21 +588,10 @@ func peerWithPort(peer string, port int) string {
 
 func fetchSubscriptionLink(rawURL string) (LinkDecodeResult, error) {
 	rawURL = strings.TrimSpace(rawURL)
-	if err := validateSubURL(rawURL); err != nil {
+	if err := httpclient.ValidatePublicURL(rawURL); err != nil {
 		return LinkDecodeResult{}, err
 	}
-	client := &http.Client{
-		Timeout: 20 * time.Second,
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{Timeout: 10 * time.Second, Control: blockInternalDial}).DialContext,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return fmt.Errorf("слишком много редиректов при загрузке подписки")
-			}
-			return validateSubURL(req.URL.String())
-		},
-	}
+	client := subscriptionClient()
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return LinkDecodeResult{}, err
@@ -668,49 +655,13 @@ func decodeSubBody(body string) string {
 	return body
 }
 
-func validateSubURL(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("некорректный URL подписки: %w", err)
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("URL подписки должен быть http(s)")
-	}
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("URL подписки без хоста")
-	}
-	if strings.EqualFold(host, "localhost") {
-		return fmt.Errorf("URL подписки указывает на внутренний адрес")
-	}
-	ips, err := lookupIP(host)
-	if err != nil {
-		return fmt.Errorf("не удалось разрешить хост подписки: %w", err)
-	}
-	for _, ip := range ips {
-		// Приватные диапазоны (LAN) намеренно НЕ блокируем — сервер подписки в LAN легитимен.
-		// Блок только loopback/link-local/unspecified: закрывает RCI localhost:79 и метадату.
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("URL подписки указывает на внутренний адрес")
-		}
-	}
-	// DNS-rebinding закрыт dial-time IP-пином (blockInternalDial в Transport клиента):
-	// фактический IP каждого connect проверяется повторно, резолв здесь — ранний отказ + defense-in-depth.
-	return nil
-}
-
-// blockInternalDial проверяет фактически подключаемый IP в момент dial (после резолва,
-// перед connect), закрывая DNS-rebinding: резолв в validateSubURL мог отличаться от dial-резолва.
-func blockInternalDial(network, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return err
-	}
-	ip := net.ParseIP(host)
-	if ip != nil && (ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()) {
-		return fmt.Errorf("подписка резолвится во внутренний адрес")
-	}
-	return nil
+// subscriptionClient — seam для тестов: подменой видно, что загрузка
+// подписки идёт ИМЕННО этим клиентом, со всеми его стражами (прямой выход,
+// страж внутренних адресов на dial, политика редиректов — см.
+// httpclient.NewPublicClient), а не собранным по месту. Снаружи пакета
+// клиент не подменяется; тест, подменивший seam, не должен быть параллельным.
+var subscriptionClient = func() *http.Client {
+	return httpclient.NewPublicClient(20*time.Second, false)
 }
 
 func normalizePeer(peer string) string {

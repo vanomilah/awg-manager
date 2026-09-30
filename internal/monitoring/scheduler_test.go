@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"errors"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -18,10 +19,16 @@ type fakeProber struct {
 	calls   atomic.Int64
 	latency int
 	ok      bool
+
+	mu    sync.Mutex
+	hosts []string
 }
 
-func (f *fakeProber) Probe(_ context.Context, _, _ string, _ time.Duration) (int, bool) {
+func (f *fakeProber) Probe(_ context.Context, host, _ string, _ time.Duration) (int, bool) {
 	f.calls.Add(1)
+	f.mu.Lock()
+	f.hosts = append(f.hosts, host)
+	f.mu.Unlock()
 	return f.latency, f.ok
 }
 
@@ -74,7 +81,7 @@ func TestScheduler_RunOnce_TwoTunnelsSelfOnly(t *testing.T) {
 
 	sched.RunOnce(context.Background())
 
-	// Self-only: 1 shared self-target (gstatic) deduplicated by host because
+	// Self-only: 1 shared self-target (the default probe host) deduplicated because
 	// both tunnels default to method=http. Each tunnel probes only its own
 	// self-cell → 2 cells, 2 probes.
 	expected := int64(2)
@@ -83,7 +90,7 @@ func TestScheduler_RunOnce_TwoTunnelsSelfOnly(t *testing.T) {
 	}
 	snap := sched.LatestSnapshot()
 	if len(snap.Targets) != 1 {
-		t.Errorf("expected 1 self target (deduped gstatic), got %d", len(snap.Targets))
+		t.Errorf("expected 1 self target (deduped default probe host), got %d", len(snap.Targets))
 	}
 	if len(snap.Cells) != 2 {
 		t.Errorf("expected 2 cells (one self-cell per tunnel), got %d", len(snap.Cells))
@@ -103,7 +110,7 @@ func TestScheduler_RunOnce_TwoTunnelsSelfOnly(t *testing.T) {
 	if selfCells != 2 {
 		t.Errorf("expected 2 IsSelf cells (one per tunnel), got %d", selfCells)
 	}
-	if len(hist.Get("cc-connectivitycheck.gstatic.com", "tn-A", 0)) != 1 {
+	if len(hist.Get(defaultSelfCellID(t), "tn-A", 0)) != 1 {
 		t.Errorf("expected 1 history sample for self-cell × tn-A")
 	}
 }
@@ -124,7 +131,7 @@ func TestScheduler_RunOnce_PrunesStaleHistory(t *testing.T) {
 	if len(hist.Get("cf-1.1.1.1", "tn-old", 0)) != 0 {
 		t.Errorf("stale history for tn-old should be pruned")
 	}
-	if len(hist.Get("cc-connectivitycheck.gstatic.com", "tn-A", 0)) != 1 {
+	if len(hist.Get(defaultSelfCellID(t), "tn-A", 0)) != 1 {
 		t.Errorf("history for tn-A self-cell should be present")
 	}
 }
@@ -178,6 +185,40 @@ func TestScheduler_RunOnce_ExcludesConfiguredTunnels(t *testing.T) {
 		if c.TunnelID == "tn-B" {
 			t.Fatalf("excluded tunnel tn-B must not appear in cells, got %+v", c)
 		}
+	}
+}
+
+// HTTP-метод: зонд получает настроенный URL проверки связи целиком, а не
+// зашитый gstatic:443 — иначе индикатор карточки и кнопка «Тест» проверяют
+// разные вещи и спорят друг с другом.
+func TestScheduler_RunOnce_SelfTargetFromConnectivityCheckURL(t *testing.T) {
+	prober := &fakeProber{ok: true, latency: 12}
+	hist := NewHistory()
+	settingsStore := storage.NewSettingsStore(t.TempDir())
+	if err := settingsStore.Update(func(cur *storage.Settings) error {
+		cur.ConnectivityCheckURL = "http://cp.cloudflare.com/generate_204"
+		return nil
+	}); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	sched := NewScheduler(SchedulerDeps{
+		TunnelLister:  &fakeLister{tunnels: []traffic.RunningTunnel{{ID: "tn-A", IfaceName: "wg0"}}},
+		SettingsStore: settingsStore,
+		Prober:        prober,
+	}, hist)
+
+	sched.RunOnce(context.Background())
+
+	snap := sched.LatestSnapshot()
+	if len(snap.Targets) != 1 || snap.Targets[0].Host != "cp.cloudflare.com" {
+		t.Fatalf("expected self target host from settings URL, got %+v", snap.Targets)
+	}
+	prober.mu.Lock()
+	hosts := append([]string(nil), prober.hosts...)
+	prober.mu.Unlock()
+	if len(hosts) != 1 || hosts[0] != "http://cp.cloudflare.com/generate_204" {
+		t.Fatalf("expected probe of the configured URL, got %v", hosts)
 	}
 }
 
@@ -415,4 +456,18 @@ func TestScheduler_AugmentSingboxClashData_PopulatesUrltestMembers(t *testing.T)
 	if tunnels[2].ClashDelay != 0 || tunnels[2].UrltestGroup != "" {
 		t.Errorf("nwg0 (non-singbox): expected no augmentation, got %+v", tunnels[2])
 	}
+}
+
+// defaultSelfCellID — идентификатор self-ячейки для ЦЕЛИ ПО УМОЛЧАНИЮ.
+// Выводится из storage.DefaultConnectivityCheckURL, а не пишется строкой:
+// адрес пробы меняется (V37 увёл его с gstatic на cp.cloudflare), и
+// захардкоженный хост превращает смену дефолта в падение чужих тестов вместо
+// проверки поведения планировщика.
+func defaultSelfCellID(t *testing.T) string {
+	t.Helper()
+	u, err := url.Parse(storage.DefaultConnectivityCheckURL)
+	if err != nil || u.Hostname() == "" {
+		t.Fatalf("дефолтный адрес пробы непригоден: %q", storage.DefaultConnectivityCheckURL)
+	}
+	return "cc-" + u.Hostname()
 }

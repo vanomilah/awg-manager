@@ -55,8 +55,10 @@ type WdttClientConfig struct {
 	AutoReconnectInterval string `json:"autoReconnectInterval,omitempty"` // on_failure|30m|1h|2h|4h|12h (default "1h")
 
 	// Пин индекса (только raw): на имя OpkgTunN ссылаются permit'ы политик.
-	NdmsIface string `json:"ndmsIface,omitempty"` // OpkgTun17..49
-	RawIface  string `json:"rawIface,omitempty"`  // opkgtun17..49
+	// Номер приходит из ОБЩЕГО пула (internal/opkgtun), собственного окна у
+	// прокси больше нет — оно разошлось бы с прошивкой (#891).
+	NdmsIface string `json:"ndmsIface,omitempty"` // OpkgTunN
+	RawIface  string `json:"rawIface,omitempty"`  // opkgtunN
 
 	// Policies — намерение членства в политиках доступа. Единственный
 	// писатель — пользователь (спека §4.4).
@@ -99,7 +101,7 @@ func (c WdttClientConfig) Validate() error {
 // group.go:14). Оба значения кратны девяти — дефолт доезжает до процесса
 // без молчаливого урезания.
 //
-// Параметр goarch, а не runtime.GOARCH внутри: симметрично OpkgIndexRange,
+// Параметр goarch, а не runtime.GOARCH внутри: симметрично opkgtun.Ceiling,
 // чтобы поведение проверялось тестом на всех архитектурах сразу.
 func DefaultWorkers(goarch string) int {
 	switch goarch {
@@ -124,8 +126,8 @@ func (c WdttClientConfig) NDMSNames() []string { return []string{c.NdmsIface} }
 // ничего сверх. Только примитивы: roles не узнаёт ни про exitreg, ни про
 // wdttclient — идентификатор выхода строит потребитель.
 type RawExit struct {
-	NDMSName    string // пин: OpkgTun17..49
-	KernelIface string // пин: opkgtun17..49
+	NDMSName    string // пин: OpkgTunN (номер из общего пула)
+	KernelIface string // пин: opkgtunN
 	Name        string // человеческое имя инстанса — в имя зеркальной записи
 	Peer        string // адрес сервера — в эндпоинт карточки
 }
@@ -370,18 +372,35 @@ type FreeTurnClientConfig struct {
 	Streams        int    `json:"streams,omitempty"`
 	Transport      string `json:"transport,omitempty"`
 	Mode           string `json:"mode,omitempty"`
-	Bond           bool   `json:"bond,omitempty"`
+	Bond           bool   `json:"bond,omitempty"` // upstream 4.0+, только -mode tcp
 	ObfProfile     string `json:"obfProfile,omitempty"`
 	ObfKey         string `json:"obfKey,omitempty"`
+	ObfTimingMs    int    `json:"obfTimingMs,omitempty"` // -obf-timing, только с профилем обфускации
 	StreamsPerCred int    `json:"streamsPerCred,omitempty"`
 	Platform       string `json:"platform,omitempty"` // ""|desktop|mobile
 	DNSMode        string `json:"dnsMode,omitempty"`
 	DNSServers     string `json:"dnsServers,omitempty"`
 	ClientID       string `json:"clientId,omitempty"`
-	Sub                   string `json:"sub,omitempty"`
-	Debug                 bool   `json:"debug,omitempty"`
-	AutoReconnect         bool   `json:"autoReconnect,omitempty"`
-	AutoReconnectInterval string `json:"autoReconnectInterval,omitempty"` // on_failure|30m|1h|2h|4h|12h (default "1h")
+	Sub                   string       `json:"sub,omitempty"`
+	Debug                 bool         `json:"debug,omitempty"`
+	AutoReconnect         bool         `json:"autoReconnect,omitempty"`
+	AutoReconnectInterval string       `json:"autoReconnectInterval,omitempty"` // on_failure|30m|1h|2h|4h|12h (default "1h")
+	// KCP — профиль ARQ tcp-режима (freeturn 3.2+, F144): приезжает полем `kcp`
+	// ссылки freeturn://, редактора в UI нет. Рендерится в -kcp-* только при
+	// Mode tcp: вне tcp клиент отвергает любое отклонение от дефолта на старте.
+	KCP                   *FreeTurnKCP `json:"kcp,omitempty"`
+}
+
+// FreeTurnKCP — восемь параметров KCP в форме upstream (uri.KCP / -kcp-*).
+type FreeTurnKCP struct {
+	NoDelay    int  `json:"nodelay"`
+	Interval   int  `json:"interval"`
+	Resend     int  `json:"resend"`
+	NC         int  `json:"nc"`
+	SndWnd     int  `json:"sndwnd"`
+	RcvWnd     int  `json:"rcvwnd"`
+	MTU        int  `json:"mtu"`
+	ACKNoDelay bool `json:"acknodelay"`
 }
 
 func (c FreeTurnClientConfig) Validate() error {
@@ -390,6 +409,64 @@ func (c FreeTurnClientConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.Peer) == "" && strings.TrimSpace(c.Links) == "" && strings.TrimSpace(c.Sub) == "" {
 		return fmt.Errorf("не задан адрес реле (-peer / -links / подписка)")
+	}
+	if err := c.validateBond(); err != nil {
+		return err
+	}
+	return c.KCP.validate()
+}
+
+// validateBond зеркалит validateBond клиента freeturn (internal/config/validate.go):
+// на каждую ссылку-группу не больше 256/групп сессий, иначе клиент не стартует.
+// Вне tcp -bond в argv не уходит (FreeTurnClientArgs) — там и проверять нечего.
+func (c FreeTurnClientConfig) validateBond() error {
+	if !c.Bond || c.Mode != "tcp" {
+		return nil
+	}
+	groups := 1
+	if p := strings.TrimSpace(c.Provider); p == "" || p == "vk" {
+		n := 0
+		for _, l := range strings.Split(c.Links, ",") {
+			if strings.TrimSpace(l) != "" {
+				n++
+			}
+		}
+		groups = max(n, 1)
+	}
+	streams := c.Streams
+	if streams <= 0 {
+		streams = 12 // DefaultStreams бинаря
+	}
+	if limit := 256 / groups; streams > limit {
+		return fmt.Errorf("bond: потоков %d, при %d ссылках допустимо не больше %d", streams, groups, limit)
+	}
+	return nil
+}
+
+// validate зеркалит validateKCP клиента freeturn (internal/config/kcp.go):
+// частичный объект `kcp` из чужой ссылки даёт нули, и клиент падал бы на старте
+// флагом `-kcp-mtu 0` — без редактора в UI выхода из этого нет.
+func (k *FreeTurnKCP) validate() error {
+	if k == nil {
+		return nil
+	}
+	if k.NoDelay != 0 && k.NoDelay != 1 {
+		return fmt.Errorf("kcp.nodelay %d: допустимо 0 | 1", k.NoDelay)
+	}
+	if k.NC != 0 && k.NC != 1 {
+		return fmt.Errorf("kcp.nc %d: допустимо 0 | 1", k.NC)
+	}
+	if k.Interval <= 0 {
+		return fmt.Errorf("kcp.interval %d: должен быть положительным", k.Interval)
+	}
+	if k.Resend < 0 {
+		return fmt.Errorf("kcp.resend %d: не может быть отрицательным", k.Resend)
+	}
+	if k.SndWnd <= 0 || k.RcvWnd <= 0 {
+		return fmt.Errorf("kcp окна %d/%d: sndwnd и rcvwnd должны быть положительными", k.SndWnd, k.RcvWnd)
+	}
+	if k.MTU < 300 || k.MTU > 1350 {
+		return fmt.Errorf("kcp.mtu %d: допустимо 300..1350", k.MTU)
 	}
 	return nil
 }
@@ -401,8 +478,24 @@ func (c FreeTurnClientConfig) NDMSNames() []string { return nil }
 
 // FreeTurnServerConfig — сервер FreeTurn.
 type FreeTurnServerConfig struct {
-	Listen       string `json:"listen"`
-	Connect      string `json:"connect,omitempty"`
+	Listen  string `json:"listen"`
+	Connect string `json:"connect,omitempty"`
+	// LinkPeer — адрес, который панель кладёт в ссылку абоненту (#933):
+	// ВАЛИДАЦИЯ ЭТОГО ПОЛЯ ЖИВЁТ НЕ ЗДЕСЬ. Ошибка из Validate() уезжает в
+	// cfgErr ресурса процесса (procres/proc.go) и означает «инстанс не
+	// запускать»: косметический адрес ссылки не смеет быть приговором
+	// раздаче. Отказ обязан случиться ДО записи — см. gateCheck
+	// (internal/api/proxy_instances.go), там же и правило.
+	//
+	// DNS-имя роутера или его внешний IP, при желании с портом. Пусто —
+	// сборщик ссылки спросит внешний IP, как делал всегда.
+	//
+	// Своё поле конфига, а НЕ общий Record.LinkPeer (как у wdtt-сервера): там
+	// это память о последней выдаче, которую молча перебивает любой
+	// одноразовый peer запроса, и править её снаружи нечем — в теле PATCH
+	// инстанса полей записи пять, linkPeer среди них нет. Здесь нужна
+	// НАСТРОЙКА с одним писателем — пользователем.
+	LinkPeer     string `json:"linkPeer,omitempty"`
 	Mode         string `json:"mode,omitempty"` // udp|tcp — он же протокол INPUT-правила
 	ObfProfile   string `json:"obfProfile,omitempty"`
 	ObfKey       string `json:"obfKey,omitempty"`

@@ -14,6 +14,8 @@ import (
 
 // peerTTL is short because the MetricsPoller refreshes on its own
 // interval (~10s). This TTL mostly serves fast-back-to-back reads.
+// От него зависит допуск дедупа серверов в поллере метрик
+// (metrics.handshakeJitter): его поднимать вместе с этим значением.
 const peerTTL = 8 * time.Second
 
 // PeerStore caches the .wireguard.peer list of /show/interface/{name} —
@@ -21,12 +23,19 @@ const peerTTL = 8 * time.Second
 type PeerStore struct {
 	getter Getter
 	log    Logger
+	// interfaces — отсечка по кэшу: пиров отсутствующего интерфейса не
+	// спрашиваем (F546). nil — без отсечки (тесты).
+	interfaces *InterfaceStore
 
 	store *cache.KeyedStore[string, []ndms.Peer]
 }
 
-func NewPeerStore(g Getter, log Logger) *PeerStore {
-	return NewPeerStoreWithTTL(g, log, peerTTL)
+// NewPeerStore — PeerStore с отсечкой по кэшу интерфейсов ifaces (nil — без
+// отсечки).
+func NewPeerStore(g Getter, log Logger, ifaces *InterfaceStore) *PeerStore {
+	s := NewPeerStoreWithTTL(g, log, peerTTL)
+	s.interfaces = ifaces
+	return s
 }
 
 func NewPeerStoreWithTTL(g Getter, log Logger, ttl time.Duration) *PeerStore {
@@ -77,6 +86,12 @@ func (s *PeerStore) fetch(ctx context.Context, name string) ([]ndms.Peer, error)
 	// as a command continuation and answers "not found". Querying the
 	// interface and reading .wireguard.peer works in both the direct-GET and
 	// batch-POST transports. Verified against Keenetic RCI 2026-05-23.
+	// Интерфейса нет в кэше — ноль пиров без запроса: на show interface по
+	// отсутствующему имени NDMS пишет E «unable to find» в свой журнал, а
+	// managed-сервер с пропавшим WireguardN опрашивается постоянно (F546).
+	if s.interfaces != nil && !s.interfaces.mayExist(ctx, name) {
+		return []ndms.Peer{}, nil
+	}
 	var wrap struct {
 		Wireguard struct {
 			Peer []peerWire `json:"peer"`
@@ -87,7 +102,10 @@ func (s *PeerStore) fetch(ctx context.Context, name string) ([]ndms.Peer, error)
 		// 404 means the interface itself doesn't exist (e.g. torn down) —
 		// treat as zero peers so the poller doesn't log warnings on every
 		// tick. A live interface with no peers returns an empty
-		// .wireguard.peer instead.
+		// .wireguard.peer instead. Only the direct-GET path form answers
+		// 404 (AWG_NDMS_BATCH=0); the batch POST used in production answers
+		// an `unable to find` envelope, which decodes to zero peers with no
+		// error — same outcome.
 		var httpErr *transport.HTTPError
 		if errors.As(err, &httpErr) && httpErr.Status == http.StatusNotFound {
 			return []ndms.Peer{}, nil

@@ -11,6 +11,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	ndms "github.com/hoaxisr/awg-manager/internal/ndms"
+	"github.com/hoaxisr/awg-manager/internal/obfuscator"
 	"github.com/hoaxisr/awg-manager/internal/response"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/testing"
@@ -39,6 +40,9 @@ type SystemTunnelDTO struct {
 	Connected     bool                 `json:"connected" example:"true"`
 	MTU           int                  `json:"mtu" example:"1420"`
 	Peer          *SystemTunnelPeerDTO `json:"peer,omitempty"`
+	// External — "phobos": интерфейс создан установщиком Phobos
+	// (description Phobos-…) и установка на месте; не наш, не перенимается.
+	External string `json:"external,omitempty" example:"phobos"`
 }
 
 // SystemTunnelsResponse is the envelope for GET /system-tunnels.
@@ -83,7 +87,7 @@ func (h *SystemTunnelsHandler) validateName(w http.ResponseWriter, name string) 
 
 // listSystemTunnels builds the filtered system tunnel list for API response and SSE snapshots.
 func (h *SystemTunnelsHandler) listSystemTunnels(ctx context.Context) ([]ndms.SystemWireguardTunnel, error) {
-	tunnels, err := h.svc.List(ctx)
+	tunnels, err := h.svc.ListFresh(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +123,35 @@ func (h *SystemTunnelsHandler) listSystemTunnels(ctx context.Context) ([]ndms.Sy
 	if visible == nil {
 		visible = []ndms.SystemWireguardTunnel{}
 	}
+	markExternal(visible, obfuscator.DetectForeign)
 	return visible, nil
+}
+
+// markExternal помечает системные туннели чужой установки Phobos. Условие
+// двойное (Q16): и префикс description от их установщика, и след самой
+// установки — переименованный чужой интерфейс бейджа не даёт.
+//
+// detect зовётся ТОЛЬКО когда префикс есть хоть у одного туннеля: поиск следа
+// установки читает /proc/*/cmdline по всем процессам, а список системных
+// туннелей главная опрашивает каждые 5 секунд.
+func markExternal(list []ndms.SystemWireguardTunnel, detect func() obfuscator.Foreign) {
+	found := false
+	for i := range list {
+		if obfuscator.ExternalKind(list[i].Description) != "" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+	f := detect()
+	if !f.InitScript && !f.ProcessAlive {
+		return
+	}
+	for i := range list {
+		list[i].External = obfuscator.ExternalKind(list[i].Description)
+	}
 }
 
 // List returns all visible (non-hidden) system WireGuard tunnels.
@@ -249,7 +281,7 @@ func (h *SystemTunnelsHandler) CheckConnectivity(w http.ResponseWriter, r *http.
 	if !h.validateName(w, name) {
 		return
 	}
-	tunnel, err := h.svc.Get(r.Context(), name)
+	tunnel, err := h.cachedTunnel(r.Context(), name)
 	if err != nil {
 		response.Error(w, err.Error(), "GET_FAILED")
 		return
@@ -264,7 +296,7 @@ func (h *SystemTunnelsHandler) CheckConnectivity(w http.ResponseWriter, r *http.
 		return
 	}
 	h.appLog.Debug("connectivity-check", name, fmt.Sprintf("Starting connectivity check for system tunnel %s", name))
-	result := testing.CheckConnectivityByInterfaceURL(r.Context(), tunnel.InterfaceName, h.connectivityCheckURL())
+	result := checkConnectivityByInterfaceURL(r.Context(), tunnel.InterfaceName, h.connectivityCheckURL())
 	latency := ""
 	if result.Latency != nil {
 		latency = fmt.Sprintf(", latency=%dms", *result.Latency)
@@ -280,6 +312,22 @@ func (h *SystemTunnelsHandler) CheckConnectivity(w http.ResponseWriter, r *http.
 		h.appLog.Debug("connectivity-check", name, fmt.Sprintf("Connectivity check passed%s", latency))
 	}
 	response.Success(w, result)
+}
+
+// cachedTunnel — туннель из кэша состава, а при промахе — с роутера.
+// Проверке связности нужны только статус и системное имя, а они держатся в
+// кэше хуками NDMS (iflayerchanged сбрасывает его на смене уровня). Карточка
+// зовёт проверку раз в минуту на каждый туннель, и отдельное чтение
+// `show interface` на каждый вызов было лишним.
+func (h *SystemTunnelsHandler) cachedTunnel(ctx context.Context, name string) (*ndms.SystemWireguardTunnel, error) {
+	if list, err := h.svc.List(ctx); err == nil {
+		for i := range list {
+			if list[i].ID == name {
+				return &list[i], nil
+			}
+		}
+	}
+	return h.svc.Get(ctx, name)
 }
 
 func (h *SystemTunnelsHandler) connectivityCheckURL() string {
@@ -310,7 +358,7 @@ func (h *SystemTunnelsHandler) CheckIP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	service := r.URL.Query().Get("service")
-	result, err := testing.CheckIPByInterface(r.Context(), tunnel.InterfaceName, service)
+	result, err := checkIPByInterface(r.Context(), tunnel.InterfaceName, service)
 	if err != nil {
 		response.Error(w, err.Error(), "IP_CHECK_FAILED")
 		return

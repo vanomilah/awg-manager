@@ -4,7 +4,7 @@
 	// импорт внешнего интерфейса, настройки connectivity. Состояние страницы
 	// приходит live-контекстом (ctx), стили — глобальные (app.css).
 	import { AdoptTunnelDialog, TunnelReferencedModal, ConnectivitySettingsModal } from '$lib/components/tunnels';
-	import { Modal, TrafficChartModal, Button } from '$lib/components/ui';
+	import { Modal, TrafficChartModal, Button, ConfirmModal } from '$lib/components/ui';
 	import TunnelDiagnosticsModal from '$lib/components/testing/TunnelDiagnosticsModal.svelte';
 	import AddTunnelWizard from '$lib/components/subscriptions/AddTunnelWizard.svelte';
 	import { resolveSubscriptionMemberTag } from '$lib/utils/subscriptionMember';
@@ -36,6 +36,59 @@
 			<Button variant="danger" size="md" onclick={() => ctx.handleDelete(ctx.deleteConfirmId!)}>Удалить</Button>
 		{/snippet}
 	</Modal>
+{/if}
+
+{#if ctx.confirmExternalDelete}
+	<Modal
+		open={true}
+		title="Удалить интерфейс"
+		size="sm"
+		onclose={() => (ctx.confirmExternalDelete = null)}
+	>
+		<p class="confirm-text">
+			Удалить интерфейс <strong>{ctx.confirmExternalDelete.interfaceName}{ctx.confirmExternalDelete.label}</strong>?
+		</p>
+		{#if ctx.confirmExternalDelete.live}
+			<p class="confirm-text confirm-warn">
+				Через этот интерфейс прямо сейчас идёт трафик, рукопожатие свежее. Снос оборвёт
+				работающее соединение.
+			</p>
+		{/if}
+		{#if ctx.confirmExternalDelete.conflictsWith}
+			<p class="confirm-text confirm-warn">
+				Его адрес {ctx.confirmExternalDelete.address} совпадает с адресом туннеля
+				«{ctx.confirmExternalDelete.conflictsWith}».
+			</p>
+		{/if}
+		<p class="confirm-text">
+			Вместе с интерфейсом уйдут его адреса, маршруты и разрешения в политиках доступа.
+			Пересоздание одноимённого их не вернёт.
+		</p>
+		{#snippet actions()}
+			<Button variant="secondary" size="md" onclick={() => (ctx.confirmExternalDelete = null)}>Отмена</Button>
+			<Button
+				variant="danger"
+				size="md"
+				loading={ctx.confirmExternalDeleteBusy}
+				onclick={() => ctx.confirmExternalDeleteNow()}
+			>
+				Удалить
+			</Button>
+		{/snippet}
+	</Modal>
+{/if}
+
+{#if ctx.unlockConfirmId}
+	{@const tunnelName = ctx.awgList.find(t => t.id === ctx.unlockConfirmId)?.name ?? ctx.unlockConfirmId}
+	<ConfirmModal
+		open={true}
+		variant="primary"
+		title="Туннель защищён от изменений"
+		message="Снять защиту с туннеля «{tunnelName}»? После этого его можно выключить, изменить и удалить."
+		confirmLabel="Снять защиту"
+		onConfirm={ctx.confirmUnlock}
+		onClose={() => ctx.unlockConfirmId = null}
+	/>
 {/if}
 
 <TunnelReferencedModal

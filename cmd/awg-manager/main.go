@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/hoaxisr/awg-manager/internal/backup"
+	"github.com/hoaxisr/awg-manager/internal/sys/appver"
 	"github.com/hoaxisr/awg-manager/internal/sys/routerclock"
 )
 
@@ -21,9 +23,19 @@ func main() {
 	serviceAction := flag.String("service", "", "Service management (start|stop|restart|status)")
 	forceBoot := flag.Bool("force-boot", false, "Simulate boot mode (for testing boot path on running router)")
 	pprofListen := flag.String("pprof-listen", "", "Dedicated TCP address for Go /debug/pprof only (recommended: 127.0.0.1:6060); empty disables standalone pprof")
-	pprofOnMain := flag.Bool("pprof-on-main", false, "Also mount /debug/pprof/* on the main HTTP server (LAN/loopback listeners)")
 	slowReqMS := flag.Int("slow-request-ms", 0, "Log HTTP handlers slower than this (ms) to stderr via slog (0 disables); long-lived SSE/WS routes are excluded")
 	flag.Parse()
+
+	// User-Agent исходящих запросов (сервер обновлений, RCI, /auth роутера).
+	// Ставим до первого HTTP-вызова — ниже по main уже ходят и RCI, и загрузки.
+	appver.Set(version, uaArch())
+
+	// `-data-dir` обязан соблюдаться целиком: иначе демон в песочнице пишет
+	// .conf туннелей, файлы релея, модули и скрипты роутера в БОЕВОЙ каталог
+	// (F168, наблюдалось на стенде 08.09). Ставим сразу после разбора флагов:
+	// ниже по main из того же каталога работают и --cleanup, и --service, и
+	// сторы с операторами читают эти пути уже при конструировании.
+	applyDataDir(*dataDir)
 
 	// Adopt the router's local timezone before anything reads time.Local.
 	// Keenetic stores the zone as a POSIX string ("MSK-3") in /var/TZ, which
@@ -56,12 +68,15 @@ func main() {
 		dataDir:     *dataDir,
 		forceBoot:   *forceBoot,
 		pprofListen: strings.TrimSpace(*pprofListen),
-		pprofOnMain: *pprofOnMain,
 		slowReqMS:   *slowReqMS,
 	}
 	// Deferred cleanups collected by the setup phases run when the HTTP
 	// server returns — same LIFO order the original in-main defers had.
 	defer a.runOnExit()
+
+	// Остатки восстановлений бэкапа — до выбора модуля: откатные копии прежних
+	// версий могли съесть место на /opt, и свой модуль из пакета не встал бы.
+	a.prunedRestoreDirs = backup.PruneRestoreLeftovers(a.dataDir)
 
 	a.setupCore()
 	a.setupNDMS()

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -34,6 +35,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/routing"
 	"github.com/hoaxisr/awg-manager/internal/singbox"
 	singboxorch "github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
+	"github.com/hoaxisr/awg-manager/internal/tunnel/external"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/managed"
@@ -71,9 +73,6 @@ type Config struct {
 	// PprofStandaloneAddr, if non-empty, starts an additional listener that
 	// serves only Go's /debug/pprof/* endpoints (recommended: 127.0.0.1:6060).
 	PprofStandaloneAddr string
-	// PprofOnMain mounts the same endpoints on the primary HTTP mux (reachable on
-	// every listen addr — LAN and loopback). Use sparingly when the API is exposed.
-	PprofOnMain bool
 	// SlowRequestThreshold, if positive, logs requests whose handler runs longer than
 	// this duration to stderr (via slog); long-lived SSE/WebSocket routes are skipped.
 	SlowRequestThreshold time.Duration
@@ -94,7 +93,6 @@ type Server struct {
 	proxyRecords               api.ProxyRecordLister
 	loggingService             *logging.Service
 	kmodLoader                 *kmod.Loader
-	opkgTunOccupancy           storage.OpkgTunPins
 	updaterService             *updater.Service
 	ndmsQueries                *ndmsquery.Queries
 	ndmsCommands               *ndmscommand.Commands
@@ -142,14 +140,23 @@ type Server struct {
 	downloadSvc                *downloader.Service
 	monitoringService          *monitoring.Service
 	singboxSubMembersFn        func() []diagnostics.SingboxSubMember
+	orphanIfacesFn             func(ctx context.Context) ([]external.OrphanIface, error)
+	orphanExclusiveFn          func(ctx context.Context) ([]external.OrphanIface, error)
+	foreignIfaces              api.ForeignIfaceMarker
 	singboxConfigPreviewFn     func() (string, error)
+	obfuscatorRelayChanged     func()
 	dnsCheckService            *dnscheck.Service
 	xrayServerService          *xrayserver.Service
 	tgWebProxyService          *tgwebproxy.Service
 	cdnDispatcher              *cdndispatcher.Dispatcher
 	serverIngressCoordinator   *serveringress.Coordinator
 	authMiddleware             *auth.Middleware
-	httpServer                 *http.Server
+	mcpKeys                    *storage.McpKeyStore
+	// mcpCalls is cancelled by Shutdown so in-flight MCP tool calls stop
+	// instead of holding httpServer.Shutdown for their full grace period.
+	mcpCalls       context.Context
+	mcpCallsCancel context.CancelFunc
+	httpServer     *http.Server
 
 	// listen владеет всеми HTTP-листенерами (по адресам из ListenSpec +
 	// безусловный loopback) и confirm-окном живой смены адреса. См. listen.go.
@@ -168,6 +175,7 @@ type Server struct {
 	bootStatusFn func() bool // returns true if boot still in progress
 
 	proxyRuntimeNudge api.ProxyRuntimeNudge
+	ipv4RunningHook   func(string)
 
 	// proxyRuntime — менеджер прокси-рантайма за узким срезом: тумблер
 	// намерения инстанса (карточка зеркальной записи wdtt-raw) и глушение
@@ -181,8 +189,9 @@ type Server struct {
 	proxyRt ProxyRtSurface
 
 	// Restart lifecycle
-	restartOnce   sync.Once // prevents multiple restart goroutines
-	shutdownHooks []func()  // cleanup functions called before syscall.Exec
+	restartOnce   sync.Once  // prevents multiple restart goroutines
+	hooksMu       sync.Mutex // пишет проводка, читает горутина рестарта
+	shutdownHooks []func()   // cleanup functions called before syscall.Exec
 }
 
 // Deps groups all New() construction-time dependencies into a named
@@ -194,20 +203,17 @@ type Server struct {
 // via the existing post-construction Set*Handler() / SetSingboxOperator()
 // setters — see SetSingboxRouterHandler etc. below in this file.
 type Deps struct {
-	TunnelService    api.TunnelService
-	ExternalService  api.ExternalTunnelService
-	TestingService   *testing.Service
-	Keenetic         *auth.KeeneticClient
-	Sessions         *auth.SessionStore
-	Settings         *storage.SettingsStore
-	Tunnels          *storage.AWGTunnelStore
-	PingCheckService api.PingCheckService
-	ProxyRecords     api.ProxyRecordLister
-	LoggingService   *logging.Service
-	KmodLoader       *kmod.Loader
-	// OpkgTunOccupancy — занятость номеров OpkgTun: живые интерфейсы плюс пины
-	// чужих подсистем. Нужна выдаче идентификатора kernel-туннеля.
-	OpkgTunOccupancy     storage.OpkgTunPins
+	TunnelService        api.TunnelService
+	ExternalService      api.ExternalTunnelService
+	TestingService       *testing.Service
+	Keenetic             *auth.KeeneticClient
+	Sessions             *auth.SessionStore
+	Settings             *storage.SettingsStore
+	Tunnels              *storage.AWGTunnelStore
+	PingCheckService     api.PingCheckService
+	ProxyRecords         api.ProxyRecordLister
+	LoggingService       *logging.Service
+	KmodLoader           *kmod.Loader
 	UpdaterService       *updater.Service
 	NdmsQueries          *ndmsquery.Queries
 	NdmsCommands         *ndmscommand.Commands
@@ -242,6 +248,25 @@ type Deps struct {
 	TelemtHandler            *api.TelemtHandler
 	CDNDispatcher            *cdndispatcher.Dispatcher
 	ServerIngressCoordinator *serveringress.Coordinator
+
+// OrphanIfaces — интерфейсы OpkgTun без записи владельца, для списка
+	// внешних туннелей и ручки их удаления. Nil выключает и то, и другое.
+	OrphanIfaces func(ctx context.Context) ([]external.OrphanIface, error)
+	// OrphanIfacesExclusive — то же под семафором выбора, для перепроверки
+	// перед сносом (см. opkgtun.Pool.OrphansExclusive).
+	OrphanIfacesExclusive func(ctx context.Context) ([]external.OrphanIface, error)
+
+	// ForeignIfaces — отметка «Сторонний интерфейс» (issue #935). Nil
+	// выключает ручки /api/interfaces/foreign/* целиком.
+	ForeignIfaces api.ForeignIfaceMarker
+
+	// McpKeys holds the MCP API keys. Nil disables the /mcp endpoint and
+	// its key-management routes entirely (they are never registered).
+	McpKeys *storage.McpKeyStore
+
+	// ObfuscatorRelayChanged — смена выключателя ядро/процесс релея Phobos
+	// (спека §4.8); nil — смена вступит в силу со следующим Start туннеля.
+	ObfuscatorRelayChanged func()
 }
 
 // authLoggerAdapter narrows ScopedLogger to the AuthLogger interface
@@ -277,7 +302,6 @@ func New(cfg Config, deps Deps) *Server {
 		proxyRecords:           deps.ProxyRecords,
 		loggingService:         deps.LoggingService,
 		kmodLoader:             deps.KmodLoader,
-		opkgTunOccupancy:       deps.OpkgTunOccupancy,
 		updaterService:         deps.UpdaterService,
 		ndmsQueries:            deps.NdmsQueries,
 		ndmsCommands:           deps.NdmsCommands,
@@ -307,12 +331,17 @@ func New(cfg Config, deps Deps) *Server {
 		clashProxy:             deps.ClashProxy,
 		monitoringService:      deps.MonitoringService,
 		singboxSubMembersFn:    deps.SingboxSubMembers,
+		orphanIfacesFn:         deps.OrphanIfaces,
+		orphanExclusiveFn:      deps.OrphanIfacesExclusive,
+		foreignIfaces:          deps.ForeignIfaces,
 		singboxConfigPreviewFn: deps.SingboxConfigPreview,
-		xrayServerService:        deps.XrayServerService,
+	xrayServerService:        deps.XrayServerService,
 		tgWebProxyService:        deps.TgWebProxyService,
 		cdnDispatcher:            deps.CDNDispatcher,
 		serverIngressCoordinator: deps.ServerIngressCoordinator,
+		obfuscatorRelayChanged:   deps.ObfuscatorRelayChanged,
 		authMiddleware:           auth.NewMiddleware(deps.Sessions, deps.Settings, &authLoggerAdapter{log: appLog}),
+		mcpKeys:                  deps.McpKeys,
 		instanceID:               id,
 	}
 }
@@ -533,6 +562,12 @@ func (s *Server) SetProxyRuntimeNudge(fn api.ProxyRuntimeNudge) {
 	s.proxyRuntimeNudge = fn
 }
 
+// SetIPv4RunningHook wires the callback for iflayerchanged layer=ipv4
+// level=running (F497: переприменение клиентских маршрутов system:-выхода).
+func (s *Server) SetIPv4RunningHook(fn func(string)) {
+	s.ipv4RunningHook = fn
+}
+
 // ProxyRuntime — то, что серверу нужно от менеджера прокси-рантайма:
 // тумблер намерения одного инстанса и пара «погасить/поднять» для бэкапа.
 // *manager.Manager удовлетворяет как есть.
@@ -568,9 +603,6 @@ func (s *Server) Start() error {
 	}
 
 	mux := http.NewServeMux()
-	if s.config.PprofOnMain {
-		registerPprofRoutes(mux)
-	}
 	s.registerRoutes(mux)
 
 	// Фоновая проверка «не открыты ли мы наружу без пароля» — гвард
@@ -633,6 +665,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.exposureGuardStop = nil
 	}
 
+	if s.mcpCallsCancel != nil {
+		s.mcpCallsCancel()
+	}
+
 	if s.pprofServer != nil {
 		shutdownCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		_ = s.pprofServer.Shutdown(shutdownCtx)
@@ -652,8 +688,23 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // AddShutdownHook registers a function to call before syscall.Exec restart.
+//
+// Именно перед exec, а не на любом завершении: образ процесса там переживает
+// смену, поэтому открытые сокеты и воркеры надо снять руками. На обычном
+// выходе (SIGTERM) их закрывает ядро, а уборка, которая обязана идти всегда,
+// регистрируется через app.deferOnExit.
 func (s *Server) AddShutdownHook(fn func()) {
+	s.hooksMu.Lock()
+	defer s.hooksMu.Unlock()
 	s.shutdownHooks = append(s.shutdownHooks, fn)
+}
+
+// shutdownHooksSnapshot отдаёт копию ведомости: исполняются хуки в отдельной
+// горутине, регистрируются в проводке, и читать срез без снимка — гонка.
+func (s *Server) shutdownHooksSnapshot() []func() {
+	s.hooksMu.Lock()
+	defer s.hooksMu.Unlock()
+	return append([]func(){}, s.shutdownHooks...)
 }
 
 // ScheduleRestart schedules a self-restart of the daemon after a short delay.
@@ -676,7 +727,7 @@ func (s *Server) ScheduleRestart() {
 			s.appLog.Info("restart", executable, "restarting daemon")
 
 			// Run shutdown hooks (stop PingCheck, sessions, log buffer, etc.)
-			for _, fn := range s.shutdownHooks {
+			for _, fn := range s.shutdownHooksSnapshot() {
 				fn()
 			}
 
@@ -702,6 +753,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.wireCrossHandlers(mux, h)
 	s.registerSingboxRoutes(mux, h)
 	s.registerProxyRtRoutes(mux, h)
+	s.registerMcpRoutes(mux, h)
 	s.registerStaticRoutes(mux, h)
 }
 
@@ -827,13 +879,37 @@ func (a *diagLogAdapter) GetBucketStats(bucket logging.Bucket) logging.BufferSta
 
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Panic recovery
+		// Panic recovery.
+		//
+		// Ответ 500 отдаётся ВМЕСТЕ с записью в журнал, и порядок именно
+		// такой: раньше обработчик молча превращал панику в 500, и в app-логе
+		// не оставалось ни строки — авария выглядела для пользователя как
+		// «внутренняя ошибка», а для нас не выглядела никак. Стек нужен
+		// целиком: паника в обработчике приходит из чужого кадра, и одно её
+		// значение («runtime error: invalid memory address») места не
+		// называет.
 		defer func() {
-			if err := recover(); err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error":true,"message":"internal server error","code":"PANIC"}`))
+			err := recover()
+			if err == nil {
+				return
 			}
+			// ErrAbortHandler — не авария, а штатный способ оборвать
+			// обработчик, и net/http свою панику этим значением из
+			// логирования стека исключает тем же образом. Так обрывается
+			// httputil.ReverseProxy, когда клиент ушёл после отдачи
+			// заголовков: у нас это прокси капчи, смонтированный на тот же
+			// mux. Без этой проверки закрытая вкладка капчи писала бы в
+			// кольцо журнала пару килобайт стека — на роутере со 128 МБ такая
+			// запись вытесняет полезные, а коалесцирование повторов не
+			// спасает: идентификатор горутины и адреса в стеке каждый раз
+			// разные.
+			if err != http.ErrAbortHandler {
+				s.appLog.Error("panic", r.URL.Path,
+					fmt.Sprintf("%s %s: %v\n%s", r.Method, r.URL.Path, err, debug.Stack()))
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"error":true,"message":"internal server error","code":"PANIC"}`))
 		}()
 
 		next.ServeHTTP(w, r)

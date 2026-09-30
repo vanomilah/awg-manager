@@ -46,6 +46,9 @@
 
   let open = $derived($drawerOpen);
   let s = $derived($status);
+  // Эффективный путь cache.db: при незаданной настройке это может быть
+  // рукописный путь из 00-base.json, который селектор выразить не может.
+  let cacheDbNow = $derived(s?.cacheDbPath ? ` Сейчас: ${s.cacheDbPath}` : '');
   let cfg = $derived($storeSettings);
   let isExpert = $derived($mode === 'expert');
 
@@ -638,6 +641,11 @@
     wanAutoOverride = override;
     if (patch) void applyPatch(patch);
   }
+  function onCacheLocationChange(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value;
+    if (v === 'flash' || v === 'tmp') void applyPatch({ cacheFileLocation: v });
+  }
+
   function onWanInterfaceChange(e: Event) {
     const action = planSelectWanInterface((e.currentTarget as HTMLSelectElement).value);
     if (!action) return;
@@ -659,6 +667,14 @@
     { value: '30m0s', label: '30 минут' },
     { value: '1h0m0s', label: '1 час' },
     { value: '3h0m0s', label: '3 часа' },
+  ];
+
+  const UDP_NAT_MAX_OPTIONS = [
+    { value: '', label: 'Авто (по памяти)' },
+    { value: '2048', label: '2048' },
+    { value: '4096', label: '4096' },
+    { value: '8192', label: '8192' },
+    { value: '16384', label: '16384' },
   ];
 </script>
 
@@ -860,6 +876,28 @@
         {/if}
         <p class="hint">Через какой внешний интерфейс отправляется прямой трафик (direct).</p>
       </section>
+
+      <!-- Кэш sing-box (issue #842): единственное место настройки, вне expert-гейта —
+           износ флеша касается любого режима с fakeip. -->
+      <section class="sec">
+        <div class="sec-cap">Кэш sing-box</div>
+        <div class="field">
+          <label class="lbl" for="ed-cache-location">Хранилище cache.db</label>
+          <select
+            id="ed-cache-location"
+            class="inp"
+            value={cfg.cacheFileLocation ?? ''}
+            onchange={onCacheLocationChange}
+          >
+            {#if !cfg.cacheFileLocation}
+              <option value="">Не задано — как в 00-base.json</option>
+            {/if}
+            <option value="flash">Флеш роутера (/opt)</option>
+            <option value="tmp">Оперативная память (/tmp)</option>
+          </select>
+        </div>
+        <p class="hint">В RAM записи FakeIP-карты и Clash не изнашивают флеш, но кэш не переживает перезагрузку. Выбор перезаписывает путь cache_file в 00-base.json, включая заданный вручную.{cacheDbNow}</p>
+      </section>
     {/if}
 
     {#if isExpert && cfg}
@@ -899,6 +937,25 @@
           </div>
         </div>
         <p class="hint">Как долго {cfg?.routingEngine === 'mihomo' ? 'Mihomo' : 'sing-box'} держит UDP-сессии активными. Увеличьте если игры или другие UDP-приложения обрываются каждые несколько минут.</p>
+        <div class="field">
+          <label class="lbl" for="ed-udp-nat-max">Потолок UDP-сессий</label>
+          <div class="udp-timeout-row">
+            <select
+              id="ed-udp-nat-max"
+              class="inp"
+              value={cfg.udpNatMax ? String(cfg.udpNatMax) : ''}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                void applyPatch({ udpNatMax: v ? Number(v) : undefined });
+              }}
+            >
+              {#each UDP_NAT_MAX_OPTIONS as opt (opt.value)}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+        <p class="hint">Сколько UDP-сессий движок держит одновременно; при переполнении вытесняется самая старая. Уменьшите на роутере с малой памятью, если sing-box растёт под UDP-нагрузкой.</p>
       </section>
 
       {#if cfg?.routingEngine !== 'mihomo'}
@@ -1000,17 +1057,12 @@
       <!-- Исключения: порт-пресеты + IP-пресеты (keendns) + ручные порты/подсети -->
       <section class="sec">
         <div class="sec-cap">Исключения</div>
-        <div class="chips">
+        <div class="bypass-presets">
           {#each BYPASS_PRESETS as p (p.id)}
             {@const active = (cfg.bypassPresets ?? []).includes(p.id)}
-            <button type="button" class="chip" class:active onclick={() => togglePreset(p.id)}>
-              <div class="chip-head">
-                <span class="chip-label">{p.label}</span>
-                <span class="chip-status-badge" class:active>
-                  {active ? 'Исключено' : 'Перехватывать'}
-                </span>
-              </div>
-              <span class="chip-desc">
+            <button type="button" class="bypass-preset" class:active onclick={() => togglePreset(p.id)}>
+              <span class="preset-label">{p.label}</span>
+              <span class="preset-desc">
                 {p.id === 'keendns' ? `имена роутера резолвит сам роутер, его адреса — мимо ${cfg?.routingEngine === 'mihomo' ? 'Mihomo' : 'sing-box'}` : p.desc}
               </span>
             </button>
@@ -1568,6 +1620,19 @@ gemini.google.com"
     word-break: break-word;
     white-space: normal;
   }
+
+  .bypass-presets { display: flex; flex-direction: column; gap: 6px; }
+  /* Не .chip: имя занято утилитой Skeleton и app.css (nowrap + центровка). */
+  .bypass-preset {
+    text-align: left; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--bg-tertiary);
+    border: 1px solid var(--border); cursor: pointer; font-family: inherit; color: inherit;
+    display: flex; flex-direction: column; gap: 2px;
+    transition: background var(--t-fast) ease, color var(--t-fast) ease, border-color var(--t-fast) ease;
+  }
+  .bypass-preset:hover { color: var(--color-text-primary); border-color: var(--color-border-hover); }
+  .bypass-preset.active { background: var(--accent-soft); border-color: var(--accent); }
+  .preset-label { font-size: 12.5px; font-weight: 600; }
+  .preset-desc { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
 
   .footer-actions { display: flex; flex-direction: column; gap: 6px; width: 100%; }
   .footer-btns {

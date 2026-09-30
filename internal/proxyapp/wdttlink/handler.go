@@ -39,26 +39,6 @@ type Mutator interface {
 // снимщик, что у ручек инстансов. Второй результат — «снимка нет».
 type Snapshots func(key string) (awgmproto.State, bool)
 
-// LinkedCleaner — снос AWG-туннелей, связанных с ОДНИМ клиентом.
-//
-// Потребитель держит КАРТУ уборщиков по роли, а не одиночную реализацию: поле
-// связи у подсистем разное (storage.AWGTunnel.WdttClientID против
-// FreeTurnClientID), и один уборщик на обе роли физически не может выбрать
-// поле — clientID роли не несёт.
-type LinkedCleaner interface {
-	// DeleteLinked сносит туннели, связанные с clientID (это Record.ID, а НЕ
-	// Key: на id ссылается поле связи туннеля).
-	//
-	// Две обязанности прод-обёртки, которые типом не выражаются и потому
-	// названы здесь: (1) снять историю трафика каждого снесённого туннеля;
-	// (2) опубликовать список туннелей в шину событий, иначе снос для фронта
-	// не случится. Третья — быть ГРОМКОЙ: при неподключённом хранилище
-	// причина обязана уехать в errs. Старый deleteLinkedAwgTunnels отвечал в
-	// этом случае «удалено ноль», и очистка выглядела успешной, ничего не
-	// сделав.
-	DeleteLinked(ctx context.Context, clientID string) (deleted []string, errs []string)
-}
-
 // TunnelImporter — узкий срез туннельной подсистемы, нужный ensure-wg.
 // Прод-обёртку (поверх storage.AWGTunnelStore и tunnel/service) строит
 // проводка.
@@ -75,8 +55,22 @@ type TunnelImporter interface {
 	// тем временем.
 	Update(tunnelID string, mut func(*storage.AWGTunnel) error) error
 	Delete(ctx context.Context, tunnelID string) error
-	Import(ctx context.Context, conf, name string) (tunnelID, tunnelName string, err error)
+	// Import создаёт туннель СРАЗУ связанным: clientID уезжает в ту же запись,
+	// что и сам туннель. Отдельного «дописать связь» здесь нет намеренно —
+	// оно оставляло окно, в котором туннель уже создан, а связи ещё нет, и
+	// такой туннель невидим для уборки связанных (api.LinkedTunnelCleaner).
+	Import(ctx context.Context, conf, name, clientID string) (tunnelID, tunnelName string, err error)
+	// AddressConflicts — предупреждения о туннелях, уже занявших адрес
+	// (строка `Address` конфига, до создания записи). NDMS не поднимет второй
+	// OpkgTun с тем же /32, поэтому импорт с конфликтом отказывается (#869).
+	AddressConflicts(address string) []string
 	Start(ctx context.Context, tunnelID string) error
+	// SyncDescription ставит описание записи туннеля в NDMS = name: F517
+	// признаёт запись kernel-туннеля своей только по равенству описания
+	// имени. prevName — имя до переименования: по нему служба проверяет, что
+	// запись наша, и чужую не трогает. Провал — Warn в журнале службы
+	// (после ребута F517 откажет).
+	SyncDescription(ctx context.Context, tunnelID, prevName, name string)
 	// ForgetTraffic снимает историю трафика удалённого туннеля: id
 	// переиспользуется, и чужая история подмешалась бы к новому туннелю.
 	ForgetTraffic(tunnelID string)
@@ -91,14 +85,12 @@ type Deps struct {
 	Mutator   Mutator
 	Snapshots Snapshots
 	Tunnels   TunnelImporter
-	// Cleaners — уборщики связанных туннелей ПО РОЛИ (см. LinkedCleaner).
-	Cleaners map[instancestore.Kind]LinkedCleaner
 	// Builders — диспетчер ручки ссылки по роли записи; собирает проводка
 	// (wdtt-server — Builder этого пакета, freeturn-server — свой пакет).
 	Builders map[instancestore.Kind]LinkBuilder
 }
 
-// Handler обслуживает ручки ссылок, импорта, ensure-wg и очистки связей.
+// Handler обслуживает ручки ссылок, импорта и ensure-wg.
 // Пути регистрирует проводка: у пакета нет своего мультиплексора, ключ
 // инстанса приходит аргументом.
 type Handler struct{ deps Deps }
@@ -151,19 +143,6 @@ type LinkResult struct {
 type LinkResponse struct {
 	Success bool       `json:"success" example:"true"`
 	Data    LinkResult `json:"data"`
-}
-
-// ClearLinkedResult — тело очистки связей.
-type ClearLinkedResult struct {
-	DeletedTunnels []string `json:"deletedTunnels"`
-	TunnelErrors   []string `json:"tunnelErrors"`
-	Message        string   `json:"message" example:"linked AWG tunnels cleared"`
-}
-
-// ClearLinkedResponse — конверт очистки связей.
-type ClearLinkedResponse struct {
-	Success bool              `json:"success" example:"true"`
-	Data    ClearLinkedResult `json:"data"`
 }
 
 // EnsureWGResponse — конверт подготовки связанного WG-туннеля.
@@ -342,58 +321,11 @@ func (h *Handler) Link(w http.ResponseWriter, r *http.Request, key string) {
 	response.Success(w, data)
 }
 
-// ── очистка связей ───────────────────────────────────────────────
-
-// ClearLinkedTunnels — POST /api/proxyrt/instances/{key}/linked-tunnels/clear.
-// Форма ответа прежняя (api/wdtt_linked_clear.go:26-30).
-//
-//	@Summary	Снять AWG-туннели, связанные с клиентским инстансом
-//	@Tags		proxyrt
-//	@Produce	json
-//	@Security	CookieAuth
-//	@Param		key	path		string	true	"Ключ инстанса (роль:id)"
-//	@Success	200	{object}	ClearLinkedResponse
-//	@Failure	400	{object}	api.APIErrorEnvelope
-//	@Failure	404	{object}	api.APIErrorEnvelope
-//	@Router		/proxyrt/instances/{key}/linked-tunnels/clear [post]
-func (h *Handler) ClearLinkedTunnels(w http.ResponseWriter, r *http.Request, key string) {
-	if r.Method != http.MethodPost {
-		response.ErrorWithStatus(w, http.StatusMethodNotAllowed, "Method not allowed", "METHOD_NOT_ALLOWED")
-		return
-	}
-	rec, ok := h.record(w, key)
-	if !ok {
-		return
-	}
-	// Роль записи сверяется ОБЯЗАТЕЛЬНО. Связь туннеля — id инстанса, а он
-	// уникален только ВНУТРИ роли: «default» есть у всех четырёх (докстрока
-	// instancestore.Record.Key). Без гейта запрос к СЕРВЕРУ default сносил бы
-	// туннели КЛИЕНТА default. В старом мире роль задавал сам путь
-	// (/wdtt/clients/{id}/…), здесь её задаёт только ключ.
-	if !isClientKind(rec.Kind) {
-		response.Error(w, "инстанс "+key+": связанные AWG-туннели есть только у клиентов, роль "+
-			string(rec.Kind)+" их не заводит", "BAD_REQUEST")
-		return
-	}
-	cleaner := h.deps.Cleaners[rec.Kind]
-	if cleaner == nil {
-		// Молчаливое «удалено ноль» здесь — худший исход: пользователь считал
-		// бы связи снятыми.
-		response.InternalError(w, "очистка связанных туннелей роли "+string(rec.Kind)+" не подключена")
-		return
-	}
-	deleted, errs := cleaner.DeleteLinked(r.Context(), rec.ID)
-	response.Success(w, map[string]any{
-		"deletedTunnels": deleted,
-		"tunnelErrors":   errs,
-		"message":        "linked AWG tunnels cleared",
-	})
-}
-
 // ── ensure-wg ────────────────────────────────────────────────────
 
-// EnsureWGTunnelResponse — тело ответа ensure-wg, форма прежняя
-// (api/wdtt_wg.go:13-18): фронт читает эти четыре поля.
+// EnsureWGTunnelResponse — тело ответа ensure-wg, форма прежняя (перенесена
+// из api/wdtt_wg.go, снесённого вместе со старым миром): фронт читает эти
+// четыре поля.
 type EnsureWGTunnelResponse struct {
 	Created    bool   `json:"created"`
 	TunnelID   string `json:"tunnelId,omitempty"`
@@ -410,6 +342,8 @@ type EnsureWGTunnelResponse struct {
 //	@Summary		Завести AWG-туннель под WireGuard-конфиг клиента
 //	@Description	409 WDTT_WG_NOT_READY означает «конфиг ещё не приехал от сервера» —
 //	@Description	это ожидание, а не сбой: ручку зовёт автоэффект страницы.
+//	@Description	409 WDTT_WG_ADDRESS_CONFLICT — адрес, выданный wdtt-server, уже занят другим туннелем
+//	@Description	(два сервера со старым wdtt-server выдают одинаковые адреса, #869); туннель не создаётся.
 //	@Tags			proxyrt
 //	@Produce		json
 //	@Security		CookieAuth
@@ -437,9 +371,6 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 	if normalizeConnMode(cfg.Mode) == ConnModeRaw {
-		if cleaner := h.deps.Cleaners[rec.Kind]; cleaner != nil {
-			cleaner.DeleteLinked(r.Context(), rec.ID)
-		}
 		response.Success(w, EnsureWGTunnelResponse{
 			Created: false,
 			Message: "Режим Raw: AWG-туннель не используется — трафик идёт через OpkgTun (NDMS)",
@@ -465,9 +396,22 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 	wantName := TunnelNameFromClient(rec.Name)
 	wantEndpoint := fmt.Sprintf("127.0.0.1:%d", port)
 	running := haveSnap && snap.PID > 0
-	// mutated — было ли что менять: публикация списка нужна ровно тогда,
-	// когда фронту есть что перечитать.
+	// mutated — было ли что менять: публикация списка нужна ровно тогда, когда
+	// фронту есть что перечитать.
+	//
+	// Публикует ОДИН defer, а не каждый путь по месту (PF22). Ручка мутирует
+	// в нескольких шагах (снос устаревших туннелей, правка совпавшего, импорт,
+	// старт), и после любого из них дальше стоит ранний возврат по отказу
+	// СЛЕДУЮЩЕГО шага. Публикация по месту жила только на успешных путях,
+	// поэтому частично удавшаяся работа уезжала на диск, но не доезжала до
+	// фронта: список показывал удалённое (а в одном случае — не показывал
+	// созданное) до ручной перезагрузки страницы.
 	mutated := false
+	defer func() {
+		if mutated {
+			h.deps.Tunnels.PublishList(r.Context())
+		}
+	}()
 
 	tunnels, err := h.deps.Tunnels.List()
 	if err != nil {
@@ -505,7 +449,7 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 	}
 
 	if match := MatchingAWGTunnel(tunnels, patched); match != nil {
-		changed := false
+		changed, renamed, prevName := false, false, ""
 		// Решение «менять или нет» принимается по свежей записи внутри
 		// мутатора: List выше — только выбор кандидата.
 		err := h.deps.Tunnels.Update(match.ID, func(stored *storage.AWGTunnel) error {
@@ -514,8 +458,9 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 				changed = true
 			}
 			if wantName != "" && stored.Name != wantName {
+				prevName = stored.Name
 				stored.Name = wantName
-				changed = true
+				changed, renamed = true, true
 			}
 			if strings.TrimSpace(stored.Peer.Endpoint) != wantEndpoint {
 				stored.Peer.Endpoint = wantEndpoint
@@ -533,12 +478,13 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 		if changed {
 			mutated = true
 		}
+		if renamed {
+			// До Start: F517 сверяет описание записи с именем уже на старте.
+			h.deps.Tunnels.SyncDescription(r.Context(), match.ID, prevName, wantName)
+		}
 		if running {
 			_ = h.deps.Tunnels.Start(r.Context(), match.ID)
 			mutated = true
-		}
-		if mutated {
-			h.deps.Tunnels.PublishList(r.Context())
 		}
 		response.Success(w, EnsureWGTunnelResponse{
 			Created:    false,
@@ -549,22 +495,33 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 		return
 	}
 
-	tunnelID, tunnelName, err := h.deps.Tunnels.Import(r.Context(), patched, wantName)
+	// #869: адрес назначает сервер, сменить его на клиенте нельзя
+	// (allowed_ip пира), а NDMS не поднимет второй OpkgTun с тем же /32 —
+	// отказываем ДО создания записи, иначе появляется туннель, который не
+	// стартует, с ошибкой NDMS только в тосте.
+	if addr := ExtractInterfaceAddress(patched); addr != "" {
+		if conflicts := h.deps.Tunnels.AddressConflicts(addr); len(conflicts) > 0 {
+			// В сообщении — хост без префикса и первое предупреждение проверки
+			// (там имя туннеля и интерфейс).
+			ip, _, _ := strings.Cut(strings.TrimSpace(strings.SplitN(addr, ",", 2)[0]), "/")
+			response.ErrorWithStatus(w, http.StatusConflict,
+				fmt.Sprintf("Сервер выдал адрес %s, он уже занят: %s. Адрес назначает wdtt-server: "+
+					"обновите его на обоих роутерах до 1.4.0-5 и заведите заново абонента этого клиента на его сервере",
+					ip, conflicts[0]),
+				"WDTT_WG_ADDRESS_CONFLICT")
+			return
+		}
+	}
+
+	tunnelID, tunnelName, err := h.deps.Tunnels.Import(r.Context(), patched, wantName, rec.ID)
 	if err != nil {
 		response.Error(w, err.Error(), "WDTT_WG_IMPORT_FAILED")
 		return
 	}
-	if err := h.deps.Tunnels.Update(tunnelID, func(stored *storage.AWGTunnel) error {
-		stored.WdttClientID = rec.ID
-		return nil
-	}); err != nil {
-		response.InternalError(w, err.Error())
-		return
-	}
+	mutated = true // туннель создан — фронту есть что перечитать в любом случае
 	if running {
 		_ = h.deps.Tunnels.Start(r.Context(), tunnelID)
 	}
-	h.deps.Tunnels.PublishList(r.Context())
 	response.Success(w, EnsureWGTunnelResponse{
 		Created:    true,
 		TunnelID:   tunnelID,
@@ -574,13 +531,6 @@ func (h *Handler) EnsureWGTunnel(w http.ResponseWriter, r *http.Request, key str
 }
 
 // ── общее ────────────────────────────────────────────────────────
-
-// isClientKind — у кого бывают связанные AWG-туннели: только у клиентов
-// (поля связи storage.AWGTunnel.WdttClientID и FreeTurnClientID). Сервер —
-// вход, туннеля на него не заводится.
-func isClientKind(k instancestore.Kind) bool {
-	return k == instancestore.KindWdttClient || k == instancestore.KindFreeTurnClient
-}
 
 func (h *Handler) record(w http.ResponseWriter, key string) (instancestore.Record, bool) {
 	if h.deps.Records == nil {

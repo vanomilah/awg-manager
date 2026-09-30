@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hoaxisr/awg-manager/internal/logging"
 )
@@ -55,8 +56,12 @@ func ReleasePolicyTunForRemoval(ctx context.Context, d Deps) error {
 	// Индекс из записи мог занять ЧУЖОЙ OpkgTun после смерти нашего: и снятие
 	// дефолта, и удаление по имени разобрали бы посторонний туннель. Записи
 	// сегментов выше вернуть всё равно надо — они про сегменты, а не про
-	// интерфейс. «Не знаем» ≠ «чужой»: без скана работаем как раньше.
-	if s.skipForeignTeardown(ctx, ndmsName, policyTunDescription, "policy-tun-remove") {
+	// интерфейс. Скан упал — отказ ошибкой (F493): дефолт и интерфейс не
+	// трогаем, `--cleanup` печатает причину.
+	if proceed, err := s.teardownGate(ctx, ndmsName, policyTunDescription, "policy-tun-remove"); !proceed {
+		if err != nil {
+			return fmt.Errorf("%s: %w", ndmsName, err)
+		}
 		return nil
 	}
 

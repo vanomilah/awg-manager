@@ -72,6 +72,9 @@ type UpdateSettingsDTO struct {
 	// AutoInstallTime is the daily "HH:MM" (24h) window an auto-install
 	// attempt may start in.
 	AutoInstallTime string `json:"autoInstallTime" example:"05:00"`
+	// StatsEnabled — анонимная статистика установок: случайный ID установки
+	// и флаги используемых механизмов в запросе проверки обновлений.
+	StatsEnabled bool `json:"statsEnabled" example:"true"`
 }
 
 type DownloadSettingsDTO struct {
@@ -95,17 +98,38 @@ type GeoFileSettingsDTO struct {
 	RefreshDailyTime     string `json:"refreshDailyTime" example:"03:00"`
 }
 
-// SettingsData is the payload for GET /settings/get.
+// SettingsData is the payload of every settings response (Get, Update,
+// RegenerateApiKey) — и НАСТОЯЩИЙ тип тела, а не только документация.
+//
+// Состав — белый список: каждое отдаваемое поле названо здесь и в
+// settingsResponse ровно по одному разу. Новое поле storage.Settings
+// наружу не уходит, пока его сюда не внесли: отказ закрытый по построению.
+// Так эта граница заменила вычистку секретов по именам полей, трижды
+// пропустившую настоящую утечку (структура с секретным именем и невинными
+// листьями, встроенная неэкспортированная структура, тег `json:"-,"`).
+// Состав стережёт TestSettingsResponse_TopLevelKeysAreWhitelisted.
 type SettingsData struct {
-	SchemaVersion int  `json:"schemaVersion" example:"16"`
+	// SchemaVersion повторяет тег storage.Settings ВМЕСТЕ с omitempty:
+	// страница шлёт тело ответа обратно PATCH-ем, а поле патчабельное, так
+	// что "schemaVersion":0 в ответе уехал бы в хранилище.
+	SchemaVersion int  `json:"schemaVersion,omitempty" example:"16"`
 	AuthEnabled   bool `json:"authEnabled" example:"false"`
 	// SessionTtlHours is the auth session lifetime in hours (1..720,
 	// sliding window; server-side expiry applies immediately, browser
 	// cookie Max-Age of existing sessions updates on next login).
 	SessionTtlHours int `json:"sessionTtlHours" example:"24" minimum:"1" maximum:"720"`
-	// EntwareAuthEnabled allows login with Entware system credentials
-	// (/opt/etc/shadow) verified locally, without the NDMS /auth call.
-	EntwareAuthEnabled        bool                 `json:"entwareAuthEnabled" example:"false"`
+	// McpEnabled turns on the Model Context Protocol endpoint at /mcp.
+	// Off by default; keys are managed via /mcp/keys*.
+	McpEnabled bool `json:"mcpEnabled" example:"false"`
+	// ObfuscatorRelayProcess — Phobos-релей принудительно процессом (выключатель ядра).
+	ObfuscatorRelayProcess bool `json:"obfuscatorRelayProcess" example:"false"`
+	// ObfuscatorKmodTripped — причина, по которой сторож выключил kernel-релей.
+	ObfuscatorKmodTripped string `json:"obfuscatorKmodTripped,omitempty" example:""`
+	// ApiKey is the opaque secret accepted in place of a session cookie via
+	// `Authorization: Bearer <key>`. Отдаётся сознательно: панель настроек
+	// показывает его и даёт скопировать — ключ для того и заводится. Ротация
+	// — POST /settings/regenerate-api-key.
+	ApiKey                    string               `json:"apiKey,omitempty" example:"d2f1c0a4-5b6e-4a7c-8d9e-0f1a2b3c4d5e"`
 	Server                    ServerSettingsDTO    `json:"server"`
 	PingCheck                 PingCheckSettingsDTO `json:"pingCheck"`
 	Logging                   LoggingSettingsDTO   `json:"logging"`
@@ -156,21 +180,22 @@ type MonitoringRefreshService interface {
 
 // SettingsHandler handles settings API endpoints.
 type SettingsHandler struct {
-	store                   *storage.SettingsStore
-	tunnels                 *storage.AWGTunnelStore
-	pingCheck               PingCheckToggleService
-	monitoring              MonitoringRefreshService
-	pingCheckSnapshot       func()
-	logsSnapshot            func()
-	applyLogSettings        func()
-	applySingboxLogSettings func() error
-	applyBootstrapDNS       func(string) error
-	applyClashPort          func(int) error
-	clashPorts              clashPortInspector
-	downloadSvc             *downloader.Service
-	log                     *logging.ScopedLogger
-	bus                     *events.Bus
-	exposure                exposureChecker
+	store                    *storage.SettingsStore
+	tunnels                  *storage.AWGTunnelStore
+	pingCheck                PingCheckToggleService
+	monitoring               MonitoringRefreshService
+	pingCheckSnapshot        func()
+	logsSnapshot             func()
+	applyLogSettings         func()
+	applySingboxLogSettings  func() error
+	applyBootstrapDNS        func(string) error
+	applyClashPort           func(int) error
+	clashPorts               clashPortInspector
+	onObfuscatorRelayChanged func()
+	downloadSvc              *downloader.Service
+	log                      *logging.ScopedLogger
+	bus                      *events.Bus
+	exposure                 exposureChecker
 }
 
 // exposureChecker re-runs the "are we exposed without a password" check
@@ -247,6 +272,12 @@ func (h *SettingsHandler) SetClashPortInspector(insp clashPortInspector) {
 	h.clashPorts = insp
 }
 
+// SetOnObfuscatorRelayChanged — смена выключателя ядро/процесс: перезапуск
+// Phobos-релеев на новом бэкенде (спека §4.8).
+func (h *SettingsHandler) SetOnObfuscatorRelayChanged(fn func()) {
+	h.onObfuscatorRelayChanged = fn
+}
+
 func (h *SettingsHandler) SetDownloadService(svc *downloader.Service) {
 	h.downloadSvc = svc
 }
@@ -255,10 +286,102 @@ func (h *SettingsHandler) SetDownloadService(svc *downloader.Service) {
 // resource:invalidated hint to all connected clients.
 func (h *SettingsHandler) SetEventBus(bus *events.Bus) { h.bus = bus }
 
+// settingsResponse строит тело ответа настроек по БЕЛОМУ СПИСКУ: из
+// storage.Settings в SettingsData переносится ровно то, что названо ниже, —
+// поле за полем, без рефлексии и без «скопировать всё и снять лишнее».
+// ЕДИНСТВЕННАЯ точка сборки: её проходят все три ручки, отдающие настройки
+// (Get, Update, RegenerateApiKey).
+//
+// Цена ошибки ЗДЕСЬ — не «поле не видно в интерфейсе»: страница настроек шлёт
+// тело ответа обратно PATCH-ем, поэтому забытое или перепутанное присваивание
+// СТИРАЕТ хранимое на первом же сохранении (пропущенный authEnabled выключает
+// авторизацию панели). То же и у вложенных блоков: server, pingCheck, updates,
+// dnsRoute и geoFile патчатся ЦЕЛИКОМ (applyStructPatch), так что поле,
+// добавленное в storage-структуру и забытое в DTO, обнуляется. Стережёт
+// TestSettingsRoundTrip_ResponseBodyPatchedBack_KeepsSecrets: он заполняет
+// всё дерево настроек разными значениями и сверяет хранимое до и после
+// круговорота.
+//
+// Состав списка выведен из фактического потребления фронтом: рукописный тип
+// frontend/src/lib/types/system.ts (export interface Settings) плюс ключ API,
+// который панель показывает. Ключевой материал (AmneziaPremiumKeyCipher,
+// ServerPeerSecrets, ManagedServers/ManagedServer) и backend-managed запись
+// владения (OpkgTun, DNSChainPreset, SingboxRouter, …) сюда не входят вовсе,
+// поэтому уехать наружу им физически неоткуда.
+//
+// Аргумент только читается: DTO забирает срезы как есть (Interfaces,
+// MonitoringExcludedTunnels), но ни один писатель их не трогает, и правки по
+// месту здесь нет — живой кэш стора не пострадает и у будущего вызывающего,
+// подавшего сюда store.Get().
+func settingsResponse(s *storage.Settings) SettingsData {
+	return SettingsData{
+		SchemaVersion:          s.SchemaVersion,
+		AuthEnabled:            s.AuthEnabled,
+		SessionTtlHours:        s.SessionTtlHours,
+		McpEnabled:             s.McpEnabled,
+		ObfuscatorRelayProcess: s.ObfuscatorRelayProcess,
+		ObfuscatorKmodTripped:  s.ObfuscatorKmodTripped,
+		ApiKey:                 s.ApiKey,
+		Server: ServerSettingsDTO{
+			Port:       s.Server.Port,
+			Interface:  s.Server.Interface,
+			Interfaces: s.Server.Interfaces,
+		},
+		PingCheck: PingCheckSettingsDTO{
+			Enabled: s.PingCheck.Enabled,
+			Defaults: PingCheckDefaultsDTO{
+				Method:        s.PingCheck.Defaults.Method,
+				Target:        s.PingCheck.Defaults.Target,
+				Interval:      s.PingCheck.Defaults.Interval,
+				DeadInterval:  s.PingCheck.Defaults.DeadInterval,
+				FailThreshold: s.PingCheck.Defaults.FailThreshold,
+			},
+		},
+		Logging: LoggingSettingsDTO{
+			Enabled:           s.Logging.Enabled,
+			MaxAge:            s.Logging.MaxAge,
+			LogLevel:          s.Logging.LogLevel,
+			SingboxLogLevel:   s.Logging.SingboxLogLevel,
+			AppMaxEntries:     s.Logging.AppMaxEntries,
+			SingboxMaxEntries: s.Logging.SingboxMaxEntries,
+		},
+		MonitoringExcludedTunnels: s.MonitoringExcludedTunnels,
+		DisableMemorySaving:       s.DisableMemorySaving,
+		Updates: UpdateSettingsDTO{
+			CheckEnabled:            s.Updates.CheckEnabled,
+			Channel:                 s.Updates.Channel,
+			AutoInstallEnabled:      s.Updates.AutoInstallEnabled,
+			AutoInstallIntervalDays: s.Updates.AutoInstallIntervalDays,
+			AutoInstallTime:         s.Updates.AutoInstallTime,
+			StatsEnabled:            s.Updates.StatsEnabled,
+		},
+		Download: DownloadSettingsDTO{
+			RouteTag:  s.Download.RouteTag,
+			RouteKind: s.Download.RouteKind,
+		},
+		DnsRoute: DNSRouteSettingsDTO{
+			AutoRefreshEnabled:   s.DNSRoute.AutoRefreshEnabled,
+			RefreshIntervalHours: s.DNSRoute.RefreshIntervalHours,
+			RefreshMode:          s.DNSRoute.RefreshMode,
+			RefreshDailyTime:     s.DNSRoute.RefreshDailyTime,
+		},
+		GeoFile: GeoFileSettingsDTO{
+			AutoRefreshEnabled:   s.GeoFile.AutoRefreshEnabled,
+			RefreshIntervalHours: s.GeoFile.RefreshIntervalHours,
+			RefreshMode:          s.GeoFile.RefreshMode,
+			RefreshDailyTime:     s.GeoFile.RefreshDailyTime,
+		},
+		ConnectivityCheckURL: s.ConnectivityCheckURL,
+		UsageLevel:           s.UsageLevel,
+		SingboxBootstrapDNS:  s.SingboxBootstrapDNS,
+		SingboxClashPort:     s.SingboxClashPort,
+	}
+}
+
 // Get returns current settings.
 //
 //	@Summary		Get settings
-//	@Description	Returns the full Settings object (server, pingCheck, logging, dnsRoute, managed, apiKey, ...).
+//	@Description	Returns the settings whitelist (SettingsData): server, pingCheck, logging, updates, download, dnsRoute, geoFile, apiKey and the rest of the fields the UI reads. Server-internal state (managed servers, peer secrets, sing-box router, OpkgTun ownership) is NOT part of the response.
 //	@Tags			settings
 //	@Produce		json
 //	@Security		CookieAuth
@@ -280,13 +403,13 @@ func (h *SettingsHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response.Success(w, settings)
+	response.Success(w, settingsResponse(settings))
 }
 
 // Update saves settings.
 //
 //	@Summary		Update settings
-//	@Description	Persists Settings via patch semantics: any field omitted from the payload is preserved, including top-level bool flags. Send only the fields you want to change, or send the full Settings object to update everything atomically. ApiKey preserved when omitted (rotate via /settings/regenerate-api-key). singboxRouter.routingMode and singboxRouter.enabled are ignored: the routing mode changes only via POST /singbox/router/mode, enable/disable only via the dedicated endpoints.
+//	@Description	Persists Settings via patch semantics: any field omitted from the payload is preserved, including top-level bool flags. Send only the fields you want to change, or send the full Settings object to update everything atomically. ApiKey preserved when omitted (rotate via /settings/regenerate-api-key). singboxRouter.routingMode and singboxRouter.enabled are ignored: the routing mode changes only via POST /singbox/router/mode, enable/disable only via the dedicated endpoints. obfuscatorRelayProcess is ignored: switch it via POST /settings/obfuscator-relay.
 //	@Tags			settings
 //	@Accept			json
 //	@Produce		json
@@ -492,11 +615,11 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 			h.log.Warn("auth", "", "Authentication disabled")
 		}
 	}
-	if oldSettings.EntwareAuthEnabled != want.EntwareAuthEnabled {
-		if want.EntwareAuthEnabled {
-			h.log.Info("auth", "", "Entware authentication enabled")
+	if oldSettings.McpEnabled != want.McpEnabled {
+		if want.McpEnabled {
+			h.log.Warn("mcp", "", "MCP endpoint enabled")
 		} else {
-			h.log.Info("auth", "", "Entware authentication disabled")
+			h.log.Info("mcp", "", "MCP endpoint disabled")
 		}
 	}
 	if oldSettings.SessionTtlHours != want.SessionTtlHours {
@@ -547,12 +670,14 @@ func (h *SettingsHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Наружу отдаём снапшот, а не want: Update опубликовал запись, выведенную
 	// из актуального состояния, и она может отличаться от черновика полями,
-	// которые этот путь не трогает.
-	if snap, err := h.store.Snapshot(); err == nil {
-		response.Success(w, snap)
-	} else {
-		response.Success(w, &want)
+	// которые этот путь не трогает. Черновик — запасной вариант на отказ
+	// снапшота. Вычистка одна на обе ветки: отдельный вызов на запасной
+	// ветке некому было бы держать красным — через HTTP она недостижима.
+	out, err := h.store.Snapshot()
+	if err != nil {
+		out = &want
 	}
+	response.Success(w, settingsResponse(out))
 	h.bus.PublishInvalidated(events.ResourceSettings, "updated")
 
 	// Порт мог смениться — перепроверяем экспозицию. В горутине с
@@ -601,8 +726,64 @@ func (h *SettingsHandler) RegenerateApiKey(w http.ResponseWriter, r *http.Reques
 	}
 
 	h.log.Info("api-key", "", "API key regenerated")
-	response.Success(w, settings)
+	response.Success(w, settingsResponse(settings))
 	h.bus.PublishInvalidated(events.ResourceSettings, "api-key-rotated")
+}
+
+// ObfuscatorRelayRequest — тело POST /settings/obfuscator-relay. Process —
+// указатель: отсутствующее поле — отказ, а не молчаливый возврат к ядру
+// (соседние DTO берут голый bool; здесь его false — небезопасный дефолт).
+type ObfuscatorRelayRequest struct {
+	// true — Phobos-релей процессом, false — модулем ядра awgm_relay.
+	Process *bool `json:"process" validate:"required" example:"true"`
+}
+
+// SetObfuscatorRelay — выключатель ядро/процесс Phobos-релея (спека §4.8).
+// Отдельная ручка, а не поле общего update: страница настроек шлёт тело
+// целиком, и устаревшее false с другой вкладки снимало бы срабатывание
+// сторожа (§4.9) и возвращало ядро.
+//
+//	@Summary		Switch Phobos relay backend
+//	@Description	Sets the Phobos relay backend: process=true forces the userspace relay, process=false returns to the awgm_relay kernel module (and clears the watchdog trip). Live Phobos relays are restarted on the new backend. Returns the updated Settings.
+//	@Tags			settings
+//	@Accept			json
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			body	body		ObfuscatorRelayRequest	true	"Relay backend"
+//	@Success		200		{object}	SettingsResponse
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		405		{object}	APIErrorEnvelope
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Router			/settings/obfuscator-relay [post]
+func (h *SettingsHandler) SetObfuscatorRelay(w http.ResponseWriter, r *http.Request) {
+	req, ok := parseJSON[ObfuscatorRelayRequest](w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+	if req.Process == nil {
+		response.ErrorWithStatus(w, http.StatusBadRequest, "process is required", "INVALID_BODY")
+		return
+	}
+	changed, err := h.store.SetObfuscatorRelayProcess(*req.Process)
+	if err != nil {
+		response.Error(w, err.Error(), "SETTINGS_SAVE_ERROR")
+		return
+	}
+	if changed {
+		h.log.Info("obfuscator", "", fmt.Sprintf("Phobos relay backend: process=%v", *req.Process))
+		if h.onObfuscatorRelayChanged != nil {
+			go h.onObfuscatorRelayChanged() // значение хук читает из стора (F478)
+		}
+	}
+	settings, err := h.store.Snapshot()
+	if err != nil {
+		response.Error(w, err.Error(), "SETTINGS_LOAD_ERROR")
+		return
+	}
+	response.Success(w, settingsResponse(settings))
+	if changed {
+		h.bus.PublishInvalidated(events.ResourceSettings, "updated")
+	}
 }
 
 // generateUUIDv4 produces an RFC 4122 v4 UUID using crypto/rand.

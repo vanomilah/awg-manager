@@ -351,6 +351,7 @@
 					ingressEnabled={ingressRefs.includes(`iface:${activeServer.interfaceName}`)}
 					onToggleIngress={handleToggleSystemIngress}
 					{activeEngine}
+					{routerIP}
 				/>
 				{:else if activeItem?.kind === 'tgwebproxy'}
 					<TelegramWebProxyCard />

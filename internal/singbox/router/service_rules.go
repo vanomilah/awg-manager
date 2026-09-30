@@ -3,6 +3,8 @@ package router
 import (
 	"context"
 	"fmt"
+
+	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 )
 
 func (s *ServiceImpl) ListRules(ctx context.Context) ([]Rule, error) {
@@ -137,6 +139,13 @@ func bulkSetRuleOutbound(c *RouterConfig, indices []int, outbound string, known 
 		if isSystemRule(c.Route.Rules[i]) {
 			return fmt.Errorf("%w: rule %d is a system rule", ErrBulkInvalidSelection, i)
 		}
+		// Checked here, on the config just loaded, and not only by the
+		// caller: a caller that inspected an earlier snapshot can be
+		// looking at a different index after a concurrent edit, and a
+		// managed rule silently reverts on the next reconcile anyway.
+		if c.Route.Rules[i].AwgmManaged != "" {
+			return fmt.Errorf("%w: rule %d is managed by awg-manager", ErrBulkInvalidSelection, i)
+		}
 	}
 	for _, i := range indices {
 		c.Route.Rules[i].Outbound = outbound
@@ -248,7 +257,7 @@ func (s *ServiceImpl) DeleteRuleSet(ctx context.Context, tag string, force bool)
 			return err
 		}
 		if s.deps.Orch == nil {
-			s.ruleSetMaterializer().removeInlineArtifacts(inlineTag)
+			s.ruleSetMaterializer().removeInlineArtifacts(orchestrator.SlotRouter, inlineTag)
 		}
 		return nil
 	})

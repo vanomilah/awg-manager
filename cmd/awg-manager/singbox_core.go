@@ -28,7 +28,7 @@ type singboxCoreDeps struct {
 	bus      *events.Bus
 	bootLog  *logging.ScopedLogger
 	dataDir  string // awg3.json
-	// dir — каталог управляемого sing-box; пусто = дефолт оператора
+	// dir — каталог управляемого sing-box; пусто = singboxDataDir (applyDataDir), в проде — дефолт оператора
 	// (каталог рядом с бинарём).
 	dir string
 	// initialManuallyStopped — снимок Settings.SingboxManuallyStopped,
@@ -48,15 +48,20 @@ type singboxCore struct {
 // AWG3-endpoint'ов.
 func buildSingboxCore(d singboxCoreDeps) singboxCore {
 	// Sing-box integration
+	dir := d.dir
+	if dir == "" {
+		dir = singboxDataDir
+	}
 	op := singbox.NewOperator(singbox.OperatorDeps{
-		Log:             slog.Default().With("component", "singbox"),
-		Dir:             d.dir,
-		Queries:         d.queries,
-		Commands:        d.commands,
-		AppLogger:       d.appLog,
-		SingboxLogLevel: d.settings.GetSingboxLogLevel,
-		BootstrapDNS:    d.settings.GetSingboxBootstrapDNS,
-		ClashPort:       d.settings.GetSingboxClashPort,
+		Log:               slog.Default().With("component", "singbox"),
+		Dir:               dir,
+		Queries:           d.queries,
+		Commands:          d.commands,
+		AppLogger:         d.appLog,
+		SingboxLogLevel:   d.settings.GetSingboxLogLevel,
+		BootstrapDNS:      d.settings.GetSingboxBootstrapDNS,
+		ClashPort:         d.settings.GetSingboxClashPort,
+		CacheFileLocation: d.settings.GetSingboxCacheFileLocation,
 		// Seed the sticky-stop flag from disk so the watchdog respects
 		// a user-pressed Stop across awgm restarts. SetManuallyStopped
 		// writes the new intent back through a single-field updater so
@@ -91,6 +96,10 @@ func buildSingboxCore(d singboxCoreDeps) singboxCore {
 	addressOrMigrated, err := router.MigrateAddressOrRules(singboxConfigDir)
 	if err != nil {
 		d.bootLog.Warn("address-or-migration", "", err.Error())
+	}
+	dnsMatchSourceMigrated, err := router.MigrateDNSRuleSetMatchSource(singboxConfigDir)
+	if err != nil {
+		d.bootLog.Warn("dns-matchsource-migration", "", err.Error())
 	}
 	orch := singboxorch.New(singboxConfigDir, op.Process())
 	orch.SetLogger(func(level, msg string) {
@@ -160,7 +169,7 @@ func buildSingboxCore(d singboxCoreDeps) singboxCore {
 		op:        op,
 		orch:      orch,
 		awg3Store: awg3Store,
-		migrated:  ruleSetURLsMigrated || addressOrMigrated || deviceProxyMigrated,
+		migrated:  ruleSetURLsMigrated || addressOrMigrated || deviceProxyMigrated || dnsMatchSourceMigrated,
 	}
 }
 
@@ -253,12 +262,11 @@ func (a *app) setupSingboxRuntime() {
 	subProxyMgr := singbox.NewProxyManager(a.ndmsQueries, a.ndmsCommands)
 	a.ndmsProxyMgr = subProxyMgr
 	a.subAdapter = subscription.NewOperatorAdapter(a.sbOrch, subProxyMgr, a.singboxOp.Clash())
-	// Wire the Operator's cached sing-box build-tag probe into the
-	// subscription adapter so flush() Pass 1 can cheaply pre-filter
-	// outbounds whose type requires a missing optional build tag
-	// (naive). The probe is cached by binary
-	// mtime+size in Operator.detectVersionAndFeaturesCached — common
-	// path is ~10µs per call (stat-only check, no subprocess).
+	// Wire the Operator's sing-box build tags into the subscription
+	// adapter so flush() Pass 1 can cheaply pre-filter outbounds whose
+	// type requires a missing optional build tag (naive). Tags come from
+	// installer.RequiredTags for the pinned version; the version is cached
+	// by binary mtime+size — common path is ~10µs per call (stat only).
 	a.subAdapter.SetSingboxFeaturesFn(a.singboxOp.SingboxFeatures)
 	if a.settingsStore != nil {
 		a.subAdapter.SetIsMihomoPrimary(func() bool {
@@ -267,7 +275,10 @@ func (a *app) setupSingboxRuntime() {
 		})
 	}
 	if err := a.subAdapter.LoadFromDisk(singboxConfigDir); err != nil {
-		a.bootLog.Warn("subscription-adapter", "load-from-disk", err.Error())
+		// Не предупреждение: пока слот не прочитан, адаптер отказывает в
+		// записи (иначе первая же операция стёрла бы все подписки), значит
+		// подписки не работают до устранения причины.
+		a.bootLog.Error("subscription-adapter", "load-from-disk", err.Error())
 	}
 	a.subSvc = subscription.NewService(a.subStore, a.subAdapter)
 	a.subSvc.SetAppLogger(a.loggingService)

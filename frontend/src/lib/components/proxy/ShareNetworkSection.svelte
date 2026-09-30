@@ -4,7 +4,15 @@
 	// копии конфига и уезжают кнопкой «Сохранить».
 	import { Badge, Button, ChipMultiSelect, Dropdown, FieldHint, FormRow, Input, SegmentedControl, Toggle } from '$lib/components/ui';
 	import { ServerAccessPolicyDropdown } from '$lib/components/servers';
-	import ServerWgBind from '../freeturn/ServerWgBind.svelte';
+	import { servers, type ServersSnapshot } from '$lib/stores/servers';
+	import { api } from '$lib/api/client';
+	import { notifications } from '$lib/stores/notifications';
+	import { errText } from '$lib/utils/errorMessage';
+	import {
+		buildRunningServerDropdownOptions,
+		connectForServerValue,
+		serverValueForConnect,
+	} from '$lib/utils/serverPeerOptions';
 	import { effectiveStaticWan } from '$lib/api/proxyInstances';
 	import { obfOptions } from '../freeturn/options';
 	import { listenPortNumber, setListenPort } from '$lib/utils/listenPortUtils';
@@ -28,6 +36,8 @@
 		 * запускался, остановлен либо процесс усыновлён.
 		 */
 		exposeApplied?: boolean;
+		/** Посторонний ACL, привязанный к интерфейсу сервера в обход выбора сегментов. */
+		foreignAcls?: string[];
 		saving?: boolean;
 		/** Общий замок мутаций сервера: одна операция за раз. */
 		busy?: boolean;
@@ -36,13 +46,6 @@
 		onpolicy: (policy: string) => void;
 		onsave: () => void;
 		onrevert: () => void;
-		/** .conf выбранного пира — уезжает в ссылку абоненту FreeTurn (FS-18). */
-		onpeerconf?: (conf: string) => void;
-		/**
-		 * Выбранный пир FreeTurn-сервера. Состояние принадлежит детали: тот же
-		 * выбор показывает быстрый селект строки состояния (RB-12).
-		 */
-		peer?: string;
 	}
 
 	let {
@@ -50,6 +53,7 @@
 		ftServer = $bindable(),
 		lanOptions,
 		exposeApplied,
+		foreignAcls,
 		saving = false,
 		busy = false,
 		onnat,
@@ -57,9 +61,29 @@
 		onpolicy,
 		onsave,
 		onrevert,
-		onpeerconf,
-		peer = $bindable(''),
 	}: Props = $props();
+
+	// WG-сервер, куда FreeTurn отдаёт трафик (#871): выбор пишет `-connect`,
+	// сам выбор — производная от него, второго состояния нет.
+	let wgSnap = $state<ServersSnapshot | null>(null);
+	$effect(() => servers.subscribe((st) => (wgSnap = st.data)));
+	const wgServerOptions = $derived(buildRunningServerDropdownOptions(wgSnap));
+	const wgServer = $derived(serverValueForConnect(wgSnap, ftServer?.connect ?? ''));
+
+	// Адрес для ссылок абонентам (#933). Поле было в прежней карточке FreeTurn и
+	// пропало при переезде на общую поверхность (#814); без него в ссылку
+	// попадал только внешний IP, а он DNS-имени не даёт никогда.
+	let wanBusy = $state(false);
+	async function fillLinkPeerWan() {
+		wanBusy = true;
+		try {
+			if (ftServer) ftServer.linkPeer = await api.getWANIP();
+		} catch (e) {
+			notifications.error(errText(e));
+		} finally {
+			wanBusy = false;
+		}
+	}
 
 	const natMode = $derived((wdttServer?.natMode ?? 'full') as NatMode);
 	/**
@@ -165,6 +189,11 @@
 					disabled={busy}
 					onchange={onlan}
 				/>
+				{#if foreignAcls?.length}
+					<span class="save-block">
+						К интерфейсу привязан посторонний список доступа ({foreignAcls.join(', ')}). Он срабатывает раньше выбора сегментов и может открыть клиентам больше, чем выбрано — проверьте его в настройках роутера.
+					</span>
+				{/if}
 			</FormRow>
 
 			<!-- Политика доступа (SH-50) — общий с «Серверами» контрол: список
@@ -208,23 +237,24 @@
 			/>
 		</div>
 	{:else if ftServer}
-		<!-- SH-59/SH-60: полей конфига с такими именами нет — это виджет, который
-		     пишет `-connect` и кладёт .conf пира в ссылку абоненту. Стоит ПЕРВЫМ
-		     (правка владельца 2026-08-27): сначала «куда ведёт раздача», потом
-		     «на каком порту принимает». -->
+		<!-- SH-59/SH-60: поля конфига с таким именем нет — выбор пишет `-connect`
+		     как 127.0.0.1:<listenPort>; .conf пира абоненту выбирает модалка
+		     «Добавить» (#871). Стоит ПЕРВЫМ (правка владельца 2026-08-27):
+		     сначала «куда ведёт раздача», потом «на каком порту принимает». -->
 		<p class="sub-title">WG-сервер</p>
-		<ServerWgBind
-			autoApply
-			compact
-			peerLabel="Пир"
-			bind:selected={peer}
-			onConnect={(addr) => {
-				if (ftServer) ftServer.connect = addr;
-			}}
-			onPeerConf={(conf) => onpeerconf?.(conf)}
-		/>
-
 		<div class="form">
+			<FormRow label="Сервер" hint="Поднятый WG-сервер роутера, в который FreeTurn отдаёт трафик абонентов">
+				<Dropdown
+					value={wgServer}
+					options={wgServerOptions}
+					placeholder={wgServerOptions.length ? 'Выберите…' : 'Нет поднятых WG-серверов'}
+					disabled={!wgServerOptions.length || busy}
+					onchange={(v) => {
+						if (ftServer) ftServer.connect = connectForServerValue(wgSnap, v);
+					}}
+					fullWidth
+				/>
+			</FormRow>
 			<FormRow
 				label="Listen-порт"
 				for="ft-listen"
@@ -232,6 +262,28 @@
 			>
 				<div class="w-port">
 					<Input id="ft-listen" type="number" value={ftPort} onchange={applyFtPort} fullWidth />
+				</div>
+			</FormRow>
+
+			<FormRow
+				label="Адрес для абонентов"
+				for="ft-link-peer"
+				hint="Что уедет в ссылку: DNS-имя роутера или его внешний IP. Пусто — подставится внешний IP, именем он быть не может"
+			>
+				<div class="field-with-btn">
+					<Input
+						id="ft-link-peer"
+						value={ftServer.linkPeer ?? ''}
+						placeholder="vpn.example.org"
+						disabled={busy}
+						onchange={(v) => {
+							if (ftServer) ftServer.linkPeer = v;
+						}}
+						fullWidth
+					/>
+					<Button variant="secondary" size="sm" loading={wanBusy} disabled={busy} onclick={fillLinkPeerWan}>
+						WAN IP
+					</Button>
 				</div>
 			</FormRow>
 

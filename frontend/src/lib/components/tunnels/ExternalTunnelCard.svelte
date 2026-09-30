@@ -1,17 +1,19 @@
 <script lang="ts">
-	import { ShieldCheck } from 'lucide-svelte';
+	import { ShieldCheck, Trash2, TriangleAlert } from 'lucide-svelte';
 	import type { ExternalTunnel } from '$lib/types';
 	import { formatBytes } from '$lib/utils/format';
-	import { Button } from '$lib/components/ui';
+	import { Badge, Button } from '$lib/components/ui';
 	import TunnelTitleRow from '$lib/components/tunnels/TunnelTitleRow.svelte';
 
 	interface Props {
 		tunnel: ExternalTunnel;
 		view?: 'cards' | 'compact' | 'list';
 		onadopt?: (interfaceName: string) => void;
+		ondelete?: (interfaceName: string) => void;
+		onunmark?: (interfaceName: string) => void;
 	}
 
-	let { tunnel, view = 'cards', onadopt }: Props = $props();
+	let { tunnel, view = 'cards', onadopt, ondelete, onunmark }: Props = $props();
 
 	let isListCard = $derived(view === 'list');
 	let statusDot = $derived(
@@ -20,8 +22,35 @@
 			: { variant: 'muted' as const, pulse: false, label: 'Неактивен' },
 	);
 
+	// Принять можно только то, поверх чего работает туннель. Без него принимать
+	// нечего: интерфейс есть, конфигурации нет. Отмеченный «сторонним» сервер
+	// не примет (ErrAdoptForeign).
+	let canAdopt = $derived(tunnel.isAWG && !tunnel.foreign);
+	// Удалять предлагаем только то, что сервер примет: за номером может стоять
+	// владелец, которого список туннелей не видит. Отмеченный «сторонним»
+	// принадлежит другой программе — его не удаляем, даже если сервер позволил бы.
+	let canDelete = $derived(tunnel.removable === true && !tunnel.foreign);
+	// Подпись о составе: «только устройство» — интерфейс, поднятый мимо NDMS.
+	let kindLabel = $derived(
+		tunnel.isAWG
+			? 'WG туннель'
+			: tunnel.ndmsRecord && !tunnel.kernelDevice
+				? 'только запись NDMS'
+				: !tunnel.ndmsRecord && tunnel.kernelDevice
+					? 'только устройство'
+					: 'интерфейс',
+	);
+
 	function handleAdopt(): void {
 		onadopt?.(tunnel.interfaceName);
+	}
+
+	function handleDelete(): void {
+		ondelete?.(tunnel.interfaceName);
+	}
+
+	function handleUnmark(): void {
+		onunmark?.(tunnel.interfaceName);
 	}
 </script>
 
@@ -41,25 +70,59 @@
 					dense
 				/>
 				<div class="meta-tags-dense">
-					<span class="iface-chip-dense">WG туннель</span>
+					<span class="iface-chip-dense">{kindLabel}</span>
+					{#if tunnel.foreign}<Badge variant="accent" size="sm">сторонний</Badge>{/if}
+					{#if tunnel.description}
+						<span class="iface-chip-dense descr-chip">«{tunnel.description}»</span>
+					{/if}
 					<span class="version-badge badge-external">Внешний</span>
 				</div>
+				{#if tunnel.conflictsWith}
+					<div class="conflict-note">
+						<TriangleAlert size={14} aria-hidden="true" />
+						Адрес совпадает с туннелем «{tunnel.conflictsWith}»
+					</div>
+				{/if}
 			</div>
 		</div>
 		<div class="actions">
-			<Button variant="primary" onclick={handleAdopt}>
-				{#snippet iconBefore()}
-					<ShieldCheck size={16} aria-hidden="true" />
-				{/snippet}
-				Взять под управление
-			</Button>
+			{#if canAdopt}
+				<Button variant="primary" onclick={handleAdopt}>
+					{#snippet iconBefore()}
+						<ShieldCheck size={16} aria-hidden="true" />
+					{/snippet}
+					Взять под управление
+				</Button>
+			{/if}
+			{#if tunnel.foreign}
+				<Button
+					variant="ghost"
+					size="sm"
+					title="Снять отметку «интерфейс другой программы»: {tunnel.interfaceName}"
+					onclick={handleUnmark}
+				>
+					Снять отметку
+				</Button>
+			{/if}
+			{#if canDelete}
+				<Button variant="outline-danger" onclick={handleDelete}>
+					{#snippet iconBefore()}
+						<Trash2 size={16} aria-hidden="true" />
+					{/snippet}
+					Удалить
+				</Button>
+			{/if}
 		</div>
 	{:else}
 		<div class="header flex justify-between items-start gap-3">
 			<div class="flex flex-col gap-1 min-w-0">
 				<h3 class="tunnel-name">{tunnel.interfaceName}</h3>
 				<div class="flex items-center gap-2 flex-wrap">
-					<span class="iface-name">WG туннель</span>
+					<span class="iface-name">{kindLabel}</span>
+					{#if tunnel.foreign}<Badge variant="accent" size="sm">сторонний</Badge>{/if}
+					{#if tunnel.description}
+						<span class="iface-name descr-chip">«{tunnel.description}»</span>
+					{/if}
 					<span class="version-badge badge-external">Внешний</span>
 				</div>
 			</div>
@@ -78,7 +141,20 @@
 			</div>
 		</div>
 
+		{#if tunnel.conflictsWith}
+			<div class="conflict-note">
+				<TriangleAlert size={14} aria-hidden="true" />
+				Адрес {tunnel.addresses?.[0] ?? ''} совпадает с туннелем «{tunnel.conflictsWith}»
+			</div>
+		{/if}
+
 		<div class="details">
+			{#if tunnel.addresses?.length}
+				<div class="flex flex-col gap-0.5 min-w-0">
+					<span class="detail-label">Адрес</span>
+					<span class="detail-value">{tunnel.addresses.join(', ')}</span>
+				</div>
+			{/if}
 			{#if tunnel.endpoint}
 				<div class="flex flex-col gap-0.5 min-w-0">
 					<span class="detail-label">Endpoint</span>
@@ -104,17 +180,49 @@
 		</div>
 
 		<div class="actions-wrapper">
-			<Button variant="primary" onclick={handleAdopt}>
-				{#snippet iconBefore()}
-					<ShieldCheck size={16} aria-hidden="true" />
-				{/snippet}
-				Взять под управление
-			</Button>
+			{#if canAdopt}
+				<Button variant="primary" onclick={handleAdopt}>
+					{#snippet iconBefore()}
+						<ShieldCheck size={16} aria-hidden="true" />
+					{/snippet}
+					Взять под управление
+				</Button>
+			{/if}
+			{#if tunnel.foreign}
+				<Button
+					variant="ghost"
+					size="sm"
+					title="Снять отметку «интерфейс другой программы»: {tunnel.interfaceName}"
+					onclick={handleUnmark}
+				>
+					Снять отметку
+				</Button>
+			{/if}
+			{#if canDelete}
+				<Button variant="outline-danger" onclick={handleDelete}>
+					{#snippet iconBefore()}
+						<Trash2 size={16} aria-hidden="true" />
+					{/snippet}
+					Удалить
+				</Button>
+			{/if}
 		</div>
 	{/if}
 </div>
 
 <style>
+	.conflict-note {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 12px;
+		color: var(--color-warning, #e0af68);
+	}
+
+	.descr-chip {
+		color: var(--text-secondary);
+	}
+
 	.ext-card {
 		border: 1px dashed color-mix(in srgb, var(--warning, #f59e0b) 40%, transparent);
 	}
@@ -129,8 +237,13 @@
 		width: 100%;
 	}
 
+	.ext-card.view-list .actions {
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
 	.ext-card.view-list .actions :global(.btn) {
-		width: 100%;
+		flex: 1 1 auto;
 		justify-content: center;
 	}
 
@@ -258,6 +371,9 @@
 	}
 
 	.actions-wrapper {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
 		padding-top: 12px;
 		border-top: 1px solid var(--border);
 	}
