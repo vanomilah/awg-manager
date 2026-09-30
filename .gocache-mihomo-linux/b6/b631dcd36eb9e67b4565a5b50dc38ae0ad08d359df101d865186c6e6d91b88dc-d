@@ -1,5 +1,0 @@
-./doc.go
-./keyedstore.go
-./liststore.go
-./singleflight.go
-./ttl.go

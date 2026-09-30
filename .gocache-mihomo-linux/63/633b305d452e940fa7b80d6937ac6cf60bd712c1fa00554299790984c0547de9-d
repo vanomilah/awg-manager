@@ -1,7 +1,0 @@
-./connectivity.go
-./errors.go
-./ip.go
-./ping.go
-./service.go
-./speedtest.go
-./types.go

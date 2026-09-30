@@ -1,7 +1,0 @@
-./autostart.go
-./coordinator.go
-./journal.go
-./lock.go
-./lock_linux.go
-./migration_saga.go
-./types.go

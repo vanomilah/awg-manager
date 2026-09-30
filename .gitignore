@@ -102,4 +102,6 @@ reports/
 __pycache__/
 *.pyc
 *.log
+prebuilt/mihomo/
+prebuilt/telemt/
 

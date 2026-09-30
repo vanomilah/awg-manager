@@ -1,5 +1,0 @@
-./ids.go
-./install.go
-./pidmatch.go
-./platform_linux.go
-./ringbuffer.go

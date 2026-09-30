@@ -1,8 +1,0 @@
-./applied.go
-./draft.go
-./errors.go
-./files.go
-./orchestrator.go
-./reload.go
-./types.go
-./validate.go

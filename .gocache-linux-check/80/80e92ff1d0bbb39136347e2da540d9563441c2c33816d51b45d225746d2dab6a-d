@@ -1,7 +1,0 @@
-./fd_linux.go
-./ident.go
-./loghook.go
-./logio_linux.go
-./probe.go
-./proto.go
-./server.go

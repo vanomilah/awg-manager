@@ -1,9 +1,0 @@
-./bridge.go
-./compatibility.go
-./inspector.go
-./manual.go
-./native_uri.go
-./store.go
-./types.go
-./uri.go
-./vless.go

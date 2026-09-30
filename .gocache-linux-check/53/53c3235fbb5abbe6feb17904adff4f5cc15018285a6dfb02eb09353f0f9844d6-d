@@ -1,9 +1,0 @@
-./autoinstall.go
-./changelog.go
-./changelog_fetch.go
-./checker.go
-./downloader.go
-./proc_linux.go
-./repo.go
-./service.go
-./types.go

@@ -1,7 +1,0 @@
-./client.go
-./dial_context.go
-./dialer_nonlinux.go
-./dns.go
-./mss.go
-./resolve.go
-./transport.go

@@ -1,7 +1,0 @@
-./builder.go
-./handler.go
-./link.go
-./names.go
-./ports.go
-./types.go
-./wgconf.go

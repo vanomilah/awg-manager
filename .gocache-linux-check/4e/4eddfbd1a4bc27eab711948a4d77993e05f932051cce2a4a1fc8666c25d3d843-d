@@ -1,5 +1,0 @@
-./embedded.go
-./install_state.go
-./installer.go
-./migrate.go
-./proc_sweep.go
