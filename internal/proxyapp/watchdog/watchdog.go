@@ -41,6 +41,17 @@ var failureSignatures = []string{
 	"context deadline exceeded",
 	"handshake error",
 	"DTLS: failed",
+	"channel-bind умер",
+	"умер - рецикл",
+	"failed to refresh allocation",
+	"failed to close TURN stream",
+	"ChannelBind rejected",
+	"Fatal provider error",
+	"No more solve modes available",
+	"broken pipe",
+	"connection reset by peer",
+	"Relay: сбой",
+	"Relay умер",
 }
 
 // Manager — срез *manager.Manager, нужный службе watchdog.
@@ -128,20 +139,38 @@ func DetectFailure(logTail string) (string, bool) {
 	}
 	lines := strings.Split(logTail, "\n")
 	// Проверяем до 50 содержательных непустых строк от новых к старым,
-	// игнорируя частый спам телеметрии ([СТАТИСТИКА]), который вытесняет
-	// сообщения об ошибках каждые 3 секунды.
+	// отслеживая как фатальные ошибки, так и потерю всех воркеров в телеметрии.
 	checked := 0
+	hasZeroActive := false
 	for i := len(lines) - 1; i >= 0 && checked < 50; i-- {
 		line := strings.TrimSpace(lines[i])
-		if line == "" || strings.Contains(line, "[СТАТИСТИКА]") {
+		if line == "" {
 			continue
 		}
+
+		// Телеметрия WDTT: [СТАТИСТИКА] Активных: N или [СТАТ] Активных: N
+		if strings.Contains(line, "[СТАТИСТИКА]") || strings.Contains(line, "[СТАТ]") {
+			if strings.Contains(line, "Активных: 0") || strings.Contains(line, "активных: 0") {
+				hasZeroActive = true
+			} else if strings.Contains(line, "Активных:") || strings.Contains(line, "активных:") {
+				// Если свежая строка телеметрии сообщает о наличии активных воркеров (> 0),
+				// значит клиент подключён и здоров — не падаем по старым строкам до подключения.
+				if checked == 0 {
+					return "", false
+				}
+			}
+			continue
+		}
+
 		checked++
 		for _, sig := range failureSignatures {
 			if strings.Contains(line, sig) {
 				return sig, true
 			}
 		}
+	}
+	if hasZeroActive {
+		return "Активных: 0 (потеря всех соединений)", true
 	}
 	return "", false
 }
@@ -197,25 +226,28 @@ func (w *Watchdog) Check(ctx context.Context) {
 
 		key := rec.Key()
 
-		// 1. Проверяем снимок процесса
+		// 1. Cooldown: избегаем циклического перезапуска при постоянной недоступности
+		w.mu.Lock()
+		last, hasLast := w.lastRestart[key]
+		w.mu.Unlock()
+		if hasLast && now.Sub(last) < w.deps.Cooldown {
+			continue
+		}
+
+		// 2. Проверяем снимок процесса
 		if w.deps.Snapshot == nil {
 			continue
 		}
 		snap, ok := w.deps.Snapshot(key)
 		if !ok || snap.PID <= 0 {
-			continue // процесс не запущен
-		}
-
-		// 2. Окно старта (grace period): даём процессу завершить handshake
-		if time.Duration(snap.UptimeS)*time.Second < w.deps.StartupGrace {
+			// Процесс аварийно завершился или не запущен, а инстанс включён
+			reason := "автопереподключение: процесс не запущен или аварийно завершился"
+			w.triggerRestart(ctx, key, reason, now)
 			continue
 		}
 
-		// 3. Cooldown: избегаем циклического перезапуска при постоянной недоступности
-		w.mu.Lock()
-		last, hasLast := w.lastRestart[key]
-		w.mu.Unlock()
-		if hasLast && now.Sub(last) < w.deps.Cooldown {
+		// 3. Окно старта (grace period): даём процессу завершить handshake
+		if time.Duration(snap.UptimeS)*time.Second < w.deps.StartupGrace {
 			continue
 		}
 
@@ -230,7 +262,16 @@ func (w *Watchdog) Check(ctx context.Context) {
 			continue
 		}
 
-		// 5. Проверка по сигнатурам ошибок в журнале
+		// 5. Проверка по снимку ошибки процесса
+		if snap.LastError != "" {
+			if sig, found := DetectFailure(snap.LastError); found {
+				reason := fmt.Sprintf("автопереподключение: ошибка в снимке процесса (%s)", sig)
+				w.triggerRestart(ctx, key, reason, now)
+				continue
+			}
+		}
+
+		// 6. Проверка по сигнатурам ошибок в журнале
 		if w.deps.LogTail != nil {
 			tail := w.deps.LogTail(key)
 			if sig, found := DetectFailure(tail); found {

@@ -236,3 +236,137 @@ func TestWatchdogCheck_CooldownAndStartupGrace(t *testing.T) {
 		t.Fatalf("expected restart after cooldown expired, got %d", len(mgr.restarts))
 	}
 }
+
+func TestDetectFailure_ZeroActiveWorkers(t *testing.T) {
+	// Хвост журнала целиком заполнен телеметрией с 0 активных воркеров
+	var log string
+	for i := 0; i < 50; i++ {
+		log += "2026/09/30 16:41:35 [СТАТИСТИКА] Активных: 0 | Трафик: 0.00 МБ\n"
+	}
+	sig, found := DetectFailure(log)
+	if !found {
+		t.Fatal("DetectFailure: expected failure on 0 active workers in stats")
+	}
+	if sig != "Активных: 0 (потеря всех соединений)" {
+		t.Fatalf("unexpected signature: %s", sig)
+	}
+}
+
+func TestDetectFailure_ActiveWorkersHealthy(t *testing.T) {
+	// Свежая телеметрия сообщает об активных воркерах: инстанс здоров, не падаем по старой строке
+	log := "2026/09/30 16:00:00 [WARN] all streams down\n" +
+		"2026/09/30 16:41:35 [СТАТИСТИКА] Активных: 36 | Трафик: 12.34 МБ\n"
+	_, found := DetectFailure(log)
+	if found {
+		t.Fatal("DetectFailure: expected no failure when latest stats show active workers > 0")
+	}
+}
+
+func TestDetectFailure_FreeTurnNewSignatures(t *testing.T) {
+	cases := []struct {
+		log  string
+		want string
+	}{
+		{
+			log:  "2026/09/30 15:06:28 [WARN] [STREAM 9] TURN channel-bind умер - рецикл allocation",
+			want: "channel-bind умер",
+		},
+		{
+			log:  "2026/09/30 18:55:02 [ERROR] [STREAM 7] failed to close TURN stream: failed to refresh allocation: write tcp: write: broken pipe",
+			want: "failed to refresh allocation",
+		},
+		{
+			log:  "2026/09/30 18:55:02 [ERROR] write tcp 10.56.150.148->91.231.135.128: write: broken pipe",
+			want: "broken pipe",
+		},
+	}
+	for _, tc := range cases {
+		sig, found := DetectFailure(tc.log)
+		if !found {
+			t.Fatalf("DetectFailure: expected failure for %q", tc.log)
+		}
+		if sig != tc.want {
+			t.Fatalf("expected signature %q, got %q", tc.want, sig)
+		}
+	}
+}
+
+func TestWatchdogCheck_DeadProcess(t *testing.T) {
+	mgr := &fakeManager{
+		recs: []instancestore.Record{
+			{
+				ID:   "c1",
+				Kind: instancestore.KindWdttClient,
+				Name: "Client 1",
+				Enabled: true,
+				WdttClient: &roles.WdttClientConfig{
+					AutoReconnect:         true,
+					AutoReconnectInterval: "on_failure",
+				},
+			},
+		},
+	}
+	jrnl := &fakeJournal{}
+	now := time.Now()
+
+	wd := New(Deps{
+		Manager: mgr,
+		Snapshot: func(key string) (awgmproto.State, bool) {
+			// Процесс упал (PID = 0)
+			return awgmproto.State{PID: 0, UptimeS: 0}, true
+		},
+		Journal: jrnl,
+		Now:     func() time.Time { return now },
+	})
+
+	wd.Check(context.Background())
+
+	if len(mgr.restarts) != 1 {
+		t.Fatalf("expected 1 restart for dead process, got %d", len(mgr.restarts))
+	}
+	if mgr.restarts[0].Key != "wdtt-client:c1" {
+		t.Errorf("wrong key: %s", mgr.restarts[0].Key)
+	}
+}
+
+func TestWatchdogCheck_LastError(t *testing.T) {
+	mgr := &fakeManager{
+		recs: []instancestore.Record{
+			{
+				ID:   "ft1",
+				Kind: instancestore.KindFreeTurnClient,
+				Name: "FT Client",
+				Enabled: true,
+				FreeTurnClient: &roles.FreeTurnClientConfig{
+					AutoReconnect:         true,
+					AutoReconnectInterval: "on_failure",
+				},
+			},
+		},
+	}
+	jrnl := &fakeJournal{}
+	now := time.Now()
+
+	wd := New(Deps{
+		Manager: mgr,
+		Snapshot: func(key string) (awgmproto.State, bool) {
+			return awgmproto.State{
+				PID:       2222,
+				UptimeS:   100,
+				LastError: "TURN Allocate: Allocate error response (error 401: Unauthorized)",
+			}, true
+		},
+		Journal: jrnl,
+		Now:     func() time.Time { return now },
+	})
+
+	wd.Check(context.Background())
+
+	if len(mgr.restarts) != 1 {
+		t.Fatalf("expected 1 restart on LastError, got %d", len(mgr.restarts))
+	}
+	if mgr.restarts[0].Key != "freeturn-client:ft1" {
+		t.Errorf("wrong key: %s", mgr.restarts[0].Key)
+	}
+}
+
