@@ -34,3 +34,27 @@ func TestParseSusaninLogLine(t *testing.T) {
 		t.Fatalf("expected QUIC, got %s", ev3.Action)
 	}
 }
+
+func TestReleaseBinaries_PinsComplete(t *testing.T) {
+	requiredArches := []string{"aarch64", "mips", "mipsel", "armv7"}
+	for _, arch := range requiredArches {
+		spec, ok := ReleaseBinaries[arch]
+		if !ok {
+			t.Errorf("missing ReleaseBinaries for arch %q", arch)
+			continue
+		}
+		if spec.Version == "" {
+			t.Errorf("empty version for %q", arch)
+		}
+		if spec.SHA256 == "" {
+			t.Errorf("empty SHA256 for %q", arch)
+		}
+		if spec.Size <= 0 {
+			t.Errorf("invalid size for %q: %d", arch, spec.Size)
+		}
+		if spec.URL == "" {
+			t.Errorf("missing URL for %q", arch)
+		}
+	}
+}
+
