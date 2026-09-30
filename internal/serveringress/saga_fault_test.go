@@ -745,7 +745,7 @@ func TestMigrationSaga_ProcfsListeningSocketUnmappedPIDFailsClosed(t *testing.T)
 	if res != LegacyProbeConflict {
 		t.Errorf("expected LegacyProbeConflict when socket is in net/tcp but PID is unmapped, got %v", res)
 	}
-	if err == nil || !strings.Contains(err.Error(), "PID unmapped") {
+	if err == nil || (!strings.Contains(err.Error(), "PID unmapped") && !strings.Contains(err.Error(), "socket owner PID cannot be proven")) {
 		t.Errorf("expected PID unmapped error, got: %v", err)
 	}
 }

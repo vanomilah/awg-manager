@@ -3,8 +3,11 @@
 	import { errorMessage } from '$lib/utils/errorMessage';
 	import { ConfirmModal, Badge, Button } from '$lib/components/ui';
 	import { Power, ChevronUp, ChevronDown, Check, Ban } from 'lucide-svelte';
+	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
+	import { mihomoInventoryStore } from '$lib/stores/mihomoNative';
+	import { subscriptionsStore, subscriptionGroupsStore } from '$lib/stores/subscriptions';
 	import {
 		filterPolicyGlobalInterfaces,
 		groupPolicyGlobalInterfaces,
@@ -32,6 +35,31 @@
 		onupdate,
 	}: Props = $props();
 
+	onMount(() => {
+		void mihomoInventoryStore.init();
+		void subscriptionsStore.init();
+		void subscriptionGroupsStore.init();
+	});
+
+	function resolveProxyName(id: string): string | undefined {
+		const mProxy = $mihomoInventoryStore?.data?.proxies?.find((p) => p.id === id);
+		if (mProxy?.name) return mProxy.name;
+
+		const mSub = $mihomoInventoryStore?.data?.subscriptions?.find((s) => s.id === id);
+		if (mSub?.name) return mSub.name;
+
+		const mGroup = $mihomoInventoryStore?.data?.groups?.find((g) => g.id === id);
+		if (mGroup?.name) return mGroup.name;
+
+		const sbSub = $subscriptionsStore?.data?.find((s) => s.id === id);
+		if (sbSub?.label) return sbSub.label;
+
+		const sbGroup = $subscriptionGroupsStore?.data?.find((g) => g.id === id);
+		if (sbGroup?.label) return sbGroup.label;
+
+		return undefined;
+	}
+
 	const isPanelPicker = $derived(addPickerVariant === 'panel');
 
 	let interfaces = $derived(rawInterfaces ?? []);
@@ -54,7 +82,7 @@
 
 	function getLabel(name: string): string {
 		const gi = catalog.find((g) => g.name === name);
-		return gi ? policyInterfaceDisplayLabel(gi) : name;
+		return gi ? policyInterfaceDisplayLabel(gi, resolveProxyName) : name;
 	}
 
 	function isUp(name: string): boolean {
@@ -114,7 +142,7 @@
 				<div class="group-label" role="presentation">{group}</div>
 				{#each items as gi (gi.name)}
 					<button class="dropdown-item in-group" onclick={() => handleAdd(gi.name)}>
-						<span class="iface-name">{policyInterfaceDisplayLabel(gi)}</span>
+						<span class="iface-name">{policyInterfaceDisplayLabel(gi, resolveProxyName)}</span>
 						{#if !gi.up}
 							<span class="iface-down">down</span>
 						{/if}

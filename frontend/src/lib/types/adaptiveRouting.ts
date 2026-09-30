@@ -101,6 +101,9 @@ export interface OperationalState {
 	lastReconcile: string;
 	lastError?: string;
 	recoveryMarker?: string;
+	installed?: boolean;
+	version?: string;
+	binary?: string;
 }
 
 export interface AdaptiveRoutingStatusResponse {

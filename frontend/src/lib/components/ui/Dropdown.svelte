@@ -298,7 +298,7 @@
         style="top: {panelTop}px; left: {panelLeft}px; width: {panelWidth}px;"
         onkeydown={handlePanelKey}
       >
-        {#each options as opt, idx (opt.value)}
+        {#each options as opt, idx (opt.value ? `${opt.value}-${idx}` : `opt-${idx}`)}
           {@const isSelected = opt.value === value}
           {@const isActive = idx === activeIndex}
           {@const showGroup = opt.group && (idx === 0 || options[idx - 1].group !== opt.group)}

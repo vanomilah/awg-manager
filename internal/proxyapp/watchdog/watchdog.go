@@ -34,6 +34,13 @@ var failureSignatures = []string{
 	"[VKCalls] FAILED",
 	"failed to allocate TURN",
 	"all streams failed",
+	"all streams down",
+	"server did not acknowledge client ID",
+	"failed to write client ID",
+	"Failed to resolve any endpoint",
+	"context deadline exceeded",
+	"handshake error",
+	"DTLS: failed",
 }
 
 // Manager — срез *manager.Manager, нужный службе watchdog.
@@ -120,11 +127,13 @@ func DetectFailure(logTail string) (string, bool) {
 		return "", false
 	}
 	lines := strings.Split(logTail, "\n")
-	// Проверяем последние 30 непустых строк от новых к старым
+	// Проверяем до 50 содержательных непустых строк от новых к старым,
+	// игнорируя частый спам телеметрии ([СТАТИСТИКА]), который вытесняет
+	// сообщения об ошибках каждые 3 секунды.
 	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < 30; i-- {
+	for i := len(lines) - 1; i >= 0 && checked < 50; i-- {
 		line := strings.TrimSpace(lines[i])
-		if line == "" {
+		if line == "" || strings.Contains(line, "[СТАТИСТИКА]") {
 			continue
 		}
 		checked++

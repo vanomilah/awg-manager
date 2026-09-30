@@ -1006,6 +1006,7 @@
           selected={rulesSelected}
           onToggleSelect={toggleRuleSelect}
           isSelectable={(i) => selectableRuleIndexSet.has(i)}
+          onOpenSettings={() => (settingsDrawerOpen = true)}
         />
         {#if rulesSelectMode}
           <BulkSelectBar

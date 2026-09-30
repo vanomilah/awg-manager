@@ -180,7 +180,9 @@ ensure_jump() {
         "$IPT" -w -t mangle -D PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN" >/dev/null 2>&1 || true
         "$IPT" -w -t mangle -A PREROUTING -m mark --mark "$POLICY_MARK/0x0fffffff" -j "$CHAIN"
     else
-        "$IPT" -w -t mangle -A PREROUTING -j "$CHAIN"
+        for i in $LAN; do
+            "$IPT" -w -t mangle -A PREROUTING -i "$i" -m mark --mark 0x0 -j "$CHAIN"
+        done
     fi
 }
 

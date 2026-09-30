@@ -259,6 +259,10 @@ func (ws *WorkerSupervisor) ApplyWorkers(cfg Config) error {
 	}
 
 	// 2. Start workers enabled by scenario in start order: telemt-direct -> telemt-raw -> tproxy-server
+	_ = os.MkdirAll("/opt/var/run", 0755)
+	_ = os.Chmod("/opt/var/run", 0755)
+	_ = os.Chmod("/opt/var", 0755)
+
 	type workerTask struct {
 		name    string
 		enabled bool
@@ -304,7 +308,7 @@ func (ws *WorkerSupervisor) CheckReadiness(cfg Config) error {
 
 		timeout := ws.readinessTimeout
 		if timeout <= 0 {
-			timeout = 20 * time.Second
+			timeout = 90 * time.Second
 		}
 		deadline := time.Now().Add(timeout)
 		ready := false

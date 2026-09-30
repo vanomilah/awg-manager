@@ -21,6 +21,8 @@
 	import { dnsModeOptions, platformOptions, modeOptions, transportOptions } from './options';
 	import { proxyClientOpsMode } from '$lib/utils/proxyOpsMode';
 	import ListenPortKillButton from '../proxy-panel/ListenPortKillButton.svelte';
+	import { Sparkles } from 'lucide-svelte';
+	import VkCallModal from '../proxy/VkCallModal.svelte';
 	import type { FreeTurnClientConfig, FreeTurnLinkPayload, FreeTurnProcessStatus } from '$lib/types';
 	import type { LogInstanceItem } from './LogInstanceSwitcher.svelte';
 
@@ -77,6 +79,7 @@
 	let opsTab = $state<ClientTab>('setup');
 	let quickActive = $state('import');
 	let wizardOpen = $state(false);
+	let vkModalOpen = $state(false);
 
 	const autoReconnectIntervalOptions = [
 		{ value: 'on_failure', label: 'Только при сбое' },
@@ -346,6 +349,16 @@
 						onPrimary={() => { quickActive = 'streams'; }}
 					>
 						<ProxyWizardGuide items={linksGuideItems} />
+						<div class="ft-vk-actions">
+							<Button
+								variant="secondary"
+								size="sm"
+								onclick={() => (vkModalOpen = true)}
+							>
+								<Sparkles size={14} />
+								Сгенерировать / проверить ссылки VK Calls
+							</Button>
+						</div>
 						<textarea class="ft-simple-textarea" bind:value={client.links} placeholder="https://vk.com/call/join/…" rows="4"></textarea>
 					</ProxyQuickStartStep>
 				{:else if stepId === 'streams'}
@@ -454,7 +467,20 @@
 				{:else}
 					<p class="ft-readonly">peer: <code>{client.peer}</code></p>
 				{/if}
-				<textarea class="ft-simple-textarea" bind:value={client.links} rows="3"></textarea>
+				<div class="ft-links-wrap">
+					<div class="ft-links-header">
+						<label class="ft-links-label" for="ft-links-setup">Ссылки VK Calls (-links)</label>
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={() => (vkModalOpen = true)}
+						>
+							<Sparkles size={14} />
+							VK Calls
+						</Button>
+					</div>
+					<textarea id="ft-links-setup" class="ft-simple-textarea" bind:value={client.links} rows="3"></textarea>
+				</div>
 				<div class="ft-simple-grid">
 					<Input
 						type="number"
@@ -593,9 +619,38 @@
 			</section>
 		{/if}
 	{/if}
+
+	{#if vkModalOpen}
+		<VkCallModal
+			bind:open={vkModalOpen}
+			initialValue={client.links}
+			targetFormat="links"
+			onApply={(val) => {
+				client.links = val;
+			}}
+		/>
+	{/if}
 </div>
 
 <style>
+	.ft-vk-actions {
+		display: flex;
+		margin-bottom: 0.5rem;
+	}
+	.ft-links-wrap {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.ft-links-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.ft-links-label {
+		font-size: 0.875rem;
+		font-weight: 500;
+	}
 	.ft-simple-wrap {
 		display: flex;
 		flex-direction: column;

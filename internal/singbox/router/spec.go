@@ -39,7 +39,11 @@ func (s *ServiceImpl) buildTproxySpec(
 		// default DNS up to the sing-box mark would route it via Policy1's
 		// (permit-less) table and DNS would never resolve. Empty result =
 		// no qualifying bridges = skip the DNS-NOPOLICY logic entirely.
-		lanBridges, _ = discoverLANBridges(ctx, mark)
+		// Note: Mihomo does not bind a transparent listener on port 53 (its DNS is on :1053),
+		// so DNS-RESCUE is unnecessary and must be skipped to avoid cross-policy DNS redirection.
+		if sr.RoutingEngine != "mihomo" {
+			lanBridges, _ = discoverLANBridges(ctx, mark)
+		}
 		ingress = s.resolveIngressInterfaces(ctx, sr.IngressInterfaces)
 	}
 	bypassUDP, bypassTCP, _ := resolveBypassPorts(sr.BypassPresets, sr.BypassExtraPorts)

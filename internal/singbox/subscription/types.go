@@ -51,7 +51,7 @@ type URLTestConfig struct {
 func DefaultURLTestConfig() URLTestConfig {
 	return URLTestConfig{
 		URL:         "https://www.gstatic.com/generate_204",
-		IntervalSec: 60,
+		IntervalSec: 300,
 		ToleranceMs: 50,
 	}
 }

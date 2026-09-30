@@ -11,7 +11,11 @@ import type {
 	FreeTurnLinkPayload,
 	FreeTurnServerConfig,
 	FreeTurnServerInstance,
-	FreeTurnStatus
+	FreeTurnStatus,
+	VKCallsGenerateRequest,
+	VKCallsGenerateResponse,
+	VKCallsCheckResponse,
+	VKCallsConfigResponse
 } from '$lib/types';
 import { SubscriptionsClient } from './clientSubscriptions';
 import {
@@ -355,6 +359,31 @@ export class FreeturnClient extends SubscriptionsClient {
 		return this.request(`/proxy/kill-listener`, {
 			method: 'POST',
 			body: JSON.stringify({ host, port, proto })
+		});
+	}
+
+	async generateVKCalls(req: VKCallsGenerateRequest): Promise<VKCallsGenerateResponse> {
+		return this.request<VKCallsGenerateResponse>('/proxyrt/vk/calls/generate', {
+			method: 'POST',
+			body: JSON.stringify(req)
+		});
+	}
+
+	async checkVKCalls(links: string[]): Promise<VKCallsCheckResponse> {
+		return this.request<VKCallsCheckResponse>('/proxyrt/vk/calls/check', {
+			method: 'POST',
+			body: JSON.stringify({ links })
+		});
+	}
+
+	async getVKCallsConfig(): Promise<VKCallsConfigResponse> {
+		return this.request<VKCallsConfigResponse>('/proxyrt/vk/calls/config');
+	}
+
+	async saveVKCallsConfig(token: string, groupId?: number): Promise<VKCallsConfigResponse> {
+		return this.request<VKCallsConfigResponse>('/proxyrt/vk/calls/config', {
+			method: 'POST',
+			body: JSON.stringify({ token, groupId: groupId || 0 })
 		});
 	}
 

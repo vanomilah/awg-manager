@@ -127,6 +127,7 @@ type InterfaceStore struct {
 	mu        sync.RWMutex
 	byID      map[string]*ndms.Interface
 	startedAt map[string]time.Time
+	failed    map[string]time.Time
 	// sys is a derived view: NDMSName → kernel-system-name. Built
 	// from byID on every mutation. Read paths take this under s.mu
 	// (RLock) — no separate lock.
@@ -143,6 +144,7 @@ func NewInterfaceStore(g Getter, log Logger) *InterfaceStore {
 		log:       log,
 		byID:      make(map[string]*ndms.Interface),
 		startedAt: make(map[string]time.Time),
+		failed:    make(map[string]time.Time),
 	}
 }
 
@@ -409,10 +411,25 @@ func (s *InterfaceStore) ResolveSystemName(ctx context.Context, ndmsName string)
 	if err := s.ensureBootstrap(ctx); err != nil {
 		return ""
 	}
+
+	// Fast-path: if ndmsName is ALREADY a syntactically valid Linux kernel
+	// interface name and exists in the running kernel, it is already a kernel device
+	// (e.g. caller passed "eth3", "apcli0", "mbr10", "ppp1" or "nwg0").
+	// Defends against callers passing kernel names instead of NDMS IDs, which
+	// would otherwise trigger an RCI query /show/interface/system-name?name=<kernel>
+	// and emit "Network::Interface::Base: unable to find <kernel>" in router syslog.
+	if looksLikeKernelIfname(ndmsName) && kernelIfaceExists(ndmsName) {
+		return ndmsName
+	}
+
 	s.mu.RLock()
 	var sysName string
 	if iface, ok := s.byID[ndmsName]; ok {
 		sysName = iface.SystemName
+	}
+	if t, ok := s.failed[ndmsName]; ok && time.Since(t) < 60*time.Second {
+		s.mu.RUnlock()
+		return ""
 	}
 	s.mu.RUnlock()
 
@@ -430,12 +447,19 @@ func (s *InterfaceStore) ResolveSystemName(ctx context.Context, ndmsName string)
 	// Fallback: dedicated NDMS resolver endpoint.
 	resolved := s.fetchSystemName(ctx, ndmsName)
 	if resolved == "" {
+		s.mu.Lock()
+		if s.failed == nil {
+			s.failed = make(map[string]time.Time)
+		}
+		s.failed[ndmsName] = time.Now()
+		s.mu.Unlock()
 		return ""
 	}
 	s.mu.Lock()
 	if iface, ok := s.byID[ndmsName]; ok {
 		iface.SystemName = resolved
 	}
+	delete(s.failed, ndmsName)
 	s.mu.Unlock()
 	return resolved
 }
@@ -472,8 +496,8 @@ func (s *InterfaceStore) fetchSystemName(ctx context.Context, ndmsName string) s
 		return ""
 	}
 
-	// POST-form: walk into .show.interface."system-name"; value is the
-	// bare kernel-name string.
+	// POST-form: walk into .show.interface."system-name" or flat ."system-name";
+	// value is the bare kernel-name string.
 	var wrap struct {
 		Show struct {
 			Interface struct {
@@ -481,8 +505,19 @@ func (s *InterfaceStore) fetchSystemName(ctx context.Context, ndmsName string) s
 			} `json:"interface"`
 		} `json:"show"`
 	}
+	var sysNameRaw json.RawMessage
 	if err := json.Unmarshal(trimmed, &wrap); err == nil && len(wrap.Show.Interface.SystemName) > 0 {
-		inner := bytes.TrimSpace(wrap.Show.Interface.SystemName)
+		sysNameRaw = wrap.Show.Interface.SystemName
+	} else {
+		var flat struct {
+			SystemName json.RawMessage `json:"system-name"`
+		}
+		if err := json.Unmarshal(trimmed, &flat); err == nil && len(flat.SystemName) > 0 {
+			sysNameRaw = flat.SystemName
+		}
+	}
+	if len(sysNameRaw) > 0 {
+		inner := bytes.TrimSpace(sysNameRaw)
 		if len(inner) > 0 {
 			if inner[0] == '"' {
 				var str string
@@ -816,6 +851,7 @@ func (s *InterfaceStore) Invalidate(name string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	delete(s.failed, name)
 	if iface == nil {
 		// NDMS confirms absent — remove from map.
 		delete(s.byID, name)
@@ -844,6 +880,7 @@ func (s *InterfaceStore) InvalidateAll() {
 	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.failed = make(map[string]time.Time)
 	// Replace map atomically. Preserve startedAt for interfaces still
 	// present and running — uptime clock is daemon-tracked, not NDMS-
 	// tracked. Drop startedAt for interfaces gone or stopped.

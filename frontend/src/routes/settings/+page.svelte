@@ -108,6 +108,18 @@
 	let mihomoUpdating = $state(false);
 	let mihomoUpdateError = $state<string | null>(null);
 	let mihomoUninstalling = $state(false);
+	let mihomoRestarting = $state(false);
+	let susaninStatusValue = $state<import('$lib/types').OperationalState | null>(null);
+	let susaninStatusLoading = $state(false);
+	let susaninInstalling = $state(false);
+	let susaninRestarting = $state(false);
+	let susaninUninstalling = $state(false);
+	let telemtStatusValue = $state<import('$lib/types').TelemtStatus | null>(null);
+	let telemtStatusLoading = $state(false);
+	let telemtInstalling = $state(false);
+	let telemtUpdating = $state(false);
+	let telemtRestarting = $state(false);
+	let telemtUninstalling = $state(false);
 	let xrayStatusValue = $state<import('$lib/types').XrayStatus | null>(null);
 	let xrayStatusLoading = $state(false);
 	let xrayInstalling = $state(false);
@@ -138,6 +150,15 @@
 	const hydraStatusError = $derived($hydrarouteStatus.error);
 	const hydraInstalled = $derived(hydraStatusValue?.installed ?? false);
 	const hydraRunning = $derived(hydraStatusValue?.running ?? false);
+
+	const mihomoInstalled = $derived(mihomoStatusValue?.installed ?? false);
+	const mihomoRunning = $derived(mihomoStatusValue?.running ?? false);
+
+	const susaninInstalled = $derived(susaninStatusValue?.installed ?? false);
+	const susaninRunning = $derived(susaninStatusValue?.status === 'running' || susaninStatusValue?.status === 'learning');
+
+	const telemtInstalled = $derived(telemtStatusValue?.installed ?? false);
+	const telemtRunning = $derived(telemtStatusValue?.running ?? false);
 
 	function handleNDMSProxyToggleClick(next: boolean) {
 		// next — желаемое состояние после клика. Открываем confirm-modal
@@ -282,6 +303,129 @@
 		}
 	}
 
+	async function restartMihomo() {
+		mihomoRestarting = true;
+		try {
+			await api.mihomoRestart();
+			notifications.success("Mihomo перезапущен");
+			await fetchMihomoStatus();
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось перезапустить Mihomo");
+		} finally {
+			mihomoRestarting = false;
+		}
+	}
+
+	async function fetchSusaninStatus() {
+		susaninStatusLoading = true;
+		try {
+			const res = await api.getAdaptiveRoutingStatus();
+			susaninStatusValue = res.state;
+		} catch {
+			// ignore if not configured
+		} finally {
+			susaninStatusLoading = false;
+		}
+	}
+
+	async function installSusanin() {
+		susaninInstalling = true;
+		try {
+			const res = await api.installAdaptiveRouting();
+			susaninStatusValue = res.state;
+			notifications.success("Сусанин установлен");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось установить Сусанин");
+		} finally {
+			susaninInstalling = false;
+		}
+	}
+
+	async function restartSusanin() {
+		susaninRestarting = true;
+		try {
+			const res = await api.restartAdaptiveRouting();
+			susaninStatusValue = res.state;
+			notifications.success("Сусанин перезапущен");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось перезапустить Сусанин");
+		} finally {
+			susaninRestarting = false;
+		}
+	}
+
+	async function uninstallSusanin() {
+		susaninUninstalling = true;
+		try {
+			const res = await api.uninstallAdaptiveRouting();
+			susaninStatusValue = res.state;
+			notifications.success("Сусанин удалён");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось удалить Сусанин");
+		} finally {
+			susaninUninstalling = false;
+		}
+	}
+
+	async function fetchTelemtStatus() {
+		telemtStatusLoading = true;
+		try {
+			telemtStatusValue = await api.telemtStatus();
+		} catch {
+			// ignore if not configured
+		} finally {
+			telemtStatusLoading = false;
+		}
+	}
+
+	async function installTelemt() {
+		telemtInstalling = true;
+		try {
+			telemtStatusValue = await api.telemtInstall();
+			notifications.success("Telemt установлен");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось установить Telemt");
+		} finally {
+			telemtInstalling = false;
+		}
+	}
+
+	async function updateTelemt() {
+		telemtUpdating = true;
+		try {
+			telemtStatusValue = await api.telemtUpdate();
+			notifications.success("Telemt обновлён");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось обновить Telemt");
+		} finally {
+			telemtUpdating = false;
+		}
+	}
+
+	async function restartTelemt() {
+		telemtRestarting = true;
+		try {
+			telemtStatusValue = await api.telemtRestart();
+			notifications.success("Telemt перезапущен");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось перезапустить Telemt");
+		} finally {
+			telemtRestarting = false;
+		}
+	}
+
+	async function uninstallTelemt() {
+		telemtUninstalling = true;
+		try {
+			telemtStatusValue = await api.telemtUninstall();
+			notifications.success("Telemt удалён");
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : "Не удалось удалить Telemt");
+		} finally {
+			telemtUninstalling = false;
+		}
+	}
+
 	async function fetchXrayStatus() {
 		xrayStatusLoading = true;
 		try {
@@ -399,10 +543,14 @@ onMount(() => {
 	const timer = setInterval(() => {
 		void fetchSystemInfo(true);
 		void fetchMihomoStatus();
+		void fetchSusaninStatus();
+		void fetchTelemtStatus();
 		void fetchXrayStatus();
 	}, 30000);
 
 	void fetchMihomoStatus();
+	void fetchSusaninStatus();
+	void fetchTelemtStatus();
 	void fetchXrayStatus();
 
 	void (async () => {
@@ -851,13 +999,35 @@ $effect(() => {
 					{mihomoStatusLoading}
 					{mihomoInstalling}
 					{mihomoUpdating}
+					{mihomoRestarting}
 					{mihomoUninstalling}
 					{mihomoInstallError}
 					{mihomoUpdateError}
 					oninstallMihomo={installMihomo}
 					onupdateMihomo={updateMihomo}
+					onrestartMihomo={restartMihomo}
 					onuninstallMihomo={uninstallMihomo}
 					showMihomo={true}
+					susaninStatus={susaninStatusValue}
+					{susaninStatusLoading}
+					{susaninInstalling}
+					{susaninRestarting}
+					{susaninUninstalling}
+					oninstallSusanin={installSusanin}
+					onrestartSusanin={restartSusanin}
+					onuninstallSusanin={uninstallSusanin}
+					showSusanin={true}
+					telemtStatus={telemtStatusValue}
+					{telemtStatusLoading}
+					{telemtInstalling}
+					{telemtUpdating}
+					{telemtRestarting}
+					{telemtUninstalling}
+					oninstallTelemt={installTelemt}
+					onupdateTelemt={updateTelemt}
+					onrestartTelemt={restartTelemt}
+					onuninstallTelemt={uninstallTelemt}
+					showTelemt={true}
 					xrayStatus={xrayStatusValue}
 					{xrayStatusLoading}
 					{xrayInstalling}
@@ -1171,6 +1341,69 @@ $effect(() => {
 					{restarting ? "Перезапуск..." : "Перезапустить"}
 				</Button>
 			</div>
+
+			{#if mihomoInstalled}
+				<div class="setting-row">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Mihomo</span>
+						<span class="setting-description">
+							{mihomoRunning ? "Процесс работает" : "Процесс остановлен"}
+						</span>
+					</div>
+					<div class="action-buttons">
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={restartMihomo}
+							loading={mihomoRestarting}
+						>
+							Перезапустить
+						</Button>
+					</div>
+				</div>
+			{/if}
+
+			{#if susaninInstalled}
+				<div class="setting-row">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Сусанин (Адаптивная маршрутизация)</span>
+						<span class="setting-description">
+							{susaninRunning ? "Сервис запущен" : "Сервис остановлен"}
+						</span>
+					</div>
+					<div class="action-buttons">
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={restartSusanin}
+							loading={susaninRestarting}
+						>
+							Перезапустить
+						</Button>
+					</div>
+				</div>
+			{/if}
+
+			{#if telemtInstalled}
+				<div class="setting-row">
+					<div class="flex flex-col gap-1">
+						<span class="font-medium">Telemt (Telegram MTProxy)</span>
+						<span class="setting-description">
+							{telemtRunning ? "Процесс работает" : "Процесс остановлен"}
+						</span>
+					</div>
+					<div class="action-buttons">
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={restartTelemt}
+							loading={telemtRestarting}
+						>
+							Перезапустить
+						</Button>
+					</div>
+				</div>
+			{/if}
 
 			{#if singboxInstalled && showSingboxIntegration}
 				<div class="setting-row">

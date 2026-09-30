@@ -97,7 +97,16 @@ type Settings struct {
 	// preset (see DNSChainPresetState). Pointer so it's absent from JSON when
 	// never enabled; nil = no preset. Written ONLY via SetDNSChainPresetState.
 	DNSChainPreset *DNSChainPresetState `json:"dnsChainPreset,omitempty"`
+	// VKCalls stores configuration for VK Calls link generator.
+	VKCalls *VKCallsSettings `json:"vkCalls,omitempty"`
 }
+
+// VKCallsSettings holds credentials for generating VK Calls join links.
+type VKCallsSettings struct {
+	Token   string `json:"token,omitempty"`
+	GroupID int64  `json:"groupId,omitempty"`
+}
+
 
 // DNSChainPresetState is backend-managed state of the DNS-chain preset
 // (sing-box 1.14 evaluate/match_response chains). Written ONLY via

@@ -27,6 +27,9 @@ func (h *AdaptiveRoutingHandler) RegisterRoutes(mux *http.ServeMux, guarded func
 	mux.HandleFunc("POST /api/adaptive-routing/apply", guarded(h.handleApply))
 	mux.HandleFunc("POST /api/adaptive-routing/start", guarded(h.handleStart))
 	mux.HandleFunc("POST /api/adaptive-routing/stop", guarded(h.handleStop))
+	mux.HandleFunc("POST /api/adaptive-routing/restart", guarded(h.handleRestart))
+	mux.HandleFunc("POST /api/adaptive-routing/install", guarded(h.handleInstall))
+	mux.HandleFunc("POST /api/adaptive-routing/uninstall", guarded(h.handleUninstall))
 	mux.HandleFunc("POST /api/adaptive-routing/test-egress", guarded(h.handleTestEgress))
 	mux.HandleFunc("GET /api/adaptive-routing/learned", guarded(h.handleLearned))
 	mux.HandleFunc("GET /api/adaptive-routing/logs", guarded(h.handleLogs))
@@ -136,6 +139,41 @@ func (h *AdaptiveRoutingHandler) handleStop(w http.ResponseWriter, r *http.Reque
 	}
 	response.Success(w, map[string]interface{}{
 		"state": state,
+	})
+}
+
+func (h *AdaptiveRoutingHandler) handleRestart(w http.ResponseWriter, r *http.Request) {
+	state, err := h.svc.Restart(r.Context())
+	if err != nil {
+		response.ErrorWithStatus(w, http.StatusInternalServerError, err.Error(), "RESTART_FAILED")
+		return
+	}
+	response.Success(w, map[string]interface{}{
+		"state": state,
+	})
+}
+
+func (h *AdaptiveRoutingHandler) handleInstall(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.Install(r.Context()); err != nil {
+		response.ErrorWithStatus(w, http.StatusInternalServerError, err.Error(), "INSTALL_FAILED")
+		return
+	}
+	state, settings, _ := h.svc.GetStatus(r.Context())
+	response.Success(w, map[string]interface{}{
+		"state":    state,
+		"settings": settings,
+	})
+}
+
+func (h *AdaptiveRoutingHandler) handleUninstall(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.Uninstall(r.Context()); err != nil {
+		response.ErrorWithStatus(w, http.StatusInternalServerError, err.Error(), "UNINSTALL_FAILED")
+		return
+	}
+	state, settings, _ := h.svc.GetStatus(r.Context())
+	response.Success(w, map[string]interface{}{
+		"state":    state,
+		"settings": settings,
 	})
 }
 

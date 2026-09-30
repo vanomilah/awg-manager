@@ -82,6 +82,24 @@ func TestDetectFailure(t *testing.T) {
 	if _, foundClean := DetectFailure(cleanLog); foundClean {
 		t.Fatal("DetectFailure: expected no failure in clean log")
 	}
+
+	freeTurnAckErrorLog := `
+2026/09/30 06:10:00 [session=5cb368ec] [STREAM 5] DTLS: failed to write client ID: clientsdb: server did not acknowledge client ID (server outdated?) - повтор через 17s
+`
+	sig, foundAck := DetectFailure(freeTurnAckErrorLog)
+	if !foundAck || sig != "server did not acknowledge client ID" {
+		t.Fatalf("DetectFailure: expected 'server did not acknowledge client ID', got %v (found=%v)", sig, foundAck)
+	}
+
+	// Проверяем, что спам статистики WDTT ([СТАТИСТИКА]) не скрывает ошибку, случившуюся ранее
+	wdttSpamLog := "2026/09/30 06:00:00 [WARN] all streams down\n"
+	for i := 0; i < 40; i++ {
+		wdttSpamLog += "2026/09/30 06:01:00 [СТАТИСТИКА] Активных: 0 | Трафик: 0.00 МБ\n"
+	}
+	sig, foundSpam := DetectFailure(wdttSpamLog)
+	if !foundSpam || sig != "all streams down" {
+		t.Fatalf("DetectFailure with stats spam: expected 'all streams down', got %v (found=%v)", sig, foundSpam)
+	}
 }
 
 func TestWatchdogCheck_LogFailure(t *testing.T) {

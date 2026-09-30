@@ -96,7 +96,8 @@
 				notifications.warning(`Тест группы ${groupName}: недоступна или таймаут`);
 			}
 		} catch (err) {
-			notifications.warning(`Тест группы ${groupName}: недоступна или таймаут`);
+			const msg = err instanceof Error ? err.message : String(err);
+			notifications.warning(`Тест группы ${groupName}: недоступна или ошибка (${msg})`);
 		} finally {
 			testingDelay[groupName] = false;
 		}

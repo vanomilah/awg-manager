@@ -721,16 +721,17 @@ func (r *mihomoBridgeRuntime) inspectBridgeLocked(
 	}
 
 	desc := obsProxy.Description
+	token := singbox.ExtractProxyOwnerToken(desc)
 	if desc == "" {
 		// Empty description in NDMS means unmanaged interface
 		obs.OwnerUUID = ""
 		obs.LegacyOwner = ""
-	} else if desc == canonicalOwner {
+	} else if desc == canonicalOwner || (token != "" && token == canonicalOwner) {
 		// Proven canonical owner
-		obs.OwnerUUID = desc
+		obs.OwnerUUID = canonicalOwner
 		obs.LegacyOwner = ""
-		obs.BridgeRef.OwnerUUID = desc
-	} else if isAllowedLegacyOwner(desc, legacyOwners) {
+		obs.BridgeRef.OwnerUUID = canonicalOwner
+	} else if isAllowedLegacyOwner(desc, legacyOwners) || (token != "" && isAllowedLegacyOwner(token, legacyOwners)) {
 		// Proven legacy owner
 		obs.OwnerUUID = ""
 		obs.LegacyOwner = desc
@@ -769,7 +770,17 @@ func (r *mihomoBridgeRuntime) PublishBridge(ctx context.Context, ref mihomo.Brid
 	defer r.mu.Unlock()
 
 	r.gate.setReady(true)
-	owned, err := r.gate.EnsureProxyIfOwned(ctx, ref.ProxyIndex, listenPort, canonicalOwner, legacyOwners...)
+	publishDesc := canonicalOwner
+	if r.store != nil {
+		for _, nb := range r.store.ListBridges() {
+			if nb.Bridge.ProxyIndex == ref.ProxyIndex {
+				publishDesc = mihomonative.FormatBridgeDescription(nb.Label, nb.Kind, nb.ID)
+				break
+			}
+		}
+	}
+	allLegacy := append([]string{canonicalOwner}, legacyOwners...)
+	owned, err := r.gate.EnsureProxyIfOwned(ctx, ref.ProxyIndex, listenPort, publishDesc, allLegacy...)
 	if err != nil {
 		return fmt.Errorf("publish bridge Proxy%d: %w", ref.ProxyIndex, err)
 	}

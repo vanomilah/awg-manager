@@ -489,16 +489,50 @@ func (pm *ProxyManager) removeProxyLocked(ctx context.Context, index int) error 
 // that permits claiming an existing NDMS proxy interface whose description is empty.
 const AllowAdoptEmptyDescription = "__AWGM_ADOPT_EMPTY__"
 
+// ExtractProxyOwnerToken extracts the canonical awg-manager ownership token
+// from a raw or formatted NDMS description (e.g. "🇷🇺 RUS [awg-manager:mihomo:proxy:123]").
+func ExtractProxyOwnerToken(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if start := strings.Index(desc, "[awg-manager:"); start != -1 {
+		end := strings.Index(desc[start:], "]")
+		if end != -1 {
+			return desc[start+1 : start+end]
+		}
+		return desc[start+1:]
+	}
+	if strings.HasPrefix(desc, "awg-manager:") {
+		return desc
+	}
+	return ""
+}
+
 func proxyOwnerMatches(description, owner string, legacyOwners []string) bool {
 	if description == owner {
+		return true
+	}
+	descToken := ExtractProxyOwnerToken(description)
+	ownerToken := ExtractProxyOwnerToken(owner)
+	if descToken != "" && ownerToken != "" && descToken == ownerToken {
+		return true
+	}
+	if ownerToken != "" && (description == ownerToken || strings.Contains(description, "["+ownerToken+"]")) {
+		return true
+	}
+	if descToken != "" && (owner == descToken || strings.Contains(owner, "["+descToken+"]")) {
 		return true
 	}
 	for _, legacy := range legacyOwners {
 		if legacy == AllowAdoptEmptyDescription && description == "" {
 			return true
 		}
-		if legacy != "" && description == legacy {
-			return true
+		if legacy != "" {
+			if description == legacy || (descToken != "" && descToken == legacy) {
+				return true
+			}
+			legacyToken := ExtractProxyOwnerToken(legacy)
+			if legacyToken != "" && (descToken == legacyToken || description == legacyToken) {
+				return true
+			}
 		}
 	}
 	return false

@@ -1261,6 +1261,9 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 	if s.adaptiveRoutingHandler != nil {
 		s.adaptiveRoutingHandler.RegisterRoutes(mux, h.guarded)
 	}
+	if s.telemtHandler != nil {
+		s.telemtHandler.RegisterRoutes(mux, h.guarded)
+	}
 	if s.xrayHandler != nil {
 		s.xrayHandler.RegisterRoutes(mux, h.guarded)
 	}
@@ -1488,6 +1491,15 @@ func (s *Server) registerProxyRtRoutes(mux *http.ServeMux, h *routeHandlers) {
 	}
 	if s.proxyRt.Uninstall != nil {
 		mux.HandleFunc("/api/proxyrt/install/uninstall", h.guarded(s.proxyRt.Uninstall))
+	}
+	if s.proxyRt.VKCallsGenerate != nil {
+		mux.HandleFunc("/api/proxyrt/vk/calls/generate", h.guarded(s.proxyRt.VKCallsGenerate))
+	}
+	if s.proxyRt.VKCallsCheck != nil {
+		mux.HandleFunc("/api/proxyrt/vk/calls/check", h.guarded(s.proxyRt.VKCallsCheck))
+	}
+	if s.proxyRt.VKCallsConfig != nil {
+		mux.HandleFunc("/api/proxyrt/vk/calls/config", h.guarded(s.proxyRt.VKCallsConfig))
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -21,12 +22,12 @@ import (
 
 const (
 	SusaninVersion           = "v0.3.10"
-	DefaultSusaninBinaryPath = "/opt/bin/susanin-agent"
-	ManagedSusaninDir        = "/opt/susanin"
-	ManagedSusaninBinaryPath = "/opt/susanin/bin/susanin-agent"
-	ManagedSusaninToolsDir   = "/opt/susanin/tools"
-	ManagedSusaninEtcDir     = "/opt/susanin/etc"
-	ManagedSusaninVarDir     = "/opt/susanin/var"
+	DefaultSusaninBinaryPath = "/opt/etc/awg-manager/susanin/bin/susanin-agent"
+	ManagedSusaninDir        = "/opt/etc/awg-manager/susanin"
+	ManagedSusaninBinaryPath = "/opt/etc/awg-manager/susanin/bin/susanin-agent"
+	ManagedSusaninToolsDir   = "/opt/etc/awg-manager/susanin/tools"
+	ManagedSusaninEtcDir     = "/opt/etc/awg-manager/susanin/etc"
+	ManagedSusaninVarDir     = "/opt/etc/awg-manager/susanin/var"
 )
 
 var DefaultTelegramCIDRs = []string{
@@ -116,7 +117,9 @@ func NewInstaller(arch string) *SusaninInstaller {
 func (i *SusaninInstaller) ResolveBinary() string {
 	candidates := []string{
 		i.targetPath,
+		ManagedSusaninBinaryPath,
 		DefaultSusaninBinaryPath,
+		"/opt/bin/susanin-agent",
 		"/opt/susanin/bin/susanin-agent",
 	}
 	for _, p := range candidates {
@@ -301,12 +304,33 @@ func extractArchive(r io.Reader, baseDir, targetBinPath string) error {
 		return fmt.Errorf("binary 'susanin-agent' not found in archive")
 	}
 
-	// Symlink to /opt/bin/susanin-agent if running in /opt/susanin
-	if targetBinPath == ManagedSusaninBinaryPath {
-		_ = os.MkdirAll("/opt/bin", 0755)
-		_ = os.Remove(DefaultSusaninBinaryPath)
-		_ = os.Symlink(ManagedSusaninBinaryPath, DefaultSusaninBinaryPath)
+	// Symlink to /opt/bin/susanin-agent
+	_ = os.MkdirAll("/opt/bin", 0755)
+	_ = os.Remove("/opt/bin/susanin-agent")
+	_ = os.Symlink(targetBinPath, "/opt/bin/susanin-agent")
+
+	// Backwards compatibility symlink /opt/susanin -> ManagedSusaninDir
+	if _, err := os.Lstat("/opt/susanin"); os.IsNotExist(err) {
+		_ = os.Symlink(ManagedSusaninDir, "/opt/susanin")
 	}
 
+	return nil
+}
+
+// Uninstall stops susanin-agent and removes installed binaries and symlinks.
+func (i *SusaninInstaller) Uninstall() error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	// Stop any running process
+	_ = exec.Command("killall", "-9", "susanin-agent").Run()
+	time.Sleep(300 * time.Millisecond)
+
+	bin := i.ResolveBinary()
+	if bin != "" {
+		_ = os.Remove(bin)
+	}
+	_ = os.Remove("/opt/bin/susanin-agent")
+	_ = os.Remove(ManagedSusaninBinaryPath)
 	return nil
 }

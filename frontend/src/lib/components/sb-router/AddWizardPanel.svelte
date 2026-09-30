@@ -32,7 +32,7 @@
     addWizardOpen,
     wizardOutboundCategory, wizardTunnelTags, wizardCustom,
     wizardEditRuleIndex, wizardEditMode, wizardExistingInlineRuleSetTag, wizardWasInlineText,
-    closeAddWizard, setOutboundCategory, toggleTunnelTag, resetWizardState,
+    closeAddWizard, setOutboundCategory, toggleTunnelTag, setTunnelTags, resetWizardState,
     type CustomMatcherFields, type OutboundCategory,
   } from './addWizardStore';
   import {
@@ -107,6 +107,19 @@
     if (e.key === 'Escape') {
       e.preventDefault();
       closeAddWizard();
+    }
+  }
+
+  function handleSelectTunnel(tag: string) {
+    if (effectiveIsMihomo) {
+      const current = get(wizardTunnelTags);
+      if (current.length === 1 && current[0] === tag) {
+        setTunnelTags([]);
+      } else {
+        setTunnelTags([tag]);
+      }
+    } else {
+      toggleTunnelTag(tag);
     }
   }
 
@@ -222,30 +235,8 @@
     } else if (args.outboundCategory === 'block') {
       targetOutbound = 'REJECT';
     } else if (args.outboundCategory === 'tunnel') {
-      if (args.tunnelTags.length === 1) {
+      if (args.tunnelTags.length > 0) {
         targetOutbound = args.tunnelTags[0];
-      } else if (args.tunnelTags.length > 1) {
-        const existingGroups = await api.mihomoNativeGroups().catch(() => []);
-        const matched = existingGroups.find((g) => {
-          const pList = g.proxies || [];
-          return pList.length === args.tunnelTags.length && args.tunnelTags.every((t) => pList.includes(t));
-        });
-        if (matched) {
-          targetOutbound = matched.name;
-        } else {
-          const groupName = `Group-${args.tunnelTags.slice(0, 2).join('-')}${args.tunnelTags.length > 2 ? `+${args.tunnelTags.length - 2}` : ''}`;
-          targetOutbound = groupName;
-          operations.push((apply) => api.mihomoNativeSaveGroup({
-            name: groupName,
-            type: 'url-test',
-            proxies: args.tunnelTags,
-            url: 'https://www.gstatic.com/generate_204',
-            interval: 300,
-            lazy: true,
-            tolerance: 50,
-            enabled: true,
-          }, apply));
-        }
       }
     }
 
@@ -511,12 +502,24 @@
     submitting = true;
     try {
       if (effectiveIsMihomo) {
+        const cat = get(wizardOutboundCategory);
+        const tags = get(wizardTunnelTags);
+        let targetOutbound = 'DIRECT';
+        if (cat === 'tunnel' && tags.length > 0) {
+          targetOutbound = tags[0];
+        } else if (cat === 'direct') {
+          targetOutbound = 'DIRECT';
+        } else if (cat === 'block') {
+          targetOutbound = 'REJECT';
+        }
+
         const created = await submitMihomoWizard({
           selectedTemplates: Array.from(get(templatesSelection)),
           customFields: get(wizardCustom),
-          outboundCategory: get(wizardOutboundCategory)!,
-          tunnelTags: get(wizardTunnelTags),
+          outboundCategory: cat!,
+          tunnelTags: tags,
         });
+
 
         if (continueAfter) {
           notifications.success(`Создано ${pluralize(created, RULE_WORDS)}. Можно добавить ещё одно.`);
@@ -707,13 +710,13 @@
         <div class="tunnel-row">
           <div class="tunnel-cap">
             <span>Выбрать {effectiveIsMihomo ? 'направление' : 'туннели'}</span>
-            {#if $wizardTunnelTags.length > 1}
+            {#if !effectiveIsMihomo && $wizardTunnelTags.length > 1}
               <span class="tunnel-count">{$wizardTunnelTags.length} выбрано</span>
             {/if}
           </div>
           <p class="tunnel-hint">
             {effectiveIsMihomo
-              ? 'Выберите готовую группу прокси или укажите отдельные серверы'
+              ? 'Выберите готовую группу прокси или отдельный сервер'
               : 'Можно выбрать несколько — будет использован composite outbound'}
           </p>
 
@@ -744,7 +747,7 @@
                       type="button"
                       class="t-chip group-chip"
                       class:selected
-                      onclick={() => toggleTunnelTag(grp.name)}
+                      onclick={() => handleSelectTunnel(grp.name)}
                     >
                       <Zap size={12} class="accent-icon" />
                       <span class="tag">{grp.name}</span>
@@ -780,7 +783,7 @@
                   $singboxTunnels.data ?? [],
                 )}
                 {@const tunnelTone = displayTone(tunnelDisplay)}
-                <button type="button" class="t-chip" class:selected onclick={() => toggleTunnelTag(ob.value)}>
+                <button type="button" class="t-chip" class:selected onclick={() => handleSelectTunnel(ob.value)}>
                   <span class="tone-icon {toneClass(tunnelTone)}">
                     <OutboundToneIcon tone={tunnelTone} kind={(ob.kind as any) || tunnelDisplay.kind} size={12} />
                   </span>

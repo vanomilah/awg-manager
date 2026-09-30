@@ -69,46 +69,45 @@
 
 <div class="card-wrap">
   <div class="card" class:disabled={!card.enabled}>
-    <!-- Order index -->
-    <div class="order">
-      {orderStr}
-    </div>
+    <!-- Top / Left Header: Order, Drag handle & Service Identity -->
+    <div class="card-head">
+      <div class="order">
+        {orderStr}
+      </div>
 
-    <!-- Drag handle -->
-    <div class="drag-slot">
-      <button
-        type="button"
-        class="drag-handle"
-        aria-label={`Перетащить правило #${orderStr}`}
-        title="Перетащите для изменения порядка"
-      >
-        <GripVertical size={16} />
-      </button>
-    </div>
+      <div class="drag-slot">
+        <button
+          type="button"
+          class="drag-handle"
+          aria-label={`Перетащить правило #${orderStr}`}
+          title="Перетащите для изменения порядка"
+        >
+          <GripVertical size={16} />
+        </button>
+      </div>
 
-    <!-- Service tile + Matcher chips -->
-    <div class="main">
       <ServiceTile
         serviceKey={card.serviceKey || card.id || 'custom'}
         name={card.title}
         sub={card.subtitle}
       />
-
-      {#if card.chips.length > 0}
-        <div class="chips">
-          {#each card.chips as chip}
-            <MatcherChip
-              kind={chip.kind === 'custom' ? 'ruleset' : (chip.kind as any)}
-              label={chip.label}
-              rulesetType={chip.rulesetType ? (chip.rulesetType === 'inline' || chip.rulesetType === 'local' || chip.rulesetType === 'dat' ? chip.rulesetType : 'remote') : undefined}
-            />
-          {/each}
-          {#if card.hasNoResolve}
-            <span class="no-resolve-chip">no-resolve</span>
-          {/if}
-        </div>
-      {/if}
     </div>
+
+    <!-- Matcher Chips -->
+    {#if card.chips.length > 0 || card.hasNoResolve}
+      <div class="chips">
+        {#each card.chips as chip}
+          <MatcherChip
+            kind={chip.kind === 'custom' ? 'ruleset' : (chip.kind as any)}
+            label={chip.label}
+            rulesetType={chip.rulesetType ? (chip.rulesetType === 'inline' || chip.rulesetType === 'local' || chip.rulesetType === 'dat' ? chip.rulesetType : 'remote') : undefined}
+          />
+        {/each}
+        {#if card.hasNoResolve}
+          <span class="no-resolve-chip">no-resolve</span>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Outbound Destination & Actions -->
     <div class="trail">
@@ -127,7 +126,7 @@
         {:else}
           <div class="tone-chip tone-composite" title={`Выход: ${formatOutbound(card.outbound)}`}>
             <Zap size={13} />
-            <span>{formatOutbound(card.outbound)}</span>
+            <span class="outbound-label-text">{formatOutbound(card.outbound)}</span>
             {#if liveTargetNode && liveTargetNode !== card.outbound}
               <span class="live-arrow">→</span>
               <span class="live-target">{formatOutbound(liveTargetNode)}</span>
@@ -168,13 +167,13 @@
   .card-wrap {
     position: relative;
     min-width: 0;
+    container-type: inline-size;
   }
 
   .card {
-    display: grid;
-    grid-template-columns: 28px 28px minmax(0, 1fr) auto;
-    gap: 12px;
+    display: flex;
     align-items: center;
+    gap: 12px;
     padding: 10px 14px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -191,18 +190,29 @@
     opacity: 0.55;
   }
 
+  .card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    min-width: 0;
+  }
+
   .order {
     font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
     text-align: center;
+    width: 20px;
+    flex-shrink: 0;
   }
 
   .drag-slot {
     display: flex;
     flex-direction: column;
     align-items: center;
+    flex-shrink: 0;
   }
 
   .drag-handle {
@@ -222,19 +232,13 @@
     color: var(--text-primary);
   }
 
-  .main {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-    flex-wrap: wrap;
-  }
-
   .chips {
     display: flex;
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
+    flex: 1;
+    min-width: 0;
   }
 
   .no-resolve-chip {
@@ -252,7 +256,7 @@
   .trail {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     flex-shrink: 0;
     margin-left: auto;
   }
@@ -261,12 +265,21 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
   }
 
   .arrow-sep {
     font-size: 16px;
     color: var(--text-muted);
     user-select: none;
+    flex-shrink: 0;
+  }
+
+  .outbound-label-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 200px;
   }
 
   .live-arrow {
@@ -284,6 +297,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
+    flex-shrink: 0;
   }
 
   .route-action-btn {
@@ -311,21 +325,100 @@
     background: rgba(239, 68, 68, 0.1);
   }
 
+  /* Responsive breakdown when container is under 580px */
+  @container (max-width: 580px) {
+    .card {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+      padding: 12px;
+    }
+
+    .card-head {
+      width: 100%;
+    }
+
+    .chips {
+      width: 100%;
+    }
+
+    .trail {
+      width: 100%;
+      margin-left: 0;
+      justify-content: space-between;
+      gap: 8px;
+      border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+      padding-top: 8px;
+    }
+
+    .action {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .action .tone-chip {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      justify-content: flex-start;
+    }
+
+    .arrow-sep {
+      display: none;
+    }
+
+    .outbound-label-text {
+      max-width: none;
+    }
+  }
+
   @media (max-width: 768px) {
     .card {
-      grid-template-columns: 28px minmax(0, 1fr) auto;
-      gap: 8px 10px;
-      padding: 10px 12px;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+      padding: 12px;
     }
+
+    .card-head {
+      width: 100%;
+    }
+
     .drag-slot {
       display: none;
     }
+
+    .chips {
+      width: 100%;
+    }
+
     .trail {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 8px;
       width: 100%;
       margin-left: 0;
+      justify-content: space-between;
+      gap: 8px;
+      border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+      padding-top: 8px;
+    }
+
+    .action {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .action .tone-chip {
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      justify-content: flex-start;
+    }
+
+    .arrow-sep {
+      display: none;
+    }
+
+    .outbound-label-text {
+      max-width: none;
     }
   }
 </style>

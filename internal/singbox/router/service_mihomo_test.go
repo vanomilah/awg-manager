@@ -181,6 +181,73 @@ func TestGenerateMihomoConfig_WritesConfigForMihomoEngine(t *testing.T) {
 	}
 }
 
+func TestGenerateMihomoConfig_CompilesDNSServersAndRules(t *testing.T) {
+	svc, mihomoDir := newMihomoConfigTestService(t, "mihomo")
+
+	// Update router config with dns-direct and dns-tunnel
+	ctx := context.Background()
+	cfg, err := svc.loadRouterConfig()
+	if err != nil {
+		t.Fatalf("loadRouterConfig: %v", err)
+	}
+	cfg.DNS.Servers = []DNSServer{
+		{Tag: "dns-direct", Type: "udp", Server: "77.88.8.8"},
+		{Tag: "dns-tunnel", Type: "udp", Server: "9.9.9.9", Detour: "route-group"},
+	}
+	cfg.DNS.Rules = []DNSRule{
+		{Domain: []string{"example.com"}, Server: "dns-tunnel"},
+	}
+	if err := svc.persistConfigDirect(ctx, cfg); err != nil {
+		t.Fatalf("persistConfigDirect: %v", err)
+	}
+
+	if err := svc.GenerateMihomoConfig(); err != nil {
+		t.Fatalf("GenerateMihomoConfig: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(mihomoDir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("ReadFile(config.yaml): %v", err)
+	}
+
+	var parsed struct {
+		DNS struct {
+			Nameserver       []string          `yaml:"nameserver"`
+			Fallback         []string          `yaml:"fallback"`
+			NameserverPolicy map[string]string `yaml:"nameserver-policy"`
+		} `yaml:"dns"`
+	}
+	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+
+	foundDirect := false
+	for _, ns := range parsed.DNS.Nameserver {
+		if strings.Contains(ns, "77.88.8.8") {
+			foundDirect = true
+			break
+		}
+	}
+	if !foundDirect {
+		t.Errorf("expected 77.88.8.8 in nameserver, got %v", parsed.DNS.Nameserver)
+	}
+
+	foundFallback := false
+	for _, fb := range parsed.DNS.Fallback {
+		if strings.Contains(fb, "9.9.9.9#route-group") {
+			foundFallback = true
+			break
+		}
+	}
+	if !foundFallback {
+		t.Errorf("expected 9.9.9.9#route-group in fallback, got %v", parsed.DNS.Fallback)
+	}
+
+	if policy := parsed.DNS.NameserverPolicy["example.com"]; policy != "9.9.9.9#route-group" {
+		t.Errorf("expected nameserver-policy for example.com to be 9.9.9.9#route-group, got %q", policy)
+	}
+}
+
 func TestGenerateMihomoConfig_MigratesLegacyGroupsAndRulesToNativeStore(t *testing.T) {
 	svc, _ := newMihomoConfigTestService(t, "mihomo")
 	native, err := mihomonative.NewStore(filepath.Join(t.TempDir(), "native.json"))
@@ -351,8 +418,17 @@ func TestGenerateMihomoConfig_SingboxPrimaryWritesExportsOnlySidecar(t *testing.
 	if cfg.TProxyPort != 0 || cfg.RedirPort != 0 || cfg.MixedPort != 0 || cfg.Port != 0 || cfg.SocksPort != 0 || cfg.Tun != nil {
 		t.Fatalf("sidecar exposes routing/global listeners: %#v", cfg)
 	}
-	if len(cfg.Listeners) != 1 || cfg.Listeners[0].Name == "routing-tproxy" || cfg.Listeners[0].Port != 12007 {
-		t.Fatalf("sidecar listeners=%#v", cfg.Listeners)
+	hasBridge := false
+	for _, l := range cfg.Listeners {
+		if l.Name == "routing-tproxy" {
+			t.Fatalf("sidecar has routing-tproxy listener: %#v", cfg.Listeners)
+		}
+		if l.Port == 12007 {
+			hasBridge = true
+		}
+	}
+	if !hasBridge {
+		t.Fatalf("sidecar missing bridge listener 12007: %#v", cfg.Listeners)
 	}
 }
 

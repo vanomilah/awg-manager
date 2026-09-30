@@ -126,8 +126,16 @@ func (pe *PreflightEngine) Run(ctx context.Context, req WizardPlanRequest) Prefl
 
 func (pe *PreflightEngine) checkTelegram(ctx context.Context, req WizardPlanRequest, checks *[]PreflightCheck) {
 	// Binary checks
-	pe.checkBinary("bin_telemt", "Служба telemt (MTProto Fake-TLS)", pe.telemtPath, checks)
-	pe.checkBinary("bin_tproxy", "Служба tproxy-server (Web Proxy)", pe.tproxyPath, checks)
+	telemtPath := pe.telemtPath
+	if _, err := pe.statFn(telemtPath); err != nil {
+		if _, errManaged := pe.statFn("/opt/etc/awg-manager/telemt/telemt"); errManaged == nil {
+			telemtPath = "/opt/etc/awg-manager/telemt/telemt"
+		}
+	}
+	pe.checkBinary("bin_telemt", "Служба telemt (MTProto Fake-TLS)", telemtPath, checks)
+	if req.Scenario != "direct_fake_tls" {
+		pe.checkBinary("bin_tproxy", "Служба tproxy-server (Web Proxy)", pe.tproxyPath, checks)
+	}
 
 	// Ports checks
 	directPort := req.DirectPort
@@ -155,7 +163,9 @@ func (pe *PreflightEngine) checkTelegram(ctx context.Context, req WizardPlanRequ
 	}
 
 	pe.checkPort("port_direct", fmt.Sprintf("Порт прямого подключения (%d)", directPort), directPort, currentDirectPID, checks)
-	pe.checkPort("port_web", fmt.Sprintf("Порт веб-прокси (%d)", webPort), webPort, currentWebPID, checks)
+	if req.Scenario != "direct_fake_tls" {
+		pe.checkPort("port_web", fmt.Sprintf("Порт веб-прокси (%d)", webPort), webPort, currentWebPID, checks)
+	}
 
 	if req.DirectHost != "" {
 		if err := ValidateDirectHost(req.DirectHost); err != nil {

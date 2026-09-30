@@ -194,12 +194,14 @@ func (a *app) mihomoSidecarNeeded() bool {
 			return true
 		}
 	}
-	hasNativeResources := len(a.mihomoNativeStore.ConfigBridgeListeners()) > 0
+	hasNativeResources := len(a.mihomoNativeStore.ConfigBridgeListeners()) > 0 ||
+		len(a.mihomoNativeStore.ListGroups()) > 0 ||
+		len(a.mihomoNativeStore.ListProxies()) > 0
 	if !hasNativeResources {
 		return false
 	}
 	// When sing-box is the primary engine, always run Mihomo as sidecar whenever
-	// there are native Mihomo resources (proxies/subscriptions), so they remain
+	// there are native Mihomo resources (proxies/subscriptions/groups), so they remain
 	// alive, auto-switch via url-test, and are accessible.
 	return true
 }

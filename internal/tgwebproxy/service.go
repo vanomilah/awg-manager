@@ -54,7 +54,14 @@ type Service struct {
 }
 
 func New(dataDir string, onReload func()) *Service {
-	telemtDir := "/opt/etc/telemt"
+	telemtDir := "/opt/etc/awg-manager/telemt"
+	if _, err := os.Stat(telemtDir); os.IsNotExist(err) {
+		if _, errLegacy := os.Stat("/opt/etc/telemt"); errLegacy == nil {
+			telemtDir = "/opt/etc/telemt"
+		} else {
+			_ = os.MkdirAll(telemtDir, 0755)
+		}
+	}
 	tproxyBaseDir := filepath.Join(dataDir, "tproxy")
 
 	workers := NewDefaultWorkerSupervisor()
@@ -515,7 +522,7 @@ func (s *Service) applyConfigLocked(newCfg Config) error {
 		return fmt.Errorf("generate txid: %w", err)
 	}
 	var validator TproxyValidator
-	if newCfg.Enabled {
+	if newCfg.Enabled && newCfg.IsWebEnabled() {
 		validator = s.tproxyValidator
 	}
 	if err := s.tc.ExecuteTransaction(txID, files, s.workers, newCfg, validator); err != nil {
@@ -1085,7 +1092,7 @@ func (s *Service) GetStatus() Status {
 		}
 	}
 
-	installedTelemt := fileExists("/opt/usr/bin/telemt")
+	installedTelemt := fileExists("/opt/etc/awg-manager/telemt/telemt") || fileExists("/opt/bin/telemt") || fileExists("/opt/usr/bin/telemt")
 	installedTproxy := fileExists("/opt/bin/tproxy-server")
 
 	return Status{

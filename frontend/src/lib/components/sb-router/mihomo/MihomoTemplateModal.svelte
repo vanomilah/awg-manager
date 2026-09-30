@@ -236,27 +236,29 @@
         ];
       }
 
-      // If replacing existing rules, delete them first
+      // If replacing existing rules, delete them first (without triggering reload on each deletion)
       if (replaceExisting) {
-        const currentRules = await api.mihomoNativeRules();
-        for (const r of currentRules) {
+        const rulesResp = await api.mihomoNativeRules();
+        const currentList = Array.isArray(rulesResp) ? rulesResp : ((rulesResp as any)?.items ?? []);
+        for (const r of currentList) {
           try {
-            await api.mihomoNativeDeleteRule(r.id);
+            await api.mihomoNativeDeleteRule(r.id, false);
           } catch {
             // ignore
           }
         }
       }
 
-      // Add each rule in order
-      for (const r of newRules) {
+      // Add each rule in order, applying only on the final rule
+      for (let i = 0; i < newRules.length; i++) {
+        const isLast = (i === newRules.length - 1);
         await api.mihomoNativeSaveRule({
-          type: r.type,
-          payload: r.payload,
-          outbound: r.outbound,
-          noResolve: r.noResolve,
-          enabled: r.enabled
-        });
+          type: newRules[i].type,
+          payload: newRules[i].payload,
+          outbound: newRules[i].outbound,
+          noResolve: newRules[i].noResolve,
+          enabled: newRules[i].enabled
+        }, isLast);
       }
 
       notifications.success(`Шаблон успешно применён! Сформировано правил: ${newRules.length}`);

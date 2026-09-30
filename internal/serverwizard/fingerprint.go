@@ -31,8 +31,8 @@ var DefaultTargetPorts = []int{
 	9009, // cdn dispatcher inbound
 	8085, // tproxy-server web proxy
 	8086, // tproxy-server admin
-	8443, // telemt direct Fake-TLS
-	2398, // telemt raw backend
+	// 8443 and 2398 (telemt) intentionally excluded: they change during normal startup (STUN probe),
+	// which would cause false PLAN_STALE errors in the wizard apply flow.
 }
 
 // XrayStateReader exposes state needed from Xray.
@@ -140,14 +140,10 @@ func (e *FingerprintEngine) Compute(ctx context.Context) string {
 		h.Write([]byte("\n"))
 	}
 
-	// 3. Telegram Web Proxy Config & Status
+	// 3. Telegram Web Proxy Config only (Status excluded: PID/online flags are volatile during startup)
 	if e.tg != nil {
 		tc := e.tg.GetConfig()
-		ts := e.tg.GetStatus()
-		data, _ := json.Marshal(struct {
-			Cfg tgwebproxy.PublicConfig `json:"cfg"`
-			St  tgwebproxy.Status       `json:"st"`
-		}{Cfg: tc, St: ts})
+		data, _ := json.Marshal(tc)
 		h.Write([]byte("tg:"))
 		h.Write(data)
 		h.Write([]byte("\n"))
@@ -239,16 +235,12 @@ func (e *FingerprintEngine) ComputeStrict(ctx context.Context) (string, error) {
 		h.Write([]byte("\n"))
 	}
 
-	// 3. Telegram Web Proxy Config & Status
+	// 3. Telegram Web Proxy Config only (Status excluded: PID/online flags are volatile during startup)
 	if e.tg != nil {
 		tc := e.tg.GetConfig()
-		ts := e.tg.GetStatus()
-		data, err := json.Marshal(struct {
-			Cfg tgwebproxy.PublicConfig `json:"cfg"`
-			St  tgwebproxy.Status       `json:"st"`
-		}{Cfg: tc, St: ts})
+		data, err := json.Marshal(tc)
 		if err != nil {
-			return "", fmt.Errorf("marshal tg state: %w", err)
+			return "", fmt.Errorf("marshal tg config: %w", err)
 		}
 		h.Write([]byte("tg:"))
 		h.Write(data)

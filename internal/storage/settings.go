@@ -1146,3 +1146,32 @@ func (s *SettingsStore) GetManagedPolicies() []string {
 	}
 	return s.settings.ManagedPolicies
 }
+
+// GetVKCallsSettings returns the stored VK Calls configuration.
+func (s *SettingsStore) GetVKCallsSettings() VKCallsSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.settings == nil || s.settings.VKCalls == nil {
+		return VKCallsSettings{}
+	}
+	return *s.settings.VKCalls
+}
+
+// SetVKCallsSettings updates the stored VK Calls configuration.
+func (s *SettingsStore) SetVKCallsSettings(cfg VKCallsSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.settings == nil {
+		return fmt.Errorf("settings not loaded")
+	}
+
+	return s.updateUnlocked(func(cp *Settings) error {
+		cp.VKCalls = &VKCallsSettings{
+			Token:   cfg.Token,
+			GroupID: cfg.GroupID,
+		}
+		return nil
+	})
+}

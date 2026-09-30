@@ -8,6 +8,7 @@
 		type SettingsSectionIconMode,
 	} from '$lib/stores/settingsSectionIconMode';
 	import { serviceLetterIcons } from '$lib/stores/serviceLetterIcons';
+	import { countryFlagEmojis } from '$lib/stores/countryFlagEmojis';
 	import { showSummary } from '$lib/stores/showSummary';
 	import { tunnelDashboardMode } from '$lib/stores/tunnelDashboardMode';
 	import { usageLevel } from '$lib/stores/settings';
@@ -270,6 +271,18 @@
 			onchange={(enabled) => serviceLetterIcons.setEnabled(enabled)}
 		/>
 	</div>
+	<div class="setting-row country-flags-row">
+		<div class="flex flex-col gap-1">
+			<span class="font-medium">Флаги стран</span>
+			<span class="setting-description">
+				Отображение графических эмодзи флагов стран (вместо буквенных кодов вроде «LV», «NL», «FI» в Windows).
+			</span>
+		</div>
+		<Toggle
+			checked={$countryFlagEmojis}
+			onchange={(enabled) => countryFlagEmojis.setEnabled(enabled)}
+		/>
+	</div>
 	</div>
 </div>
 
@@ -277,7 +290,8 @@
 	.compact-layout-row,
 	.dashboard-mode-row,
 	.summary-row,
-	.letter-icons-row {
+	.letter-icons-row,
+	.country-flags-row {
 		align-items: center;
 	}
 
@@ -285,7 +299,8 @@
 		.compact-layout-row,
 		.dashboard-mode-row,
 		.summary-row,
-		.letter-icons-row {
+		.letter-icons-row,
+		.country-flags-row {
 			flex-direction: row;
 			align-items: center;
 			flex-wrap: nowrap;
@@ -295,7 +310,8 @@
 		.compact-layout-row > *:first-child,
 		.dashboard-mode-row > *:first-child,
 		.summary-row > *:first-child,
-		.letter-icons-row > *:first-child {
+		.letter-icons-row > *:first-child,
+		.country-flags-row > *:first-child {
 			flex: 1 1 auto;
 			min-width: 0;
 		}

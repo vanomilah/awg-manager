@@ -165,7 +165,9 @@ export class CoreClient {
 		// подкреплён фактической валидацией, а не доверием.
 		validateApiResponse(options.method ?? 'GET', endpoint, data);
 
-		return data.data as T;
+		return (data && typeof data === 'object' && 'data' in data && (data as { data?: unknown }).data !== undefined
+			? (data as { data: T }).data
+			: data) as T;
 	}
 
 	protected isMockDevMode(): boolean {

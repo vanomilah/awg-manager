@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { Button, Input, Dropdown, SegmentedControl, Toggle } from '$lib/components/ui';
+	import { Sparkles } from 'lucide-svelte';
+	import VkCallModal from '../proxy/VkCallModal.svelte';
 	import ProcessLogBox from '../freeturn/ProcessLogBox.svelte';
 	import ProxyInstanceStatusBar from '../proxy-panel/ProxyInstanceStatusBar.svelte';
 	import ProxyPanelTabs from '../proxy-panel/ProxyPanelTabs.svelte';
@@ -103,6 +105,7 @@
 	let fileInput: HTMLInputElement | undefined = $state();
 	let quickActive = $state('import');
 	let wizardOpen = $state(false);
+	let vkModalOpen = $state(false);
 
 	const autoReconnectIntervalOptions = [
 		{ value: 'on_failure', label: 'Только при сбое' },
@@ -548,7 +551,18 @@
 						onPrimary={() => { quickActive = 'start'; }}
 					>
 						<ProxyWizardGuide items={vkGuideItems} />
-						<Input bind:value={client.vkHashes} placeholder="hash1,hash2" />
+						<div class="wdtt-vk-input-row">
+							<Input bind:value={client.vkHashes} placeholder="hash1,hash2" />
+							<Button
+								variant="secondary"
+								size="sm"
+								class="wdtt-vk-btn"
+								onclick={() => (vkModalOpen = true)}
+							>
+								<Sparkles size={14} />
+								VK Calls
+							</Button>
+						</div>
 						<Input
 							type="number"
 							value={String(client.workers)}
@@ -711,7 +725,18 @@
 				{/if}
 				<SensitiveInput label="Пароль" bind:value={client.password} />
 				<Input bind:value={client.listen} placeholder="127.0.0.1:9000" />
-				<Input bind:value={client.vkHashes} placeholder="VK-хеши" />
+				<div class="wdtt-vk-input-row">
+					<Input bind:value={client.vkHashes} placeholder="VK-хеши" />
+					<Button
+						variant="secondary"
+						size="sm"
+						class="wdtt-vk-btn"
+						onclick={() => (vkModalOpen = true)}
+					>
+						<Sparkles size={14} />
+						VK Calls
+					</Button>
+				</div>
 				<Input
 					type="number"
 					value={String(client.workers)}
@@ -797,9 +822,29 @@
 			</section>
 		{/if}
 	{/if}
+
+	{#if vkModalOpen}
+		<VkCallModal
+			bind:open={vkModalOpen}
+			initialValue={client.vkHashes}
+			targetFormat="hashes"
+			onApply={(val) => {
+				client.vkHashes = val;
+			}}
+		/>
+	{/if}
 </div>
 
 <style>
+	.wdtt-vk-input-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		width: 100%;
+	}
+	:global(.wdtt-vk-btn) {
+		white-space: nowrap;
+	}
 	.wdtt-simple-wrap {
 		display: flex;
 		flex-direction: column;

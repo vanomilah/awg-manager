@@ -597,8 +597,8 @@ func (s *WizardService) probeTopologyReadiness(ctx context.Context, topo serveri
 	}
 	probeInterval := 50 * time.Millisecond
 
-	// 1. Probe Xray listener if configured
-	if topo.XrayPort > 0 {
+	// 1. Probe Xray listener if configured and enabled
+	if topo.XrayEnabled && topo.XrayPort > 0 {
 		target := fmt.Sprintf("127.0.0.1:%d", topo.XrayPort)
 		ready := false
 		var lastErr error
@@ -704,7 +704,7 @@ func (s *WizardService) probeTopologyReadiness(ctx context.Context, topo serveri
 		}
 
 		// Strict HTTP route identity check
-		checkXray := topo.XrayPublicHostname != "" || (topo.PublicHostname != "" && (topo.XrayEnabled || topo.XrayPort > 0))
+		checkXray := (topo.XrayEnabled || topo.XrayPort > 0 && topo.XrayPublicHostname != "") && (topo.XrayPublicHostname != "" || (topo.PublicHostname != "" && topo.XrayEnabled))
 		checkTg := topo.TgPublicHostname != "" || (topo.PublicHostname != "" && (topo.TgEnabled || topo.TgWebPort > 0))
 
 		if checkXray || checkTg {

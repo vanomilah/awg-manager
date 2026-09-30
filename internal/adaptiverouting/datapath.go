@@ -233,6 +233,9 @@ func (d *DatapathController) EnsureChain(
 		policyMarkWithMask = fmt.Sprintf("%s/0x0fffffff", strings.TrimSpace(mark))
 		// Fail-closed guard: if packet mark does not match the policy mark, return immediately
 		bypasses = append(bypasses, []string{"-m", "mark", "!", "--mark", policyMarkWithMask, "-j", "RETURN"})
+	} else {
+		// When not scoped to a specific policy, do NOT steal traffic from NDMS policies (0xffffaa0/0xffffff0)
+		bypasses = append(bypasses, []string{"-m", "mark", "--mark", "0xffffaa0/0xffffff0", "-j", "RETURN"})
 	}
 
 	bypasses = append(bypasses, [][]string{
@@ -846,6 +849,9 @@ func (d *DatapathController) ReconcileDatapath(
 	if res, err := d.runner(ctx, d.iptablesBin, "-w", "-t", "mangle", "-S", "PREROUTING"); err == nil && res != nil {
 		for _, line := range strings.Split(res.Stdout, "\n") {
 			if (strings.Contains(line, "-j "+ChainSusanin) || strings.Contains(line, "-g "+ChainSusanin)) && strings.HasPrefix(line, "-A PREROUTING") {
+				if settings.Source.Type == "policy" && !strings.Contains(line, "--mark") {
+					continue
+				}
 				jumpMissing = false
 				break
 			}

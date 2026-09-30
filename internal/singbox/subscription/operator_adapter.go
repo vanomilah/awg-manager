@@ -92,6 +92,8 @@ type OperatorAdapter struct {
 	// "skip feature gating" (same as empty slice but preserves back-compat
 	// with pre-feature-gate tests).
 	singboxFeaturesFn func() []string
+	isMihomoPrimary   func() bool
+	onPostCommit      func()
 
 	mu              sync.Mutex
 	cfg             slotConfig
@@ -111,6 +113,22 @@ type OperatorAdapter struct {
 // feature-based pre-filtering (tests).
 func (a *OperatorAdapter) SetSingboxFeaturesFn(fn func() []string) {
 	a.singboxFeaturesFn = fn
+}
+
+// SetIsMihomoPrimary registers an engine check so flush() keeps SlotSubscriptions
+// parked in disabled/ when Mihomo is the primary engine.
+func (a *OperatorAdapter) SetIsMihomoPrimary(fn func() bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.isMihomoPrimary = fn
+}
+
+// SetOnPostCommit registers a callback invoked asynchronously after a successful flush()
+// (e.g. to notify DynamicEngine to recompile and reload Mihomo when primary).
+func (a *OperatorAdapter) SetOnPostCommit(fn func()) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.onPostCommit = fn
 }
 
 // slotSnapshot is a shallow copy of the mutable slot state. Shallow is enough
@@ -680,7 +698,16 @@ func (a *OperatorAdapter) flush() error {
 	if err := a.orch.Save(orchestrator.SlotSubscriptions, data); err != nil {
 		return fmt.Errorf("subscription adapter: save slot: %w", err)
 	}
-	_ = a.orch.SetEnabled(orchestrator.SlotSubscriptions, len(a.cfg.Outbounds) > 0)
+	subEnabled := len(a.cfg.Outbounds) > 0
+	if a.isMihomoPrimary != nil && a.isMihomoPrimary() {
+		subEnabled = false
+	}
+	_ = a.orch.SetEnabled(orchestrator.SlotSubscriptions, subEnabled)
+
+	postCommit := a.onPostCommit
+	if postCommit != nil {
+		go postCommit()
+	}
 
 	a.lastDropped = dropped
 	return nil

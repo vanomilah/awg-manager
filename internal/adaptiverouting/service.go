@@ -165,8 +165,49 @@ func (s *Service) GetStatus(ctx context.Context) (OperationalState, Settings, er
 			state.FallbackActive = stats.FailOpen
 		}
 	}
+	if s.installer != nil {
+		bin := s.installer.ResolveBinary()
+		state.Binary = bin
+		state.Installed = bin != ""
+		state.Version = SusaninVersion
+	}
 
 	return state, settings, nil
+}
+
+func (s *Service) Restart(ctx context.Context) (OperationalState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.procMgr != nil {
+		if err := s.procMgr.Stop(ctx); err != nil {
+			return s.store.GetState(), fmt.Errorf("stop susanin: %w", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+		applied := s.store.GetApplied()
+		if applied != nil && applied.Settings.Enabled {
+			if err := s.procMgr.Start(ctx, ""); err != nil {
+				return s.store.GetState(), fmt.Errorf("start susanin: %w", err)
+			}
+		}
+	}
+	return s.store.GetState(), nil
+}
+
+func (s *Service) Install(ctx context.Context) error {
+	if s.installer == nil {
+		return errors.New("susanin installer not configured")
+	}
+	_, err := s.installer.EnsureInstalled(ctx)
+	return err
+}
+
+func (s *Service) Uninstall(ctx context.Context) error {
+	_, _ = s.Stop(ctx)
+	if s.installer == nil {
+		return errors.New("susanin installer not configured")
+	}
+	return s.installer.Uninstall()
 }
 
 // Reconcile verifies the committed Susanin runtime and applies the configured
@@ -836,6 +877,11 @@ func (s *Service) ReconcileDatapath(ctx context.Context) error {
 
 	applied := s.store.GetApplied()
 	if applied == nil || !applied.Settings.Enabled || s.datapath == nil {
+		return nil
+	}
+
+	state := s.store.GetState()
+	if state.Status == "recovery_required" || !state.Installed {
 		return nil
 	}
 

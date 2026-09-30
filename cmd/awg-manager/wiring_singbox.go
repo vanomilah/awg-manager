@@ -38,6 +38,22 @@ func (a *singboxUpdaterAdapter) Update(ctx context.Context) error {
 func (a *app) setupSingbox() {
 	a.setupSingboxRuntime()
 
+	isMihomo := func() bool {
+		if a.settingsStore != nil {
+			if s, err := a.settingsStore.Get(); err == nil && s != nil && s.SingboxRouter.RoutingEngine == "mihomo" {
+				return true
+			}
+		}
+		return false
+	}
+	if a.singboxOp != nil && a.singboxOp.Clash() != nil {
+		a.singboxOp.Clash().SetAddressFn(func() string {
+			if isMihomo() {
+				return "127.0.0.1:9090"
+			}
+			return ""
+		})
+	}
 	delayChecker := singbox.NewDelayChecker(
 		a.singboxOp.Clash(),
 		&singboxAndSubLister{op: a.singboxOp, sub: a.subSvc, awg3: a.awg3Svc},

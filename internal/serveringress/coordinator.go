@@ -353,7 +353,7 @@ func (c *Coordinator) calculateAffected(prev, desired IngressTopology) []string 
 		prev.XrayPathPrefix != desired.XrayPathPrefix ||
 		prev.XrayPublicHostname != desired.XrayPublicHostname ||
 		prev.XrayPublicPort != desired.XrayPublicPort ||
-		prev.PublicHostname != desired.PublicHostname
+		((prev.XrayEnabled || desired.XrayEnabled) && prev.PublicHostname != desired.PublicHostname)
 
 	if xrayChanged {
 		affected = append(affected, "xray")
@@ -369,7 +369,7 @@ func (c *Coordinator) calculateAffected(prev, desired IngressTopology) []string 
 		prev.TgWebPort != desired.TgWebPort ||
 		prev.TgPublicHostname != desired.TgPublicHostname ||
 		prev.TgPort != desired.TgPort ||
-		prev.PublicHostname != desired.PublicHostname
+		((prev.TgEnabled || desired.TgEnabled) && prev.PublicHostname != desired.PublicHostname)
 
 	if tgChanged {
 		affected = append(affected, "tgwebproxy")
@@ -666,9 +666,13 @@ func (c *Coordinator) applyLocked(ctx context.Context, txID string, desired Ingr
 			} else if desired.TgPort > 0 {
 				candidate.ListenPort = desired.TgPort
 			}
-			candidate.PublicHostname = desired.TgPublicHostname
-			if candidate.PublicHostname == "" && desired.PublicHostname != "" {
-				candidate.PublicHostname = desired.PublicHostname
+			if desired.TgScenario == "direct_fake_tls" {
+				candidate.PublicHostname = ""
+			} else {
+				candidate.PublicHostname = desired.TgPublicHostname
+				if candidate.PublicHostname == "" && desired.PublicHostname != "" {
+					candidate.PublicHostname = desired.PublicHostname
+				}
 			}
 		}
 
@@ -735,31 +739,28 @@ func (c *Coordinator) applyLocked(ctx context.Context, txID string, desired Ingr
 	// Step 2: Candidate Activation (CommitPrepared)
 	if contains(affected, "xray") && c.xraySvc != nil {
 		xrayTxID := journal.ComponentTransactionIDs["xray"]
-		if xrayTxID == "" {
-			xrayTxID = txID
-		}
-		if err := c.xraySvc.CommitPrepared(xrayTxID); err != nil {
-			return c.failAndRollback(journal, fmt.Errorf("activate xray candidate: %w", err))
+		if xrayTxID != "" {
+			if err := c.xraySvc.CommitPrepared(xrayTxID); err != nil {
+				return c.failAndRollback(journal, fmt.Errorf("activate xray candidate: %w", err))
+			}
 		}
 	}
 
 	if contains(affected, "tgwebproxy") && c.tgSvc != nil {
 		tgTxID := journal.ComponentTransactionIDs["tgwebproxy"]
-		if tgTxID == "" {
-			tgTxID = txID
-		}
-		if err := c.tgSvc.CommitPrepared(tgTxID); err != nil {
-			return c.failAndRollback(journal, fmt.Errorf("activate tg candidate: %w", err))
+		if tgTxID != "" {
+			if err := c.tgSvc.CommitPrepared(tgTxID); err != nil {
+				return c.failAndRollback(journal, fmt.Errorf("activate tg candidate: %w", err))
+			}
 		}
 	}
 
 	if contains(affected, "dispatcher") && c.dispatcher != nil {
 		dispTxID := journal.ComponentTransactionIDs["dispatcher"]
-		if dispTxID == "" {
-			dispTxID = txID
-		}
-		if err := c.dispatcher.CommitPrepared(dispTxID); err != nil {
-			return c.failAndRollback(journal, fmt.Errorf("activate dispatcher candidate: %w", err))
+		if dispTxID != "" {
+			if err := c.dispatcher.CommitPrepared(dispTxID); err != nil {
+				return c.failAndRollback(journal, fmt.Errorf("activate dispatcher candidate: %w", err))
+			}
 		}
 	}
 
@@ -787,18 +788,24 @@ func (c *Coordinator) applyLocked(ctx context.Context, txID string, desired Ingr
 	// Step 4: Finalize Components
 	var finErrs []error
 	if contains(affected, "xray") && c.xraySvc != nil {
-		if err := c.xraySvc.FinalizePrepared(journal.ComponentTransactionIDs["xray"]); err != nil {
-			finErrs = append(finErrs, fmt.Errorf("finalize xray: %w", err))
+		if id := journal.ComponentTransactionIDs["xray"]; id != "" {
+			if err := c.xraySvc.FinalizePrepared(id); err != nil {
+				finErrs = append(finErrs, fmt.Errorf("finalize xray: %w", err))
+			}
 		}
 	}
 	if contains(affected, "tgwebproxy") && c.tgSvc != nil {
-		if err := c.tgSvc.FinalizePrepared(journal.ComponentTransactionIDs["tgwebproxy"]); err != nil {
-			finErrs = append(finErrs, fmt.Errorf("finalize tgwebproxy: %w", err))
+		if id := journal.ComponentTransactionIDs["tgwebproxy"]; id != "" {
+			if err := c.tgSvc.FinalizePrepared(id); err != nil {
+				finErrs = append(finErrs, fmt.Errorf("finalize tgwebproxy: %w", err))
+			}
 		}
 	}
 	if contains(affected, "dispatcher") && c.dispatcher != nil {
-		if err := c.dispatcher.FinalizePrepared(journal.ComponentTransactionIDs["dispatcher"]); err != nil {
-			finErrs = append(finErrs, fmt.Errorf("finalize dispatcher: %w", err))
+		if id := journal.ComponentTransactionIDs["dispatcher"]; id != "" {
+			if err := c.dispatcher.FinalizePrepared(id); err != nil {
+				finErrs = append(finErrs, fmt.Errorf("finalize dispatcher: %w", err))
+			}
 		}
 	}
 	if len(finErrs) > 0 {
@@ -1235,7 +1242,9 @@ func (c *Coordinator) ExecuteIngressTransaction(ctx context.Context, params Ingr
 			if params.Telegram.AdminPort > 0 {
 				cfg.AdminPort = params.Telegram.AdminPort
 			}
-			if params.Telegram.PublicHostname != "" {
+			if params.Telegram.Scenario == "direct_fake_tls" {
+				cfg.PublicHostname = ""
+			} else if params.Telegram.PublicHostname != "" {
 				cfg.PublicHostname = params.Telegram.PublicHostname
 			}
 			if params.Telegram.CarrierMode != "" {
@@ -1256,9 +1265,13 @@ func (c *Coordinator) ExecuteIngressTransaction(ctx context.Context, params Ingr
 			desiredTopo.TgWebAddress = "127.0.0.1"
 			desiredTopo.TgWebPort = candTg.ListenPort
 			desiredTopo.TgPort = candTg.ListenPort
-			desiredTopo.TgPublicHostname = candTg.PublicHostname
-			if candTg.PublicHostname != "" && desiredTopo.PublicHostname == "" {
-				desiredTopo.PublicHostname = candTg.PublicHostname
+			if candTg.Scenario == "direct_fake_tls" {
+				desiredTopo.TgPublicHostname = ""
+			} else {
+				desiredTopo.TgPublicHostname = candTg.PublicHostname
+				if candTg.PublicHostname != "" && desiredTopo.PublicHostname == "" {
+					desiredTopo.PublicHostname = candTg.PublicHostname
+				}
 			}
 		}
 
@@ -1386,31 +1399,28 @@ func (c *Coordinator) ExecuteIngressTransaction(ctx context.Context, params Ingr
 		// Activate candidates (CommitPrepared) BEFORE PhaseCandidateActive and BEFORE ReadinessProbe!
 		if contains(affected, "xray") && c.xraySvc != nil {
 			xrayTxID := journal.ComponentTransactionIDs["xray"]
-			if xrayTxID == "" {
-				xrayTxID = txID
-			}
-			if err := c.xraySvc.CommitPrepared(xrayTxID); err != nil {
-				return c.failAndRollback(journal, fmt.Errorf("activate xray candidate: %w", err))
+			if xrayTxID != "" {
+				if err := c.xraySvc.CommitPrepared(xrayTxID); err != nil {
+					return c.failAndRollback(journal, fmt.Errorf("activate xray candidate: %w", err))
+				}
 			}
 		}
 
 		if contains(affected, "tgwebproxy") && c.tgSvc != nil {
 			tgTxID := journal.ComponentTransactionIDs["tgwebproxy"]
-			if tgTxID == "" {
-				tgTxID = txID
-			}
-			if err := c.tgSvc.CommitPrepared(tgTxID); err != nil {
-				return c.failAndRollback(journal, fmt.Errorf("activate tg candidate: %w", err))
+			if tgTxID != "" {
+				if err := c.tgSvc.CommitPrepared(tgTxID); err != nil {
+					return c.failAndRollback(journal, fmt.Errorf("activate tg candidate: %w", err))
+				}
 			}
 		}
 
 		if contains(affected, "dispatcher") && c.dispatcher != nil {
 			dispTxID := journal.ComponentTransactionIDs["dispatcher"]
-			if dispTxID == "" {
-				dispTxID = txID
-			}
-			if err := c.dispatcher.CommitPrepared(dispTxID); err != nil {
-				return c.failAndRollback(journal, fmt.Errorf("activate dispatcher candidate: %w", err))
+			if dispTxID != "" {
+				if err := c.dispatcher.CommitPrepared(dispTxID); err != nil {
+					return c.failAndRollback(journal, fmt.Errorf("activate dispatcher candidate: %w", err))
+				}
 			}
 		}
 
@@ -1478,18 +1488,24 @@ func (c *Coordinator) ExecuteIngressTransaction(ctx context.Context, params Ingr
 		// Finalize Components (FinalizePrepared) - candidates were already activated!
 		var finErrs []error
 		if contains(affected, "xray") && c.xraySvc != nil {
-			if err := c.xraySvc.FinalizePrepared(journal.ComponentTransactionIDs["xray"]); err != nil {
-				finErrs = append(finErrs, fmt.Errorf("finalize xray: %w", err))
+			if id := journal.ComponentTransactionIDs["xray"]; id != "" {
+				if err := c.xraySvc.FinalizePrepared(id); err != nil {
+					finErrs = append(finErrs, fmt.Errorf("finalize xray: %w", err))
+				}
 			}
 		}
 		if contains(affected, "tgwebproxy") && c.tgSvc != nil {
-			if err := c.tgSvc.FinalizePrepared(journal.ComponentTransactionIDs["tgwebproxy"]); err != nil {
-				finErrs = append(finErrs, fmt.Errorf("finalize tgwebproxy: %w", err))
+			if id := journal.ComponentTransactionIDs["tgwebproxy"]; id != "" {
+				if err := c.tgSvc.FinalizePrepared(id); err != nil {
+					finErrs = append(finErrs, fmt.Errorf("finalize tgwebproxy: %w", err))
+				}
 			}
 		}
 		if contains(affected, "dispatcher") && c.dispatcher != nil {
-			if err := c.dispatcher.FinalizePrepared(journal.ComponentTransactionIDs["dispatcher"]); err != nil {
-				finErrs = append(finErrs, fmt.Errorf("finalize dispatcher: %w", err))
+			if id := journal.ComponentTransactionIDs["dispatcher"]; id != "" {
+				if err := c.dispatcher.FinalizePrepared(id); err != nil {
+					finErrs = append(finErrs, fmt.Errorf("finalize dispatcher: %w", err))
+				}
 			}
 		}
 		if len(finErrs) > 0 {

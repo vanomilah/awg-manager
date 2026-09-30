@@ -68,6 +68,7 @@ vi.mock('$lib/api/client', () => ({
 		stopAdaptiveRouting: vi.fn().mockResolvedValue({ state: { status: 'stopped', routingOwner: 'none' } }),
 		clearAdaptiveRoutingCache: vi.fn().mockResolvedValue({ cleared: true }),
 		testAdaptiveRoutingEgress: vi.fn().mockResolvedValue({ available: true, interface: 'awgsus0' }),
+		getAdaptiveRoutingLogs: vi.fn().mockResolvedValue({ events: [] }),
 	},
 }));
 
@@ -75,7 +76,8 @@ describe('SusaninAdaptiveTab', () => {
 	it('renders status bar with running state and routing owner badge', async () => {
 		render(SusaninAdaptiveTab);
 		expect(await screen.findByText('Susanin активен')).toBeDefined();
-		expect(screen.getByText('Владелец сети: Susanin')).toBeDefined();
+		expect(screen.getByText('Владелец:')).toBeDefined();
+		expect(screen.getByText('Susanin')).toBeDefined();
 		expect(screen.getByText('Fail-Open (Direct)')).toBeDefined();
 	});
 
@@ -93,8 +95,8 @@ describe('SusaninAdaptiveTab', () => {
 		expect(await screen.findByText('TCP ОК')).toBeDefined();
 		expect(screen.getByText('UDP ОК')).toBeDefined();
 		expect(screen.getByText('В тесте')).toBeDefined();
-		expect(await screen.findByText('14')).toBeDefined();
-		expect(await screen.findByText('5')).toBeDefined();
+		expect((await screen.findAllByText('14')).length).toBeGreaterThan(0);
+		expect((await screen.findAllByText('5')).length).toBeGreaterThan(0);
 	});
 
 	it('keeps low-level routing marks out of the user interface', async () => {

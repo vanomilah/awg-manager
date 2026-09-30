@@ -185,7 +185,7 @@ func (s *Service) PrepareCandidate(txID string, candidate Config) (string, error
 	}
 
 	// 3. Validation hook
-	if candidate.Enabled && s.tproxyValidator != nil {
+	if candidate.Enabled && candidate.IsWebEnabled() && s.tproxyValidator != nil {
 		if err := s.tproxyValidator(txPath); err != nil {
 			_ = os.RemoveAll(txPath)
 			return "", fmt.Errorf("candidate validation failed: %w", err)

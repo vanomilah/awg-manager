@@ -131,11 +131,18 @@ func (d *DelayChecker) Check(ctx context.Context) {
 		}
 	}
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, 4)
 	for _, tag := range tags {
 		tag := tag
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return
+			}
 			_, _ = d.CheckOne(ctx, tag)
 		}()
 	}

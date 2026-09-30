@@ -119,6 +119,9 @@ type OperationalState struct {
 	LastReconcile     time.Time       `json:"lastReconcile"`
 	LastError         string          `json:"lastError,omitempty"`
 	RecoveryMarker    string          `json:"recoveryMarker,omitempty"`
+	Installed         bool            `json:"installed"`
+	Version           string          `json:"version,omitempty"`
+	Binary            string          `json:"binary,omitempty"`
 }
 
 // AppliedConfig is the last configuration that reached a fully working

@@ -13,6 +13,7 @@ func GenerateTelemtDirectConfig(cfg Config) string {
 	b.WriteString("use_middle_proxy = false\n")
 	b.WriteString("log_level = \"normal\"\n")
 	b.WriteString("upstream_connect_failfast_hard_errors = false\n")
+	b.WriteString("quota_state_path = \"/opt/var/run/telemt.limit.json\"\n")
 	b.WriteString("beobachten_file = \"/tmp/cache/beobachten.txt\"\n\n")
 
 	b.WriteString("[general.modes]\n")
@@ -27,8 +28,12 @@ func GenerateTelemtDirectConfig(cfg Config) string {
 	b.WriteString("[server]\n")
 	fmt.Fprintf(&b, "port = %d\n\n", port)
 
+	b.WriteString("[server.api]\n")
+	b.WriteString("enabled = false\n\n")
+
 	b.WriteString("[[server.listeners]]\n")
-	b.WriteString("ip = \"0.0.0.0\"\n\n")
+	b.WriteString("ip = \"0.0.0.0\"\n")
+	fmt.Fprintf(&b, "port = %d\n\n", port)
 
 	domain := cfg.TlsDomain
 	b.WriteString("[censorship]\n")
@@ -61,7 +66,8 @@ func GenerateTelemtRawConfig(cfg Config) string {
 	b.WriteString("[general]\n")
 	b.WriteString("use_middle_proxy = false\n")
 	b.WriteString("log_level = \"normal\"\n")
-	b.WriteString("upstream_connect_failfast_hard_errors = false\n\n")
+	b.WriteString("upstream_connect_failfast_hard_errors = false\n")
+	b.WriteString("quota_state_path = \"/opt/var/run/telemt-raw.limit.json\"\n\n")
 
 	b.WriteString("[general.modes]\n")
 	b.WriteString("classic = true\n")
@@ -71,8 +77,12 @@ func GenerateTelemtRawConfig(cfg Config) string {
 	b.WriteString("[server]\n")
 	fmt.Fprintf(&b, "port = %d\n\n", DefaultRawPort)
 
+	b.WriteString("[server.api]\n")
+	b.WriteString("enabled = false\n\n")
+
 	b.WriteString("[[server.listeners]]\n")
-	b.WriteString("ip = \"127.0.0.1\"\n\n")
+	b.WriteString("ip = \"127.0.0.1\"\n")
+	fmt.Fprintf(&b, "port = %d\n\n", DefaultRawPort)
 
 	b.WriteString("[censorship]\n")
 	b.WriteString("mask = false\n")
@@ -141,7 +151,11 @@ func GenerateTproxyConfigJSON(cfg Config, profilesPath, tokenKeyPath string) ([]
 	}
 	publicHost := cfg.PublicHostname
 	if publicHost == "" {
-		publicHost = DefaultPublicHostname
+		if !cfg.IsWebEnabled() {
+			publicHost = "direct-only.invalid"
+		} else {
+			publicHost = DefaultPublicHostname
+		}
 	}
 
 	configData := map[string]interface{}{

@@ -83,12 +83,18 @@ func (s *ServiceImpl) AssembleCompileInput(ctx context.Context) (*MihomoCompileI
 
 	var ownOutbounds []map[string]any
 	if len(cfg.Outbounds) > 0 {
-		ownJSON, err := json.Marshal(cfg.Outbounds)
-		if err != nil {
-			return nil, fmt.Errorf("marshal router outbounds: %w", err)
-		}
-		if err := json.Unmarshal(ownJSON, &ownOutbounds); err != nil {
-			return nil, fmt.Errorf("unmarshal router outbounds: %w", err)
+		for _, ob := range cfg.Outbounds {
+			if ob.Server == "127.0.0.1" || ob.Server == "localhost" {
+				continue
+			}
+			obJSON, err := json.Marshal(ob)
+			if err != nil {
+				continue
+			}
+			var m map[string]any
+			if err := json.Unmarshal(obJSON, &m); err == nil {
+				ownOutbounds = append(ownOutbounds, m)
+			}
 		}
 	}
 	if s.deps.Orch != nil {
@@ -198,6 +204,18 @@ func (s *ServiceImpl) AssembleCompileInput(ctx context.Context) (*MihomoCompileI
 				})
 			}
 		}
+		baseGroupPort := 12100
+		for i, group := range resources.ProxyGroups {
+			if group.Name != "" {
+				resources.Listeners = append(resources.Listeners, mihomo.Listener{
+					Name:   fmt.Sprintf("mihomo-group-%d", i),
+					Type:   "mixed",
+					Port:   baseGroupPort + i,
+					Listen: "127.0.0.1",
+					Proxy:  group.Name,
+				})
+			}
+		}
 		if err := s.deps.MihomoNativeProxies.ValidateRuntimeRules(); err != nil {
 			return nil, fmt.Errorf("validate mihomo native rules: %w", err)
 		}
@@ -220,6 +238,30 @@ func (s *ServiceImpl) AssembleCompileInput(ctx context.Context) (*MihomoCompileI
 
 	if s.deps.AdaptiveEgressProvider != nil {
 		resources.AdaptiveEgress = s.deps.AdaptiveEgressProvider.AdaptiveConfig()
+	}
+
+	for _, srv := range cfg.DNS.Servers {
+		sni := ""
+		if srv.TLS != nil {
+			sni = srv.TLS.ServerName
+		}
+		resources.DNSServers = append(resources.DNSServers, mihomo.DNSServerSpec{
+			Tag:        srv.Tag,
+			Type:       srv.Type,
+			Server:     srv.Server,
+			ServerPort: srv.ServerPort,
+			Detour:     srv.Detour,
+			SNI:        sni,
+		})
+	}
+	for _, r := range cfg.DNS.Rules {
+		resources.DNSRules = append(resources.DNSRules, mihomo.DNSRuleSpec{
+			Domain:        r.Domain,
+			DomainSuffix:  r.DomainSuffix,
+			DomainKeyword: r.DomainKeyword,
+			RuleSet:       r.RuleSet,
+			Server:        r.Server,
+		})
 	}
 
 	isPrimary := sr.Enabled && sr.RoutingEngine == "mihomo"

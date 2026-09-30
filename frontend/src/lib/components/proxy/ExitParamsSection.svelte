@@ -3,11 +3,13 @@
 	// конфиге инстанса на месте; сохраняет и откатывает страница (владелец
 	// конфига).
 	import { Button, Dropdown, FormRow, Input, SegmentedControl, Toggle } from '$lib/components/ui';
+	import { Sparkles } from 'lucide-svelte';
 	import { setPeer, switchConnMode } from '$lib/utils/wdttPeerMode';
 	import SensitiveInput from '../proxy-panel/SensitiveInput.svelte';
 	import { autoReconnectIntervalOptions, dnsModeOptions, modeOptions, platformOptions, transportOptions } from '../freeturn/options';
 	import type { FreeTurnClientConfig, WdttClientConfig } from '$lib/types';
 	import DetailSection from './DetailSection.svelte';
+	import VkCallModal from './VkCallModal.svelte';
 
 	interface Props {
 		/** Редактируемая копия конфига детали — правится на месте. */
@@ -28,6 +30,8 @@
 		onsave,
 		onrevert,
 	}: Props = $props();
+
+	let vkModalOpen = $state(false);
 
 	// Режим подключения к серверу. Раньше он приезжал ТОЛЬКО из импортируемой
 	// ссылки, и сменить его в UI было нечем — при живом бейдже режима в списке.
@@ -81,7 +85,18 @@
 			</FormRow>
 
 			<FormRow label="VK-хеши" for="exit-vk" hint="Применяется при перезапуске">
-				<Input id="exit-vk" bind:value={wdttClient.vkHashes} fullWidth />
+				<div class="row-with-btn">
+					<Input id="exit-vk" bind:value={wdttClient.vkHashes} fullWidth />
+					<Button
+						variant="secondary"
+						size="sm"
+						title="Сгенерировать или проверить ссылки VK Calls"
+						onclick={() => (vkModalOpen = true)}
+					>
+						<Sparkles size={14} />
+						VK Calls
+					</Button>
+				</div>
 			</FormRow>
 
 			<FormRow label="Потоков" for="exit-workers">
@@ -134,7 +149,19 @@
 	{:else if ftClient}
 		<div class="grid">
 			<Input label="Адрес сервера" bind:value={ftClient.peer} fullWidth />
-			<Input label="Ссылки VK Calls" bind:value={ftClient.links} fullWidth />
+			<div class="ft-field-with-btn">
+				<Input label="Ссылки VK Calls" bind:value={ftClient.links} fullWidth />
+				<Button
+					variant="secondary"
+					size="sm"
+					class="ft-vk-btn"
+					title="Сгенерировать или проверить ссылки VK Calls"
+					onclick={() => (vkModalOpen = true)}
+				>
+					<Sparkles size={14} />
+					VK Calls
+				</Button>
+			</div>
 			<Input
 				label="Потоков"
 				type="number"
@@ -200,9 +227,40 @@
 			<span class="save-blocked">{saveBlockedHint}</span>
 		{/if}
 	</div>
+
+	{#if vkModalOpen}
+		<VkCallModal
+			bind:open={vkModalOpen}
+			initialValue={wdttClient ? wdttClient.vkHashes : (ftClient ? ftClient.links : '')}
+			targetFormat={wdttClient ? 'hashes' : 'links'}
+			onApply={(val) => {
+				if (wdttClient) wdttClient.vkHashes = val;
+				if (ftClient) ftClient.links = val;
+			}}
+		/>
+	{/if}
 </DetailSection>
 
 <style>
+	.row-with-btn {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+	}
+
+	.ft-field-with-btn {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: flex-end;
+		gap: 8px;
+	}
+
+	:global(.ft-vk-btn) {
+		margin-bottom: 2px;
+		white-space: nowrap;
+	}
+
 	.save-blocked {
 		font-size: 12px;
 		color: var(--color-warning-text, var(--color-text-secondary));

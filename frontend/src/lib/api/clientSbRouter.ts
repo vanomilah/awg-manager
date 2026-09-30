@@ -14,6 +14,7 @@ import type {
 	MihomoNativeGroup,
 	MihomoNativeRule,
 	MihomoNativeRuleProvider,
+	TelemtStatus,
 	XrayStatus,
 	XrayConfigRequest,
 	RouterPolicy,
@@ -574,6 +575,30 @@ export class SbRouterClient extends SingboxClient {
 		await this.request('/mihomo/reload', { method: 'POST' });
 	}
 
+	async mihomoRestart(): Promise<void> {
+		await this.request('/mihomo/restart', { method: 'POST' });
+	}
+
+	async telemtStatus(): Promise<TelemtStatus> {
+		return this.request<TelemtStatus>('/telemt/status');
+	}
+
+	async telemtInstall(): Promise<TelemtStatus> {
+		return this.request<TelemtStatus>('/telemt/install', { method: 'POST' });
+	}
+
+	async telemtUpdate(): Promise<TelemtStatus> {
+		return this.request<TelemtStatus>('/telemt/update', { method: 'POST' });
+	}
+
+	async telemtRestart(): Promise<TelemtStatus> {
+		return this.request<TelemtStatus>('/telemt/restart', { method: 'POST' });
+	}
+
+	async telemtUninstall(): Promise<TelemtStatus> {
+		return this.request<TelemtStatus>('/telemt/uninstall', { method: 'POST' });
+	}
+
 	async mihomoReconcile(action: 'rollback_to_lkg' | 'regenerate_from_desired', force = false): Promise<{ status: string }> {
 		return this.request('/mihomo/recovery/reconcile', {
 			method: 'POST',
@@ -688,10 +713,7 @@ export class SbRouterClient extends SingboxClient {
 	}
 
 	async mihomoProxyDelay(name: string, testUrl = 'https://www.gstatic.com/generate_204', timeout = 5000): Promise<number> {
-		const res = await this.request<{ delay?: number }>(
-			`/mihomo/clash/proxies/${encodeURIComponent(name)}/delay?url=${encodeURIComponent(testUrl)}&timeout=${timeout}`,
-		);
-		return res?.delay ?? 0;
+		return this.mihomoRuntimeDelay(name, testUrl, timeout);
 	}
 
 	async mihomoNativeRules(): Promise<MihomoNativeRule[]> {

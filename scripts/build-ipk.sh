@@ -149,12 +149,34 @@ build_ipk_one() {
                 exit 1
             } ;;
         esac
-        mkdir -p "$IPK_ROOT/opt/susanin/bin" "$IPK_ROOT/opt/susanin/tools" "$IPK_ROOT/opt/susanin/etc" "$IPK_ROOT/opt/susanin/var"
-        cp "$SUSANIN_SRC" "$IPK_ROOT/opt/susanin/bin/susanin-agent"
-        chmod 755 "$IPK_ROOT/opt/susanin/bin/susanin-agent"
-        cp "$SUSANIN_SRC" "$IPK_ROOT/opt/bin/susanin-agent"
-        chmod 755 "$IPK_ROOT/opt/bin/susanin-agent"
+        mkdir -p "$IPK_ROOT/opt/etc/awg-manager/susanin/bin" "$IPK_ROOT/opt/etc/awg-manager/susanin/tools" "$IPK_ROOT/opt/etc/awg-manager/susanin/etc" "$IPK_ROOT/opt/etc/awg-manager/susanin/var"
+        cp "$SUSANIN_SRC" "$IPK_ROOT/opt/etc/awg-manager/susanin/bin/susanin-agent"
+        chmod 755 "$IPK_ROOT/opt/etc/awg-manager/susanin/bin/susanin-agent"
         echo "Bundled susanin-agent binary for $ENTWARE_ARCH"
+    fi
+
+    local TELEMT_SRC=""
+    local TELEMT_ARCH=""
+    case "$ENTWARE_ARCH" in
+        aarch64-*)
+            TELEMT_ARCH="aarch64"
+            if [[ -f "$PROJECT_ROOT/prebuilt/telemt/aarch64/telemt" ]]; then
+                TELEMT_SRC="$PROJECT_ROOT/prebuilt/telemt/aarch64/telemt"
+            fi
+            ;;
+        mipsel-*)
+            TELEMT_ARCH="mipsel"
+            if [[ -f "$PROJECT_ROOT/prebuilt/telemt/mipsel/telemt" ]]; then
+                TELEMT_SRC="$PROJECT_ROOT/prebuilt/telemt/mipsel/telemt"
+            fi
+            ;;
+    esac
+
+    if [[ -n "$TELEMT_SRC" && -f "$TELEMT_SRC" ]]; then
+        mkdir -p "$IPK_ROOT/opt/share/awg-manager/prebuilt/telemt/$TELEMT_ARCH"
+        cp "$TELEMT_SRC" "$IPK_ROOT/opt/share/awg-manager/prebuilt/telemt/$TELEMT_ARCH/telemt"
+        chmod 755 "$IPK_ROOT/opt/share/awg-manager/prebuilt/telemt/$TELEMT_ARCH/telemt"
+        echo "Bundled telemt prebuilt binary for $ENTWARE_ARCH ($TELEMT_ARCH)"
     fi
 
     if [[ -f "$PROJECT_ROOT/scripts/awgm-susanin-sync.py" ]]; then

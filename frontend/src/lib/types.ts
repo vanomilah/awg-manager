@@ -15,3 +15,6 @@ export * from './types/wdtt';
 export * from './types/awg3';
 export * from './types/mihomoNative';
 export * from './types/xray';
+export * from './types/vkCalls';
+export * from './types/adaptiveRouting';
+export * from './types/telemt';

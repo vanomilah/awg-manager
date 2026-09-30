@@ -61,11 +61,7 @@ func (f *fakeBridgeRegistrar) EnsureProxy(_ context.Context, index, port int, de
 func (f *fakeBridgeRegistrar) EnsureProxyIfOwned(ctx context.Context, index, port int, owner string, legacyOwners ...string) (bool, error) {
 	if f.occupied[index] {
 		description := f.descriptions[index]
-		owned := description == owner
-		for _, legacy := range legacyOwners {
-			owned = owned || (legacy != "" && description == legacy)
-		}
-		if !owned {
+		if !fakeOwnerMatches(description, owner, legacyOwners) {
 			return false, nil
 		}
 	}
@@ -75,11 +71,7 @@ func (f *fakeBridgeRegistrar) EnsureProxyIfOwned(ctx context.Context, index, por
 func (f *fakeBridgeRegistrar) RemoveProxyIfOwned(_ context.Context, index int, owner string, legacyOwners ...string) (bool, error) {
 	if f.occupied[index] {
 		description := f.descriptions[index]
-		owned := description == owner
-		for _, legacy := range legacyOwners {
-			owned = owned || (legacy != "" && description == legacy)
-		}
-		if !owned {
+		if !fakeOwnerMatches(description, owner, legacyOwners) {
 			return false, nil
 		}
 	}
@@ -87,6 +79,50 @@ func (f *fakeBridgeRegistrar) RemoveProxyIfOwned(_ context.Context, index int, o
 	delete(f.occupied, index)
 	delete(f.descriptions, index)
 	return true, nil
+}
+
+func fakeOwnerMatches(description, owner string, legacyOwners []string) bool {
+	if description == owner {
+		return true
+	}
+	descToken := extractMockToken(description)
+	ownerToken := extractMockToken(owner)
+	if descToken != "" && ownerToken != "" && descToken == ownerToken {
+		return true
+	}
+	if ownerToken != "" && (description == ownerToken || strings.Contains(description, "["+ownerToken+"]")) {
+		return true
+	}
+	if descToken != "" && (owner == descToken || strings.Contains(owner, "["+descToken+"]")) {
+		return true
+	}
+	for _, legacy := range legacyOwners {
+		if legacy != "" {
+			if description == legacy || (descToken != "" && descToken == legacy) {
+				return true
+			}
+			legacyToken := extractMockToken(legacy)
+			if legacyToken != "" && (descToken == legacyToken || description == legacyToken) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func extractMockToken(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if start := strings.Index(desc, "[awg-manager:"); start != -1 {
+		end := strings.Index(desc[start:], "]")
+		if end != -1 {
+			return desc[start+1 : start+end]
+		}
+		return desc[start+1:]
+	}
+	if strings.HasPrefix(desc, "awg-manager:") {
+		return desc
+	}
+	return ""
 }
 
 func TestStoreBridgeAllocationsAreUniqueAndListenersTargetResources(t *testing.T) {
@@ -224,7 +260,7 @@ func TestBridgeManagerAllocatesActiveResourcesAndRemovesDisabledBridge(t *testin
 		t.Fatalf("standalone proxy bridge not found in %#v", refs)
 	}
 	for _, ensured := range registrar.ensured {
-		if !strings.HasPrefix(ensured.description, "awg-manager:mihomo:") {
+		if !strings.Contains(ensured.description, "awg-manager:mihomo:") {
 			t.Fatalf("description=%q", ensured.description)
 		}
 	}
@@ -360,8 +396,8 @@ func TestBridgeManagerReallocatesForeignProxyWithoutOverwritingIt(t *testing.T) 
 	if registrar.descriptions[7] != "user-created" {
 		t.Fatalf("foreign Proxy7 was overwritten: %q", registrar.descriptions[7])
 	}
-	if registrar.descriptions[got.Bridge.ProxyIndex] != BridgeOwnershipDescription("proxy", proxy.ID) {
-		t.Fatalf("new bridge owner=%q", registrar.descriptions[got.Bridge.ProxyIndex])
+	if want := FormatBridgeDescription(proxy.Name, "proxy", proxy.ID); registrar.descriptions[got.Bridge.ProxyIndex] != want {
+		t.Fatalf("new bridge owner=%q, want %q", registrar.descriptions[got.Bridge.ProxyIndex], want)
 	}
 }
 
@@ -475,15 +511,15 @@ func TestBridgeManagerLegacyOwnerMigrationClearsLegacyOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonicalOwner := BridgeOwnershipDescription("proxy", proxy.ID)
-	if registrar.descriptions[7] != canonicalOwner {
-		t.Fatalf("Proxy7 owner = %q, want canonical %q", registrar.descriptions[7], canonicalOwner)
+	expectedOwner := FormatBridgeDescription(proxy.Name, "proxy", proxy.ID)
+	if registrar.descriptions[7] != expectedOwner {
+		t.Fatalf("Proxy7 owner = %q, want %q", registrar.descriptions[7], expectedOwner)
 	}
 	if got.Bridge.LegacyOwner != "" {
 		t.Fatalf("LegacyOwner was not cleared: %q", got.Bridge.LegacyOwner)
 	}
 
-	// Rename after migration: must not affect ownership or revert to label
+	// Rename after migration: updates display label while preserving ownership token
 	if _, err := store.UpdateProxy(proxy.ID, UpdateProxyInput{
 		Manual: &ManualProxyInput{
 			Name: "Renamed Card", Protocol: "anytls", Server: "proxy.example", Port: 443,
@@ -498,7 +534,8 @@ func TestBridgeManagerLegacyOwnerMigrationClearsLegacyOwner(t *testing.T) {
 	if err := manager.Reconcile(context.Background(), store.ListBridges()); err != nil {
 		t.Fatal(err)
 	}
-	if registrar.descriptions[7] != canonicalOwner {
-		t.Fatalf("Proxy7 owner after rename = %q, want canonical %q", registrar.descriptions[7], canonicalOwner)
+	expectedAfterRename := FormatBridgeDescription("Renamed Card", "proxy", proxy.ID)
+	if registrar.descriptions[7] != expectedAfterRename {
+		t.Fatalf("Proxy7 owner after rename = %q, want %q", registrar.descriptions[7], expectedAfterRename)
 	}
 }

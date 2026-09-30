@@ -3500,9 +3500,14 @@ func (c *ApplyCoordinator) syncBridgesLocked(ctx context.Context, m *Transaction
 				toCreate = append(toCreate, targetRef)
 			} else {
 				if obs.OwnerUUID != "" && obs.OwnerUUID != targetRef.OwnerUUID {
-					c.setState(StateRecoveryRequired)
-					_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("foreign retained bridge conflict on %s: owned by %q, want %q", targetRef.KernelInterface, obs.OwnerUUID, targetRef.OwnerUUID))
-					return fmt.Errorf("%w: foreign retained bridge %s: owned by %q (expected %q)", ErrForeignBridgeOwnership, targetRef.KernelInterface, obs.OwnerUUID, targetRef.OwnerUUID)
+					if m.OperationKind == OperationRegenerate && strings.HasPrefix(obs.OwnerUUID, "awg-manager:mihomo:") {
+						c.log("warn", "coordinator.reconcile", fmt.Sprintf("stale mihomo bridge in slot %s during regeneration (owned by %s): self-healing ownership to %s", targetRef.KernelInterface, obs.OwnerUUID, targetRef.OwnerUUID))
+						toCreate = append(toCreate, targetRef)
+					} else {
+						c.setState(StateRecoveryRequired)
+						_ = c.writeRecoveryMarkerLocked(fmt.Sprintf("foreign retained bridge conflict on %s: owned by %q, want %q", targetRef.KernelInterface, obs.OwnerUUID, targetRef.OwnerUUID))
+						return fmt.Errorf("%w: foreign retained bridge %s: owned by %q (expected %q)", ErrForeignBridgeOwnership, targetRef.KernelInterface, obs.OwnerUUID, targetRef.OwnerUUID)
+					}
 				}
 				if obs.OwnerUUID == "" && obs.LegacyOwner == "" {
 					if m.OperationKind == OperationRegenerate {

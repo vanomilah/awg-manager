@@ -357,6 +357,7 @@ func (h *MihomoHandler) RegisterRoutesTo(mux RouteRegistrar, guarded func(http.H
 	mux.HandleFunc("POST /api/mihomo/uninstall", guarded(h.handleUninstall))
 	mux.HandleFunc("GET /api/mihomo/config", guarded(h.handleConfig))
 	mux.HandleFunc("POST /api/mihomo/reload", guarded(h.handleReload))
+	mux.HandleFunc("POST /api/mihomo/restart", guarded(h.handleRestart))
 	mux.HandleFunc("GET /api/mihomo/recovery/evidence", guarded(h.HandleRecoveryEvidence))
 	mux.HandleFunc("POST /api/mihomo/recovery/reconcile", guarded(h.HandleRecoveryReconcile))
 	if h.nativeStore != nil {
@@ -1623,6 +1624,18 @@ func (h *MihomoHandler) handleReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Success(w, map[string]bool{"reloaded": true})
+}
+
+func (h *MihomoHandler) handleRestart(w http.ResponseWriter, r *http.Request) {
+	if err := h.checkMutationAllowed(); err != nil {
+		writeNativeMutationError(w, err, "")
+		return
+	}
+	if err := h.Restart(); err != nil {
+		response.InternalError(w, err.Error())
+		return
+	}
+	response.Success(w, map[string]bool{"restarted": true})
 }
 
 // MihomoClashProxy forwards /api/mihomo/clash/* to the Mihomo API.

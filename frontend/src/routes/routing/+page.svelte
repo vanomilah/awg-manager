@@ -46,9 +46,6 @@
             sp.set('mode', 'expert');
             sp.delete('sub');
             goto(`?${sp.toString()}`, { replaceState: true });
-        } else if (sp.get('tab') === 'susanin') {
-            sp.set('tab', 'singbox');
-            goto(`?${sp.toString()}`, { replaceState: true });
         }
         unsubRouting = subscribeRouting();
         // Prime sing-box router status so the tab badge count is correct
@@ -255,7 +252,6 @@
         geodata: 'geoData',
         singbox: 'singboxRouter',
         mihomo: 'singboxRouter',
-        susanin: 'susanin',
     };
 
     function tabVisible(localId: string, level?: UsageLevel): boolean {

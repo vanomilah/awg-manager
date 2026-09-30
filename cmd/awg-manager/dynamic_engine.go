@@ -382,6 +382,9 @@ func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
 		}
 
 		if err := d.coordinator.MutateAndApply(ctx, mutateFn, d.compileFn); err != nil {
+			if d.activeRoutingEngine() != "mihomo" && d.mihomoEngine != nil {
+				_ = d.mihomoEngine.Stop()
+			}
 			return d.failMihomo(fmt.Errorf("mihomo coordinator apply: %w", err))
 		}
 		d.currentMihomoMode = mode
@@ -464,7 +467,21 @@ func (d *DynamicEngine) SyncMihomoRuntime() error {
 }
 
 func (d *DynamicEngine) syncMihomoRuntimeLocked() error {
-	return d.runMihomo(d.desiredMihomoMode(), false)
+	mode := d.desiredMihomoMode()
+	err := d.runMihomo(mode, false)
+	if err != nil && d.activeRoutingEngine() != "mihomo" && d.mihomoEngine != nil {
+		_ = d.mihomoEngine.Stop()
+	}
+	return err
+}
+
+func (d *DynamicEngine) ForceStopMihomo() error {
+	d.transitionMu.Lock()
+	defer d.transitionMu.Unlock()
+	if d.mihomoEngine != nil {
+		return d.mihomoEngine.Stop()
+	}
+	return nil
 }
 
 func (d *DynamicEngine) drainReloadHookRequestsLocked() error {

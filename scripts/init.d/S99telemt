@@ -2,14 +2,20 @@
 # MANAGED_BY=awg-manager
 ENABLED=yes
 DESC="Telemt MTProxy Direct"
-if [ -x "/opt/bin/telemt" ]; then
+if [ -x "/opt/etc/awg-manager/telemt/telemt" ]; then
+    BIN="/opt/etc/awg-manager/telemt/telemt"
+elif [ -x "/opt/bin/telemt" ]; then
     BIN="/opt/bin/telemt"
 elif [ -x "/opt/usr/bin/telemt" ]; then
     BIN="/opt/usr/bin/telemt"
 else
-    BIN=$(command -v telemt 2>/dev/null || echo "/opt/bin/telemt")
+    BIN=$(command -v telemt 2>/dev/null || echo "/opt/etc/awg-manager/telemt/telemt")
 fi
-CONFIG="/opt/etc/telemt/config.toml"
+if [ -f "/opt/etc/awg-manager/telemt/config.toml" ]; then
+    CONFIG="/opt/etc/awg-manager/telemt/config.toml"
+else
+    CONFIG="/opt/etc/telemt/config.toml"
+fi
 PID_FILE="/opt/var/run/telemt.pid"
 START_FILE="/opt/var/run/telemt.pid.start"
 LOG_FILE="/opt/var/log/telemt.log"
@@ -87,8 +93,12 @@ start() {
         fi
     done
 
+    mkdir -p "/opt/var/run" "/opt/var/log"
+    chown root:root "/opt/var" "/opt/var/run" 2>/dev/null
+    chmod 755 "/opt/var" "/opt/var/run" 2>/dev/null
+
     echo "Starting $DESC..."
-    "$BIN" start "$CONFIG" --pid-file "$PID_FILE" --log-file "$LOG_FILE"
+    "$BIN" start --pid-file "$PID_FILE" --log-file "$LOG_FILE" "$CONFIG"
 
     for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         if [ -f "$PID_FILE" ]; then

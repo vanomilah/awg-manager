@@ -74,7 +74,17 @@
             : undefined,
     );
 
-    const history = $derived($singboxDelayHistory.get(activeMember.tag) ?? []);
+    const history = $derived.by(() => {
+        if (activeMember?.tag) {
+            const h = $singboxDelayHistory.get(activeMember.tag);
+            if (h && h.length > 0) return h;
+        }
+        if (selectorTag) {
+            const h = $singboxDelayHistory.get(selectorTag);
+            if (h && h.length > 0) return h;
+        }
+        return [];
+    });
     const delayPresentation = $derived(singboxDelayFromHistory(history));
     const traffic = $derived($singboxTraffic.get(activeMember.tag));
 
@@ -152,7 +162,12 @@
         if (checking) return;
         checking = true;
         try {
-            await triggerDelayCheck(activeMember.tag);
+            if (activeMember?.tag) {
+                await triggerDelayCheck(activeMember.tag);
+            }
+            if (selectorTag && selectorTag !== activeMember?.tag) {
+                void triggerDelayCheck(selectorTag);
+            }
         } finally {
             checking = false;
         }

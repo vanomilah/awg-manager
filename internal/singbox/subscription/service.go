@@ -142,12 +142,40 @@ func (s *Service) proxyEnabled() bool {
 	return s.ndmsProxyEnabled()
 }
 
-func (s *Service) ensureProxyIfOwned(ctx context.Context, kind, id string, idx, port int, legacyOwners ...string) (bool, error) {
-	owner := ProxyOwnershipDescription(kind, id)
-	if mutator, ok := s.mutator.(proxyOwnershipMutator); ok {
-		return mutator.EnsureProxyIfOwned(ctx, idx, port, owner, legacyOwners...)
+// FormatProxyDescription formats NDMS description with human-readable label
+// and stable canonical ownership token: e.g. "VOX [awg-manager:singbox:subscription:123]".
+func FormatProxyDescription(label, kind, id string) string {
+	canonical := ProxyOwnershipDescription(kind, id)
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return canonical
 	}
-	return true, s.mutator.EnsureProxy(ctx, idx, port, owner)
+	return fmt.Sprintf("%s [%s]", label, canonical)
+}
+
+func (s *Service) resolveResourceLabel(kind, id string) string {
+	if kind == "subscription" && s.store != nil {
+		if sub, err := s.store.Get(id); err == nil {
+			return sub.Label
+		}
+	}
+	if kind == "group" && s.groups != nil {
+		if g, err := s.groups.Get(id); err == nil {
+			return g.Label
+		}
+	}
+	return ""
+}
+
+func (s *Service) ensureProxyIfOwned(ctx context.Context, kind, id string, idx, port int, legacyOwners ...string) (bool, error) {
+	canonical := ProxyOwnershipDescription(kind, id)
+	label := s.resolveResourceLabel(kind, id)
+	desc := FormatProxyDescription(label, kind, id)
+	allLegacy := append([]string{canonical}, legacyOwners...)
+	if mutator, ok := s.mutator.(proxyOwnershipMutator); ok {
+		return mutator.EnsureProxyIfOwned(ctx, idx, port, desc, allLegacy...)
+	}
+	return true, s.mutator.EnsureProxy(ctx, idx, port, desc)
 }
 
 func (s *Service) removeProxyIfOwned(ctx context.Context, kind, id string, idx int, legacyOwners ...string) (bool, error) {
@@ -1005,18 +1033,25 @@ func ToMemberInfo(tag string, p vlink.ParsedOutbound) MemberInfo {
 	return mi
 }
 
-// ListActiveMemberTags returns the active member tag of every enabled
-// subscription whose ActiveMember is set. Used by DelayChecker so the
-// active outbound of each subscription gets the same periodic latency
-// probe as regular sing-box tunnels.
+// ListActiveMemberTags returns the active member tags and selector tags of every enabled
+// subscription. Used by DelayChecker so the active outbound and selector group of each
+// subscription gets the same periodic latency probe as regular sing-box tunnels.
 func (s *Service) ListActiveMemberTags() []string {
 	subs := s.store.List()
-	out := make([]string, 0, len(subs))
+	out := make([]string, 0, len(subs)*2)
 	for _, sub := range subs {
-		if !sub.Enabled || sub.ActiveMember == "" {
+		if !sub.Enabled {
 			continue
 		}
-		out = append(out, sub.ActiveMember)
+		if sub.ActiveMember != "" {
+			out = append(out, sub.ActiveMember)
+		}
+		if sub.SelectorTag != "" {
+			out = append(out, sub.SelectorTag)
+		}
+		if sub.ActiveMember == "" && len(sub.MemberTags) > 0 {
+			out = append(out, sub.MemberTags[0])
+		}
 	}
 	return out
 }

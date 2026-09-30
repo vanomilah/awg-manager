@@ -1204,3 +1204,64 @@ func TestBuildTgLinks_Pure(t *testing.T) {
 	}
 }
 
+func TestPrepareCandidate_DirectFakeTLS_ValidatorAndConfigGen(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+
+	validatorCalled := false
+	svc.tproxyValidator = func(stagingDir string) error {
+		validatorCalled = true
+		return errors.New("validator should not be called when web is disabled")
+	}
+
+	cand := Config{
+		Enabled:        true,
+		Scenario:       ScenarioDirectFakeTLS,
+		DirectHost:     "direct.myhost.ru",
+		DirectPort:     8443,
+		PublicHostname: "", // empty in direct_fake_tls!
+		Secret:         "11223344556677889900aabbccddeeff",
+		TlsDomain:      "ya.ru",
+	}
+
+	txID, err := svc.PrepareCandidate("tx-test-direct", cand)
+	if err != nil {
+		t.Fatalf("PrepareCandidate failed: %v", err)
+	}
+	if validatorCalled {
+		t.Errorf("tproxyValidator was called for direct_fake_tls scenario, expected it to be skipped")
+	}
+
+	// Verify config.json.candidate generated has direct-only.invalid fallback hostname
+	cfgCandPath := filepath.Join(svc.txDir(txID), "config.json.candidate")
+	data, err := os.ReadFile(cfgCandPath)
+	if err != nil {
+		t.Fatalf("read config.json.candidate failed: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal config.json.candidate failed: %v", err)
+	}
+	if parsed["public_hostname"] != "direct-only.invalid" {
+		t.Errorf("expected public_hostname direct-only.invalid, got %v", parsed["public_hostname"])
+	}
+
+	// Now verify that for dual scenario with empty public_hostname, validator IS called
+	validatorCalled = false
+	candDual := Config{
+		Enabled:        true,
+		Scenario:       ScenarioDual,
+		DirectHost:     "direct.myhost.ru",
+		DirectPort:     8443,
+		PublicHostname: "",
+		Secret:         "11223344556677889900aabbccddeeff",
+	}
+	_, err = svc.PrepareCandidate("tx-test-dual", candDual)
+	if err == nil {
+		t.Fatalf("expected PrepareCandidate to fail when validator returns error for dual scenario")
+	}
+	if !validatorCalled {
+		t.Errorf("expected validator to be called for dual scenario")
+	}
+}
+
+

@@ -1,10 +1,12 @@
 <script lang="ts">
 	// Шаг 2 мастера «Выхода» — параметры (WE-29..WE-37). Поля правятся на месте
 	// в объекте мастера; пароль есть только у WDTT-клиента, у FreeTurn его нет.
-	import { Dropdown, Input, Toggle } from '$lib/components/ui';
+	import { Button, Dropdown, Input, Toggle } from '$lib/components/ui';
+	import { Sparkles } from 'lucide-svelte';
 	import SensitiveInput from '../proxy-panel/SensitiveInput.svelte';
 	import { autoReconnectIntervalOptions } from '../freeturn/options';
 	import type { ExitProtocol, ExitWizardFields } from './exitWizard';
+	import VkCallModal from './VkCallModal.svelte';
 
 	interface Props {
 		protocol: ExitProtocol;
@@ -13,6 +15,7 @@
 	}
 
 	let { protocol, fields = $bindable() }: Props = $props();
+	let vkModalOpen = $state(false);
 </script>
 
 <p class="lead">Значения из ссылки — поправьте, если нужно.</p>
@@ -27,14 +30,26 @@
 	     без подписи «Дальше» гасла бы молча. Значение у них разное: у WDTT это
 	     VK-хеши, у FreeTurn — ссылки VK Calls (`links`), отсюда две строки и две
 	     подписи: WE-35 у WDTT и EX-59 у FreeTurn (та же, что на детали). -->
-	<Input
-		label={protocol === 'wdtt' ? 'VK-хеши' : 'Ссылки VK Calls'}
-		bind:value={fields.vkHashes}
-		hint={protocol === 'wdtt'
-			? 'Обязательно — без VK-хешей клиент не запустится'
-			: 'Обязательно — без ссылок VK Calls клиент не запустится'}
-		fullWidth
-	/>
+	<div class="field-with-btn">
+		<Input
+			label={protocol === 'wdtt' ? 'VK-хеши' : 'Ссылки VK Calls'}
+			bind:value={fields.vkHashes}
+			hint={protocol === 'wdtt'
+				? 'Обязательно — без VK-хешей клиент не запустится'
+				: 'Обязательно — без ссылок VK Calls клиент не запустится'}
+			fullWidth
+		/>
+		<Button
+			variant="secondary"
+			size="sm"
+			class="vk-btn"
+			title="Сгенерировать или проверить ссылки VK Calls"
+			onclick={() => (vkModalOpen = true)}
+		>
+			<Sparkles size={14} />
+			VK Calls
+		</Button>
+	</div>
 	<!-- WE-37 — про округление в wdtt-клиенте; у freeturn правила кратности нет. -->
 	<Input
 		label="Потоков"
@@ -69,7 +84,30 @@
 	</div>
 </div>
 
+{#if vkModalOpen}
+	<VkCallModal
+		bind:open={vkModalOpen}
+		initialValue={fields.vkHashes}
+		targetFormat={protocol === 'wdtt' ? 'hashes' : 'links'}
+		onApply={(val) => {
+			fields.vkHashes = val;
+		}}
+	/>
+{/if}
+
 <style>
+	.field-with-btn {
+		grid-column: 1 / -1;
+		display: flex;
+		align-items: flex-end;
+		gap: 8px;
+	}
+
+	:global(.vk-btn) {
+		margin-bottom: 2px;
+		white-space: nowrap;
+	}
+
 	.lead {
 		margin: 0 0 0.875rem;
 		font-size: 0.875rem;

@@ -34,6 +34,82 @@ for hook in iflayerchanged ifcreated ifdestroyed ifipchanged; do
     chmod 755 "/opt/etc/ndm/${hook}.d/50-awg-manager.sh" 2>/dev/null || true
 done
 
+# Companion migration and symlinks
+chmod 755 /opt/etc/awg-manager/susanin/bin/susanin-agent 2>/dev/null || true
+chmod 755 /opt/etc/awg-manager/telemt/telemt 2>/dev/null || true
+chmod 755 /opt/etc/awg-manager/mihomo/mihomo 2>/dev/null || true
+
+# Migrate legacy directories to symlinks if they are standalone directories
+if [ -d /opt/etc/telemt ] && [ ! -L /opt/etc/telemt ]; then
+    mkdir -p /opt/etc/awg-manager/telemt
+    cp -a /opt/etc/telemt/* /opt/etc/awg-manager/telemt/ 2>/dev/null || true
+    rm -rf /opt/etc/telemt
+fi
+if [ -d /opt/susanin ] && [ ! -L /opt/susanin ]; then
+    mkdir -p /opt/etc/awg-manager/susanin
+    cp -a /opt/susanin/* /opt/etc/awg-manager/susanin/ 2>/dev/null || true
+    rm -rf /opt/susanin
+fi
+
+if [ -f /opt/etc/awg-manager/susanin/bin/susanin-agent ]; then
+    chmod 755 /opt/etc/awg-manager/susanin/bin/susanin-agent
+    rm -f /opt/bin/susanin-agent
+    ln -sf /opt/etc/awg-manager/susanin/bin/susanin-agent /opt/bin/susanin-agent
+    [ ! -e /opt/susanin ] && ln -sf /opt/etc/awg-manager/susanin /opt/susanin
+fi
+if [ -f /opt/etc/awg-manager/telemt/telemt ]; then
+    chmod 755 /opt/etc/awg-manager/telemt/telemt
+    rm -f /opt/bin/telemt
+    ln -sf /opt/etc/awg-manager/telemt/telemt /opt/bin/telemt
+    [ ! -e /opt/etc/telemt ] && ln -sf /opt/etc/awg-manager/telemt /opt/etc/telemt
+fi
+if [ -f /opt/etc/awg-manager/mihomo/mihomo ]; then
+    chmod 755 /opt/etc/awg-manager/mihomo/mihomo
+    rm -f /opt/bin/mihomo
+    ln -sf /opt/etc/awg-manager/mihomo/mihomo /opt/bin/mihomo
+fi
+
+# Persistent DNAT hook for tproxy-server (8085)
+mkdir -p /opt/etc/ndm/netfilter.d
+cat << 'EOF' > /opt/etc/ndm/netfilter.d/64-awgm-tproxy-dnat.sh
+#!/bin/sh
+# AWG Manager: DNAT for tproxy-server (8085) to loopback
+[ "$type" = "ip6tables" ] && exit 0
+sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.default.route_localnet=1 >/dev/null 2>&1
+for iface in /proc/sys/net/ipv4/conf/*; do
+    [ -f "$iface/route_localnet" ] && echo 1 > "$iface/route_localnet" 2>/dev/null
+done
+
+IPTABLES=/opt/sbin/iptables
+[ -x "$IPTABLES" ] || IPTABLES=iptables
+run() { "$IPTABLES" -w "$@" 2>/dev/null || "$IPTABLES" "$@" 2>/dev/null; }
+
+if [ "$table" = "filter" ] || [ -z "$table" ]; then
+    run -C INPUT -p tcp --dport 8085 -j ACCEPT 2>/dev/null || run -I INPUT 1 -p tcp --dport 8085 -j ACCEPT
+fi
+
+if [ "$table" = "nat" ] || [ -z "$table" ]; then
+    run -t nat -C PREROUTING -p tcp --dport 8085 -j DNAT --to-destination 127.0.0.1:8085 2>/dev/null || \
+    run -t nat -I PREROUTING 1 -p tcp --dport 8085 -j DNAT --to-destination 127.0.0.1:8085
+
+    run -t nat -C OUTPUT -p tcp -o lo -d 127.0.0.1 --dport 8085 -j ACCEPT 2>/dev/null || \
+    run -t nat -I OUTPUT 1 -p tcp -o lo -d 127.0.0.1 --dport 8085 -j ACCEPT
+
+    run -t nat -C OUTPUT -p tcp --dport 8085 -j DNAT --to-destination 127.0.0.1:8085 2>/dev/null || \
+    run -t nat -A OUTPUT -p tcp --dport 8085 -j DNAT --to-destination 127.0.0.1:8085
+fi
+exit 0
+EOF
+chmod 755 /opt/etc/ndm/netfilter.d/64-awgm-tproxy-dnat.sh
+/opt/etc/ndm/netfilter.d/64-awgm-tproxy-dnat.sh 2>/dev/null || true
+
+# Ensure Keenetic HTTP proxy preserves Host header for tproxy-server (8085)
+if command -v ndmq >/dev/null 2>&1; then
+    ndmq -p "ip http proxy tg preserve-host" -x >/dev/null 2>&1 || true
+    ndmq -p "system configuration save" -x >/dev/null 2>&1 || true
+fi
+
 # Clean up legacy files
 rm -f /opt/etc/ndm/ifstatechanged.d/50-awg-manager.sh
 rm -f /opt/var/log/awg-wan-hook.log

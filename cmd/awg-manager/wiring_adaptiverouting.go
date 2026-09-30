@@ -32,7 +32,7 @@ func (a *adaptiveTunnelAdapter) ListTunnels() []adaptiverouting.TunnelInfo {
 			iface := e.Iface
 			if k, ok := a.app.catalog.GetKernelIface(context.Background(), e.ID); ok && k != "" {
 				iface = k
-			} else if a.app.ndmsQueries != nil && a.app.ndmsQueries.Interfaces != nil {
+			} else if a.app.ndmsQueries != nil && a.app.ndmsQueries.Interfaces != nil && !strings.HasPrefix(e.ID, "wan:") {
 				if k := a.app.ndmsQueries.Interfaces.ResolveSystemName(context.Background(), e.Iface); k != "" && k != e.Iface {
 					iface = k
 				}

@@ -37,13 +37,22 @@
 		ondetail,
 	}: Props = $props();
 
+	const selectorTag = $derived(subscription.selectorTag ?? '');
 	const resolvedMemberTag = $derived(resolveSubscriptionMemberTag(subscription, liveActiveMember));
 
-	const history = $derived(
-		resolvedMemberTag ? ($singboxDelayHistory.get(resolvedMemberTag) ?? []) : [],
-	);
+	const history = $derived.by(() => {
+		if (resolvedMemberTag) {
+			const h = $singboxDelayHistory.get(resolvedMemberTag);
+			if (h && h.length > 0) return h;
+		}
+		if (selectorTag) {
+			const h = $singboxDelayHistory.get(selectorTag);
+			if (h && h.length > 0) return h;
+		}
+		return [];
+	});
 	const delayPresentation = $derived(
-		resolvedMemberTag ? singboxDelayFromHistory(history) : { state: 'unknown' as const, label: '—', latest: undefined },
+		resolvedMemberTag || selectorTag ? singboxDelayFromHistory(history) : { state: 'unknown' as const, label: '—', latest: undefined },
 	);
 	const delayState = $derived(delayPresentation.state);
 	const delayText = $derived(delayPresentation.label);
@@ -103,10 +112,14 @@
 
 	async function runDelayCheck(e?: MouseEvent | KeyboardEvent): Promise<void> {
 		e?.stopPropagation();
-		if (!resolvedMemberTag || testingDelay) return;
+		const tag = resolvedMemberTag || selectorTag;
+		if (!tag || testingDelay) return;
 		testingDelay = true;
 		try {
-			await triggerDelayCheck(resolvedMemberTag);
+			await triggerDelayCheck(tag);
+			if (selectorTag && selectorTag !== tag) {
+				void triggerDelayCheck(selectorTag);
+			}
 		} finally {
 			testingDelay = false;
 		}
@@ -121,8 +134,6 @@
 	}
 
 	let diagnosticsOpen = $state(false);
-
-	let selectorTag = $derived(subscription.selectorTag ?? '');
 	const proxyIface = $derived(subscription.proxyIndex >= 0 ? `Proxy${subscription.proxyIndex}` : '');
 	let kernelIface = $derived(subscription.proxyIndex >= 0 ? `t2s${subscription.proxyIndex}` : '');
 	const isURLTest = $derived(subscription.mode === 'urltest');

@@ -20,6 +20,7 @@
 	import { settingsSectionIconMode } from '$lib/stores/settingsSectionIconMode';
 	import { serviceLetterIcons } from '$lib/stores/serviceLetterIcons';
 	import { showSummary } from '$lib/stores/showSummary';
+	import { countryFlagEmojis } from '$lib/stores/countryFlagEmojis';
 	import { auth, isAuthenticated, isLoading } from '$lib/stores/auth';
 	import { notifications } from '$lib/stores/notifications';
 	import { api } from '$lib/api/client';
@@ -382,6 +383,7 @@
 		tunnelDashboardManualOrder.init();
 		tunnelDashboardGroupMode.init();
 		tunnelDashboardTags.init();
+		countryFlagEmojis.init();
 		await auth.checkStatus();
 	});
 

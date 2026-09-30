@@ -98,6 +98,17 @@ start() {
         fi
         sleep 0.2 2>/dev/null || usleep 200000 2>/dev/null || sleep 1
     done
+
+    _port=$(grep '"listen"' "$CONFIG" 2>/dev/null | awk -F: '{print $NF}' | tr -dc '0-9')
+    if [ -n "$_port" ]; then
+        sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true
+        iptables -t nat -C PREROUTING -p tcp --dport "$_port" -j DNAT --to-destination "127.0.0.1:$_port" 2>/dev/null || \
+            iptables -t nat -I PREROUTING -p tcp --dport "$_port" -j DNAT --to-destination "127.0.0.1:$_port" 2>/dev/null || true
+        iptables -t nat -C OUTPUT -p tcp -d 127.0.0.1 --dport "$_port" -j RETURN 2>/dev/null || \
+            iptables -t nat -I OUTPUT -p tcp -d 127.0.0.1 --dport "$_port" -j RETURN 2>/dev/null || true
+        iptables -t nat -C OUTPUT -p tcp --dport "$_port" -j DNAT --to-destination "127.0.0.1:$_port" 2>/dev/null || \
+            iptables -t nat -I OUTPUT -p tcp --dport "$_port" -j DNAT --to-destination "127.0.0.1:$_port" 2>/dev/null || true
+    fi
 }
 
 stop() {
@@ -134,6 +145,13 @@ stop() {
         fi
     done
     rm -f "$PID_FILE" "$START_FILE"
+
+    _port=$(grep '"listen"' "$CONFIG" 2>/dev/null | awk -F: '{print $NF}' | tr -dc '0-9')
+    if [ -n "$_port" ]; then
+        iptables -t nat -D PREROUTING -p tcp --dport "$_port" -j DNAT --to-destination "127.0.0.1:$_port" 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p tcp --dport "$_port" -j DNAT --to-destination "127.0.0.1:$_port" 2>/dev/null || true
+        iptables -t nat -D OUTPUT -p tcp -d 127.0.0.1 --dport "$_port" -j RETURN 2>/dev/null || true
+    fi
 }
 
 status() {

@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -621,6 +622,29 @@ func (s *ServiceImpl) reconcileCompatibilitySlotsLocked(sr storage.SingboxRouter
 	// 1. Reconcile SlotRouter using SetEnabledSilent (authoritative surrounding flow reloads).
 	if err := s.deps.Orch.SetEnabledSilent(orchestrator.SlotRouter, !mihomoPrimary); err != nil {
 		return fmt.Errorf("orchestrator set router slot state: %w", err)
+	}
+
+	// 1b. Reconcile SlotSubscriptions: in Mihomo primary mode, sing-box SlotSubscriptions
+	// is parked in disabled/ so sing-box does not run background urltests or hold the daemon alive.
+	// Mihomo loads subscription outbounds via LoadEffective, which reads from disabled/ transparently.
+	// When switching back to sing-box primary, unpark SlotSubscriptions if it has outbounds.
+	if subState, subRegistered := s.slotSnapshot(orchestrator.SlotSubscriptions); subRegistered {
+		targetSubEnabled := false
+		if !mihomoPrimary {
+			if raw, err := s.deps.Orch.LoadEffective(orchestrator.SlotSubscriptions); err == nil && len(raw) > 0 {
+				var slot struct {
+					Outbounds []any `json:"outbounds"`
+				}
+				if json.Unmarshal(raw, &slot) == nil && len(slot.Outbounds) > 0 {
+					targetSubEnabled = true
+				}
+			}
+		}
+		if subState.Enabled != targetSubEnabled {
+			if err := s.deps.Orch.SetEnabledSilent(orchestrator.SlotSubscriptions, targetSubEnabled); err != nil {
+				return fmt.Errorf("orchestrator set subscriptions slot state: %w", err)
+			}
+		}
 	}
 
 	// 2. Load existing parking state. Fails closed if corrupt, unknown owner, or unsupported version.
@@ -1677,6 +1701,14 @@ func (s *ServiceImpl) Disable(ctx context.Context) error {
 		return nil
 	}); err != nil {
 		return err
+	}
+
+	if s.isMihomoPrimary() {
+		if engine := s.routingEngineController(); engine != nil {
+			if err := engine.Stop(); err != nil {
+				s.appLog.Warn("disable", "engine-stop", err.Error())
+			}
+		}
 	}
 
 	s.emitStatus(ctx)

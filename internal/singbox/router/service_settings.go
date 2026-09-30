@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/singbox/router/bypassset"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
@@ -51,6 +52,7 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 	// Персист-окно под transitionMu: см. ErrTransitionInProgress. Reconcile
 	// ниже остаётся ВНЕ окна — он сам берёт transitionMu через TryLock и под
 	// нашим локом молча съел бы тик (мьютекс нерекурсивный).
+	var engineChanged bool
 	settings, err := func() (*storage.Settings, error) {
 		if !s.transitionMu.TryLock() {
 			return nil, ErrTransitionInProgress
@@ -71,7 +73,6 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 				ipsetOK = bypassset.IsIPSetAvailable()
 			}
 		}
-		engineChanged := false
 		if err := s.deps.Settings.Update(func(cur *storage.Settings) error {
 			// Переход «пусто → непусто» требует живого ipset-бинаря. Только на
 			// переходе: при уже выбранных тегах и сломанном ipset прочие правки
@@ -126,7 +127,10 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 	// no-op (набор уже совпадает).
 	s.syncKeenDNSPreset(ctx, normalized)
 	s.syncKeeneticCloudRelays(ctx, normalized)
-	if normalized.RoutingEngine == "mihomo" && normalized.Enabled {
+	if err := s.reapplyRouterOverlay(ctx, settings); err != nil {
+		s.appLog.Warn("settings", "", fmt.Sprintf("reapply router overlay: %v", err))
+	}
+	if normalized.RoutingEngine == "mihomo" && normalized.Enabled && !engineChanged {
 		if rec := s.routingEngineController(); rec != nil {
 			if err := rec.Reload(); err != nil {
 				return fmt.Errorf("apply mihomo settings: %w", err)
@@ -134,6 +138,26 @@ func (s *ServiceImpl) UpdateSettings(ctx context.Context, sr storage.SingboxRout
 		}
 	}
 	return s.Reconcile(ctx)
+}
+
+// reapplyRouterOverlay re-materializes the active or draft SlotRouter config so that
+// changes to Susanin (enabled/disabled/outbound) or Keenetic Cloud tunnels take effect immediately.
+func (s *ServiceImpl) reapplyRouterOverlay(ctx context.Context, settings *storage.Settings) error {
+	if s.deps.Orch == nil {
+		return nil
+	}
+	st, ok := s.slotSnapshot(orchestrator.SlotRouter)
+	if !ok || !st.Enabled {
+		return nil
+	}
+	cfg, err := s.loadRouterConfig()
+	if err != nil {
+		return err
+	}
+	if s.deps.Orch.HasDraft(orchestrator.SlotRouter) {
+		return s.persistConfig(ctx, cfg)
+	}
+	return s.persistSlotDirect(orchestrator.SlotRouter, cfg, false)
 }
 
 // reapplyFakeIPOverlay перегенерирует fakeip-overlay на ВКЛЮЧЁННОМ и

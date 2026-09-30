@@ -8528,6 +8528,76 @@ const server = http.createServer(async (req, res) => {
 		return;
 	}
 
+	let mockVKCallsToken = '';
+	let mockVKCallsGroupId = 0;
+
+	if (req.method === 'POST' && path === '/proxyrt/vk/calls/generate') {
+		try {
+			const body = await readJsonBody(req);
+			const count = Math.min(Math.max(body.count || 1, 1), 5);
+			const links = [];
+			const hashes = [];
+			for (let i = 0; i < count; i++) {
+				const hash = 'mock_' + Math.random().toString(36).substring(2, 10);
+				hashes.push(hash);
+				links.push(`https://vk.ru/call/join/${hash}`);
+			}
+			sendData(res, {
+				success: true,
+				links,
+				hashes,
+				callIds: hashes.map((h) => 'call_' + h)
+			});
+		} catch (e) {
+			sendInvalidRequest(res, e);
+		}
+		return;
+	}
+
+	if (req.method === 'POST' && path === '/proxyrt/vk/calls/check') {
+		try {
+			const { links = [] } = await readJsonBody(req);
+			const results = links.map((l) => {
+				const hash = String(l).replace(/^https?:\/\/[^/]+\/call\/join\//, '').trim();
+				return {
+					link: l,
+					hash: hash,
+					alive: true
+				};
+			});
+			sendData(res, { results });
+		} catch (e) {
+			sendInvalidRequest(res, e);
+		}
+		return;
+	}
+
+	if (path === '/proxyrt/vk/calls/config') {
+		if (req.method === 'GET') {
+			sendData(res, {
+				hasToken: !!mockVKCallsToken,
+				maskedToken: mockVKCallsToken ? 'vk1.a.mock***' : '',
+				groupId: mockVKCallsGroupId || 0
+			});
+			return;
+		}
+		if (req.method === 'POST') {
+			try {
+				const body = await readJsonBody(req);
+				mockVKCallsToken = body.token || '';
+				mockVKCallsGroupId = body.groupId || 0;
+				sendData(res, {
+					hasToken: !!mockVKCallsToken,
+					maskedToken: mockVKCallsToken ? 'vk1.a.mock***' : '',
+					groupId: mockVKCallsGroupId || 0
+				});
+			} catch (e) {
+				sendInvalidRequest(res, e);
+			}
+			return;
+		}
+	}
+
 	// ── /proxyrt/instances/{key}[/{action}] ─────────────────────────────────────
 	if (path.startsWith('/proxyrt/instances/')) {
 		const tail = path.slice('/proxyrt/instances/'.length);

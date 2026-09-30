@@ -64,6 +64,24 @@ export class AdaptiveRoutingClient extends Awg3Client {
 		});
 	}
 
+	async restartAdaptiveRouting(): Promise<{ state: OperationalState }> {
+		return this.request<{ state: OperationalState }>('/adaptive-routing/restart', {
+			method: 'POST',
+		});
+	}
+
+	async installAdaptiveRouting(): Promise<AdaptiveRoutingStatusResponse> {
+		return this.request<AdaptiveRoutingStatusResponse>('/adaptive-routing/install', {
+			method: 'POST',
+		});
+	}
+
+	async uninstallAdaptiveRouting(): Promise<AdaptiveRoutingStatusResponse> {
+		return this.request<AdaptiveRoutingStatusResponse>('/adaptive-routing/uninstall', {
+			method: 'POST',
+		});
+	}
+
 	async testAdaptiveRoutingEgress(
 		target: EgressRef
 	): Promise<{ available: boolean; interface: string; reason?: string }> {

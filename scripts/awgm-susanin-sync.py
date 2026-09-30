@@ -24,6 +24,8 @@ from collections import defaultdict
 
 RULES_FILE = "/opt/etc/awg-manager/mihomo/rules/susanin.yaml"
 RULES_TMP = "/opt/etc/awg-manager/mihomo/rules/susanin.yaml.tmp"
+SINGBOX_RULES_FILE = "/opt/etc/awg-manager/sing-box/rules/susanin.json"
+SINGBOX_RULES_TMP = "/opt/etc/awg-manager/sing-box/rules/susanin.json.tmp"
 LOG_FILE = "/opt/var/log/susanin-sync.log"
 PID_FILE = "/var/run/awgm-susanin-sync.pid"
 MIHOMO_API = "http://127.0.0.1:9090/providers/rules/susanin"
@@ -333,6 +335,19 @@ def notify_mihomo():
     except Exception:
         return False
 
+def notify_singbox():
+    try:
+        res = subprocess.run(["pidof", "sing-box"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        if res.returncode == 0:
+            pids = res.stdout.strip().split()
+            for p in pids:
+                if p.isdigit():
+                    os.kill(int(p), signal.SIGHUP)
+            return True
+    except Exception as e:
+        log(f"Singbox HUP error: {e}")
+    return False
+
 def sync_once(radar, last_rules):
     # 1. Scan Mihomo log and process failure events
     events = radar.scan()
@@ -342,12 +357,17 @@ def sync_once(radar, last_rules):
     # 2. Compile all active classical rules
     current_rules = compile_all_rules()
 
-    if not current_rules and not last_rules:
+    singbox_missing_or_empty = (
+        not os.path.exists(SINGBOX_RULES_FILE) or
+        os.path.getsize(SINGBOX_RULES_FILE) < 50
+    )
+
+    if not current_rules and not last_rules and not singbox_missing_or_empty:
         return last_rules
 
-    if current_rules != last_rules:
-        added = current_rules - last_rules
-        removed = last_rules - current_rules
+    if current_rules != last_rules or singbox_missing_or_empty:
+        added = current_rules - last_rules if last_rules else current_rules
+        removed = last_rules - current_rules if last_rules else set()
 
         # Write temporary classical YAML
         sorted_rules = sorted(current_rules)
@@ -358,10 +378,45 @@ def sync_once(radar, last_rules):
                 f.write(f"  - '{item}'\n")
         os.replace(RULES_TMP, RULES_FILE)
 
-        # Signal Mihomo to reload in memory
-        ok = notify_mihomo()
-        status_str = "reloaded Mihomo in-memory" if ok else "Mihomo reload pending (API offline)"
-        log(f"Sync: {len(sorted_rules)} total classical rules (+{len(added)} / -{len(removed)}): {status_str}")
+        # Write Sing-box JSON rule-set
+        # NOTE: In Sing-box rule-sets, fields within a single rule object are evaluated with AND!
+        # Domain, domain_suffix, and ip_cidr MUST be in SEPARATE rule objects so they match via OR!
+        domains = []
+        domain_suffixes = []
+        ip_cidrs = []
+        for r in sorted_rules:
+            parts = r.split(',')
+            rtype = parts[0].strip().upper()
+            val = parts[1].strip() if len(parts) > 1 else ""
+            if rtype == "DOMAIN" and val:
+                domains.append(val)
+                domain_suffixes.append(val)
+            elif rtype == "DOMAIN-SUFFIX" and val:
+                domain_suffixes.append(val)
+            elif (rtype == "IP-CIDR" or rtype == "IP-CIDR6") and val:
+                ip_cidrs.append(val)
+
+        singbox_rules = []
+        if domains:
+            singbox_rules.append({"domain": sorted(list(set(domains)))})
+        if domain_suffixes:
+            singbox_rules.append({"domain_suffix": sorted(list(set(domain_suffixes)))})
+        if ip_cidrs:
+            singbox_rules.append({"ip_cidr": sorted(list(set(ip_cidrs)))})
+
+        singbox_payload = {"version": 1, "rules": singbox_rules}
+
+        os.makedirs(os.path.dirname(SINGBOX_RULES_FILE), exist_ok=True)
+        with open(SINGBOX_RULES_TMP, "w", encoding="utf-8") as f:
+            json.dump(singbox_payload, f, indent=2)
+        os.replace(SINGBOX_RULES_TMP, SINGBOX_RULES_FILE)
+
+        # Signal Mihomo and Sing-box to reload in memory
+        ok_mihomo = notify_mihomo()
+        ok_sb = notify_singbox()
+        mihomo_str = "Mihomo: OK" if ok_mihomo else "Mihomo: pending"
+        sb_str = "Sing-box: HUP" if ok_sb else "Sing-box: offline"
+        log(f"Sync: {len(sorted_rules)} total rules (+{len(added)} / -{len(removed)}): {mihomo_str}, {sb_str}")
         return current_rules
 
     return last_rules

@@ -23,6 +23,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/ftlink"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/install"
 	proxysub "github.com/hoaxisr/awg-manager/internal/proxyapp/subscription"
+	"github.com/hoaxisr/awg-manager/internal/proxyapp/vkcalls"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/watchdog"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/wdttlink"
 	"github.com/hoaxisr/awg-manager/internal/proxyapp/wdttusers"
@@ -974,6 +975,11 @@ func (a *app) wireProxyrt() {
 		},
 	})
 
+	vkSvc := vkcalls.New(vkcalls.Config{
+		Settings: a.settingsStore,
+	})
+	vkHandler := api.NewVKCallsHandler(vkSvc)
+
 	a.srv.SetProxyRtSurface(server.ProxyRtSurface{
 		Instances: proxyrtDispatch{
 			instances: instances.Handle,
@@ -993,6 +999,9 @@ func (a *app) wireProxyrt() {
 		InstallStatus:      installSvc.ServeStatus,
 		Install:            installSvc.ServeInstall,
 		Uninstall:          installSvc.ServeUninstall,
+		VKCallsGenerate:    vkHandler.Generate,
+		VKCallsCheck:       vkHandler.Check,
+		VKCallsConfig:      vkHandler.Config,
 	})
 
 	// Тумблер намерения инстанса (карточка зеркальной записи wdtt-raw) и

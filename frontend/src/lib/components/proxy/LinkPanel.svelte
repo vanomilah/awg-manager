@@ -3,12 +3,13 @@
 	// пароль абонента; peer и VK-хеши правятся здесь же и пересобирают ссылку.
 	import { onMount } from 'svelte';
 	import { Button, Input, IconButton } from '$lib/components/ui';
-	import { X } from 'lucide-svelte';
+	import { Sparkles, X } from 'lucide-svelte';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { errText } from '$lib/utils/errorMessage';
 	import type { WdttPanelUserEntry, WdttServerConfig } from '$lib/types';
 	import LinkBox from './LinkBox.svelte';
+	import VkCallModal from './VkCallModal.svelte';
 	import { wdttServerPorts } from './shareConfig';
 
 	interface Props {
@@ -35,6 +36,7 @@
 	let linkQwdtt = $state('');
 	let busy = $state(false);
 	let wanBusy = $state(false);
+	let vkModalOpen = $state(false);
 
 	const dtlsPort = $derived(wdttServerPorts(server)[0]?.port ?? 0);
 
@@ -110,13 +112,25 @@
 			/>
 			<Button variant="secondary" size="sm" loading={wanBusy} onclick={fillWan}>WAN IP</Button>
 		</div>
-		<Input
-			label="VK-хеши"
-			hint="Маскировка, а не пароль подключения"
-			bind:value={vkHashes}
-			onchange={() => generate()}
-			fullWidth
-		/>
+		<div class="row-with-btn">
+			<Input
+				label="VK-хеши"
+				hint="Маскировка, а не пароль подключения"
+				bind:value={vkHashes}
+				onchange={() => generate()}
+				fullWidth
+			/>
+			<Button
+				variant="secondary"
+				size="sm"
+				class="vk-btn"
+				title="Сгенерировать или проверить ссылки VK Calls"
+				onclick={() => (vkModalOpen = true)}
+			>
+				<Sparkles size={14} />
+				VK Calls
+			</Button>
+		</div>
 	</div>
 
 	{#if linkQwdtt}
@@ -125,9 +139,31 @@
 	{#if link}
 		<LinkBox {link} title="Для клиента на роутере" />
 	{/if}
+
+	{#if vkModalOpen}
+		<VkCallModal
+			bind:open={vkModalOpen}
+			initialValue={vkHashes}
+			targetFormat="hashes"
+			onApply={(val) => {
+				vkHashes = val;
+				void generate();
+			}}
+		/>
+	{/if}
 </div>
 
 <style>
+	.row-with-btn {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.5rem;
+		width: 100%;
+	}
+	:global(.vk-btn) {
+		margin-bottom: 2px;
+		white-space: nowrap;
+	}
 	.link-panel {
 		display: flex;
 		flex-direction: column;

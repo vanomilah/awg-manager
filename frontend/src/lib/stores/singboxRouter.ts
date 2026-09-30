@@ -3,6 +3,7 @@ import { api } from '$lib/api/client';
 import { awgTags } from './awgTags';
 import { subscriptionsStore } from './subscriptions';
 import { singboxTunnels } from './singbox';
+import { mihomoInventoryStore } from './mihomoNative';
 import { buildOutboundOptions, type OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
 import { reconcileRuleUiKeys } from '$lib/utils/ruleUiKeys';
 import {
@@ -47,17 +48,23 @@ function createSingboxRouterStore() {
 	// subscription labels mixed in for source='subscription' composites.
 	// Defensive: components subscribing during cold-load see [] groups.
 	const options = derived(
-		[outbounds, singboxTunnels, awgTags, subscriptionsStore, settings],
-		([$outbounds, $sb, $awg, $subs, $settings]) =>
-			buildOutboundOptions(
+		[outbounds, singboxTunnels, awgTags, subscriptionsStore, settings, mihomoInventoryStore],
+		([$outbounds, $sb, $awg, $subs, $settings, $mihomo]) => {
+			const groups = ($mihomo.data?.groups && $mihomo.data.groups.length > 0)
+				? $mihomo.data.groups
+				: ($settings?.proxyGroups ?? []);
+			const proxies = $mihomo.data?.proxies ?? [];
+			return buildOutboundOptions(
 				$awg.data,
 				$sb.data,
 				$outbounds,
 				true,
 				$subs.data,
 				null,
-				$settings?.proxyGroups ?? []
-			),
+				groups,
+				proxies
+			);
+		},
 	);
 
 	// optionsReady — true once all PollingStore sources for `options`
@@ -66,11 +73,11 @@ function createSingboxRouterStore() {
 	// brief cold-load window where `outbounds` is populated but the
 	// PollingStore-backed sources are still 'idle'/'loading'.
 	const optionsReady = derived(
-		[singboxTunnels, awgTags, subscriptionsStore],
-		([$sb, $awg, $subs]) => {
+		[singboxTunnels, awgTags, subscriptionsStore, mihomoInventoryStore],
+		([$sb, $awg, $subs, $mihomo]) => {
 			const settled = (s: 'idle' | 'loading' | 'fresh' | 'stale' | 'error'): boolean =>
 				s === 'fresh' || s === 'stale' || s === 'error';
-			return settled($sb.status) && settled($awg.status) && settled($subs.status);
+			return settled($sb.status) && settled($awg.status) && settled($subs.status) && settled($mihomo.status);
 		},
 	);
 

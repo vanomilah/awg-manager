@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -69,6 +70,18 @@ func (m *BridgeManager) SetRuntimeActive(fn func() bool) {
 // therefore cannot prove that a persisted ProxyN still belongs to us.
 func BridgeOwnershipDescription(kind, id string) string {
 	return "awg-manager:mihomo:" + kind + ":" + id
+}
+
+// FormatBridgeDescription returns the NDMS interface description. When a label
+// is present, it prepends the human label so Keenetic Web UI displays friendly names:
+// e.g. "🇷🇺 RUS (Россия) [awg-manager:mihomo:proxy:123]".
+func FormatBridgeDescription(label, kind, id string) string {
+	canonical := BridgeOwnershipDescription(kind, id)
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return canonical
+	}
+	return fmt.Sprintf("%s [%s]", label, canonical)
 }
 
 func (m *BridgeManager) Enabled() bool {
@@ -179,10 +192,11 @@ func (m *BridgeManager) Reconcile(ctx context.Context, previous []BridgeRef) err
 			return fmt.Errorf("invalid Mihomo bridge %s/%s: %w", ref.Kind, ref.ID, err)
 		}
 		canonicalOwner := BridgeOwnershipDescription(ref.Kind, ref.ID)
-		legacyOwners := []string{}
+		legacyOwners := []string{canonicalOwner}
 		if ref.LegacyOwner != "" && ref.LegacyOwner != canonicalOwner {
 			legacyOwners = append(legacyOwners, ref.LegacyOwner)
 		}
+		desc := FormatBridgeDescription(ref.Label, ref.Kind, ref.ID)
 		bridge := ref.Bridge
 		changed := false
 		runtimeOwnsPorts := m.running != nil && m.running()
@@ -205,7 +219,7 @@ func (m *BridgeManager) Reconcile(ctx context.Context, previous []BridgeRef) err
 		if g, ok := m.registrar.(interface{ IsGated() bool }); ok {
 			isGated = g.IsGated()
 		}
-		owned, err := m.registrar.EnsureProxyIfOwned(ctx, ref.Bridge.ProxyIndex, ref.Bridge.ListenPort, canonicalOwner, legacyOwners...)
+		owned, err := m.registrar.EnsureProxyIfOwned(ctx, ref.Bridge.ProxyIndex, ref.Bridge.ListenPort, desc, legacyOwners...)
 		if err != nil {
 			return fmt.Errorf("ensure Mihomo bridge %s/%s: %w", ref.Kind, ref.ID, err)
 		}
@@ -235,7 +249,7 @@ func (m *BridgeManager) Reconcile(ctx context.Context, previous []BridgeRef) err
 		if setErr := m.store.SetBridge(ref.Kind, ref.ID, bridge); setErr != nil {
 			return fmt.Errorf("persist reallocated Mihomo bridge %s/%s: %w", ref.Kind, ref.ID, setErr)
 		}
-		owned, err = m.registrar.EnsureProxyIfOwned(ctx, index, bridge.ListenPort, canonicalOwner, legacyOwners...)
+		owned, err = m.registrar.EnsureProxyIfOwned(ctx, index, bridge.ListenPort, desc, legacyOwners...)
 		if err != nil {
 			return fmt.Errorf("ensure reallocated Mihomo bridge %s/%s: %w", ref.Kind, ref.ID, err)
 		}

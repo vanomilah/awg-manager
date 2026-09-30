@@ -117,6 +117,7 @@ type Server struct {
 	singboxHandler             *api.SingboxHandler
 	mihomoHandler              *api.MihomoHandler
 	adaptiveRoutingHandler     *api.AdaptiveRoutingHandler
+	telemtHandler              *api.TelemtHandler
 	xrayHandler                *api.XrayHandler
 	aiAssistantHandler         *api.AIAssistantHandler
 	trafficHandler             *systraffic.Handler
@@ -238,6 +239,7 @@ type Deps struct {
 	SingboxConfigPreview func() (string, error)
 	XrayServerService        *xrayserver.Service
 	TgWebProxyService        *tgwebproxy.Service
+	TelemtHandler            *api.TelemtHandler
 	CDNDispatcher            *cdndispatcher.Dispatcher
 	ServerIngressCoordinator *serveringress.Coordinator
 }
@@ -296,6 +298,7 @@ func New(cfg Config, deps Deps) *Server {
 		singboxHandler:         deps.SingboxHandler,
 		mihomoHandler:          deps.MihomoHandler,
 		adaptiveRoutingHandler: deps.AdaptiveRoutingHandler,
+		telemtHandler:          deps.TelemtHandler,
 		xrayHandler:            deps.XrayHandler,
 		aiAssistantHandler:     deps.AIAssistantHandler,
 		trafficHandler:         deps.TrafficHandler,
@@ -442,6 +445,9 @@ type ProxyRtSurface struct {
 	InstallStatus      http.HandlerFunc
 	Install            http.HandlerFunc
 	Uninstall          http.HandlerFunc
+	VKCallsGenerate    http.HandlerFunc
+	VKCallsCheck       http.HandlerFunc
+	VKCallsConfig      http.HandlerFunc
 }
 
 // SetProxyRtSurface wires the proxy-runtime handlers so /api/proxyrt/*
@@ -735,6 +741,10 @@ func spaHandler(staticFS fs.FS) http.Handler {
 			contentType = "application/json"
 		case strings.HasSuffix(name, ".webmanifest"):
 			contentType = "application/manifest+json"
+		case strings.HasSuffix(name, ".woff2"):
+			contentType = "font/woff2"
+		case strings.HasSuffix(name, ".woff"):
+			contentType = "font/woff"
 		}
 		if contentType != "" {
 			w.Header().Set("Content-Type", contentType)

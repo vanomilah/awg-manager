@@ -36,6 +36,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
+	telemtinstaller "github.com/hoaxisr/awg-manager/internal/telemt/installer"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/xrayserver"
 )
@@ -94,6 +95,15 @@ func (a *app) setupServer() {
 
 	a.xrayServerService = xrayserver.New(a.dataDir, onReload)
 	a.tgWebProxyService = tgwebproxy.New(a.dataDir, onReload)
+
+	telemtArch := detectArch()
+	a.telemtInstaller = telemtinstaller.New(telemtArch)
+	if a.tgWebProxyService != nil {
+		a.telemtInstaller.SetRestartHandler(func(ctx context.Context) error {
+			return a.tgWebProxyService.Restart()
+		})
+	}
+	a.telemtHandler = api.NewTelemtHandler(a.telemtInstaller)
 
 	// Cross-Component Ingress Coordinator and Crash Recovery
 	a.ingressCoordinator = serveringress.New(a.dataDir, a.xrayServerService, a.cdnDispatcher, a.tgWebProxyService)
@@ -224,6 +234,7 @@ func (a *app) setupServer() {
 			},
 			XrayServerService:        a.xrayServerService,
 			TgWebProxyService:        a.tgWebProxyService,
+			TelemtHandler:            a.telemtHandler,
 			CDNDispatcher:            a.cdnDispatcher,
 			ServerIngressCoordinator: a.ingressCoordinator,
 		},
@@ -414,6 +425,15 @@ func (a *app) setupRouter() {
 		return a.mihomoBridgeRuntime.deactivate(context.Background())
 	}
 	a.dynamicEngine = dynEngine
+	if a.subAdapter != nil {
+		a.subAdapter.SetOnPostCommit(func() {
+			if a.dynamicEngine != nil && a.settingsStore != nil {
+				if s, err := a.settingsStore.Get(); err == nil && s != nil && s.SingboxRouter.RoutingEngine == "mihomo" {
+					_ = a.dynamicEngine.Reload()
+				}
+			}
+		})
+	}
 	mihomoExec := a.adaptiveRoutingMihomoExec
 	if mihomoExec != nil {
 		mihomoExec.SetReloadFunc(func(ctx context.Context) error {

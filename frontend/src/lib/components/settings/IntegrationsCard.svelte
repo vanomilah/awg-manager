@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SingboxStatus, HydraRouteStatus, MihomoStatus, XrayStatus } from '$lib/types';
+	import type { SingboxStatus, HydraRouteStatus, MihomoStatus, XrayStatus, OperationalState, TelemtStatus } from '$lib/types';
 	import { Button, ConfirmModal, Input, Modal, StatusDot } from '$lib/components/ui';
 	import SettingsSectionLabel from './SettingsSectionLabel.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -58,13 +58,37 @@
 		mihomoStatusLoading?: boolean;
 		mihomoInstalling?: boolean;
 		mihomoUpdating?: boolean;
+		mihomoRestarting?: boolean;
 		mihomoUninstalling?: boolean;
 		mihomoInstallError?: string | null;
 		mihomoUpdateError?: string | null;
 		oninstallMihomo?: () => void;
 		onupdateMihomo?: () => void;
+		onrestartMihomo?: () => void;
 		onuninstallMihomo?: () => void;
 		showMihomo?: boolean;
+		/** Susanin (Адаптивная маршрутизация) */
+		susaninStatus?: OperationalState | null;
+		susaninStatusLoading?: boolean;
+		susaninInstalling?: boolean;
+		susaninRestarting?: boolean;
+		susaninUninstalling?: boolean;
+		oninstallSusanin?: () => void;
+		onrestartSusanin?: () => void;
+		onuninstallSusanin?: () => void;
+		showSusanin?: boolean;
+		/** Telemt (Telegram MTProxy) */
+		telemtStatus?: TelemtStatus | null;
+		telemtStatusLoading?: boolean;
+		telemtInstalling?: boolean;
+		telemtUpdating?: boolean;
+		telemtRestarting?: boolean;
+		telemtUninstalling?: boolean;
+		oninstallTelemt?: () => void;
+		onupdateTelemt?: () => void;
+		onrestartTelemt?: () => void;
+		onuninstallTelemt?: () => void;
+		showTelemt?: boolean;
 		/** Xray интеграция */
 		xrayStatus?: XrayStatus | null;
 		xrayStatusLoading?: boolean;
@@ -104,12 +128,34 @@
 		mihomoInstalling = false,
 		mihomoUpdating = false,
 		mihomoUninstalling = false,
+		mihomoRestarting = false,
 		mihomoInstallError = null,
 		mihomoUpdateError = null,
 		oninstallMihomo,
 		onupdateMihomo,
+		onrestartMihomo,
 		onuninstallMihomo,
 		showMihomo = true,
+		susaninStatus = null,
+		susaninStatusLoading = false,
+		susaninInstalling = false,
+		susaninRestarting = false,
+		susaninUninstalling = false,
+		oninstallSusanin,
+		onrestartSusanin,
+		onuninstallSusanin,
+		showSusanin = true,
+		telemtStatus = null,
+		telemtStatusLoading = false,
+		telemtInstalling = false,
+		telemtUpdating = false,
+		telemtRestarting = false,
+		telemtUninstalling = false,
+		oninstallTelemt,
+		onupdateTelemt,
+		onrestartTelemt,
+		onuninstallTelemt,
+		showTelemt = true,
 		xrayStatus = null,
 		xrayStatusLoading = false,
 		xrayInstalling = false,
@@ -167,8 +213,17 @@
 	const mihomoNeedsUpdate = $derived(mihomoStatus?.updateAvailable ?? false);
 	const xrayInstalled = $derived(xrayStatus?.installed ?? false);
 	const xrayRunning = $derived(xrayStatus?.running ?? false);
-
 	let confirmUninstallXray = $state(false);
+	let confirmUninstallSusanin = $state(false);
+	let confirmUninstallTelemt = $state(false);
+
+	const susaninInstalled = $derived(susaninStatus?.installed ?? false);
+	const susaninRunning = $derived(susaninStatus?.status === 'running' || susaninStatus?.status === 'learning');
+
+	const telemtInstalled = $derived(telemtStatus?.installed ?? false);
+	const telemtRunning = $derived(telemtStatus?.running ?? false);
+	const telemtNeedsUpdate = $derived(telemtStatus?.updateAvailable ?? false);
+
 	const hydraInstalled = $derived(hydraStatus?.installed ?? false);
 	const hydraRunning = $derived(hydraStatus?.running ?? false);
 	const hydraProcessState = $derived(
@@ -242,7 +297,7 @@
 	});
 </script>
 
-{#if showSingbox || showMihomo || showXray || showHydra || proxyBinaries.length > 0}
+{#if showSingbox || showMihomo || showSusanin || showTelemt || showXray || showHydra || proxyBinaries.length > 0}
 	<div class="settings-block">
 		<div class="card">
 		<SettingsSectionLabel label="Интеграции" icon={Blocks} tone="purple" header />
@@ -480,6 +535,125 @@
 				{:else if oninstallMihomo}
 					<Button variant="primary" size="sm" onclick={oninstallMihomo} loading={mihomoInstalling}>
 						{mihomoInstalling ? 'Установка...' : 'Установить'}
+					</Button>
+				{/if}
+			</div>
+		{/if}
+
+		{#if showSusanin}
+			<div class="setting-row">
+				<div class="integration-item">
+					<StatusDot
+						variant={susaninStatusLoading ? 'muted' : (susaninInstalled && susaninRunning ? 'success' : 'muted')}
+						size="md"
+						ariaLabel={
+							susaninStatusLoading
+								? 'Susanin: получение данных'
+								: susaninInstalled && susaninRunning
+									? 'Susanin работает'
+									: 'Susanin остановлен'
+						}
+					/>
+					<div class="integration-meta">
+						<span class="font-medium">Сусанин (Адаптивная маршрутизация)</span>
+						{#if susaninStatusLoading}
+							<span class="integration-sub">получаю данные…</span>
+						{:else if susaninInstalled && susaninStatus}
+							<span class="integration-sub">
+								v{susaninStatus.version ?? '0.3.10'}
+								{#if susaninRunning}· запущен{:else}· остановлен{/if}
+							</span>
+						{:else}
+							<span class="setting-description">
+								Автоматическое разделение трафика и самообучающаяся маршрутизация доменов и IP.
+							</span>
+						{/if}
+					</div>
+				</div>
+				{#if susaninInstalled}
+					<div class="integration-actions">
+						<Button variant="secondary" size="sm" href="/routing?tab=adaptive">Открыть</Button>
+						{#if onuninstallSusanin}
+							<Button
+								variant="outline-danger"
+								size="sm"
+								loading={susaninUninstalling}
+								onclick={() => (confirmUninstallSusanin = true)}
+							>
+								{susaninUninstalling ? 'Удаление...' : 'Удалить'}
+							</Button>
+						{/if}
+					</div>
+				{:else if susaninStatusLoading}
+					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
+				{:else if oninstallSusanin}
+					<Button variant="primary" size="sm" onclick={oninstallSusanin} loading={susaninInstalling}>
+						{susaninInstalling ? 'Установка...' : 'Установить'}
+					</Button>
+				{/if}
+			</div>
+		{/if}
+
+		{#if showTelemt}
+			<div class="setting-row">
+				<div class="integration-item">
+					<StatusDot
+						variant={telemtStatusLoading ? 'muted' : (telemtInstalled && telemtRunning ? 'success' : 'muted')}
+						size="md"
+						ariaLabel={
+							telemtStatusLoading
+								? 'Telemt: получение данных'
+								: telemtInstalled && telemtRunning
+									? 'Telemt работает'
+									: 'Telemt остановлен'
+						}
+					/>
+					<div class="integration-meta">
+						<span class="font-medium">Telemt (Telegram MTProxy)</span>
+						{#if telemtStatusLoading}
+							<span class="integration-sub">получаю данные…</span>
+						{:else if telemtInstalled && telemtStatus}
+							<span class="integration-sub">
+								v{telemtStatus.version || '?'}
+								{#if telemtRunning && telemtStatus.pid}· pid {telemtStatus.pid}{:else if !telemtRunning}· остановлен{/if}
+							</span>
+							{#if telemtNeedsUpdate}
+								<span class="setting-description warning">
+									Доступно обновление: {telemtStatus.version} → {telemtStatus.latestVersion}
+								</span>
+							{/if}
+						{:else}
+							<span class="setting-description">
+								Высокопроизводительный MTProxy для Telegram с поддержкой Fake-TLS и raw-проксирования.
+							</span>
+						{/if}
+					</div>
+				</div>
+				{#if telemtInstalled}
+					<div class="integration-actions">
+						{#if telemtNeedsUpdate && onupdateTelemt}
+							<Button variant="primary" size="sm" onclick={onupdateTelemt} loading={telemtUpdating}>
+								{telemtUpdating ? 'Обновление...' : 'Обновить'}
+							</Button>
+						{:else}
+							<Button variant="secondary" size="sm" href="/servers">Открыть</Button>
+						{/if}
+						{#if onuninstallTelemt}
+							<Button
+								variant="outline-danger"
+								size="sm"
+								loading={telemtUninstalling}
+								onclick={() => (confirmUninstallTelemt = true)}
+							>
+								{telemtUninstalling ? 'Удаление...' : 'Удалить'}
+							</Button>
+						{/if}
+					</div>
+				{:else if telemtStatusLoading}
+					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
+				{:else if oninstallTelemt}
+					<Button variant="primary" size="sm" onclick={oninstallTelemt} loading={telemtInstalling}>
+						{telemtInstalling ? 'Установка...' : 'Установить'}
 					</Button>
 				{/if}
 			</div>
@@ -752,6 +926,40 @@
 	/>
 {/if}
 
+{#if confirmUninstallSusanin}
+	<ConfirmModal
+		open={confirmUninstallSusanin}
+		title="Удалить Сусанин?"
+		message="Агент susanin-agent будет остановлен, а его исполняемый файл удален с роутера."
+		secondary="Файлы списков vpn_always.txt и vpn_never.txt сохранятся — после повторной установки они продолжат действовать."
+		confirmLabel="Удалить"
+		variant="danger"
+		busy={susaninUninstalling}
+		onConfirm={() => {
+			confirmUninstallSusanin = false;
+			onuninstallSusanin?.();
+		}}
+		onClose={() => (confirmUninstallSusanin = false)}
+	/>
+{/if}
+
+{#if confirmUninstallTelemt}
+	<ConfirmModal
+		open={confirmUninstallTelemt}
+		title="Удалить Telemt?"
+		message="Служба Telemt будет остановлена, а исполняемый файл удален с роутера."
+		secondary="Конфигурационные файлы config.toml и raw.toml сохранятся."
+		confirmLabel="Удалить"
+		variant="danger"
+		busy={telemtUninstalling}
+		onConfirm={() => {
+			confirmUninstallTelemt = false;
+			onuninstallTelemt?.();
+		}}
+		onClose={() => (confirmUninstallTelemt = false)}
+	/>
+{/if}
+
 
 <style>
 	.integration-title-wrap {
@@ -797,6 +1005,7 @@
 		display: flex;
 		gap: 0.35rem;
 		align-items: center;
+		flex-shrink: 0;
 	}
 
 	.card {
@@ -823,6 +1032,8 @@
 		flex-direction: column;
 		gap: 0.125rem;
 		min-width: 0;
+		word-break: normal;
+		overflow-wrap: break-word;
 	}
 
 	.integration-meta .setting-description {

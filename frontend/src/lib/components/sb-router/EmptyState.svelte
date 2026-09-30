@@ -17,7 +17,7 @@
   import SbRouterServiceCatalogModal from './SbRouterServiceCatalogModal.svelte';
   import { templatesSelection, openTemplatesModal, clearSelection } from './templatesStore';
   import { buildTemplateList } from './templatesData';
-  import { finishSetup } from './emptyStateActions';
+  import { finishSetup, ensureTunnelDnsInfra, syncTunnelDnsRule } from './emptyStateActions';
   import type {
     MihomoNativeGroup,
     MihomoNativeProxy,
@@ -153,7 +153,17 @@
           routingEngine: 'mihomo',
           routingMode: 'tproxy',
         });
+
+        if (!isMihomo && selectedTunnel) {
+          try {
+            await ensureTunnelDnsInfra(selectedTunnel);
+            await syncTunnelDnsRule();
+          } catch (e) {
+            console.error('Failed to configure tunnel DNS infra:', e);
+          }
+        }
         await api.mihomoReload();
+        await singboxRouterStore.loadAll();
 
         notifications.success('Готово — Mihomo запущен');
         clearSelection();

@@ -19,6 +19,7 @@ import (
 type ClashClient struct {
 	mu      sync.RWMutex
 	address string // e.g. "127.0.0.1:9099" — построен через ClashAddr
+	addrFn  func() string
 	http    *http.Client
 }
 
@@ -136,11 +137,24 @@ func (c *ClashClient) IsHealthy() bool {
 	return resp.StatusCode == 200
 }
 
-// Address returns the Clash API address for WebSocket proxying.
+// Address returns the Clash API address for WebSocket proxying and REST calls.
 func (c *ClashClient) Address() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	if c.addrFn != nil {
+		if a := c.addrFn(); a != "" {
+			return a
+		}
+	}
 	return c.address
+}
+
+// SetAddressFn registers a dynamic function that resolves the Clash API endpoint
+// (e.g. returning 127.0.0.1:9090 when Mihomo is the active routing engine).
+func (c *ClashClient) SetAddressFn(fn func() string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.addrFn = fn
 }
 
 // SetAddress repoints the client at a new Clash API endpoint. Called when the

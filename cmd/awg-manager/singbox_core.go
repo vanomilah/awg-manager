@@ -260,6 +260,12 @@ func (a *app) setupSingboxRuntime() {
 	// mtime+size in Operator.detectVersionAndFeaturesCached — common
 	// path is ~10µs per call (stat-only check, no subprocess).
 	a.subAdapter.SetSingboxFeaturesFn(a.singboxOp.SingboxFeatures)
+	if a.settingsStore != nil {
+		a.subAdapter.SetIsMihomoPrimary(func() bool {
+			s, err := a.settingsStore.Get()
+			return err == nil && s != nil && s.SingboxRouter.RoutingEngine == "mihomo"
+		})
+	}
 	if err := a.subAdapter.LoadFromDisk(singboxConfigDir); err != nil {
 		a.bootLog.Warn("subscription-adapter", "load-from-disk", err.Error())
 	}

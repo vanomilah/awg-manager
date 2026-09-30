@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -1123,3 +1124,66 @@ func TestFetchSummary_NoDataMeansNilDetails(t *testing.T) {
 		t.Fatalf("want (nil, nil), got d=%+v err=%v", d, err)
 	}
 }
+
+func TestInterfaceStore_ResolveSystemName_FastPathKernelDevice(t *testing.T) {
+	fg := newFakeGetter()
+	fg.SetJSON(ifaceListPath, sampleIfaceList)
+	s := NewInterfaceStore(fg, NopLogger())
+
+	// Kernel device names that exist in kernel (kernelIfaceExists hook returns true in TestMain)
+	for _, kName := range []string{"eth3", "apcli0", "apclii0", "mbr10", "ppp1", "nwg0"} {
+		got := s.ResolveSystemName(context.Background(), kName)
+		if got != kName {
+			t.Errorf("ResolveSystemName(%q): want %q, got %q", kName, kName, got)
+		}
+		if calls := fg.PostSystemNameCalls(kName); calls != 0 {
+			t.Errorf("system-name resolver must NOT be probed for kernel device %q, got %d calls", kName, calls)
+		}
+	}
+}
+
+func TestInterfaceStore_ResolveSystemName_FailedCooldown(t *testing.T) {
+	fg := newFakeGetter()
+	fg.SetJSON(ifaceListPath, sampleIfaceList)
+	// Non-kernel shaped name (e.g. capitalized) not in bootstrap map
+	s := NewInterfaceStore(fg, NopLogger())
+
+	got1 := s.ResolveSystemName(context.Background(), "NonExistentIface0")
+	if got1 != "" {
+		t.Errorf("want empty, got %q", got1)
+	}
+	if calls := fg.PostSystemNameCalls("NonExistentIface0"); calls != 1 {
+		t.Errorf("expected 1 call, got %d", calls)
+	}
+
+	// Second call within 60s cooldown must NOT hit resolver
+	got2 := s.ResolveSystemName(context.Background(), "NonExistentIface0")
+	if got2 != "" {
+		t.Errorf("want empty, got %q", got2)
+	}
+	if calls := fg.PostSystemNameCalls("NonExistentIface0"); calls != 1 {
+		t.Errorf("expected cooldown to prevent second call, got %d calls", calls)
+	}
+}
+
+type flatGetter struct {
+	*FakeGetter
+}
+
+func (g *flatGetter) Post(ctx context.Context, payload any) (json.RawMessage, error) {
+	return json.RawMessage(`{"system-name":"eth3"}`), nil
+}
+
+func TestInterfaceStore_ResolveSystemName_FlatResponseShape(t *testing.T) {
+	fg := newFakeGetter()
+	fg.SetJSON(ifaceListPath, `{
+		"GigabitEthernet1": {"id":"GigabitEthernet1","interface-name":"ISP","type":"GigabitEthernet","state":"up"}
+	}`)
+
+	s := NewInterfaceStore(&flatGetter{FakeGetter: fg}, NopLogger())
+	got := s.ResolveSystemName(context.Background(), "GigabitEthernet1")
+	if got != "eth3" {
+		t.Errorf("flat response shape: want eth3, got %q", got)
+	}
+}
+
