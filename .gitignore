@@ -97,3 +97,9 @@ scripts/diag/
 /internal/presets/decompiled/
 /build/tools/.design/
 tmp/
+.gocache*/
+reports/
+__pycache__/
+*.pyc
+*.log
+
