@@ -2009,6 +2009,7 @@
 				proxies={mihomoInventory?.proxies ?? []}
 				subscriptions={mihomoSubscriptions}
 				runtimeProxies={mihomoRuntimeProxies}
+				runtimeProviders={mihomoRuntimeProviders}
 				onGroupChanged={() => {
 					void mihomoInventoryStore.refetch();
 					void mihomoRuntimeStore.refetch();

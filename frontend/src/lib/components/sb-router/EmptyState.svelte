@@ -71,9 +71,18 @@
   let selectedTunnel = $state<string | null>(null);
   let finishing = $state(false);
 
-  const tunnelOutbounds = $derived(
-    $options.filter((g) => g.group !== 'Специальные').flatMap((g) => g.items),
-  );
+  const tunnelOutbounds = $derived.by(() => {
+    const raw = $options
+      .filter((g) => g.group !== 'Специальные' && (!isMihomo || g.group !== 'Proxy-группы (Mihomo)'))
+      .flatMap((g) => g.items);
+    if (!isMihomo || mihomoGroups.length === 0) return raw;
+    const groupNames = new Set(mihomoGroups.map((g) => g.name.toLowerCase()));
+    return raw.filter((ob) => {
+      const val = ob.value.toLowerCase();
+      const baseLabel = ob.label.replace(/\s*\([^)]*\)$/, '').trim().toLowerCase();
+      return !groupNames.has(val) && !groupNames.has(baseLabel);
+    });
+  });
   const groups = $derived(buildTemplateList($presets, $ruleSets, ''));
 
   const hasServices = $derived($templatesSelection.size > 0);

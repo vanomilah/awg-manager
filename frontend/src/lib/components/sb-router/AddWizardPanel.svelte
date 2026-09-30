@@ -124,22 +124,27 @@
   }
 
   const tunnelOutbounds = $derived(
-    $options.filter((g) => g.group !== 'Специальные').flatMap((g) => g.items),
+    $options
+      .filter((g) => g.group !== 'Специальные' && (!effectiveIsMihomo || g.group !== 'Proxy-группы (Mihomo)'))
+      .flatMap((g) => g.items),
   );
 
   const allAvailableTunnels = $derived.by(() => {
     const list: Array<{ value: string; label: string; kind?: string }> = [];
+    const groupNames = effectiveIsMihomo
+      ? new Set(mihomoGroups.map((g) => g.name.toLowerCase()))
+      : new Set<string>();
 
     if (effectiveIsMihomo) {
       // 1. Mihomo standalone proxies
       for (const p of mihomoProxies) {
-        if (p.enabled && !list.some((i) => i.value === p.name)) {
+        if (p.enabled && !groupNames.has(p.name.toLowerCase()) && !list.some((i) => i.value === p.name)) {
           list.push({ value: p.name, label: p.name, kind: 'proxy' });
         }
       }
       // 2. Mihomo subscriptions
       for (const s of mihomoSubscriptions) {
-        if (s.enabled && s.groupName && !list.some((i) => i.value === s.groupName)) {
+        if (s.enabled && s.groupName && !groupNames.has(s.groupName.toLowerCase()) && !list.some((i) => i.value === s.groupName)) {
           list.push({ value: s.groupName, label: `${s.name} (${s.groupName})`, kind: 'subscription' });
         }
       }
@@ -147,6 +152,13 @@
 
     // 3. Singbox options (AWG tunnels, Wireguard, Sing-box tunnels)
     for (const ob of tunnelOutbounds) {
+      if (effectiveIsMihomo) {
+        const val = ob.value.toLowerCase();
+        const baseLabel = ob.label.replace(/\s*\([^)]*\)$/, '').trim().toLowerCase();
+        if (groupNames.has(val) || groupNames.has(baseLabel)) {
+          continue;
+        }
+      }
       if (!list.some((i) => i.value === ob.value)) {
         list.push({ value: ob.value, label: ob.label });
       }
