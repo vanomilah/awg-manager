@@ -593,7 +593,7 @@ def deploy():
         print(f"No IPK found for {entware_arch}! Please build first.", flush=True)
         sys.exit(1)
     
-    ipk_path = max(ipks, key=os.path.getctime)
+    ipk_path = max(ipks, key=os.path.getmtime)
     ipk_filename = os.path.basename(ipk_path)
     print(f"Found IPK: {ipk_path}", flush=True)
 
