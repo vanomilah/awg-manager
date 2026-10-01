@@ -88,6 +88,7 @@ type ToolSources struct {
 	TestOutbound    func(context.Context, string, string) (any, error)
 	ExplainDNS      func(context.Context, string, string, string) (any, error)
 	ExplainConn     func(context.Context, string, int, string, int, string) (any, error)
+	DNSProbe        func(context.Context) error
 }
 
 func NewToolRegistry() *ToolRegistry {
