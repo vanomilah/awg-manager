@@ -36,6 +36,9 @@ type Service interface {
 	// UnassignDevice removes a device's policy assignment.
 	UnassignDevice(ctx context.Context, mac string) error
 
+	// BatchAssignDevices assigns multiple devices to a policy, or unassigns if policyName is empty or "default".
+	BatchAssignDevices(ctx context.Context, macs []string, policyName string) error
+
 	// ListDevices returns all known LAN devices with their policy assignments.
 	ListDevices(ctx context.Context) ([]Device, error)
 

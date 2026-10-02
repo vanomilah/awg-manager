@@ -374,6 +374,29 @@ func (s *ServiceImpl) UnassignDevice(ctx context.Context, mac string) error {
 	return nil
 }
 
+// BatchAssignDevices assigns multiple devices to a policy, or unassigns them if policyName is empty or "default".
+func (s *ServiceImpl) BatchAssignDevices(ctx context.Context, macs []string, policyName string) error {
+	if len(macs) == 0 {
+		return nil
+	}
+	isUnassign := policyName == "" || policyName == "default"
+	if !isUnassign {
+		if !isValidPolicyName(policyName) {
+			return fmt.Errorf("invalid policy name: %s", policyName)
+		}
+		if !IsStandardPolicyName(policyName) {
+			return errHydraRoutePolicy(policyName)
+		}
+	}
+	if err := s.policies.BatchAssignDevices(ctx, macs, policyName); err != nil {
+		s.appLog.Warn("batch-assign-device", policyName, fmt.Sprintf("Failed for %d devices: %v", len(macs), err))
+		return err
+	}
+
+	s.appLog.Info("batch-assign-device", policyName, fmt.Sprintf("%d devices assigned to %s", len(macs), policyName))
+	return nil
+}
+
 // ListDevices returns all known LAN devices with their policy assignments.
 func (s *ServiceImpl) ListDevices(ctx context.Context) ([]Device, error) {
 	if isForceRefresh(ctx) {

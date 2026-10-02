@@ -1128,6 +1128,7 @@ func (s *Server) registerPolicyRoutes(mux *http.ServeMux, h *routeHandlers) {
 	mux.HandleFunc("/api/access-policies/standalone", h.guarded(h.accessPolicyHandler.SetStandalone))
 	mux.HandleFunc("/api/access-policies/permit", h.guarded(h.accessPolicyHandler.PermitInterface))
 	mux.HandleFunc("/api/access-policies/assign", h.guarded(h.accessPolicyHandler.AssignDevice))
+	mux.HandleFunc("/api/access-policies/batch-assign", h.guarded(h.accessPolicyHandler.BatchAssignDevices))
 	mux.HandleFunc("/api/access-policies/interfaces", h.guarded(h.accessPolicyHandler.ListGlobalInterfaces))
 	mux.HandleFunc("/api/access-policies/interface-up", h.guarded(h.accessPolicyHandler.SetInterfaceUp))
 

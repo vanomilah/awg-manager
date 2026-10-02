@@ -104,3 +104,36 @@ func TestPolicyCommands_UnassignDevice(t *testing.T) {
 		t.Errorf("unassign: %#v", pol)
 	}
 }
+
+func TestPolicyCommands_BatchAssignDevices(t *testing.T) {
+	cmds, poster, sc, _ := newTestPolicyCommands(t)
+	err := cmds.BatchAssignDevices(context.Background(), []string{"aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"}, "Policy1")
+	if err != nil {
+		t.Fatalf("BatchAssignDevices failed: %v", err)
+	}
+	p := poster.Payloads()[0].(map[string]any)
+	hosts := p["ip"].(map[string]any)["hotspot"].(map[string]any)["host"].([]any)
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(hosts))
+	}
+	h1 := hosts[0].(map[string]any)
+	if h1["mac"] != "aa:bb:cc:dd:ee:01" || h1["policy"] != "Policy1" {
+		t.Errorf("host 1: %#v", h1)
+	}
+	if sc.Status().State != SaveStatePending {
+		t.Errorf("save state: want Pending, got %v", sc.Status().State)
+	}
+
+	// Test unassign via empty policy
+	cmds2, poster2, _, _ := newTestPolicyCommands(t)
+	err = cmds2.BatchAssignDevices(context.Background(), []string{"aa:bb:cc:dd:ee:01"}, "")
+	if err != nil {
+		t.Fatalf("BatchAssignDevices unassign failed: %v", err)
+	}
+	p2 := poster2.Payloads()[0].(map[string]any)
+	hosts2 := p2["ip"].(map[string]any)["hotspot"].(map[string]any)["host"].([]any)
+	h2 := hosts2[0].(map[string]any)
+	if h2["policy"].(map[string]any)["no"] != true {
+		t.Errorf("host 2 unassign: %#v", h2)
+	}
+}

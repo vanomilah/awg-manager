@@ -103,6 +103,12 @@ type AssignDeviceRequest struct {
 	Policy string `json:"policy" example:"Policy0"`
 }
 
+// BatchAssignDeviceRequest is the body for POST /access-policies/batch-assign.
+type BatchAssignDeviceRequest struct {
+	MACs   []string `json:"macs"`
+	Policy string   `json:"policy"`
+}
+
 // SetInterfaceUpRequest is the body for POST /access-policies/interface-up.
 type SetInterfaceUpRequest struct {
 	Name string `json:"name" example:"Wireguard0"`
@@ -440,6 +446,41 @@ func (h *AccessPolicyHandler) unassignDeviceDelete(w http.ResponseWriter, r *htt
 	response.Success(w, map[string]bool{"ok": true})
 	h.publishPoliciesUpdated("unassign-device")
 	h.publishDevicesUpdated("unassign-device")
+}
+
+// BatchAssignDevices handles batch device assignment to a policy or unassignment.
+//
+//	@Summary		Batch assign devices to policy
+//	@Description	Assigns multiple LAN devices to a policy or unassigns them if policy is empty or "default".
+//	@Tags			access-policy
+//	@Accept			json
+//	@Produce		json
+//	@Security		CookieAuth
+//	@Param			body	body		BatchAssignDeviceRequest	true	"Device MACs + target policy name"
+//	@Success		200		{object}	OkResponse
+//	@Failure		400		{object}	APIErrorEnvelope
+//	@Failure		500		{object}	APIErrorEnvelope
+//	@Router			/access-policies/batch-assign [post]
+func (h *AccessPolicyHandler) BatchAssignDevices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		response.MethodNotAllowed(w)
+		return
+	}
+	req, ok := parseJSON[BatchAssignDeviceRequest](w, r, http.MethodPost)
+	if !ok {
+		return
+	}
+	if len(req.MACs) == 0 {
+		response.Error(w, "missing macs", "MISSING_MACS")
+		return
+	}
+	if err := h.svc.BatchAssignDevices(r.Context(), req.MACs, req.Policy); err != nil {
+		response.Error(w, err.Error(), "BATCH_ASSIGN_FAILED")
+		return
+	}
+	response.Success(w, map[string]bool{"ok": true})
+	h.publishPoliciesUpdated("batch-assign-device")
+	h.publishDevicesUpdated("batch-assign-device")
 }
 
 // ListDevices returns all LAN devices with their policy assignments.

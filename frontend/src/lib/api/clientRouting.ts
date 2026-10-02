@@ -196,6 +196,13 @@ export class RoutingClient extends ServersClient {
 		});
 	}
 
+	async batchAssignDevicesToPolicy(macs: string[], policy: string): Promise<void> {
+		return this.request('/access-policies/batch-assign', {
+			method: 'POST',
+			body: JSON.stringify({ macs, policy }),
+		});
+	}
+
 	async listPolicyDevices(): Promise<PolicyDevice[]> {
 		return this.request<PolicyDevice[]>('/routing/policy-devices');
 	}
