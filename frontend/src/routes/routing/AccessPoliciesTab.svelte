@@ -1,9 +1,9 @@
 <script lang="ts">
     import { api } from '$lib/api/client';
     import type { AccessPolicy, PolicyDevice, PolicyGlobalInterface } from '$lib/types';
-    import { ConfirmModal, StoreStatusBadge, Button } from '$lib/components/ui';
+    import { ConfirmModal, StoreStatusBadge, Button, SegmentedControl, type SegmentedOption } from '$lib/components/ui';
     import RoutingCreateButton from '$lib/components/routing/RoutingCreateButton.svelte';
-    import { PolicyTable, PolicyCreateModal, PolicyEditView } from '$lib/components/accesspolicy';
+    import { PolicyTable, PolicyCreateModal, PolicyEditView, DeviceMatrix } from '$lib/components/accesspolicy';
     import { notifications } from '$lib/stores/notifications';
     import { accessPoliciesStore, policyDevicesStore, policyInterfacesStore, invalidateAllRouting } from '$lib/stores/routing';
     import { isHydraRouteAccessPolicy } from '$lib/utils/accessPolicy';
@@ -19,6 +19,25 @@
     }
 
     let { accessPolicies, policyDevices, policyInterfaces, missing = false, openPolicy = null }: Props = $props();
+
+    type ViewMode = 'matrix' | 'policies';
+    let viewMode = $state<ViewMode>(
+        typeof localStorage !== 'undefined'
+            ? (localStorage.getItem('awgm_access_policies_view') as ViewMode) || 'matrix'
+            : 'matrix'
+    );
+
+    function handleViewModeChange(mode: ViewMode) {
+        viewMode = mode;
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('awgm_access_policies_view', mode);
+        }
+    }
+
+    const VIEW_OPTIONS: SegmentedOption<ViewMode>[] = [
+        { value: 'matrix', label: 'Матрица устройств' },
+        { value: 'policies', label: 'Список политик' },
+    ];
 
     let policyCreateOpen = $state(false);
     let policyCreating = $state(false);
@@ -145,6 +164,21 @@
             policyBulkDeleteConfirm = false;
         }
     }
+
+    async function handleMatrixAssign(mac: string, policy: string) {
+        await api.assignDeviceToPolicy(mac, policy);
+        invalidateAllRouting();
+    }
+
+    async function handleMatrixUnassign(mac: string) {
+        await api.unassignDeviceFromPolicy(mac);
+        invalidateAllRouting();
+    }
+
+    async function handleMatrixBatchAssign(macs: string[], policy: string) {
+        await api.batchAssignDevicesToPolicy(macs, policy);
+        invalidateAllRouting();
+    }
 </script>
 
 {#if editingPolicyData}
@@ -170,6 +204,12 @@
                 <StoreStatusBadge store={accessPoliciesStore} />
                 <StoreStatusBadge store={policyDevicesStore} />
                 <StoreStatusBadge store={policyInterfacesStore} />
+                <SegmentedControl
+                    value={viewMode}
+                    options={VIEW_OPTIONS}
+                    ariaLabel="Режим отображения политик"
+                    onchange={handleViewModeChange}
+                />
                 <Button
                     variant="ghost"
                     size="sm"
@@ -179,7 +219,7 @@
                 >
                     Обновить
                 </Button>
-                {#if accessPolicies.length > 0}
+                {#if viewMode === 'policies' && accessPolicies.length > 0}
                     <Button variant="ghost" size="sm" onclick={() => { policySelectionMode = true; policySelected = new Set(); }}>Выбрать</Button>
                 {/if}
                 <RoutingCreateButton onclick={() => (policyCreateOpen = true)} />
@@ -198,7 +238,23 @@
         {/if}
     </div>
 
-    {#if accessPolicies.length === 0}
+    {#if viewMode === 'matrix'}
+        <div class="policy-list-scroll">
+            <DeviceMatrix
+                {accessPolicies}
+                {policyDevices}
+                {policyInterfaces}
+                onassign={handleMatrixAssign}
+                onunassign={handleMatrixUnassign}
+                onbatchassign={handleMatrixBatchAssign}
+                oncreatepolicy={() => (policyCreateOpen = true)}
+                oneditpolicy={(name) => {
+                    editingPolicy = name;
+                    editingPolicyData = accessPolicies.find((p) => p.name === name) ?? null;
+                }}
+            />
+        </div>
+    {:else if accessPolicies.length === 0}
         {#if missing}
             <div class="warn-hint">
                 Данные политик не получены от маршрутизатора. Нажмите «Загрузить недостающее» в заголовке страницы, чтобы повторить запрос.

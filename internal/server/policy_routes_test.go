@@ -36,6 +36,7 @@ func TestPolicyRoutesRegisteredRegardlessOfFirmware(t *testing.T) {
 		"/api/access-policies/standalone",
 		"/api/access-policies/permit",
 		"/api/access-policies/assign",
+		"/api/access-policies/batch-assign",
 		"/api/access-policies/interfaces",
 		"/api/access-policies/interface-up",
 		"/api/access-policies/devices",

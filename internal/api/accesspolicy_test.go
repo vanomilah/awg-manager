@@ -44,6 +44,9 @@ func (s *recAccessPolicySvc) AssignDevice(_ context.Context, mac, p string) erro
 func (s *recAccessPolicySvc) UnassignDevice(_ context.Context, mac string) error {
 	return s.rec("UnassignDevice:%s", mac)
 }
+func (s *recAccessPolicySvc) BatchAssignDevices(_ context.Context, macs []string, p string) error {
+	return s.rec("BatchAssignDevices:%d:%s", len(macs), p)
+}
 func (s *recAccessPolicySvc) ListDevices(context.Context) ([]accesspolicy.Device, error) {
 	return nil, nil
 }
@@ -87,6 +90,8 @@ func TestAccessPolicyHandler_MutationsForwardArgsAndPublish(t *testing.T) {
 			[]string{"AssignDevice:aa:bb:cc:dd:ee:01:Policy3"}, []string{pol + "/assign-device", dev + "/assign-device"}},
 		{"UnassignDevice", func(h *AccessPolicyHandler) http.HandlerFunc { return h.AssignDevice }, "DELETE", "/access-policies/device?mac=aa:bb:cc:dd:ee:01", "",
 			[]string{"UnassignDevice:aa:bb:cc:dd:ee:01"}, []string{pol + "/unassign-device", dev + "/unassign-device"}},
+		{"BatchAssignDevices", func(h *AccessPolicyHandler) http.HandlerFunc { return h.BatchAssignDevices }, "POST", "/access-policies/batch-assign", `{"macs":["aa:bb:cc:dd:ee:01","aa:bb:cc:dd:ee:02"],"policy":"Policy3"}`,
+			[]string{"BatchAssignDevices:2:Policy3"}, []string{pol + "/batch-assign-device", dev + "/batch-assign-device"}},
 		{"SetInterfaceUp", func(h *AccessPolicyHandler) http.HandlerFunc { return h.SetInterfaceUp }, "POST", "/access-policies/interface-up", `{"name":"Wireguard2","up":false}`,
 			[]string{"SetInterfaceUp:Wireguard2:false"}, []string{"routing.policyInterfaces/set-interface-up", "routing.tunnels/set-interface-up", "tunnels/set-interface-up"}},
 	}
@@ -118,6 +123,17 @@ func TestAccessPolicyHandler_MutationsForwardArgsAndPublish(t *testing.T) {
 				t.Fatalf("на отказе публикаций быть не должно: %v", got)
 			}
 		})
+	}
+}
+
+func TestAccessPolicyHandler_BatchAssignDevices_RequiresMACs(t *testing.T) {
+	svc := &recAccessPolicySvc{}
+	h := NewAccessPolicyHandler(svc)
+	if rr := perform(h.BatchAssignDevices, "POST", "/access-policies/batch-assign", `{"macs":[],"policy":"Policy3"}`); decodeJSONBody(t, rr)["code"] != "MISSING_MACS" {
+		t.Fatal(rr.Body.String())
+	}
+	if len(svc.calls) != 0 {
+		t.Fatalf("служба не должна вызываться: %v", svc.calls)
 	}
 }
 

@@ -37,6 +37,7 @@ func (s *recPolicySvc) PermitInterface(_ context.Context, n, i string, o int) er
 func (s *recPolicySvc) DenyInterface(context.Context, string, string) error { return nil }
 func (s *recPolicySvc) AssignDevice(context.Context, string, string) error  { return nil }
 func (s *recPolicySvc) UnassignDevice(context.Context, string) error        { return nil }
+func (s *recPolicySvc) BatchAssignDevices(context.Context, []string, string) error { return nil }
 func (s *recPolicySvc) ListDevices(context.Context) ([]accesspolicy.Device, error) {
 	return nil, nil
 }

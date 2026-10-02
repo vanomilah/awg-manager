@@ -2,6 +2,7 @@ package command
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hoaxisr/awg-manager/internal/ndms/query"
 )
@@ -146,6 +147,42 @@ func (c *PolicyCommands) UnassignDevice(ctx context.Context, mac string) error {
 		},
 	}
 	return postMutationChecked(ctx, c.poster, c.save, payload, "unassign device "+mac,
+		c.queries.Hotspot.InvalidateAll,
+		c.queries.RunningConfig.InvalidateAll)
+}
+
+func (c *PolicyCommands) BatchAssignDevices(ctx context.Context, macs []string, policyName string) error {
+	if len(macs) == 0 {
+		return nil
+	}
+	hosts := make([]any, 0, len(macs))
+	for _, mac := range macs {
+		if mac == "" {
+			continue
+		}
+		if policyName == "" || policyName == "default" {
+			hosts = append(hosts, map[string]any{
+				"mac":    mac,
+				"policy": map[string]any{"no": true},
+			})
+		} else {
+			hosts = append(hosts, map[string]any{
+				"mac":    mac,
+				"policy": policyName,
+			})
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	payload := map[string]any{
+		"ip": map[string]any{
+			"hotspot": map[string]any{
+				"host": hosts,
+			},
+		},
+	}
+	return postMutationChecked(ctx, c.poster, c.save, payload, fmt.Sprintf("batch assign %d devices to %s", len(hosts), policyName),
 		c.queries.Hotspot.InvalidateAll,
 		c.queries.RunningConfig.InvalidateAll)
 }
