@@ -43,7 +43,12 @@
     let policyCreating = $state(false);
     let policyDeleteName = $state<string | null>(null);
     let editingPolicy = $state<string | null>(null);
-    let editingPolicyData = $state<AccessPolicy | null>(null);
+    let createdPolicy = $state<AccessPolicy | null>(null);
+    let editingPolicyData = $derived(
+        editingPolicy
+            ? (accessPolicies.find((p) => p.name === editingPolicy) ?? (createdPolicy?.name === editingPolicy ? createdPolicy : null))
+            : null
+    );
     let policySelectionMode = $state(false);
     let policySelected = $state<Set<string>>(new Set());
 	let policyBulkLoading = $state(false);
@@ -52,13 +57,6 @@
 
     let policyCount = $derived(accessPolicies.length);
     let policyDeviceCount = $derived(accessPolicies.reduce((n, p) => n + p.deviceCount, 0));
-
-    // Keep editingPolicyData in sync with store-driven accessPolicies
-    $effect(() => {
-        if (editingPolicy) {
-            editingPolicyData = accessPolicies.find(p => p.name === editingPolicy) ?? null;
-        }
-    });
 
     // Одноразовое открытие по deep-link: политики приезжают из стора, поэтому
     // ждём появления нужной. Отмечаем имя обработанным, иначе «Назад» из
@@ -70,8 +68,6 @@
         if (!target) return;
         appliedOpenPolicy = openPolicy;
         editingPolicy = target.name;
-        editingPolicyData = target;
-        void refreshPolicyData();
     });
 
     async function createPolicy(description: string) {
@@ -80,8 +76,8 @@
             const created = await api.createAccessPolicy(description);
             policyCreateOpen = false;
             // Open newly created policy for editing
+            createdPolicy = created;
             editingPolicy = created.name;
-            editingPolicyData = created;
             void refreshPolicyData();
             notifications.success('Политика создана');
         } catch (e) {
@@ -194,7 +190,7 @@
             policy={editingPolicyData}
             devices={policyDevices}
             globalInterfaces={policyInterfaces}
-            onback={() => { editingPolicy = null; editingPolicyData = null; }}
+            onback={() => { editingPolicy = null; createdPolicy = null; }}
             onupdate={refreshPolicyData}
             ondeviceassigned={handleDeviceAssigned}
             ondeviceunassigned={handleDeviceUnassigned}
@@ -257,7 +253,6 @@
                 oncreatepolicy={() => (policyCreateOpen = true)}
                 oneditpolicy={(name) => {
                     editingPolicy = name;
-                    editingPolicyData = accessPolicies.find((p) => p.name === name) ?? null;
                 }}
             />
         </div>
@@ -275,7 +270,7 @@
         <div class="policy-list-scroll">
             <PolicyTable
                 policies={accessPolicies}
-                onedit={(name) => { editingPolicy = name; editingPolicyData = accessPolicies.find(p => p.name === name) ?? null; void refreshPolicyData(); }}
+                onedit={(name) => { editingPolicy = name; }}
                 ondelete={(name) => policyDeleteName = name}
                 selectable={policySelectionMode}
                 selectedNames={policySelected}

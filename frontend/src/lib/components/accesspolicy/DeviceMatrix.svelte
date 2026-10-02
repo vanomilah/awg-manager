@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { AccessPolicy, PolicyDevice, PolicyGlobalInterface } from '$lib/types';
-	import { isHydraRouteAccessPolicy } from '$lib/utils/accessPolicy';
+	import { isHydraRouteAccessPolicy, isDeviceOnline } from '$lib/utils/accessPolicy';
 	import { getDeviceTypeInfo } from '$lib/utils/device-icon';
 	import { Badge, Button } from '$lib/components/ui';
 	import PolicyIcon from './PolicyIcon.svelte';
@@ -54,7 +54,7 @@
 	);
 
 	function isOnline(d: PolicyDevice): boolean {
-		return d.active && d.link === 'up';
+		return isDeviceOnline(d);
 	}
 
 	function hasCustomPolicy(d: PolicyDevice): boolean {
