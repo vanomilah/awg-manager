@@ -489,8 +489,8 @@ func (c *CatalogImpl) ResolveTargetTunnel(ctx context.Context, target string) (s
 			if wanModel.Known(target) {
 				return "wan:" + target, true
 			}
-			if ndmsID := wanModel.IDFor(target); ndmsID != "" {
-				return "wan:" + target, true
+			if kernelName := wanModel.NameForID(target); kernelName != "" {
+				return "wan:" + kernelName, true
 			}
 		}
 	}
