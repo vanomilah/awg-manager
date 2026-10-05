@@ -54,8 +54,9 @@ func isGhostPolicyName(name string) bool {
 }
 
 func isSystemPolicy(name string) bool {
-	if strings.HasPrefix(name, "Policy") {
-		numPart := strings.TrimPrefix(name, "Policy")
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "policy") {
+		numPart := strings.TrimPrefix(lower, "policy")
 		if _, err := strconv.Atoi(numPart); err == nil {
 			return true
 		}

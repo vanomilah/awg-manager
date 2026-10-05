@@ -254,10 +254,13 @@ func TestIsGhostPolicyName(t *testing.T) {
 		name string
 		want bool
 	}{
-		// Keenetic system policies: never ghosts
+		// Keenetic system policies: never ghosts (case-insensitive)
 		{"Policy0", false},
 		{"Policy1", false},
 		{"Policy10", false},
+		{"policy0", false},
+		{"policy10", false},
+		{"POLICY0", false},
 
 		// Legitimate user policy names
 		{"EmptyUser", false},
@@ -265,9 +268,11 @@ func TestIsGhostPolicyName(t *testing.T) {
 		{"Work", false},
 		{"Direct", false},
 		{"Gaming", false},
+		{"PolicyUser", false},
 
 		// Prefixed targets
 		{"wan:ppp0", true},
+		{"wan:PPPoE0", true},
 		{"system:Wireguard0", true},
 
 		// Interface naming patterns matching ghostPolicyPrefixRE

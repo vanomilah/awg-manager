@@ -715,10 +715,20 @@ func TestResolveTargetTunnel(t *testing.T) {
 		t.Errorf("ResolveTargetTunnel(GigabitEthernet1) = (%q, %v), want (wan:eth3, true)", id, ok)
 	}
 
-	// 6. WAN prefix
+	// 6. WAN prefix (kernel name and NDMS ID normalization)
 	id, ok = cat.ResolveTargetTunnel(ctx, "wan:ppp0")
 	if !ok || id != "wan:ppp0" {
 		t.Errorf("ResolveTargetTunnel(wan:ppp0) = (%q, %v), want (wan:ppp0, true)", id, ok)
+	}
+
+	id, ok = cat.ResolveTargetTunnel(ctx, "wan:PPPoE0")
+	if !ok || id != "wan:ppp0" {
+		t.Errorf("ResolveTargetTunnel(wan:PPPoE0) = (%q, %v), want (wan:ppp0, true)", id, ok)
+	}
+
+	id, ok = cat.ResolveTargetTunnel(ctx, "wan:GigabitEthernet1")
+	if !ok || id != "wan:eth3" {
+		t.Errorf("ResolveTargetTunnel(wan:GigabitEthernet1) = (%q, %v), want (wan:eth3, true)", id, ok)
 	}
 
 	// 7. Non-existent target

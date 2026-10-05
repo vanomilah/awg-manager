@@ -75,6 +75,9 @@ func (emptyCatalog) SnapshotAll(context.Context) *routing.RoutingSnapshot { retu
 func (emptyCatalog) GetKernelIfaceName(context.Context, string) (string, error) {
 	return "", nil
 }
+func (emptyCatalog) ResolveTargetTunnel(context.Context, string) (string, bool) {
+	return "", false
+}
 
 // noNDMS — RCI недоступен: сервис обязан пережить это и отдать соединения
 // без имён клиентов (в проде ровно этот путь и берётся, когда ndm молчит).
