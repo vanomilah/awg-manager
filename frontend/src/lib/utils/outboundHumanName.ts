@@ -61,6 +61,10 @@ export function formatOutboundHumanName(
   if (raw.startsWith('awg-sys-')) {
     return raw.slice(8);
   }
+  // "awg-wdttraw-default" -> "default (WDTT)"
+  if (raw.startsWith('awg-wdttraw-')) {
+    return raw.slice(12) + ' (WDTT)';
+  }
   // "awg-awg20" -> "awg20"
   if (raw.startsWith('awg-')) {
     return raw.slice(4);

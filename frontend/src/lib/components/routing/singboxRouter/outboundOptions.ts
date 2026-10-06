@@ -34,9 +34,20 @@ export function buildOutboundOptions(
 		});
 	}
 
-	const managed = tags.filter((t) => t.kind === 'managed');
+	const wdtt = tags.filter((t) => t.tag.startsWith('awg-wdttraw-'));
+	const managed = tags.filter((t) => t.kind === 'managed' && !t.tag.startsWith('awg-wdttraw-'));
 	const system = tags.filter((t) => t.kind === 'system');
 	const awg3 = tags.filter((t) => t.kind === 'awg3');
+
+	if (wdtt.length > 0) {
+		groups.push({
+			group: 'WDTT туннели',
+			items: wdtt.map((t) => ({
+				value: t.tag,
+				label: `${t.label} (${t.iface})`,
+			})),
+		});
+	}
 
 	if (managed.length > 0) {
 		groups.push({

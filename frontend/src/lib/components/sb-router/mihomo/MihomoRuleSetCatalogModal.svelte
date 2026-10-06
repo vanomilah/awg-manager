@@ -126,10 +126,14 @@
     const awgList = $awgTagsStore.data ?? [];
     for (const t of awgList) {
       if (!list.some(i => i.value === t.tag)) {
+        const isWdtt = t.tag.startsWith('awg-wdttraw-');
+        const gName = isWdtt
+          ? 'WDTT туннели'
+          : (t.kind === 'system' ? 'Системные WireGuard' : 'AWG туннели');
         list.push({
           value: t.tag,
           label: t.label ? `${t.label} (${t.tag})` : t.tag,
-          group: t.kind === 'system' ? 'Системные WireGuard' : 'AWG туннели'
+          group: gName
         });
       }
     }

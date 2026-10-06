@@ -71,9 +71,13 @@ func (s *ServiceImpl) enumerate(ctx context.Context) ([]AWGEntry, error) {
 				continue
 			}
 			seen[t.BackendIface] = true
+			label := t.Name
+			if label == "" {
+				label = t.ID
+			}
 			out = append(out, AWGEntry{
 				Tag:      ManagedTag(t.ID),
-				Label:    t.Name,
+				Label:    label,
 				Kind:     "managed",
 				Iface:    t.BackendIface,
 				Resolver: firstIP(t.DNS),

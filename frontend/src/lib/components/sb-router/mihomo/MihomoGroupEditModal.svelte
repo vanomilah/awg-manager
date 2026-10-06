@@ -82,9 +82,12 @@
     // AWG and Native WireGuard tunnels
     const awgList = $awgTags.data ?? [];
     for (const t of awgList) {
-      const gName = t.kind === 'managed'
-        ? 'AWG туннели (Kernel)'
-        : (t.kind === 'system' ? 'Системные WireGuard (Native)' : 'AWG3 туннели');
+      const isWdtt = t.tag.startsWith('awg-wdttraw-');
+      const gName = isWdtt
+        ? 'WDTT туннели'
+        : (t.kind === 'managed'
+            ? 'AWG туннели (Kernel)'
+            : (t.kind === 'system' ? 'Системные WireGuard (Native)' : 'AWG3 туннели'));
       if (!list.some((i) => i.value === t.tag)) {
         list.push({
           value: t.tag,
