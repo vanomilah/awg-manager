@@ -452,9 +452,14 @@ func (d *DynamicEngine) reloadLocked() error {
 	// record a request and are drained after the sing-box call returns.
 	d.suppressReloadHook.Add(1)
 	d.expectedReloadHook.Store(1)
-	reloadErr := d.singboxEngine.Reload()
-	d.expectedReloadHook.Store(0)
-	d.suppressReloadHook.Add(-1)
+	var reloadErr error
+	func() {
+		defer func() {
+			d.expectedReloadHook.Store(0)
+			d.suppressReloadHook.Add(-1)
+		}()
+		reloadErr = d.singboxEngine.Reload()
+	}()
 	drainErr := d.drainReloadHookRequestsLocked()
 	return errors.Join(reloadErr, drainErr)
 }
@@ -478,6 +483,8 @@ func (d *DynamicEngine) syncMihomoRuntimeLocked() error {
 func (d *DynamicEngine) ForceStopMihomo() error {
 	d.transitionMu.Lock()
 	defer d.transitionMu.Unlock()
+	d.currentMihomoMode = mihomoRuntimeOff
+	d.markMihomoUnavailable()
 	if d.mihomoEngine != nil {
 		return d.mihomoEngine.Stop()
 	}
