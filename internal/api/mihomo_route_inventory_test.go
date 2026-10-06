@@ -44,6 +44,7 @@ var KnownMihomoRouteClassification = map[string]RouteKind{
 	"POST /api/mihomo/update":                             KindOrdinaryMutation,
 	"POST /api/mihomo/uninstall":                          KindOrdinaryMutation,
 	"POST /api/mihomo/reload":                             KindOrdinaryMutation,
+	"POST /api/mihomo/restart":                            KindOrdinaryMutation,
 	"POST /api/mihomo/native/proxies":                     KindOrdinaryMutation,
 	"PUT /api/mihomo/native/proxies/{id}":                 KindOrdinaryMutation,
 	"DELETE /api/mihomo/native/proxies/{id}":              KindOrdinaryMutation,
