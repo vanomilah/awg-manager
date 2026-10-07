@@ -130,8 +130,9 @@ type ProxyGroup struct {
 	ExcludeType         string   `json:"excludeType,omitempty"`
 	ExpectedStatus      string   `json:"expectedStatus,omitempty"`
 	Hidden              bool     `json:"hidden,omitempty"`
-	Icon                string   `json:"icon,omitempty"`
-	Enabled             bool     `json:"enabled"`
+	Icon                string       `json:"icon,omitempty"`
+	Enabled             bool         `json:"enabled"`
+	Bridge              *ProxyBridge `json:"bridge,omitempty"`
 }
 
 type GroupReference struct {

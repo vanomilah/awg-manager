@@ -7247,6 +7247,7 @@
   "inline_rules_tag_charset": "Имя набора — это имя его файла: латиница, цифры, точка, подчёркивание и дефис (дефис не с краю). Кириллица и пробелы не годятся: два таких имени дают один файл и затирают друг друга",
   "routing_tunnel_group_provider": "Провайдер",
   "routing_tunnel_group_server_wg": "Серверы WireGuard",
+  "routing_tunnel_group_proxy_group": "Группы прокси",
   "routing_tunnel_group_proxy": "Прокси",
   "routing_tunnel_group_system": "Системные",
   "routing_tunnel_label_down": "{label} — нет несущей",

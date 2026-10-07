@@ -11,6 +11,7 @@ export type RoutingGroupId =
 	| 'awg'
 	| 'systemWg'
 	| 'serverWg'
+	| 'proxyGroup'
 	| 'proxy'
 	| 'opkgtun'
 	| 'system'
@@ -24,6 +25,7 @@ const GROUP_ORDER: readonly RoutingGroupId[] = [
 	'awg',
 	'systemWg',
 	'serverWg',
+	'proxyGroup',
 	'proxy',
 	'opkgtun',
 	'system',
@@ -43,6 +45,8 @@ export function routingGroupLabel(id: RoutingGroupId): string {
 			return m.routing_singbox_group_system();
 		case 'serverWg':
 			return m.routing_tunnel_group_server_wg();
+		case 'proxyGroup':
+			return m.routing_tunnel_group_proxy_group();
 		case 'proxy':
 			return m.routing_tunnel_group_proxy();
 		case 'opkgtun':
@@ -107,11 +111,17 @@ export function shouldOmitSingboxProxyKernelDuplicate(
 }
 
 /** Группа для NDMS-имени в «Интерфейсы политики» (ip policy permit). */
-export function policyInterfaceGroupId(ndmsName: string): RoutingGroupId {
+export function policyInterfaceGroupId(ndmsName: string, label?: string): RoutingGroupId {
 	const lower = ndmsName.trim().toLowerCase();
+	const lbl = (label ?? '').toLowerCase();
 	if (lower.startsWith('pppoe') || lower.startsWith('isp')) return 'provider';
 	if (lower.startsWith('wireguard')) return 'systemWg';
-	if (lower.startsWith('proxy')) return 'proxy';
+	if (lower.startsWith('proxy')) {
+		if (lbl.includes(':group:') || lbl.includes(':group]')) {
+			return 'proxyGroup';
+		}
+		return 'proxy';
+	}
 	if (lower.startsWith('opkgtun') || lower.startsWith('awgm')) return 'awg';
 	if (lower.startsWith('lte') || lower.startsWith('usb')) return 'lte';
 	if (lower.startsWith('apcli') || lower.startsWith('wlan')) return 'wifi';
@@ -119,8 +129,8 @@ export function policyInterfaceGroupId(ndmsName: string): RoutingGroupId {
 }
 
 /** Подпись группы для NDMS-имени на текущем языке. */
-export function policyInterfaceGroup(ndmsName: string): string {
-	return routingGroupLabel(policyInterfaceGroupId(ndmsName));
+export function policyInterfaceGroup(ndmsName: string, label?: string): string {
+	return routingGroupLabel(policyInterfaceGroupId(ndmsName, label));
 }
 
 export function filterPolicyGlobalInterfaces(
@@ -144,22 +154,24 @@ export function cleanPolicyInterfaceLabel(
 	const trimmed = (label ?? '').trim();
 	if (!trimmed) return '';
 
-	// 1. If formatted as "Friendly Name [awg-manager:...]", strip the bracketed token
+	// 1. If label contains token [awg-manager:<engine>:<kind>:<id>] or raw awg-manager:..., try resolving ID first
+	const tokenMatch = trimmed.match(/(?:\[)?awg-manager:(?:mihomo|singbox):(?:proxy|subscription|group):([a-zA-Z0-9_-]+)(?:\])?/);
+	if (tokenMatch && idResolver) {
+		const resolved = idResolver(tokenMatch[1]);
+		if (resolved && resolved.trim()) {
+			return resolved.trim();
+		}
+	}
+
+	// 2. If formatted as "Friendly Name [awg-manager:...]", strip the bracketed token
 	const bracketMatch = trimmed.match(/^(.*?)\s*\[awg-manager:[^\]]+\]$/);
 	if (bracketMatch && bracketMatch[1].trim()) {
 		return bracketMatch[1].trim();
 	}
 
-	// 2. If it's a raw canonical token: awg-manager:<engine>:<kind>:<id>
-	const tokenMatch = trimmed.match(/^awg-manager:(?:mihomo|singbox):(?:proxy|subscription|group):([a-zA-Z0-9_-]+)$/);
-	if (tokenMatch) {
-		const id = tokenMatch[1];
-		if (idResolver) {
-			const resolved = idResolver(id);
-			if (resolved && resolved.trim()) {
-				return resolved.trim();
-			}
-		}
+	// 3. If raw canonical token without resolution, don't show internal ID
+	if (trimmed.startsWith('awg-manager:') || trimmed.startsWith('[awg-manager:')) {
+		return '';
 	}
 
 	return trimmed;
@@ -190,7 +202,7 @@ export interface PolicyInterfaceGroup {
 export function groupPolicyGlobalInterfaces(items: PolicyGlobalInterface[]): PolicyInterfaceGroup[] {
 	const byGroup = new Map<RoutingGroupId, PolicyGlobalInterface[]>();
 	for (const gi of items) {
-		const id = policyInterfaceGroupId(gi.name);
+		const id = policyInterfaceGroupId(gi.name, gi.label);
 		const bucket = byGroup.get(id) ?? [];
 		bucket.push(gi);
 		byGroup.set(id, bucket);
@@ -215,7 +227,6 @@ export function routingTunnelGroupId(t: RoutingTunnel): RoutingGroupId {
 	if (t.type === 'wan') return wanGroup(t);
 	return systemGroup(t);
 }
-
 /** Подпись группы в выпадающем списке для записи каталога — на текущем языке. */
 export function routingTunnelGroup(t: RoutingTunnel): string {
 	return routingGroupLabel(routingTunnelGroupId(t));
@@ -226,7 +237,13 @@ function systemGroup(t: RoutingTunnel): RoutingGroupId {
 	const lower = ndmsId.toLowerCase();
 	if (t.server) return 'serverWg';
 	if (lower.startsWith('wireguard')) return 'systemWg';
-	if (lower.startsWith('proxy')) return 'proxy';
+	if (lower.startsWith('proxy')) {
+		const name = (t.name ?? '').toLowerCase();
+		if (name.includes(':group:') || name.includes(':group]')) {
+			return 'proxyGroup';
+		}
+		return 'proxy';
+	}
 	if (lower.startsWith('opkgtun')) return 'opkgtun';
 	return 'system';
 }

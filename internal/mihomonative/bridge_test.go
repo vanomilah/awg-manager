@@ -592,3 +592,107 @@ func TestBridgeManager_Reconcile_ReallocatesOutOfRangePorts(t *testing.T) {
 	}
 }
 
+func TestStoreBridgeAllocationsForGroups(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mihomo-native.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g1, err := store.SaveGroup(ProxyGroup{
+		Name: "AI", Type: "load-balance", Proxies: []string{"DIRECT"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2, err := store.SaveGroup(ProxyGroup{
+		Name: "Fast", Type: "url-test", Proxies: []string{"DIRECT"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b1 := ProxyBridge{ListenPort: 12050, ProxyIndex: 5, ProxyInterface: "Proxy5", KernelInterface: "t2s5"}
+	if err := store.SetBridge("group", g1.ID, b1); err != nil {
+		t.Fatalf("SetBridge group error: %v", err)
+	}
+
+	// Collision check: same port
+	if err := store.SetBridge("group", g2.ID, ProxyBridge{ListenPort: 12050, ProxyIndex: 6, ProxyInterface: "Proxy6", KernelInterface: "t2s6"}); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("expected already used port error, got: %v", err)
+	}
+	// Collision check: same index
+	if err := store.SetBridge("group", g2.ID, ProxyBridge{ListenPort: 12051, ProxyIndex: 5, ProxyInterface: "Proxy5", KernelInterface: "t2s5"}); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("expected already used index error, got: %v", err)
+	}
+
+	b2 := ProxyBridge{ListenPort: 12051, ProxyIndex: 6, ProxyInterface: "Proxy6", KernelInterface: "t2s6"}
+	if err := store.SetBridge("group", g2.ID, b2); err != nil {
+		t.Fatalf("SetBridge group 2 error: %v", err)
+	}
+
+	refs := store.ListBridges()
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 group bridges, got %d", len(refs))
+	}
+	if refs[0].Kind != "group" || refs[0].Label != "AI" {
+		t.Fatalf("unexpected ref: %#v", refs[0])
+	}
+
+	listeners := store.ConfigBridgeListeners()
+	if len(listeners) != 2 {
+		t.Fatalf("expected 2 listeners, got %d", len(listeners))
+	}
+	byName := make(map[string]BridgeListener)
+	for _, l := range listeners {
+		byName[l.Name] = l
+	}
+	l1, ok := byName["mihomo-native-g-"+g1.ID]
+	if !ok || l1.Port != 12050 || l1.Proxy != "AI" {
+		t.Fatalf("unexpected listener for g1: %#v", l1)
+	}
+	l2, ok := byName["mihomo-native-g-"+g2.ID]
+	if !ok || l2.Port != 12051 || l2.Proxy != "Fast" {
+		t.Fatalf("unexpected listener for g2: %#v", l2)
+	}
+}
+
+func TestBridgeManagerReconcilesGroups(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mihomo-native.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g1, err := store.SaveGroup(ProxyGroup{
+		Name: "AI", Type: "load-balance", Proxies: []string{"DIRECT"}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registrar := &fakeBridgeRegistrar{occupied: map[int]bool{}}
+	manager := NewBridgeManager(store, registrar, func() bool { return true })
+
+	if err := manager.Reconcile(context.Background(), nil); err != nil {
+		t.Fatalf("Reconcile error: %v", err)
+	}
+
+	groups := store.ListGroups()
+	if len(groups) != 1 || groups[0].Bridge == nil {
+		t.Fatalf("group bridge not allocated: %#v", groups)
+	}
+	expectedDesc := FormatBridgeDescription(g1.Name, "group", g1.ID)
+	if registrar.descriptions[groups[0].Bridge.ProxyIndex] != expectedDesc {
+		t.Fatalf("expected description %q, got %q", expectedDesc, registrar.descriptions[groups[0].Bridge.ProxyIndex])
+	}
+
+	// Now delete the group and reconcile
+	beforeBridges := store.ListBridges()
+	if err := store.DeleteGroup(g1.ID); err != nil {
+		t.Fatalf("DeleteGroup error: %v", err)
+	}
+	if err := manager.Reconcile(context.Background(), beforeBridges); err != nil {
+		t.Fatalf("Reconcile after delete error: %v", err)
+	}
+	if len(store.ListBridges()) != 0 {
+		t.Fatalf("expected 0 bridges after group delete, got %d", len(store.ListBridges()))
+	}
+}
+
+

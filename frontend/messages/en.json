@@ -6873,6 +6873,7 @@
   "inline_rules_tag_charset": "The set name is its file name: Latin letters, digits, dot, underscore and hyphen (no hyphen at the edges). Cyrillic and spaces are not allowed: two such names produce the same file and overwrite each other",
   "routing_tunnel_group_provider": "Provider",
   "routing_tunnel_group_server_wg": "WireGuard servers",
+  "routing_tunnel_group_proxy_group": "Proxy groups",
   "routing_tunnel_group_proxy": "Proxies",
   "routing_tunnel_group_system": "System",
   "routing_tunnel_label_down": "{label} — no carrier",
