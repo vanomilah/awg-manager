@@ -3,7 +3,7 @@
     import type { AccessPolicy, PolicyDevice, PolicyGlobalInterface } from '$lib/types';
     import { ConfirmModal, StoreStatusBadge, Button, SegmentedControl, type SegmentedOption } from '$lib/components/ui';
     import RoutingCreateButton from '$lib/components/routing/RoutingCreateButton.svelte';
-    import { PolicyTable, PolicyCreateModal, PolicyEditView, DeviceMatrix } from '$lib/components/accesspolicy';
+    import { PolicyTable, PolicyCreateModal, PolicyEditView, PolicyOutputsModal, DeviceMatrix } from '$lib/components/accesspolicy';
     import { notifications } from '$lib/stores/notifications';
     import { accessPoliciesStore, policyDevicesStore, policyInterfacesStore, invalidateAllRouting } from '$lib/stores/routing';
     import { isHydraRouteAccessPolicy } from '$lib/utils/accessPolicy';
@@ -35,7 +35,7 @@
     }
 
     const VIEW_OPTIONS: SegmentedOption<ViewMode>[] = [
-        { value: 'matrix', label: 'Матрица устройств' },
+        { value: 'matrix', label: 'Устройства' },
         { value: 'policies', label: 'Список политик' },
     ];
 
@@ -184,7 +184,7 @@
     }
 </script>
 
-{#if editingPolicyData}
+{#if viewMode === 'policies' && editingPolicyData}
     <div class="policy-tab policy-tab--edit">
         <PolicyEditView
             policy={editingPolicyData}
@@ -270,7 +270,7 @@
         <div class="policy-list-scroll">
             <PolicyTable
                 policies={accessPolicies}
-                onedit={(name) => { editingPolicy = name; }}
+                onedit={(name) => { editingPolicy = name; void refreshPolicyData(); }}
                 ondelete={(name) => policyDeleteName = name}
                 selectable={policySelectionMode}
                 selectedNames={policySelected}
@@ -305,6 +305,18 @@
             message={`Удалить ${pluralize(policySelected.size, POLICY_WORDS)}? Все устройства будут отвязаны.`}
             onConfirm={bulkPolicyDelete}
             onClose={() => policyBulkDeleteConfirm = false}
+        />
+    {/if}
+
+    {#if viewMode === 'matrix' && editingPolicyData}
+        <PolicyOutputsModal
+            open={true}
+            policy={editingPolicyData}
+            devices={policyDevices}
+            globalInterfaces={policyInterfaces}
+            onclose={() => { editingPolicy = null; createdPolicy = null; }}
+            onupdate={refreshPolicyData}
+            ondeviceunassigned={handleDeviceUnassigned}
         />
     {/if}
     </div>
@@ -345,7 +357,33 @@
             flex: none;
             overflow-y: visible;
         }
+
+        .section-header {
+            gap: 6px;
+        }
+
+        .section-summary {
+            font-size: 0.75rem;
+        }
+
+        .section-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            width: 100%;
+        }
+
+        /* SegmentedControl full-width on mobile: ensures 'Устройства' and 'Список политик' never truncate */
+        :global(.section-buttons > .segmented-control) {
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+            width: 100% !important;
+        }
+
+        /* Action buttons share second row evenly */
+        :global(.section-buttons > :not([role='status']):not(.segmented-control)) {
+            flex: 1 1 calc(50% - 3px) !important;
+            min-width: calc(50% - 3px) !important;
+        }
     }
-
-
 </style>
