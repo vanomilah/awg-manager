@@ -42,6 +42,14 @@ func TestProxyCommands_CreateProxy_SOCKS5(t *testing.T) {
 	if iface["up"] != true {
 		t.Errorf("up: %v", iface["up"])
 	}
+	ip, ok := iface["ip"].(map[string]any)["global"].(map[string]any)
+	if !ok || ip["priority"] != 100 {
+		t.Errorf("ip global: %v, want priority=100", iface["ip"])
+	}
+	ipv6, ok := iface["ipv6"].(map[string]any)["address"].(map[string]any)
+	if !ok || ipv6["no"] != true {
+		t.Errorf("ipv6 address: %v, want no=true", iface["ipv6"])
+	}
 }
 
 func TestProxyCommands_CreateProxy_NoUDP(t *testing.T) {

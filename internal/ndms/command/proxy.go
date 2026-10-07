@@ -33,7 +33,8 @@ func (c *ProxyCommands) CreateProxy(ctx context.Context, name, description, upst
 			name: map[string]any{
 				"description": description,
 				"proxy":       proxy,
-				"ip":          map[string]any{"global": map[string]any{"auto": true}},
+				"ip":          map[string]any{"global": map[string]any{"priority": 100}},
+				"ipv6":        map[string]any{"address": map[string]any{"no": true}},
 				"up":          true,
 			},
 		},
