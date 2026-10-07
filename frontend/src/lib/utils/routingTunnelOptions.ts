@@ -7,7 +7,6 @@ const GROUP_ORDER = [
 	'AWG туннели',
 	'Системные WireGuard',
 	'Серверы WireGuard',
-	'Группы прокси',
 	'Прокси',
 	'OpkgTun',
 	'Системные',
@@ -65,17 +64,11 @@ export function shouldOmitSingboxProxyKernelDuplicate(
 }
 
 /** Группа для NDMS-имени в «Интерфейсы политики» (ip policy permit). */
-export function policyInterfaceGroup(ndmsName: string, label?: string): string {
+export function policyInterfaceGroup(ndmsName: string): string {
 	const lower = ndmsName.trim().toLowerCase();
-	const lbl = (label ?? '').toLowerCase();
 	if (lower.startsWith('pppoe') || lower.startsWith('isp')) return 'Провайдер';
 	if (lower.startsWith('wireguard')) return 'Системные WireGuard';
-	if (lower.startsWith('proxy')) {
-		if (lbl.includes(':group:') || lbl.includes(':group]')) {
-			return 'Группы прокси';
-		}
-		return 'Прокси';
-	}
+	if (lower.startsWith('proxy')) return 'Прокси';
 	if (lower.startsWith('opkgtun') || lower.startsWith('awgm')) return 'AWG туннели';
 	if (lower.startsWith('lte') || lower.startsWith('usb')) return 'LTE / USB';
 	if (lower.startsWith('apcli') || lower.startsWith('wlan')) return 'Wi‑Fi';
@@ -103,24 +96,22 @@ export function cleanPolicyInterfaceLabel(
 	const trimmed = (label ?? '').trim();
 	if (!trimmed) return '';
 
-	// 1. If label contains token [awg-manager:<engine>:<kind>:<id>] or raw awg-manager:..., try resolving ID first
-	const tokenMatch = trimmed.match(/(?:\[)?awg-manager:(?:mihomo|singbox):(?:proxy|subscription|group):([a-zA-Z0-9_-]+)(?:\])?/);
-	if (tokenMatch && idResolver) {
-		const resolved = idResolver(tokenMatch[1]);
-		if (resolved && resolved.trim()) {
-			return resolved.trim();
-		}
-	}
-
-	// 2. If formatted as "Friendly Name [awg-manager:...]", strip the bracketed token
+	// 1. If formatted as "Friendly Name [awg-manager:...]", strip the bracketed token
 	const bracketMatch = trimmed.match(/^(.*?)\s*\[awg-manager:[^\]]+\]$/);
 	if (bracketMatch && bracketMatch[1].trim()) {
 		return bracketMatch[1].trim();
 	}
 
-	// 3. If raw canonical token without resolution, don't show internal ID
-	if (trimmed.startsWith('awg-manager:') || trimmed.startsWith('[awg-manager:')) {
-		return '';
+	// 2. If it's a raw canonical token: awg-manager:<engine>:<kind>:<id>
+	const tokenMatch = trimmed.match(/^awg-manager:(?:mihomo|singbox):(?:proxy|subscription|group):([a-zA-Z0-9_-]+)$/);
+	if (tokenMatch) {
+		const id = tokenMatch[1];
+		if (idResolver) {
+			const resolved = idResolver(id);
+			if (resolved && resolved.trim()) {
+				return resolved.trim();
+			}
+		}
 	}
 
 	return trimmed;
@@ -149,7 +140,7 @@ export interface PolicyInterfaceGroup {
 export function groupPolicyGlobalInterfaces(items: PolicyGlobalInterface[]): PolicyInterfaceGroup[] {
 	const byGroup = new Map<string, PolicyGlobalInterface[]>();
 	for (const gi of items) {
-		const group = policyInterfaceGroup(gi.name, gi.label);
+		const group = policyInterfaceGroup(gi.name);
 		const bucket = byGroup.get(group) ?? [];
 		bucket.push(gi);
 		byGroup.set(group, bucket);
@@ -180,13 +171,7 @@ function systemGroup(t: RoutingTunnel): string {
 	const lower = ndmsId.toLowerCase();
 	if (t.server) return 'Серверы WireGuard';
 	if (lower.startsWith('wireguard')) return 'Системные WireGuard';
-	if (lower.startsWith('proxy')) {
-		const name = (t.name ?? '').toLowerCase();
-		if (name.includes(':group:') || name.includes(':group]')) {
-			return 'Группы прокси';
-		}
-		return 'Прокси';
-	}
+	if (lower.startsWith('proxy')) return 'Прокси';
 	if (lower.startsWith('opkgtun')) return 'OpkgTun';
 	return 'Системные';
 }

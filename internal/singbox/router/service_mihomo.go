@@ -196,34 +196,21 @@ func (s *ServiceImpl) AssembleCompileInput(ctx context.Context) (*MihomoCompileI
 			group.Icon, _ = rawGroup["icon"].(string)
 			resources.ProxyGroups = append(resources.ProxyGroups, group)
 		}
-		bridgeProxies := make(map[string]bool)
-		bridgePorts := make(map[int]bool)
 		if settings.CreateNDMSProxyForSingbox {
 			for _, bridge := range s.deps.MihomoNativeProxies.ConfigBridgeListeners() {
 				resources.Listeners = append(resources.Listeners, mihomo.Listener{
 					Name: bridge.Name, Type: "mixed", Port: bridge.Port,
 					Listen: "127.0.0.1", Proxy: bridge.Proxy,
 				})
-				if bridge.Proxy != "" {
-					bridgeProxies[bridge.Proxy] = true
-				}
-				if bridge.Port > 0 {
-					bridgePorts[bridge.Port] = true
-				}
 			}
 		}
 		baseGroupPort := 12100
 		for i, group := range resources.ProxyGroups {
-			if group.Name != "" && !bridgeProxies[group.Name] {
-				port := baseGroupPort + i
-				for bridgePorts[port] {
-					port++
-				}
-				bridgePorts[port] = true
+			if group.Name != "" {
 				resources.Listeners = append(resources.Listeners, mihomo.Listener{
 					Name:   fmt.Sprintf("mihomo-group-%d", i),
 					Type:   "mixed",
-					Port:   port,
+					Port:   baseGroupPort + i,
 					Listen: "127.0.0.1",
 					Proxy:  group.Name,
 				})

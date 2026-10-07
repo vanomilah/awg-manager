@@ -35,7 +35,7 @@ type mihomoDiagnosticResolver struct {
 func (r *mihomoDiagnosticResolver) ResolveMihomoDiagnosticInterface(ctx context.Context, kind, resourceID string) (string, error) {
 	kind = strings.TrimSpace(kind)
 	resourceID = strings.TrimSpace(resourceID)
-	if kind != "proxy" && kind != "subscription" && kind != "group" {
+	if kind != "proxy" && kind != "subscription" {
 		return "", fmt.Errorf("unsupported Mihomo resource kind %q", kind)
 	}
 	if resourceID == "" {

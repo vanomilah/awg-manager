@@ -4,10 +4,8 @@ import {
 	buildAwgTunnelDropdownOptions,
 	buildManagedTunnelListDropdownOptions,
 	buildRoutingTunnelDropdownOptions,
-	cleanPolicyInterfaceLabel,
 	filterPolicyGlobalInterfaces,
 	groupPolicyGlobalInterfaces,
-	policyInterfaceDisplayLabel,
 	policyInterfaceGroup,
 	routingTunnelGroup,
 	routingTunnelLabel,
@@ -121,21 +119,10 @@ describe('buildRoutingTunnelDropdownOptions', () => {
 		expect(groups.map((g) => g.group)).toEqual(['Провайдер', 'Прокси']);
 	});
 
-	it('policyInterfaceGroup matches NDMS ids and recognizes proxy groups from label', () => {
+	it('policyInterfaceGroup matches NDMS ids', () => {
 		expect(policyInterfaceGroup('Proxy1')).toBe('Прокси');
-		expect(policyInterfaceGroup('Proxy5', 'Задний ход [awg-manager:mihomo:group:7555ab2c8d728ecc63bda8f1]')).toBe('Группы прокси');
 		expect(policyInterfaceGroup('Wireguard0')).toBe('Системные WireGuard');
 		expect(policyInterfaceGroup('PPPoE0')).toBe('Провайдер');
-	});
-
-	it('groupPolicyGlobalInterfaces separates proxy groups and proxies', () => {
-		const list: PolicyGlobalInterface[] = [
-			{ name: 'Proxy1', label: 'RUS [awg-manager:mihomo:proxy:1]', up: true },
-			{ name: 'Proxy5', label: 'AI [awg-manager:mihomo:group:2]', up: true },
-			{ name: 'PPPoE0', label: 'Provider', up: true },
-		];
-		const groups = groupPolicyGlobalInterfaces(list);
-		expect(groups.map((g) => g.group)).toEqual(['Провайдер', 'Группы прокси', 'Прокси']);
 	});
 
 	it('respects requireSelectable', () => {
@@ -148,25 +135,6 @@ describe('buildRoutingTunnelDropdownOptions', () => {
 		);
 		expect(opts).toHaveLength(1);
 		expect(opts[0].value).toBe('wan:eth3');
-	});
-
-	it('cleans policy interface label for mihomo groups and displays properly', () => {
-		expect(cleanPolicyInterfaceLabel('AI [awg-manager:mihomo:group:448042f799829984f9d4d994]')).toBe('AI');
-		expect(
-			policyInterfaceDisplayLabel({
-				name: 'Proxy5',
-				label: 'AI [awg-manager:mihomo:group:448042f799829984f9d4d994]',
-				up: true,
-			}),
-		).toBe('AI (Proxy5)');
-
-		const resolver = (id: string) => (id === '448042f799829984f9d4d994' ? 'AI' : undefined);
-		expect(
-			cleanPolicyInterfaceLabel('awg-manager:mihomo:group:448042f799829984f9d4d994', resolver),
-		).toBe('AI');
-		expect(
-			cleanPolicyInterfaceLabel('[awg-manager:mihomo:group:448042f799829984f9d4d994]', resolver),
-		).toBe('AI');
 	});
 });
 

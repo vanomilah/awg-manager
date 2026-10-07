@@ -197,7 +197,7 @@ type BridgeRef struct {
 func (s *Store) ListBridges() []BridgeRef {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]BridgeRef, 0, len(s.data.Proxies)+len(s.data.Subscriptions)+len(s.data.Groups))
+	out := make([]BridgeRef, 0, len(s.data.Proxies)+len(s.data.Subscriptions))
 	for _, node := range s.data.Proxies {
 		if node.SourceID != "" || node.Bridge == nil {
 			continue
@@ -218,17 +218,6 @@ func (s *Store) ListBridges() []BridgeRef {
 			LegacyOwner: sub.Bridge.LegacyOwner,
 			Enabled:     s.subscriptionExportableLocked(sub),
 			Bridge:      *sub.Bridge,
-		})
-	}
-	for _, group := range s.data.Groups {
-		if group.Bridge == nil {
-			continue
-		}
-		out = append(out, BridgeRef{
-			Kind: "group", ID: group.ID, Label: group.Name,
-			LegacyOwner: group.Bridge.LegacyOwner,
-			Enabled:     group.Enabled,
-			Bridge:      *group.Bridge,
 		})
 	}
 	return out
@@ -256,13 +245,6 @@ func (s *Store) SetBridge(kind, id string, bridge ProxyBridge) error {
 				break
 			}
 		}
-	case "group":
-		for _, group := range s.data.Groups {
-			if group.ID == id {
-				target = &group.Bridge
-				break
-			}
-		}
 	default:
 		return fmt.Errorf("mihomo native: invalid bridge kind %q", kind)
 	}
@@ -282,14 +264,6 @@ func (s *Store) SetBridge(kind, id string, bridge ProxyBridge) error {
 			continue
 		}
 		if sub.Bridge.ListenPort == bridge.ListenPort || sub.Bridge.ProxyIndex == bridge.ProxyIndex {
-			return fmt.Errorf("mihomo native: bridge allocation is already used")
-		}
-	}
-	for _, group := range s.data.Groups {
-		if group.Bridge == nil || (kind == "group" && group.ID == id) {
-			continue
-		}
-		if group.Bridge.ListenPort == bridge.ListenPort || group.Bridge.ProxyIndex == bridge.ProxyIndex {
 			return fmt.Errorf("mihomo native: bridge allocation is already used")
 		}
 	}
@@ -884,7 +858,7 @@ func (s *Store) ConfigProviderGroups() []map[string]interface{} {
 func (s *Store) ConfigBridgeListeners() []BridgeListener {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([]BridgeListener, 0, len(s.data.Proxies)+len(s.data.Subscriptions)+len(s.data.Groups))
+	out := make([]BridgeListener, 0, len(s.data.Proxies)+len(s.data.Subscriptions))
 	for _, node := range s.data.Proxies {
 		if node.SourceID != "" || !node.Enabled || node.SelectedEngine != EngineMihomo || node.Bridge == nil {
 			continue
@@ -896,12 +870,6 @@ func (s *Store) ConfigBridgeListeners() []BridgeListener {
 			continue
 		}
 		out = append(out, BridgeListener{Name: "mihomo-native-s-" + sub.ID, Port: sub.Bridge.ListenPort, Proxy: sub.GroupName})
-	}
-	for _, group := range s.data.Groups {
-		if group.Bridge == nil || !group.Enabled {
-			continue
-		}
-		out = append(out, BridgeListener{Name: "mihomo-native-g-" + group.ID, Port: group.Bridge.ListenPort, Proxy: group.Name})
 	}
 	return out
 }
@@ -946,7 +914,6 @@ func (s *Store) ListGroups() []ProxyGroup {
 		cp := *group
 		cp.Proxies = append([]string(nil), group.Proxies...)
 		cp.Use = append([]string(nil), group.Use...)
-		cp.Bridge = cloneBridge(group.Bridge)
 		out = append(out, cp)
 	}
 	return out
@@ -1098,9 +1065,6 @@ func (s *Store) SaveGroup(in ProxyGroup) (ProxyGroup, error) {
 		for i, group := range s.data.Groups {
 			if strings.EqualFold(group.Name, in.Name) {
 				in.ID = group.ID
-				if in.Bridge == nil {
-					in.Bridge = cloneBridge(group.Bridge)
-				}
 				cp := in
 				s.data.Groups[i] = &cp
 				if err := s.saveLocked(); err != nil {
@@ -1123,9 +1087,6 @@ func (s *Store) SaveGroup(in ProxyGroup) (ProxyGroup, error) {
 	}
 	for i, group := range s.data.Groups {
 		if group.ID == in.ID {
-			if in.Bridge == nil {
-				in.Bridge = cloneBridge(group.Bridge)
-			}
 			oldName := group.Name
 			cp := in
 			s.data.Groups[i] = &cp

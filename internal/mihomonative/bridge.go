@@ -148,16 +148,6 @@ func (m *BridgeManager) Reconcile(ctx context.Context, previous []BridgeRef) err
 		}
 		pendingIndices[index] = true
 	}
-	for _, group := range m.store.ListGroups() {
-		if group.Bridge != nil || !group.Enabled {
-			continue
-		}
-		index, err := m.allocate(ctx, "group", group.ID, usedPorts, reservedIndices)
-		if err != nil {
-			return err
-		}
-		pendingIndices[index] = true
-	}
 
 	desired := m.store.ListBridges()
 	desiredIndices := make(map[int]bool, len(desired))
