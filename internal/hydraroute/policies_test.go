@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"sort"
 	"sync"
@@ -160,6 +161,20 @@ func digPermit(t *testing.T, payload any, policyName string) map[string]any {
 }
 
 func TestCleanGhostPolicies(t *testing.T) {
+	svc, domainPath, _ := setupRuleFiles(t)
+
+	// Set up domain.conf targeting empty user policies (EmptyUser, Streaming, Work)
+	// and interface names (awgm0). Previously, EmptyUser would have been deleted
+	// simply because it was in domain.conf hrTargets.
+	domainContent := `address=/test1.com/EmptyUser
+address=/test2.com/Streaming
+address=/test3.com/Work
+address=/test4.com/awgm0
+`
+	if err := os.WriteFile(domainPath, []byte(domainContent), 0644); err != nil {
+		t.Fatalf("failed to write domain.conf: %v", err)
+	}
+
 	q, g := newTestQueries()
 	g.SetJSON("/show/rc/ip/policy", `{
 		"Policy0": {"description": "System Mallware"},
@@ -168,27 +183,27 @@ func TestCleanGhostPolicies(t *testing.T) {
 		"EmptyUser": {"description": ""},
 		"awgm0": {"description": ""},
 		"Wireguard2": {"description": ""},
-		"opkgtun10": {"description": ""}
+		"opkgtun10": {"description": ""},
+		"sstp0": {"description": ""},
+		"openvpn1": {"description": ""}
 	}`)
 
 	cmds, poster := newTestPolicyCommands(q)
-	svc := &Service{
-		queries:  q,
-		policies: cmds,
-	}
+	svc.queries = q
+	svc.policies = cmds
 
 	deleted, err := svc.CleanGhostPolicies(context.Background())
 	if err != nil {
 		t.Fatalf("CleanGhostPolicies failed: %v", err)
 	}
 
-	if deleted != 3 {
-		t.Errorf("CleanGhostPolicies deleted %d, want 3 (awgm0, Wireguard2, opkgtun10)", deleted)
+	if deleted != 5 {
+		t.Errorf("CleanGhostPolicies deleted %d, want 5 (awgm0, Wireguard2, opkgtun10, sstp0, openvpn1)", deleted)
 	}
 
 	payloads := poster.Payloads()
-	if len(payloads) != 3 {
-		t.Fatalf("expected 3 DeletePolicy calls, got %d", len(payloads))
+	if len(payloads) != 5 {
+		t.Fatalf("expected 5 DeletePolicy calls, got %d", len(payloads))
 	}
 
 	deletedNames := make([]string, 0, len(payloads))
@@ -204,8 +219,97 @@ func TestCleanGhostPolicies(t *testing.T) {
 		}
 	}
 	sort.Strings(deletedNames)
-	wantDeleted := []string{"Wireguard2", "awgm0", "opkgtun10"}
+	wantDeleted := []string{"Wireguard2", "awgm0", "openvpn1", "opkgtun10", "sstp0"}
 	if !reflect.DeepEqual(deletedNames, wantDeleted) {
 		t.Errorf("deleted policies = %v, want %v", deletedNames, wantDeleted)
+	}
+}
+
+func TestCleanGhostPolicies_Concurrent(t *testing.T) {
+	q, g := newTestQueries()
+	g.SetJSON("/show/rc/ip/policy", `{
+		"awgm0": {"description": ""},
+		"Wireguard2": {"description": ""}
+	}`)
+
+	cmds, _ := newTestPolicyCommands(q)
+	svc := &Service{
+		queries:  q,
+		policies: cmds,
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.CleanGhostPolicies(context.Background())
+		}()
+	}
+	wg.Wait()
+}
+
+func TestIsGhostPolicyName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		// Keenetic system policies: never ghosts (case-insensitive)
+		{"Policy0", false},
+		{"Policy1", false},
+		{"Policy10", false},
+		{"policy0", false},
+		{"policy10", false},
+		{"POLICY0", false},
+
+		// Legitimate user policy names
+		{"EmptyUser", false},
+		{"Streaming", false},
+		{"Work", false},
+		{"Direct", false},
+		{"Gaming", false},
+		{"PolicyUser", false},
+
+		// Prefixed targets
+		{"wan:ppp0", true},
+		{"wan:PPPoE0", true},
+		{"system:Wireguard0", true},
+
+		// Interface naming patterns matching ghostPolicyPrefixRE
+		{"awgm0", true},
+		{"awg1", true},
+		{"opkgtun10", true},
+		{"nwg0", true},
+		{"wireguard2", true},
+		{"ppp0", true},
+		{"pppoe1", true},
+		{"eth0", true},
+		{"usb0", true},
+		{"wlan0", true},
+		{"wifi1", true},
+		{"br0", true},
+		{"tun0", true},
+		{"tap0", true},
+		{"sstp0", true},
+		{"openvpn1", true},
+		{"ovpn0", true},
+		{"l2tp0", true},
+		{"ipsec1", true},
+		{"gre0", true},
+		{"eoip2", true},
+
+		// Case-insensitive check
+		{"Wireguard0", true},
+		{"OPKGTUN1", true},
+		{"AWGM3", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isGhostPolicyName(tt.name)
+			if got != tt.want {
+				t.Errorf("isGhostPolicyName(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
 	}
 }

@@ -445,6 +445,14 @@ func (c *CatalogImpl) ResolveTargetTunnel(ctx context.Context, target string) (s
 	}
 	// Direct tunnelID match or system/wan prefixes
 	if strings.HasPrefix(target, "wan:") {
+		wanTarget := strings.TrimPrefix(target, "wan:")
+		if c.provider != nil {
+			if wanModel := c.provider.WANModel(); wanModel != nil {
+				if kernelName := wanModel.NameForID(wanTarget); kernelName != "" {
+					return "wan:" + kernelName, true
+				}
+			}
+		}
 		return target, true
 	}
 	if tunnel.IsSystemTunnel(target) {
@@ -489,8 +497,8 @@ func (c *CatalogImpl) ResolveTargetTunnel(ctx context.Context, target string) (s
 			if wanModel.Known(target) {
 				return "wan:" + target, true
 			}
-			if ndmsID := wanModel.IDFor(target); ndmsID != "" {
-				return "wan:" + target, true
+			if kernelName := wanModel.NameForID(target); kernelName != "" {
+				return "wan:" + kernelName, true
 			}
 		}
 	}

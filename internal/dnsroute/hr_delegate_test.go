@@ -57,6 +57,7 @@ func (a *kernelResolverAdapter) GetKernelIfaceName(ctx context.Context, tunnelID
 type stubResolver struct {
 	kernelByTunnel map[string]string
 	systemByIface  map[string]string
+	targetMap      map[string]string
 }
 
 func (s *stubResolver) SystemTunnelsByIface(context.Context) map[string]string {
@@ -78,6 +79,11 @@ func (s *stubResolver) GetKernelIfaceName(ctx context.Context, tunnelID string) 
 }
 
 func (s *stubResolver) ResolveTargetTunnel(_ context.Context, target string) (string, bool) {
+	if s.targetMap != nil {
+		if id, ok := s.targetMap[target]; ok {
+			return id, true
+		}
+	}
 	if s.systemByIface != nil {
 		if id, ok := s.systemByIface[target]; ok {
 			return id, true
@@ -527,5 +533,64 @@ func TestHRRuleToDomainList_GhostPolicyDoesNotFlipInterfaceMode(t *testing.T) {
 	}
 	if len(created.Routes) != 1 || created.Routes[0].Interface != "awgm0" {
 		t.Errorf("created rule Routes = %+v, want Interface: awgm0", created.Routes)
+	}
+
+	// 4. Rule targeting WAN by NDMS ID (PPPoE0) resolving to wan:ppp0
+	_, err = hydra.CreateRule(hydraroute.HRRule{
+		Name:    "WanRule",
+		Domains: []string{"wan-target.com"},
+		Target:  "PPPoE0",
+	})
+	if err != nil {
+		t.Fatalf("CreateRule WanRule: %v", err)
+	}
+
+	// 5. Rule targeting expanded interface prefix (sstp0)
+	_, err = hydra.CreateRule(hydraroute.HRRule{
+		Name:    "SstpRule",
+		Domains: []string{"sstp-target.com"},
+		Target:  "sstp0",
+	})
+	if err != nil {
+		t.Fatalf("CreateRule SstpRule: %v", err)
+	}
+
+	// Update resolver stub with PPPoE0 -> wan:ppp0
+	resolver.systemByIface = map[string]string{}
+	resolver.targetMap = map[string]string{"PPPoE0": "wan:ppp0"}
+	resolver.kernelByTunnel["wan:ppp0"] = "ppp0"
+
+	// Re-list rules
+	lists, err = svc.List(ctx)
+	if err != nil {
+		t.Fatalf("List after adding WanRule & SstpRule: %v", err)
+	}
+
+	var wanList, sstpList *DomainList
+	for i := range lists {
+		if lists[i].Name == "WanRule" {
+			wanList = &lists[i]
+		} else if lists[i].Name == "SstpRule" {
+			sstpList = &lists[i]
+		}
+	}
+	if wanList == nil {
+		t.Fatalf("missing WanRule")
+	}
+	if wanList.HRRouteMode != "interface" {
+		t.Errorf("WanRule HRRouteMode = %q, want 'interface'", wanList.HRRouteMode)
+	}
+	if len(wanList.Routes) != 1 || wanList.Routes[0].Interface != "PPPoE0" {
+		t.Errorf("WanRule Routes = %+v, want Interface: PPPoE0", wanList.Routes)
+	}
+
+	if sstpList == nil {
+		t.Fatalf("missing SstpRule")
+	}
+	if sstpList.HRRouteMode != "interface" {
+		t.Errorf("SstpRule HRRouteMode = %q, want 'interface'", sstpList.HRRouteMode)
+	}
+	if len(sstpList.Routes) != 1 || sstpList.Routes[0].Interface != "sstp0" {
+		t.Errorf("SstpRule Routes = %+v, want Interface: sstp0", sstpList.Routes)
 	}
 }

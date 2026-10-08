@@ -25,6 +25,7 @@ type Service struct {
 	resolver                 KernelIfaceResolver
 	appLog                   *logging.ScopedLogger
 	mu                       sync.Mutex
+	cleanMu                  sync.Mutex
 	status                   Status
 	restartTimer             *time.Timer
 	geodata                  *GeoDataStore

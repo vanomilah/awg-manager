@@ -35,7 +35,7 @@ func (s *Service) ListPolicyNames(ctx context.Context) ([]string, error) {
 	return names, nil
 }
 
-var ghostPolicyPrefixRE = regexp.MustCompile(`(?i)^(awgm|awg|opkgtun|nwg|wireguard|ppp|pppoe|eth|usb|wlan|wifi|br|tun|tap)\d.*$`)
+var ghostPolicyPrefixRE = regexp.MustCompile(`(?i)^(awgm|awg|opkgtun|nwg|wireguard|ppp|pppoe|eth|usb|wlan|wifi|br|tun|tap|sstp|openvpn|ovpn|l2tp|ipsec|gre|eoip)\d.*$`)
 
 func isGhostPolicyName(name string) bool {
 	// Never treat Keenetic system policies (Policy0, Policy1, etc.) as ghost policies.
@@ -54,8 +54,9 @@ func isGhostPolicyName(name string) bool {
 }
 
 func isSystemPolicy(name string) bool {
-	if strings.HasPrefix(name, "Policy") {
-		numPart := strings.TrimPrefix(name, "Policy")
+	lower := strings.ToLower(name)
+	if strings.HasPrefix(lower, "policy") {
+		numPart := strings.TrimPrefix(lower, "policy")
 		if _, err := strconv.Atoi(numPart); err == nil {
 			return true
 		}
@@ -71,9 +72,11 @@ func isSystemPolicy(name string) bool {
 // 1. It is NOT a Keenetic system policy (Policy0, Policy1, etc.).
 // 2. It has an empty description ("").
 // 3. It has no permitted interfaces (len(p.Interfaces) == 0).
-// 4. Its name matches known interface/tunnel patterns (e.g. awgm0, nwg0, opkgtun10, Wireguard0)
-//    OR matches an interface target from domain.conf.
+// 4. Its name matches known interface/tunnel patterns (e.g. awgm0, nwg0, opkgtun10, Wireguard0).
 func (s *Service) CleanGhostPolicies(ctx context.Context) (int, error) {
+	s.cleanMu.Lock()
+	defer s.cleanMu.Unlock()
+
 	s.mu.Lock()
 	queries := s.queries
 	policies := s.policies
@@ -88,16 +91,6 @@ func (s *Service) CleanGhostPolicies(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("list policies for ghost cleanup: %w", err)
 	}
 
-	// Collect targets from existing HR rules in domain.conf
-	hrTargets := make(map[string]bool)
-	if rules, _, err := s.ListRules(); err == nil {
-		for _, r := range rules {
-			if r.Target != "" {
-				hrTargets[r.Target] = true
-			}
-		}
-	}
-
 	deleted := 0
 	for _, p := range list {
 		// System policies (Policy0, Policy1, etc.) must NEVER be deleted.
@@ -109,9 +102,8 @@ func (s *Service) CleanGhostPolicies(ctx context.Context) (int, error) {
 			continue
 		}
 
-		// A policy is a ghost if it matches interface naming patterns or is an interface target in domain.conf.
-		isCandidate := isGhostPolicyName(p.Name) || hrTargets[p.Name]
-		if !isCandidate {
+		// A policy is a ghost policy ONLY if its name matches interface naming patterns.
+		if !isGhostPolicyName(p.Name) {
 			continue
 		}
 

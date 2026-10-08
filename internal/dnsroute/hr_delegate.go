@@ -109,7 +109,7 @@ func nameFromHRID(id string) string {
 // isHRID reports whether the ID refers to an HR rule.
 func isHRID(id string) bool { return strings.HasPrefix(id, hrIDPrefix) }
 
-var knownIfacePrefixRE = regexp.MustCompile(`(?i)^(awgm|awg|opkgtun|nwg|wireguard|ppp|pppoe|eth|usb|wlan|wifi|br|tun|tap)\d.*$`)
+var knownIfacePrefixRE = regexp.MustCompile(`(?i)^(awgm|awg|opkgtun|nwg|wireguard|ppp|pppoe|eth|usb|wlan|wifi|br|tun|tap|sstp|openvpn|ovpn|l2tp|ipsec|gre|eoip)\d.*$`)
 
 func isKernelInterfaceName(target string) bool {
 	if strings.HasPrefix(target, "wan:") || strings.HasPrefix(target, "system:") {

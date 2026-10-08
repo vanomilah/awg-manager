@@ -640,11 +640,17 @@ func TestListAll_SystemServerFlag(t *testing.T) {
 }
 
 func TestResolveTargetTunnel(t *testing.T) {
+	wanModel := wan.NewModel()
+	wanModel.Populate([]wan.Interface{
+		{ID: "PPPoE0", Name: "ppp0", Label: "ISP Main", Up: true},
+		{ID: "GigabitEthernet1", Name: "eth3", Label: "Backup WAN", Up: true},
+	})
 	provider := &mockTunnelProvider{
 		tunnels: []TunnelWithStatus{
 			{ID: "awgm0", Backend: "kernel"},
 			{ID: "awg1", Backend: "nativewg", NWGIndex: 1},
 		},
+		wan: wanModel,
 	}
 	store := &mockStoreClient{
 		entries: map[string]StoreEntry{
@@ -687,13 +693,45 @@ func TestResolveTargetTunnel(t *testing.T) {
 		t.Errorf("ResolveTargetTunnel(nwg3) = (%q, %v), want (system:Wireguard3, true)", id, ok)
 	}
 
-	// 4. WAN prefix
+	// 4. WAN resolution by kernel name (Known)
+	id, ok = cat.ResolveTargetTunnel(ctx, "ppp0")
+	if !ok || id != "wan:ppp0" {
+		t.Errorf("ResolveTargetTunnel(ppp0) = (%q, %v), want (wan:ppp0, true)", id, ok)
+	}
+
+	id, ok = cat.ResolveTargetTunnel(ctx, "eth3")
+	if !ok || id != "wan:eth3" {
+		t.Errorf("ResolveTargetTunnel(eth3) = (%q, %v), want (wan:eth3, true)", id, ok)
+	}
+
+	// 5. WAN resolution by NDMS ID (NameForID)
+	id, ok = cat.ResolveTargetTunnel(ctx, "PPPoE0")
+	if !ok || id != "wan:ppp0" {
+		t.Errorf("ResolveTargetTunnel(PPPoE0) = (%q, %v), want (wan:ppp0, true)", id, ok)
+	}
+
+	id, ok = cat.ResolveTargetTunnel(ctx, "GigabitEthernet1")
+	if !ok || id != "wan:eth3" {
+		t.Errorf("ResolveTargetTunnel(GigabitEthernet1) = (%q, %v), want (wan:eth3, true)", id, ok)
+	}
+
+	// 6. WAN prefix (kernel name and NDMS ID normalization)
 	id, ok = cat.ResolveTargetTunnel(ctx, "wan:ppp0")
 	if !ok || id != "wan:ppp0" {
 		t.Errorf("ResolveTargetTunnel(wan:ppp0) = (%q, %v), want (wan:ppp0, true)", id, ok)
 	}
 
-	// 5. Non-existent target
+	id, ok = cat.ResolveTargetTunnel(ctx, "wan:PPPoE0")
+	if !ok || id != "wan:ppp0" {
+		t.Errorf("ResolveTargetTunnel(wan:PPPoE0) = (%q, %v), want (wan:ppp0, true)", id, ok)
+	}
+
+	id, ok = cat.ResolveTargetTunnel(ctx, "wan:GigabitEthernet1")
+	if !ok || id != "wan:eth3" {
+		t.Errorf("ResolveTargetTunnel(wan:GigabitEthernet1) = (%q, %v), want (wan:eth3, true)", id, ok)
+	}
+
+	// 7. Non-existent target
 	id, ok = cat.ResolveTargetTunnel(ctx, "nonexistent999")
 	if ok {
 		t.Errorf("ResolveTargetTunnel(nonexistent999) = (%q, %v), want false", id, ok)
