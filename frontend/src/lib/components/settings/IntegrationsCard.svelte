@@ -229,14 +229,9 @@
 	const xrayRunning = $derived(xrayStatus?.running ?? false);
 	let confirmUninstallXray = $state(false);
 	let confirmUninstallSusanin = $state(false);
-	let confirmUninstallTelemt = $state(false);
 
 	const susaninInstalled = $derived(susaninStatus?.installed ?? false);
 	const susaninRunning = $derived(susaninStatus?.status === 'running' || susaninStatus?.status === 'learning');
-
-	const telemtInstalled = $derived(telemtStatus?.installed ?? false);
-	const telemtRunning = $derived(telemtStatus?.running ?? false);
-	const telemtNeedsUpdate = $derived(telemtStatus?.updateAvailable ?? false);
 
 	const hydraInstalled = $derived(hydraStatus?.installed ?? false);
 	const hydraRunning = $derived(hydraStatus?.running ?? false);

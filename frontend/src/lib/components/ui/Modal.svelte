@@ -298,12 +298,12 @@
                 class:modal-body-fill={bodyLayout === 'fill'}
                 style={bodyMinHeight ? `min-height: ${bodyMinHeight}` : undefined}
             >
-                {@render children()}
+                {@render children?.()}
             </section>
 
             {#if actions}
                 <footer class="modal-footer">
-                    {@render actions()}
+                    {@render actions?.()}
                 </footer>
             {/if}
 
