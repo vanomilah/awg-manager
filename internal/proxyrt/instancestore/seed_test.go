@@ -1388,12 +1388,13 @@ func TestSeedCarriesEveryFieldOfEveryRole(t *testing.T) {
 	// OpenFirewall у обеих серверных ролей задан явным false — чтобы значение
 	// отличалось от дефолта «ключа нет → true» и потеря маппинга была видна.
 	// Форма nil→true закрыта TestSeedOpenFirewallAbsentOrNullMeansOn.
-	assertEveryFieldCarried(t, "WdttServerConfig", []any{*srv.WdttServer}, "OpenFirewall", "ClientAuthMode", "SharedPassword")
+	assertEveryFieldCarried(t, "WdttServerConfig", []any{*srv.WdttServer}, "OpenFirewall")
 	assertEveryFieldCarried(t, "ServerUser", []any{srv.Users[0]})
 	// KCP появился в freeturn 3.2 (F144) и приезжает только ссылкой freeturn://;
 	// старый freeturn.json, который переносит посев, его не знал. ObfTimingMs
 	// (4.0) — та же причина. Bond в старом файле был, но под протокол 2.x
 	// (tcpfwd/smux), с bond 4.x поверх KCP он несовместим — не переносим.
+	// AutoReconnect/AutoReconnectInterval — новые поля 4.x, в старом файле их не было.
 	assertEveryFieldCarried(t, "FreeTurnClientConfig",
 		[]any{*got["freeturn-client:ftc-1"].FreeTurnClient}, "KCP", "Bond", "ObfTimingMs", "AutoReconnect", "AutoReconnectInterval")
 	// LinkPeer — настройка адреса для ссылок абонентам (#933), заведена

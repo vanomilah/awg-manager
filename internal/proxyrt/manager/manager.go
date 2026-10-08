@@ -50,7 +50,7 @@ type RunningInstance interface {
 	// ResetStartBackoff снимает у процесса инстанса паузу повторного старта
 	// (proxyrt.BackoffResetter).
 	ResetStartBackoff()
-	Restart(reason string)
+	Restart(reason string) bool
 	Stop()
 }
 
@@ -92,6 +92,12 @@ type Factory func(rec instancestore.Record, live *Live) (RunningInstance, error)
 // с пином сборки, а загрузка не удалась. Старое поколение не тронуто, воркеры
 // не собраны; повтор — забота проводки (proxyBinariesRetry).
 var ErrBinariesPending = errors.New("бинари не загружены")
+
+// ErrInstanceNotFound сообщает, что управляемый инстанс с таким ключом не зарегистрирован в памяти.
+var ErrInstanceNotFound = errors.New("инстанс не найден")
+
+// ErrRestartUnsupported сообщает, что роль инстанса не поддерживает перезапуск.
+var ErrRestartUnsupported = errors.New("перезапуск для этой роли не поддерживается")
 
 // Deps — все зависимости, конструктором (G4).
 type Deps struct {
@@ -1065,10 +1071,11 @@ func (m *Manager) Restart(ctx context.Context, key string, reason string) error 
 	mg, ok := m.m[key]
 	m.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("инстанс %s не найден", key)
+		return fmt.Errorf("%w: %s", ErrInstanceNotFound, key)
 	}
-	mg.inst.ResetStartBackoff()
-	mg.inst.Restart(reason)
+	if !mg.inst.Restart(reason) {
+		return fmt.Errorf("%w: %s", ErrRestartUnsupported, key)
+	}
 	return nil
 }
 
