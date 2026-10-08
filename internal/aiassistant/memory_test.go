@@ -1,4 +1,4 @@
-﻿package aiassistant
+package aiassistant
 
 import (
 	"path/filepath"

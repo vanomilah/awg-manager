@@ -862,6 +862,7 @@ func TestTunnelUpdate_FieldInventoryComplete(t *testing.T) {
 		"RawKernelIface": true,
 		"RawNdmsIface":   true,
 		"Locked":         true,
+		"ToggleLocked":   true,
 	}
 
 	rt := reflect.TypeOf(storage.AWGTunnel{})

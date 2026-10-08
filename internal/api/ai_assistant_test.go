@@ -2,9 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -39,7 +41,7 @@ func TestAIAssistantConfigNeverReturnsAPIKey(t *testing.T) {
 
 func (f *fakeAIService) Start(question string) error { f.question = question; return f.err }
 func (f *fakeAIService) Status() aiassistant.State   { return f.state }
-func (f *fakeAIService) ClearChat()            {}
+func (f *fakeAIService) ClearChat()                  {}
 
 func TestAIAssistantDiagnose(t *testing.T) {
 	svc := &fakeAIService{state: aiassistant.State{Status: "running", ReadOnly: true}}
@@ -108,5 +110,34 @@ func TestAIAssistantMCPListsAndCallsReadOnlyTools(t *testing.T) {
 	h.MCP(rec, httptest.NewRequest(http.MethodPost, "/api/system/ai/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"dns.inspect","arguments":{"domain":"ya.ru"}}}`)))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"isError":false`) || !strings.Contains(rec.Body.String(), "DNS отвечает") {
 		t.Fatalf("unexpected tools/call response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Verify numeric and boolean arguments in tools/call are converted and forwarded
+	rec = httptest.NewRecorder()
+	h.MCP(rec, httptest.NewRequest(http.MethodPost, "/api/system/ai/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"system.diagnose_command","arguments":{"command":"ping -c 1 127.0.0.1","timeoutSeconds":5}}}`)))
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"error":`) {
+		t.Fatalf("unexpected tools/call with numeric args response: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAIAssistantListErrorsReturnsCanonicalCategories(t *testing.T) {
+	h := NewAIAssistantHandler(&fakeAIService{})
+	rec := httptest.NewRecorder()
+	h.ListErrors(rec, httptest.NewRequest(http.MethodGet, "/api/system/errors", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			Total      int      `json:"total"`
+			Categories []string `json:"categories"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	expected := aiassistant.GetAllCategories()
+	if !reflect.DeepEqual(resp.Data.Categories, expected) {
+		t.Fatalf("categories mismatch: got %v, want %v", resp.Data.Categories, expected)
 	}
 }

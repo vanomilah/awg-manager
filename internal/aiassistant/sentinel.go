@@ -33,6 +33,7 @@ type Sentinel struct {
 	mu              sync.RWMutex
 	running         bool
 	cancel          context.CancelFunc
+	loopDone        chan struct{}
 	lastCheck       time.Time
 	lastSymptom     string
 	lastAction      string
@@ -62,23 +63,36 @@ func (s *Sentinel) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.running = true
+	s.loopDone = make(chan struct{})
+	done := s.loopDone
 	s.mu.Unlock()
 
-	go s.loop(ctx)
+	go func() {
+		defer close(done)
+		s.loop(ctx)
+	}()
 }
 
 // Stop stops the background sentinel monitoring loop.
 func (s *Sentinel) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
-	}
+	cancel := s.cancel
+	s.cancel = nil
 	s.running = false
+	done := s.loopDone
+	s.loopDone = nil
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 }
 
 // Status returns a snapshot of the Sentinel state.
@@ -202,7 +216,7 @@ func (s *Sentinel) probeHealth(ctx context.Context) string {
 						if !st.Mihomo.Running && (st.Mihomo.Enabled || st.Routing.Enabled || st.Mihomo.Selected) {
 							return "engine_stopped: mihomo is stopped"
 						}
-					} else if engine == "sing-box" {
+					} else if engine == "sing-box" || engine == "singbox" {
 						if !st.Singbox.Running && st.Routing.Enabled {
 							return "engine_stopped: sing-box is stopped"
 						}
@@ -225,9 +239,9 @@ func (s *Sentinel) probeHealth(ctx context.Context) string {
 					name, _ := t["name"].(string)
 					id, _ := t["id"].(string)
 					if enabled && (state == "failed" || state == "error" || state == "down") {
-						target := name
+						target := id
 						if target == "" {
-							target = id
+							target = name
 						}
 						return fmt.Sprintf("tunnel_down: %s", target)
 					}
@@ -345,7 +359,7 @@ func (s *Sentinel) consultCloudAI(ctx context.Context, symptom string, settings 
 	defer cancel()
 
 	query := fmt.Sprintf(`Фоновый наблюдатель (Sentinel) роутера Keenetic обнаружил сетевой сбой: %s.
-Определи диагноз и подбери действие из разрешённых: singbox.restart, mihomo.restart, mihomo.reload, routing.reapply, tunnel.restart, service.restart.
+Определи диагноз и подбери действие из разрешённых: singbox.restart, mihomo.restart, mihomo.reload, routing.reapply, tunnel.restart, service.restart, dns.flush.
 Ответь ТОЛЬКО валидным JSON без markdown-разметки:
 {"title": "Краткое имя", "diagnosis": "В чём причина", "action": "одно из разрешённых", "target": "цель или пусто", "category": "routing/tunnel/dns"}`, symptom)
 
@@ -419,7 +433,7 @@ func (s *Sentinel) consultCloudAI(ctx context.Context, symptom string, settings 
 
 func isSafeAutoAction(action string) bool {
 	switch action {
-	case "singbox.restart", "mihomo.restart", "mihomo.reload", "tunnel.restart", "routing.reapply":
+	case "singbox.restart", "mihomo.restart", "mihomo.reload", "tunnel.restart", "routing.reapply", "dns.flush":
 		return true
 	default:
 		return false

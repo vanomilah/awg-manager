@@ -76,7 +76,7 @@ func TestSubscriptionGroupHandler_Create_HappyPath(t *testing.T) {
 	if d.Mode != "urltest" {
 		t.Errorf("default mode=%q want urltest", d.Mode)
 	}
-	if d.URLTest == nil || d.URLTest.IntervalSec != 60 {
+	if d.URLTest == nil || d.URLTest.IntervalSec != subscription.DefaultURLTestConfig().IntervalSec {
 		t.Errorf("urlTest defaults must be surfaced: %+v", d.URLTest)
 	}
 	if !strings.HasPrefix(d.Tag, "agg-") || d.InboundTag != d.Tag+"-in" {

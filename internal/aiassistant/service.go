@@ -1558,7 +1558,7 @@ func buildModelDiagnostic(report diagnostics.Report, findings []Finding, toolSte
 			Arch:          report.System.Arch,
 			MemoryMB:      report.System.TotalMemoryMB,
 			TotalChecks:   len(report.Tests),
-			RoutingEngine: report.System.RoutingEngine,
+			RoutingEngine: report.System.Backend,
 		},
 		Checks:   checks,
 		Findings: modelFindings,

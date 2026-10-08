@@ -533,7 +533,7 @@ func TestIsChatCompletionsToolProvider(t *testing.T) {
 		{ModelConfig{Provider: "openrouter"}, true},
 		{ModelConfig{Provider: "custom"}, true},
 		{ModelConfig{Provider: "ollama", BaseURL: "http://localhost:11434/v1"}, true},
-		{ModelConfig{Provider: "ollama", BaseURL: ""}, true},  // default URL ends with /v1
+		{ModelConfig{Provider: "ollama", BaseURL: ""}, true}, // default URL ends with /v1
 		{ModelConfig{Provider: "ollama", BaseURL: "http://localhost:11434"}, false},
 		{ModelConfig{Provider: "google"}, false},
 		{ModelConfig{Provider: "openai"}, false},

@@ -28,11 +28,11 @@ type MemoryFact struct {
 // LearnedPlaybook represents a proven remedy/solution learned from cloud consultations or user guidance.
 type LearnedPlaybook struct {
 	ID           string    `json:"id"`
-	Category     string    `json:"category"` // "routing", "cloud", "dns", "tunnel"
-	Title        string    `json:"title"`    // Short name of the playbook
-	Trigger      string    `json:"trigger"`  // Symptom or error signature (e.g. "mws_cloud_timeout", "keendns_relay_blocked")
-	Diagnosis    string    `json:"diagnosis"`// Explanation of the cause
-	Action       string    `json:"action"`   // Remediation action (e.g. "reapply_routing", "restart_singbox", "add_cloud_ip")
+	Category     string    `json:"category"`  // "routing", "cloud", "dns", "tunnel"
+	Title        string    `json:"title"`     // Short name of the playbook
+	Trigger      string    `json:"trigger"`   // Symptom or error signature (e.g. "mws_cloud_timeout", "keendns_relay_blocked")
+	Diagnosis    string    `json:"diagnosis"` // Explanation of the cause
+	Action       string    `json:"action"`    // Remediation action (e.g. "reapply_routing", "restart_singbox", "add_cloud_ip")
 	Target       string    `json:"target,omitempty"`
 	SuccessCount int       `json:"successCount"`
 	LearnedFrom  string    `json:"learnedFrom"` // "cloud_gemini", "cloud_claude", "user"

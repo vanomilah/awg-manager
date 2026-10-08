@@ -6,14 +6,14 @@ import (
 
 func TestAgentRunLifecycle(t *testing.T) {
 	run := NewAgentRun("sing-box memory leak")
-	
+
 	if run.Status != AgentRunPending {
 		t.Errorf("expected status 'pending', got %s", run.Status)
 	}
 	if run.Iteration != 1 {
 		t.Errorf("expected iteration 1, got %d", run.Iteration)
 	}
-	
+
 	run.AddLog("started diagnostics")
 	if len(run.DiagLog) != 1 {
 		t.Errorf("expected 1 log entry, got %d", len(run.DiagLog))

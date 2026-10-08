@@ -88,7 +88,6 @@ type ActionHandlers struct {
 	VerifyTunnel         func(ctx context.Context, tunnelID string) (*ActionVerification, error)
 	VerifySubscription   func(ctx context.Context, subID string) (*ActionVerification, error)
 	VerifyDNS            func(ctx context.Context) (*ActionVerification, error)
-	ExecCommand          func(ctx context.Context, command string) error
 	ExecKeenetic         func(ctx context.Context, command string) error
 }
 
@@ -103,7 +102,10 @@ type remediationSpec struct {
 	description    func(string) string
 }
 
-var remediationTargetPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+var (
+	remediationTargetPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+	wireguard2ProtectedPattern = regexp.MustCompile(`(?i)\bwireguard[\s_]*2\b`)
+)
 
 var remediationSpecs = map[string]remediationSpec{
 	"singbox.restart": {
@@ -217,16 +219,11 @@ var remediationSpecs = map[string]remediationSpec{
 			return "Принудительно загрузить обновлённый список серверов подписки и применить его через штатный сервис AWG Manager."
 		},
 	},
-	"command.exec": {
-		risk: "medium", targetRequired: true,
-		title: func(target string) string {
-			if len(target) > 50 {
-				return "Выполнить команду: " + target[:50] + "…"
-			}
-			return "Выполнить команду: " + target
-		},
-		description: func(target string) string {
-			return "Выполнить согласованную системную команду после подтверждения пользователем: " + target
+	"dns.flush": {
+		risk:  "low",
+		title: func(string) string { return "Сбросить кэш DNS" },
+		description: func(string) string {
+			return "Очистить кэш DNS-прокси роутера KeeneticOS и перезапустить локальные службы DNS-резолверов."
 		},
 	},
 	"keenetic.ndmc": {
@@ -266,13 +263,9 @@ func validRemediationTarget(action string, spec remediationSpec, target string) 
 		if len(name) > 3 && (name[0] == 's' || name[0] == 'k') && name[1] >= '0' && name[1] <= '9' && name[2] >= '0' && name[2] <= '9' {
 			name = name[3:]
 		}
-		if name == "dropbear" || name == "awg-manager" || name == "ttyd" || name == "sing-box" {
+		if name == "dropbear" || name == "awg-manager" || name == "ttyd" || name == "sing-box" || name == "singbox" || name == "mihomo" {
 			return false
 		}
-	}
-	if action == "command.exec" {
-		trimmed := strings.TrimSpace(target)
-		return trimmed != "" && len(trimmed) <= 512
 	}
 	if action == "keenetic.ndmc" {
 		trimmed := strings.TrimSpace(target)
@@ -286,6 +279,10 @@ func validRemediationTarget(action string, spec remediationSpec, target string) 
 			if strings.Contains(lower, b) {
 				return false
 			}
+		}
+		// Strict invariant protections: reject commands touching Wireguard2 interface, port 1099, or forbidden flags
+		if wireguard2ProtectedPattern.MatchString(trimmed) || strings.Contains(lower, "1099") || strings.Contains(lower, "force-reinstall") {
+			return false
 		}
 		return true
 	}
@@ -393,24 +390,12 @@ func (r *ActionRegistry) Apply(ctx context.Context, action, target string) error
 			return errors.New("dns flush is unavailable")
 		}
 		return r.handlers.FlushDNS(ctx)
-	case "command.exec":
-		if r.handlers.ExecCommand == nil {
-			return errors.New("command execution is unavailable")
-		}
-		if target == "" {
-			return errors.New("command target is required")
-		}
-		return r.handlers.ExecCommand(ctx, target)
 	case "keenetic.ndmc":
 		if target == "" {
 			return errors.New("keenetic ndmc command is required")
 		}
 		if r.handlers.ExecKeenetic != nil {
 			return r.handlers.ExecKeenetic(ctx, target)
-		}
-		if r.handlers.ExecCommand != nil {
-			cmd := fmt.Sprintf("ndmc -c %q && ndmc -c 'system configuration save'", target)
-			return r.handlers.ExecCommand(ctx, cmd)
 		}
 		return errors.New("keenetic ndmc execution is unavailable")
 	default:
@@ -524,12 +509,6 @@ func (r *ActionRegistry) Verify(ctx context.Context, action, target string) (*Ac
 		return &ActionVerification{
 			Status:  "passed",
 			Summary: "Команда KeeneticOS успешно выполнена и сохранена в конфигурации",
-			Detail:  target,
-		}, nil
-	case "command.exec":
-		return &ActionVerification{
-			Status:  "passed",
-			Summary: "Системная команда успешно выполнена",
 			Detail:  target,
 		}, nil
 	default:

@@ -257,8 +257,10 @@ func newGuardServer(t *testing.T) (*Server, *auth.SessionStore) {
 		proxyRt: ProxyRtSurface{
 			Instances: stub, ListenMoves: stub, WdttLinkDecode: stub, WdttLinkImport: stub,
 			FreeTurnLinkDecode: stub, CaptchaStatus: stub, InstallStatus: stub, Install: stub, Uninstall: stub,
+			VKCallsGenerate: stub, VKCallsCheck: stub, VKCallsConfig: stub,
 		},
 	}
+	t.Cleanup(func() { _ = s.Shutdown(context.Background()) })
 	return s, sessions
 }
 

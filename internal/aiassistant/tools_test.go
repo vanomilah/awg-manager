@@ -203,8 +203,8 @@ func TestToolRegistryCatalogContainsOnlyReadOnlyTools(t *testing.T) {
 		"proxy.groups": false, "routing.explain_rule": false, "outbound.test": false,
 		"dns.explain": false, "connections.explain": false,
 		"system.diagnose_command": false,
-		"remediation.propose": false,
-		"memory.learn_fact": false, "memory.save_playbook": false, "memory.list_facts": false,
+		"remediation.propose":     false,
+		"memory.learn_fact":       false, "memory.save_playbook": false, "memory.list_facts": false,
 	}
 	for _, definition := range definitions {
 		if !definition.ReadOnly || definition.Risk != "none" {

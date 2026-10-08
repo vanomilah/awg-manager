@@ -145,3 +145,24 @@ func TestSentinel_ProbeHealth_StructuredEngineStatus(t *testing.T) {
 	}
 }
 
+func TestSentinel_ProbeHealth_TunnelUsesInternalID(t *testing.T) {
+	sources := ToolSources{
+		DNSProbe: func(context.Context) error { return nil },
+		Tunnels: func(ctx context.Context) (any, error) {
+			return []map[string]any{
+				{
+					"id":      "awg-internal-id-123",
+					"name":    "My Beautiful VPN Label",
+					"enabled": true,
+					"state":   "down",
+				},
+			}, nil
+		},
+	}
+	sentinel := NewSentinel(nil, nil, sources, nil)
+	symptom := sentinel.probeHealth(context.Background())
+	if symptom != "tunnel_down: awg-internal-id-123" {
+		t.Fatalf("expected 'tunnel_down: awg-internal-id-123', got %q", symptom)
+	}
+}
+

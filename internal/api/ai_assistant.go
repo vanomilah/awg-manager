@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -36,7 +37,7 @@ func (h *AIAssistantHandler) SetConfigStore(config *aiassistant.ConfigStore) { h
 func (h *AIAssistantHandler) SetEmbedded(embedded *aiassistant.EmbeddedManager) {
 	h.embedded = embedded
 }
-func (h *AIAssistantHandler) SetRoutes(routes *downloader.Service) { h.routes = routes }
+func (h *AIAssistantHandler) SetRoutes(routes *downloader.Service)           { h.routes = routes }
 func (h *AIAssistantHandler) SetMemoryStore(memory *aiassistant.MemoryStore) { h.memory = memory }
 func (h *AIAssistantHandler) SetSentinel(sentinel *aiassistant.Sentinel)     { h.sentinel = sentinel }
 
@@ -79,7 +80,7 @@ func (h *AIAssistantHandler) ListErrors(w http.ResponseWriter, r *http.Request) 
 	cat := r.URL.Query().Get("category")
 
 	results := aiassistant.SearchErrors(q, cat)
-	categories := []string{"Все", "KeeneticOS (NDMS)", "AmneziaWG", "Mihomo", "Sing-box", "DNS", "Сеть", "Ядро Linux", "Система"}
+	categories := aiassistant.GetAllCategories()
 	response.Success(w, map[string]any{
 		"total":      len(results),
 		"categories": categories,
@@ -164,8 +165,11 @@ func (h *AIAssistantHandler) MCP(w http.ResponseWriter, r *http.Request) {
 		}
 		arguments := make(map[string]string, len(params.Arguments))
 		for key, value := range params.Arguments {
-			if text, ok := value.(string); ok {
-				arguments[key] = text
+			switch typed := value.(type) {
+			case string:
+				arguments[key] = typed
+			case float64, float32, int, int64, bool:
+				arguments[key] = fmt.Sprint(typed)
 			}
 		}
 		step := service.CallTool(r.Context(), aiassistant.ToolCall{Name: params.Name, Arguments: arguments})
