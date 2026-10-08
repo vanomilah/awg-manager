@@ -1,7 +1,7 @@
 import type { TelemtConfig, TelemtStatus } from '$lib/types';
-import { Awg3Client } from './clientAwg3';
+import { AdaptiveRoutingClient } from './clientAdaptiveRouting';
 
-export class TelemtClient extends Awg3Client {
+export class TelemtClient extends AdaptiveRoutingClient {
 	// ─────────────────────────────────────────────
 	// #region Telegram MTProto Proxy (telemt)
 	// ─────────────────────────────────────────────

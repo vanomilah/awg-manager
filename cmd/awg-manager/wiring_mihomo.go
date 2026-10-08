@@ -154,12 +154,16 @@ func (a *app) syncNDMSProxyExports(ctx context.Context) error {
 			if err := a.dynamicEngine.syncMihomoRuntimeWithinTransition(); err != nil {
 				return err
 			}
-			if a.adaptiveRoutingSvc != nil {
-				_ = a.adaptiveRoutingSvc.ReconcileDatapath(ctx)
-			}
 			return nil
 		}); err != nil {
 			return failMihomoProxySync(err, a.mihomoBridgeDeactivate)
+		}
+		if a.adaptiveRoutingSvc != nil {
+			go func() {
+				reconcileCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = a.adaptiveRoutingSvc.ReconcileDatapath(reconcileCtx)
+			}()
 		}
 	}
 	return nil
