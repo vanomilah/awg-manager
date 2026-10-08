@@ -88,6 +88,9 @@ func KeyMiddleware(cfg AuthConfig, next http.Handler) http.Handler {
 			return
 		}
 		now := time.Since(epoch).Nanoseconds()
+		if now == 0 {
+			now = 1
+		}
 		last := lastLoopbackReject.Load()
 		if last != 0 && now-last < int64(loopbackRejectLogInterval) || !lastLoopbackReject.CompareAndSwap(last, now) {
 			suppressedLoopback.Add(1)

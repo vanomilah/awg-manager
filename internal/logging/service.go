@@ -112,6 +112,7 @@ func (s *Service) AppLog(level Level, group, subgroup, action, target, message s
 	if !s.Visible(level) {
 		return
 	}
+	target, message = RedactURLs(target), RedactURLs(message)
 	bucket := BucketForGroup(group)
 	target_buf := s.bufferFor(bucket)
 	if target_buf == nil {

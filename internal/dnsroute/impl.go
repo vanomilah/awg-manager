@@ -699,6 +699,16 @@ func (s *ServiceImpl) SetEnabled(ctx context.Context, id string, enabled bool) e
 	return nil
 }
 
+// redactedError prints a message with addresses reduced to scheme and
+// host while keeping the cause reachable for errors.Is and errors.As.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e redactedError) Error() string { return e.msg }
+func (e redactedError) Unwrap() error { return e.err }
+
 // validateSubscriptions fetches each subscription URL and verifies it returns
 // text/plain with at least one parseable domain. Returns the first error encountered.
 func (s *ServiceImpl) validateSubscriptions(ctx context.Context, list *DomainList, subs []Subscription) error {
@@ -706,10 +716,13 @@ func (s *ServiceImpl) validateSubscriptions(ctx context.Context, list *DomainLis
 	for _, sub := range subs {
 		domains, err := s.fetchSubscription(ctx, sub.URL)
 		if err != nil {
-			return fmt.Errorf("подписка %q: %w", sub.URL, err)
+			return redactedError{
+				msg: fmt.Sprintf("подписка %s: %s", logging.RedactURLs(sub.URL), logging.RedactURLs(err.Error())),
+				err: err,
+			}
 		}
 		if len(domains) == 0 {
-			return fmt.Errorf("подписка %q: список пуст — URL не содержит доменов", sub.URL)
+			return fmt.Errorf("подписка %s: список пуст — URL не содержит доменов", logging.RedactURLs(sub.URL))
 		}
 		_, subnets := splitDomainsAndSubnets(domains)
 		for _, subnet := range list.routedSubnets(subnets) {
@@ -756,7 +769,8 @@ func (s *ServiceImpl) refreshSubscriptions(ctx context.Context, id string) error
 		domains, err := s.fetchSubscription(ctx, sub.URL)
 		sub.LastFetched = now
 		if err != nil {
-			sub.LastError = err.Error()
+			reason := logging.RedactURLs(err.Error())
+			sub.LastError = reason
 			sub.LastCount = 0
 			s.appLog.Warn("subscription-fetch", id, fmt.Sprintf("url=%s err=%s", sub.URL, err.Error()))
 			// Keep going — one failed subscription shouldn't block others
