@@ -31,5 +31,7 @@ export const autoReconnectIntervalOptions = [
 	{ value: '1h', label: '1 час (по умолчанию)' },
 	{ value: '2h', label: '2 часа' },
 	{ value: '4h', label: '4 часа' },
-	{ value: '12h', label: '12 часов' }
+	{ value: '8h', label: '8 часов' },
+	{ value: '12h', label: '12 часов' },
+	{ value: '24h', label: '24 часа' }
 ];

@@ -139,6 +139,8 @@ export function fieldsFromWdttPayload(
 		password: p.password ?? '',
 		vkHashes: (p.vkHashes ?? []).join(','),
 		workers: p.workers && p.workers > 0 ? String(p.workers) : DEFAULT_WORKERS,
+		autoReconnect: false,
+		autoReconnectInterval: 'on_failure',
 	};
 }
 
@@ -151,6 +153,8 @@ export function fieldsFromFtPayload(
 		password: '',
 		vkHashes: p.vk?.trim() ?? '',
 		workers: p.n && p.n > 0 ? String(p.n) : DEFAULT_FT_STREAMS,
+		autoReconnect: false,
+		autoReconnectInterval: 'on_failure',
 	};
 }
 

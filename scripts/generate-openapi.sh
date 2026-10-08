@@ -9,7 +9,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
     cd "$REPO_ROOT/cmd/awg-manager"
     go run github.com/swaggo/swag/cmd/swag@v1.16.4 init \
         -g docs.go \
-        -d .,../../internal/api,../../internal/aiassistant,../../internal/sys/routerinfo,../../internal/diagnostics,../../internal/presets,../../internal/sys/files,../../internal/sys/opkg,../../internal/sys/ports,../../internal/sys/procmon,../../internal/sys/services,../../internal/mihomonative \
+        -d .,../../internal/api,../../internal/aiassistant,../../internal/sys/routerinfo,../../internal/diagnostics,../../internal/presets,../../internal/sys/files,../../internal/sys/opkg,../../internal/sys/ports,../../internal/sys/procmon,../../internal/sys/services,../../internal/mihomonative,../../internal/telemt \
         -o ../../internal/openapi \
         --parseInternal --ot yaml
 )

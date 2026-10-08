@@ -4,6 +4,7 @@
 	import RoutingTargetBadges from '$lib/components/routing/RoutingTargetBadges.svelte';
 	import { ServiceIcon } from '$lib/components/dnsroutes';
 	import { SquarePen, Trash2, RefreshCw } from 'lucide-svelte';
+	import { skipIPv6LeavesNothing } from '$lib/utils/ipFamily';
 
 	interface Props {
 		route: DnsRoute;
@@ -45,6 +46,10 @@
 	let domainCount = $derived((route.domains ?? []).filter(d => !d.includes('/')).length);
 	let subCount = $derived(route.subscriptions?.length ?? 0);
 	let manualCount = $derived(route.manualDomains?.length ?? 0);
+
+	// Список со SkipIPv6 из одних IPv6-записей на роутер не попадает, хотя
+	// выглядит включённым, — без пометки этого не узнать.
+	let nothingRouted = $derived(skipIPv6LeavesNothing(route));
 
 	let dedupReport = $derived(route.lastDedupeReport);
 	let hasDedups = $derived(dedupReport && dedupReport.totalRemoved > 0);
@@ -120,6 +125,11 @@
 			{#if subCount > 0 && downloadRouteLabel}
 				<span class="card-download-route" title={downloadRouteLabel}>
 					Обновление через {downloadRouteLabel}
+				</span>
+			{/if}
+			{#if nothingRouted}
+				<span class="card-dedup" title="Все записи списка — IPv6, а включено «Не отправлять IPv6 на роутер». Список не попадает на роутер, хотя включён. Добавьте IPv4-записи или выключите эту настройку.">
+					Только IPv6 — на роутер не отправлен
 				</span>
 			{/if}
 			{#if hasDedups}

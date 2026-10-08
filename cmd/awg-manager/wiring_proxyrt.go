@@ -1209,7 +1209,10 @@ func (a *app) proxyFactory(ref *proxyManagerRef, journal *logging.ScopedLogger,
 				Registry: a.exitRegistry,
 				Sync: newProxyEndpointSync(a.awgStore, a.proxyTunnels(),
 					proxyLinkedField(rec.Kind), a.eventBus),
-				Occ: newProxyOccupancy(store, a.awgStore, rec.Kind, rec.ID),
+				Occ:  newProxyOccupancy(store, a.awgStore, rec.Kind, rec.ID),
+				Wake: func() { ref.mgr.Post(key, proxyrt.EventProcessState) },
+				Log:  func(msg string) { journal.Info("proc", key, msg) },
+				Warn: func(msg string) { journal.Warn("proc", key, msg) },
 			})
 			if err != nil {
 				return nil, err
@@ -1247,7 +1250,10 @@ func (a *app) proxyFactory(ref *proxyManagerRef, journal *logging.ScopedLogger,
 				Link:         link, Runner: runner, Gate: gate,
 				Sync: newProxyEndpointSync(a.awgStore, a.proxyTunnels(),
 					proxyLinkedField(rec.Kind), a.eventBus),
-				Occ: newProxyOccupancy(store, a.awgStore, rec.Kind, rec.ID),
+				Occ:  newProxyOccupancy(store, a.awgStore, rec.Kind, rec.ID),
+				Wake: func() { ref.mgr.Post(key, proxyrt.EventProcessState) },
+				Log:  func(msg string) { journal.Info("proc", key, msg) },
+				Warn: func(msg string) { journal.Warn("proc", key, msg) },
 			})
 			if err != nil {
 				return nil, err

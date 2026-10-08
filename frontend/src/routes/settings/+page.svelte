@@ -433,14 +433,18 @@
 		}
 	}
 
-	async function fetchTelemtStatus() {
-		telemtStatusLoading = true;
+	async function fetchTelemtStatus(silent = false) {
+		if (!silent) {
+			telemtStatusLoading = true;
+		}
 		try {
 			telemtStatusValue = await api.telemtStatus();
 		} catch {
 			// ignore if not configured
 		} finally {
-			telemtStatusLoading = false;
+			if (!silent) {
+				telemtStatusLoading = false;
+			}
 		}
 	}
 
@@ -527,7 +531,6 @@
 			xrayUninstalling = false;
 		}
 	}
-
 	async function fetchSystemInfo(silent = true) {
 		if (systemInfoInFlight) {
 			return systemInfoInFlight;
@@ -686,7 +689,7 @@ onMount(() => {
 		void fetchSystemInfo(true);
 		void fetchMihomoStatus();
 		void fetchSusaninStatus();
-		void fetchTelemtStatus();
+		void fetchTelemtStatus(true);
 		void fetchXrayStatus();
 	}, 30000);
 
@@ -709,6 +712,8 @@ onMount(() => {
 		} finally {
 			loading = false;
 		}
+
+		void fetchTelemtStatus(false);
 
 		// Non-critical for first paint: load update state in background.
 		api.checkUpdate()

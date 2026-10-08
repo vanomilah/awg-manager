@@ -11,6 +11,7 @@
 	import { Button, ConfirmModal, Input, Modal, StatusDot } from '$lib/components/ui';
 	import SettingsSectionLabel from './SettingsSectionLabel.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { notifications } from '$lib/stores/notifications';
 	import { singboxInstallProgress } from '$lib/stores/singboxInstall';
 	import { formatBytes } from '$lib/utils/format';
 	import { stripAnsi } from '$lib/utils/ansi';
@@ -173,6 +174,11 @@
 		showXray = true,
 	}: Props = $props();
 
+	const telemtInstalled = $derived(telemtStatus?.installed ?? false);
+	const telemtRunning = $derived(telemtStatus?.running ?? false);
+	const telemtNeedsUpdate = $derived(telemtStatus?.updateAvailable ?? false);
+	let confirmUninstallTelemt = $state(false);
+
 	// Подсистема, ожидающая подтверждения удаления.
 	let confirmProxy = $state<ProxyBinaryRow | null>(null);
 
@@ -294,6 +300,20 @@
 		const err = singboxInstallError ?? singboxUpdateError;
 		if (err) {
 			await copyToClipboard(err);
+		}
+	}
+
+	async function copyTelemtLink() {
+		if (!telemtStatus?.link) return;
+		let link = telemtStatus.link;
+		if (typeof window !== 'undefined' && window.location?.hostname) {
+			const host = window.location.hostname;
+			link = link.replace(/([?&]server=)(?:192\.168\.1\.1|0\.0\.0\.0)([&]|$)/, `$1${host}$2`);
+		}
+		if (await copyToClipboard(link)) {
+			notifications.success(m.settings_integrations_telemt_link_copied());
+		} else {
+			notifications.error(m.settings_integrations_telemt_link_copy_failed());
 		}
 	}
 
@@ -617,34 +637,67 @@
 						}
 					/>
 					<div class="integration-meta">
-						<span class="font-medium">Telemt (Telegram MTProxy)</span>
+						<div class="integration-title-wrap">
+							<span class="font-medium">Telemt (Telegram MTProxy)</span>
+							{#if telemtStatus?.source === 'managed'}
+								<span class="integration-badge">управляется awg-manager</span>
+							{:else if telemtStatus?.source === 'opkg'}
+								<span class="integration-badge">пакет opkg</span>
+							{:else if telemtStatus?.source === 'external'}
+								<span class="integration-badge">внешний бинарник</span>
+							{/if}
+						</div>
 						{#if telemtStatusLoading}
 							<span class="integration-sub">получаю данные…</span>
 						{:else if telemtInstalled && telemtStatus}
 							<span class="integration-sub">
-								v{telemtStatus.version || '?'}
-								{#if telemtRunning && telemtStatus.pid}· pid {telemtStatus.pid}{:else if !telemtRunning}· остановлен{/if}
+								v{telemtStatus.version || 'Версия не определена'}
+								{#if telemtRunning}· запущен{:else}· остановлен{/if}
+								{#if telemtStatus.config?.mode === 'web'}
+									· Веб-прокси (native)
+								{:else}
+									· Fake-TLS
+								{/if}
 							</span>
-							{#if telemtNeedsUpdate}
-								<span class="setting-description warning">
-									Доступно обновление: {telemtStatus.version} → {telemtStatus.latestVersion}
-								</span>
+							<span class="setting-description">
+								Высокопроизводительный MTProxy для Telegram с поддержкой Fake-TLS и нативного веб-прокси.
+							</span>
+							{#if telemtRunning && telemtStatus.link}
+								<div class="mt-1">
+									<button
+										type="button"
+										class="text-xs text-primary hover:underline cursor-pointer inline-flex items-center gap-1 font-medium"
+										onclick={copyTelemtLink}
+									>
+										Скопировать ссылку подключения
+									</button>
+								</div>
 							{/if}
+						{:else if telemtStatus && telemtStatus.archSupported === false}
+							<span class="integration-sub" style="color: var(--color-warning, #f59e0b);">
+								Архитектура не поддерживается ({telemtStatus.arch || ''})
+							</span>
+							<span class="setting-description">
+								Для данного устройства нет готового бинарного файла telemt.
+							</span>
 						{:else}
 							<span class="setting-description">
-								Высокопроизводительный MTProxy для Telegram с поддержкой Fake-TLS и raw-проксирования.
+								Высокопроизводительный MTProxy для Telegram с поддержкой Fake-TLS и нативного веб-прокси.
 							</span>
 						{/if}
 					</div>
 				</div>
 				{#if telemtInstalled}
 					<div class="integration-actions">
+						{#if onrestartTelemt && telemtRunning}
+							<Button variant="secondary" size="sm" onclick={onrestartTelemt} loading={telemtRestarting}>
+								{telemtRestarting ? 'Перезапуск...' : 'Перезапустить'}
+							</Button>
+						{/if}
 						{#if telemtNeedsUpdate && onupdateTelemt}
 							<Button variant="primary" size="sm" onclick={onupdateTelemt} loading={telemtUpdating}>
 								{telemtUpdating ? 'Обновление...' : 'Обновить'}
 							</Button>
-						{:else}
-							<Button variant="secondary" size="sm" href="/servers">Открыть</Button>
 						{/if}
 						{#if onuninstallTelemt}
 							<Button
@@ -659,6 +712,8 @@
 					</div>
 				{:else if telemtStatusLoading}
 					<Button variant="secondary" size="sm" disabled>Ожидание…</Button>
+				{:else if telemtStatus && telemtStatus.archSupported === false}
+					<Button variant="secondary" size="sm" disabled>Недоступно</Button>
 				{:else if oninstallTelemt}
 					<Button variant="primary" size="sm" onclick={oninstallTelemt} loading={telemtInstalling}>
 						{telemtInstalling ? 'Установка...' : 'Установить'}
@@ -972,7 +1027,6 @@
 	/>
 {/if}
 
-
 <style>
 	.integration-title-wrap {
 		display: flex;
@@ -984,10 +1038,10 @@
 		font-size: 0.6875rem;
 		font-weight: 500;
 		padding: 0.1rem 0.4rem;
-		background: rgba(59, 130, 246, 0.12);
-		color: #3b82f6;
+		background: var(--color-primary-bg, rgba(59, 130, 246, 0.12));
+		color: var(--color-primary, #3b82f6);
 		border-radius: 4px;
-		border: 1px solid rgba(59, 130, 246, 0.25);
+		border: 1px solid var(--color-primary-border, rgba(59, 130, 246, 0.25));
 	}
 	/* Своя раскладка вместо сетки .setting-row (1fr auto): там колонка с
 	   описанием схлопывалась под ширину поля и текст ломался по слову. */

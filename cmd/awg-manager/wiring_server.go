@@ -36,7 +36,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
-	telemtinstaller "github.com/hoaxisr/awg-manager/internal/telemt/installer"
+	"github.com/hoaxisr/awg-manager/internal/telemt"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
 	"github.com/hoaxisr/awg-manager/internal/xrayserver"
@@ -98,13 +98,12 @@ func (a *app) setupServer() {
 	a.tgWebProxyService = tgwebproxy.New(a.dataDir, onReload)
 
 	telemtArch := detectArch()
-	a.telemtInstaller = telemtinstaller.New(telemtArch)
-	if a.tgWebProxyService != nil {
-		a.telemtInstaller.SetRestartHandler(func(ctx context.Context) error {
-			return a.tgWebProxyService.Restart()
-		})
-	}
-	a.telemtHandler = api.NewTelemtHandler(a.telemtInstaller)
+	a.telemtService = telemt.New(a.dataDir, telemtArch)
+	a.deferOnExit(func() {
+		_ = a.telemtService.Close()
+	})
+	_ = a.telemtService.StartIfEnabled(context.Background())
+	a.telemtHandler = api.NewTelemtHandler(a.telemtService)
 
 	// Cross-Component Ingress Coordinator and Crash Recovery
 	a.ingressCoordinator = serveringress.New(a.dataDir, a.xrayServerService, a.cdnDispatcher, a.tgWebProxyService)
@@ -204,9 +203,9 @@ func (a *app) setupServer() {
 			Bus:                 a.eventBus,
 			HydraService:        a.hydraService,
 			SingboxHandler:      a.singboxHandler,
-			MihomoHandler:       a.mihomoHandler,
+			MihomoHandler:          a.mihomoHandler,
 			AdaptiveRoutingHandler: a.adaptiveRoutingHandler,
-			XrayHandler:         api.NewXrayHandler(a.xrayServerService),
+			XrayHandler:            api.NewXrayHandler(a.xrayServerService),
 			SingboxOrch:         a.sbOrch,
 			ClashProxy:          a.clashProxy,
 			SingboxConnsHandler: a.singboxConnsHandler,

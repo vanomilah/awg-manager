@@ -763,6 +763,7 @@ func dnsRouteDetail(dl *dnsroute.DomainList) mcpsrv.DNSRouteDetail {
 			URL: redactURL(sub.URL), Name: sub.Name, LastFetched: sub.LastFetched, LastCount: sub.LastCount, LastError: sub.LastError,
 		})
 	}
+	out.SkipIPv6 = dl.SkipsIPv6()
 	return out
 }
 

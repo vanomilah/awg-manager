@@ -48,7 +48,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/staticroute"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/kmod"
-	telemtinstaller "github.com/hoaxisr/awg-manager/internal/telemt/installer"
+	"github.com/hoaxisr/awg-manager/internal/telemt"
 	"github.com/hoaxisr/awg-manager/internal/terminal"
 	"github.com/hoaxisr/awg-manager/internal/testing"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
@@ -179,7 +179,7 @@ type app struct {
 	// Xray Server, TG Web Proxy and CDN Dispatcher
 	xrayServerService  *xrayserver.Service
 	tgWebProxyService  *tgwebproxy.Service
-	telemtInstaller    *telemtinstaller.TelemtInstaller
+	telemtService      *telemt.Service
 	telemtHandler      *api.TelemtHandler
 	cdnDispatcher      *cdndispatcher.Dispatcher
 	ingressCoordinator *serveringress.Coordinator

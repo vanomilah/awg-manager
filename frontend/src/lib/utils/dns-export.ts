@@ -8,6 +8,7 @@ export interface PortableDnsRoute {
 	subnets?: string[];
 	enabled: boolean;
 	iconUrl?: string;
+	skipIPv6?: boolean;
 }
 
 export function exportRoutes(routes: DnsRoute[]): PortableDnsRoute[] {
@@ -21,6 +22,7 @@ export function exportRoutes(routes: DnsRoute[]): PortableDnsRoute[] {
 		subnets: r.subnets?.length ? r.subnets : undefined,
 		enabled: r.enabled,
 		iconUrl: r.iconUrl || undefined,
+		skipIPv6: r.skipIPv6 || undefined,
 	}));
 }
 
