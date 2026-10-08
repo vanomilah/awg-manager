@@ -771,14 +771,6 @@ func (r *mihomoBridgeRuntime) PublishBridge(ctx context.Context, ref mihomo.Brid
 
 	r.gate.setReady(true)
 	publishDesc := canonicalOwner
-	if r.store != nil {
-		for _, nb := range r.store.ListBridges() {
-			if nb.Bridge.ProxyIndex == ref.ProxyIndex {
-				publishDesc = mihomonative.FormatBridgeDescription(nb.Label, nb.Kind, nb.ID)
-				break
-			}
-		}
-	}
 	allLegacy := append([]string{canonicalOwner}, legacyOwners...)
 	owned, err := r.gate.EnsureProxyIfOwned(ctx, ref.ProxyIndex, listenPort, publishDesc, allLegacy...)
 	if err != nil {

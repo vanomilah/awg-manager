@@ -136,8 +136,28 @@ func (pm *ProxyManager) EnsureProxyIfOwned(ctx context.Context, index, port int,
 	if err != nil {
 		return false, err
 	}
-	if exists && !proxyOwnerMatches(description, owner, legacyOwners) {
-		return false, nil
+	if exists {
+		if !proxyOwnerMatches(description, owner, legacyOwners) {
+			return false, nil
+		}
+		// Idempotency: if the proxy interface already exists in NDMS with the exact
+		// requested description, and the upstream port already matches, do NOT re-run
+		// CreateProxy. In KeenOS, re-running CreateProxy causes hev-socks5-tunnel to restart
+		// (SIGINT), resets the interface, clears IPv6, and causes a link flap / notification storm.
+		if description == owner {
+			currentPort := 0
+			if pm.getProxyPort != nil {
+				currentPort, _ = pm.getProxyPort(ctx, index)
+			} else if pm.queries != nil && pm.queries.RunningConfig != nil {
+				if lines, err := pm.queries.RunningConfig.Lines(ctx); err == nil {
+					name := fmt.Sprintf("%s%d", proxyIfacePrefix, index)
+					currentPort = parseProxyPortFromRunningConfig(lines, name)
+				}
+			}
+			if currentPort == port || (currentPort == 0 && pm.queries == nil && pm.getProxyPort == nil) {
+				return true, nil
+			}
+		}
 	}
 	if err := pm.ensureProxyLocked(ctx, index, port, owner); err != nil {
 		return true, err

@@ -262,6 +262,8 @@ func (ws *WorkerSupervisor) ApplyWorkers(cfg Config) error {
 	_ = os.MkdirAll("/opt/var/run", 0755)
 	_ = os.Chmod("/opt/var/run", 0755)
 	_ = os.Chmod("/opt/var", 0755)
+	_ = os.Chmod("/opt", 0755)
+
 
 	type workerTask struct {
 		name    string

@@ -125,6 +125,15 @@ func TestProxyManagerOwnedMutationPreservesForeignProxy(t *testing.T) {
 	if !owned || createCalls != 1 || description != owner {
 		t.Fatalf("legacy migration: owned=%v createCalls=%d description=%q", owned, createCalls, description)
 	}
+
+	// Repeated ensure on an already matching proxy MUST be a no-op (createCalls unchanged).
+	owned, err = pm.EnsureProxyIfOwned(context.Background(), 4, 11004, owner, "old label")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !owned || createCalls != 1 {
+		t.Fatalf("idempotent repeat mutated NDMS: owned=%v createCalls=%d", owned, createCalls)
+	}
 	removed, err = pm.RemoveProxyIfOwnedBy(context.Background(), 4, owner)
 	if err != nil {
 		t.Fatal(err)

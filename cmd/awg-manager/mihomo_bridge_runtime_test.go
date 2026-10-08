@@ -332,9 +332,10 @@ func (f *fakeNDMSRegistrarWithOwnership) EnsureProxyIfOwned(ctx context.Context,
 	}
 	if f.occupied[index] {
 		cur := f.descriptions[index]
-		owned := cur == owner
+		curToken := singbox.ExtractProxyOwnerToken(cur)
+		owned := cur == owner || (curToken != "" && curToken == owner)
 		for _, leg := range legacy {
-			if leg != "" && cur == leg {
+			if leg != "" && (cur == leg || (curToken != "" && curToken == leg)) {
 				owned = true
 				break
 			}
@@ -360,9 +361,10 @@ func (f *fakeNDMSRegistrarWithOwnership) RemoveProxyIfOwned(_ context.Context, i
 		return true, nil
 	}
 	cur := f.descriptions[index]
-	owned := cur == owner
+	curToken := singbox.ExtractProxyOwnerToken(cur)
+	owned := cur == owner || (curToken != "" && curToken == owner)
 	for _, leg := range legacy {
-		if leg != "" && cur == leg {
+		if leg != "" && (cur == leg || (curToken != "" && curToken == leg)) {
 			owned = true
 			break
 		}
@@ -435,7 +437,7 @@ func TestMihomoBridgeRuntime_PrepareRetainsLegacyOwnerUntilActivate(t *testing.T
 
 	// Verify that after activate, NDMS description is updated to canonical token AND LegacyOwner is cleared
 	canonicalOwner := mihomonative.BridgeOwnershipDescription("proxy", nodes[0].ID)
-	if base.descriptions[7] != canonicalOwner {
+	if base.descriptions[7] != canonicalOwner && singbox.ExtractProxyOwnerToken(base.descriptions[7]) != canonicalOwner {
 		t.Fatalf("activate did not write canonical owner: %q, want %q", base.descriptions[7], canonicalOwner)
 	}
 

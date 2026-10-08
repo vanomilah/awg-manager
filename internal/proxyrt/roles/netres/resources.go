@@ -338,9 +338,11 @@ func ruleAbsent(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	// Первое — ответ `-C` на несуществующее правило, второе — на
-	// несуществующую цепочку или незагруженный матч. Сносить нечего в обоих.
+	// несуществующую цепочку или незагруженный матч, третье — ответ iptables v1.4.21
+	// на несуществующую цепочку-таргет ("couldn't load target `...'"). Сносить нечего.
 	return strings.Contains(msg, "does a matching rule exist") ||
-		strings.Contains(msg, "no chain/target/match by that name")
+		strings.Contains(msg, "no chain/target/match by that name") ||
+		strings.Contains(msg, "couldn't load target")
 }
 
 // chainExists — есть ли цепочка, проверено НАБЛЮДЕНИЕМ. Текст ошибки `-C` для
