@@ -65,9 +65,9 @@ func (p *ProcessManager) GenerateConfigFile(
 		lanSubnets = []string{"192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"}
 	}
 
-	table := settings.RoutingTableID
-	if table <= 0 {
-		table = DefaultTableID
+	table, err := ValidateRoutingTableID(settings.RoutingTableID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid routing table in settings: %w", err)
 	}
 	markTest := settings.FwmarkTest
 	if markTest == "" {
@@ -250,20 +250,25 @@ func (p *ProcessManager) WriteConfigFiles(
 // Start launches susanin-agent in the background.
 func (p *ProcessManager) Start(ctx context.Context, binPath string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if binPath != "" {
 		p.binaryPath = binPath
 	}
 	if p.binaryPath == "" {
+		p.mu.Unlock()
 		return fmt.Errorf("susanin-agent binary path not configured")
 	}
 
-	// Always make sure any stale/orphan daemon is terminated before launching a new one
+	var stalePids []int
 	for _, pid := range p.managedPIDsLocked() {
 		if p.cmd != nil && p.cmd.Process != nil && p.cmd.Process.Pid == pid {
 			continue
 		}
+		stalePids = append(stalePids, pid)
+	}
+	p.mu.Unlock()
+
+	// Terminate stale daemons without holding mutex during sleep
+	for _, pid := range stalePids {
 		if proc, err := os.FindProcess(pid); err == nil && proc != nil {
 			_ = proc.Signal(syscall.SIGTERM)
 			time.Sleep(100 * time.Millisecond)
@@ -272,6 +277,9 @@ func (p *ProcessManager) Start(ctx context.Context, binPath string) error {
 			}
 		}
 	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
 	if running, pid := p.isRunningLocked(); running {
 		_ = pid
@@ -367,14 +375,18 @@ func (p *ProcessManager) wait(cmd *exec.Cmd) {
 // Stop terminates the running susanin-agent.
 func (p *ProcessManager) Stop(ctx context.Context) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	pids := p.managedPIDsLocked()
 	if len(pids) == 0 {
 		if running, pid := p.isRunningLocked(); running && pid > 0 {
 			pids = append(pids, pid)
 		}
 	}
+	p.cmd = nil
+	pidPath := p.PidPath()
+	p.mu.Unlock()
+
+	_ = os.Remove(pidPath)
+
 	for _, pid := range pids {
 		proc, err := os.FindProcess(pid)
 		if err != nil || proc == nil {
@@ -382,7 +394,12 @@ func (p *ProcessManager) Stop(ctx context.Context) error {
 		}
 		_ = proc.Signal(syscall.SIGTERM)
 		for i := 0; i < 30; i++ {
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				_ = proc.Kill()
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
 			if err := proc.Signal(syscall.Signal(0)); err != nil {
 				break
 			}
@@ -392,24 +409,31 @@ func (p *ProcessManager) Stop(ctx context.Context) error {
 		}
 	}
 
-	_ = os.Remove(p.PidPath())
-	p.cmd = nil
 	return nil
 }
 
 // CleanupOrphans discovers and terminates any stray susanin-agent daemons.
 func (p *ProcessManager) CleanupOrphans(ctx context.Context) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
+	var orphanPids []int
 	for _, pid := range p.managedPIDsLocked() {
 		if p.cmd != nil && p.cmd.Process != nil && p.cmd.Process.Pid == pid {
 			continue
 		}
+		orphanPids = append(orphanPids, pid)
+	}
+	p.mu.Unlock()
+
+	for _, pid := range orphanPids {
 		if proc, err := os.FindProcess(pid); err == nil && proc != nil {
 			_ = proc.Signal(syscall.SIGTERM)
 			for i := 0; i < 15; i++ {
-				time.Sleep(100 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					_ = proc.Kill()
+					return ctx.Err()
+				case <-time.After(100 * time.Millisecond):
+				}
 				if err := proc.Signal(syscall.Signal(0)); err != nil {
 					break
 				}

@@ -8,7 +8,9 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
 	"github.com/hoaxisr/awg-manager/internal/api"
+	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	ndmsquery "github.com/hoaxisr/awg-manager/internal/ndms/query"
+	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
 )
 
@@ -179,6 +181,61 @@ func (s *singboxAdaptiveAdapter) ListOutbounds() []adaptiverouting.SingboxOutbou
 	return out
 }
 
+type mihomoAdaptiveAdapter struct {
+	store *mihomonative.Store
+}
+
+func (m *mihomoAdaptiveAdapter) ListProxies() []adaptiverouting.MihomoProxyInfo {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	nodes := m.store.ListProxies()
+	out := make([]adaptiverouting.MihomoProxyInfo, len(nodes))
+	for i, n := range nodes {
+		out[i] = adaptiverouting.MihomoProxyInfo{
+			ID:      n.ID,
+			Name:    n.Name,
+			Enabled: n.Enabled,
+		}
+	}
+	return out
+}
+
+func (m *mihomoAdaptiveAdapter) ListSubscriptions() []adaptiverouting.MihomoSubscriptionInfo {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	subs := m.store.ListSubscriptions()
+	out := make([]adaptiverouting.MihomoSubscriptionInfo, len(subs))
+	for i, s := range subs {
+		out[i] = adaptiverouting.MihomoSubscriptionInfo{
+			ID:      s.ID,
+			Name:    s.Name,
+			Enabled: s.Enabled,
+		}
+	}
+	return out
+}
+
+func (m *mihomoAdaptiveAdapter) ListGroups() []adaptiverouting.MihomoGroupInfo {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	groups := m.store.ListGroups()
+	out := make([]adaptiverouting.MihomoGroupInfo, len(groups))
+	for i, g := range groups {
+		out[i] = adaptiverouting.MihomoGroupInfo{
+			ID:         g.ID,
+			Name:       g.Name,
+			Enabled:    g.Enabled,
+			Proxies:    g.Proxies,
+			Use:        g.Use,
+			DisableUDP: g.DisableUDP,
+		}
+	}
+	return out
+}
+
 func (a *app) setupAdaptiveRouting() {
 	store, err := adaptiverouting.NewStore(a.dataDir)
 	if err != nil {
@@ -188,14 +245,22 @@ func (a *app) setupAdaptiveRouting() {
 
 	tunnelAdapter := &adaptiveTunnelAdapter{app: a}
 	sbAdapter := &singboxAdaptiveAdapter{app: a}
-	catalog := adaptiverouting.NewCatalog(a.mihomoNativeStore, tunnelAdapter, sbAdapter)
+	var mihomoAdapter adaptiverouting.MihomoNativeProvider
 	refChecker := adaptiverouting.NewReferenceChecker(store)
 
 	if a.mihomoNativeStore != nil {
+		mihomoAdapter = &mihomoAdaptiveAdapter{store: a.mihomoNativeStore}
 		a.mihomoNativeStore.SetInUseChecker(refChecker.InUseChecker())
 	}
+	catalog := adaptiverouting.NewCatalog(mihomoAdapter, tunnelAdapter, sbAdapter)
 
-	svc := adaptiverouting.NewService(a.dataDir, catalog, refChecker, store)
+	arch := detectArch()
+	svc := adaptiverouting.NewService(a.dataDir, catalog, refChecker, store, arch)
+	lanIfaces := []string{storage.DefaultInterface}
+	if a.settings != nil && len(a.settings.Server.Interfaces) > 0 {
+		lanIfaces = a.settings.Server.Interfaces
+	}
+	svc.SetLanInterfaces(lanIfaces)
 
 	if a.ndmsTransportClient != nil {
 		markStore := ndmsquery.NewPolicyMarkStore(a.ndmsTransportClient, nil)
@@ -203,7 +268,7 @@ func (a *app) setupAdaptiveRouting() {
 	}
 
 	systemExec := adaptiverouting.NewSystemExecutor()
-	mihomoExec := adaptiverouting.NewMihomoExecutor(a.mihomoNativeStore, nil)
+	mihomoExec := adaptiverouting.NewMihomoExecutor(mihomoAdapter)
 	singboxExec := adaptiverouting.NewSingboxExecutor(a.sbOrch)
 	svc.SetExecutors(systemExec, mihomoExec, singboxExec)
 	a.adaptiveRoutingMihomoExec = mihomoExec

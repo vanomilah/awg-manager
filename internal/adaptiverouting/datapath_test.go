@@ -350,3 +350,215 @@ func TestDatapath_GetStats_KeeneticListingWithoutEntryCount(t *testing.T) {
 		t.Fatalf("OkTcpCount = %d, want 2", stats.OkTcpCount)
 	}
 }
+
+func TestDatapath_ValidateRoutingTableID(t *testing.T) {
+	cases := []struct {
+		table   int
+		wantErr bool
+		wantVal int
+	}{
+		{0, false, DefaultTableID},
+		{-5, true, 0},
+		{50, true, 0},
+		{99, true, 0},
+		{100, false, 100},
+		{105, false, 105},
+		{254, true, 0},
+		{255, true, 0},
+		{300, false, 300},
+	}
+	for _, tc := range cases {
+		got, err := ValidateRoutingTableID(tc.table)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ValidateRoutingTableID(%d) err = %v, wantErr %v", tc.table, err, tc.wantErr)
+		}
+		if !tc.wantErr && got != tc.wantVal {
+			t.Errorf("ValidateRoutingTableID(%d) = %d, want %d", tc.table, got, tc.wantVal)
+		}
+	}
+}
+
+func TestDatapath_Teardown_InvalidTableRejectsWithoutFlush(t *testing.T) {
+	var calls []mockCmdCall
+	dp := NewDatapathController(func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
+		calls = append(calls, mockCmdCall{bin: bin, args: args})
+		return &sysexec.Result{ExitCode: 0}, nil
+	})
+	settings := DefaultSettings()
+	settings.RoutingTableID = 254 // Reserved 'main' table
+
+	err := dp.Teardown(context.Background(), settings, []string{"br0"})
+	if err == nil {
+		t.Fatal("expected Teardown to fail with invalid table 254")
+	}
+
+	for _, c := range calls {
+		str := strings.Join(c.args, " ")
+		if strings.Contains(str, "route flush table") {
+			t.Fatalf("dangerous route flush table executed on table 254: %s", str)
+		}
+	}
+}
+
+func TestDatapath_EnsureChain_NoAcceptInSusaninChain(t *testing.T) {
+	var calls []mockCmdCall
+	dp := NewDatapathController(func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
+		calls = append(calls, mockCmdCall{bin: bin, args: args})
+		return &sysexec.Result{ExitCode: 0}, nil
+	})
+	settings := DefaultSettings()
+	settings.DNS.Enabled = true
+	settings.DNS.Servers = []string{"1.1.1.1"}
+	settings.DNS.RouteViaTunnel = true
+	settings.DNS.InterceptPort53 = true
+
+	err := dp.EnsureChain(context.Background(), settings, []string{"br0"}, []string{"192.168.1.1"})
+	if err != nil {
+		t.Fatalf("EnsureChain failed: %v", err)
+	}
+
+	for _, c := range calls {
+		str := strings.Join(c.args, " ")
+		if strings.Contains(str, "-t mangle") && strings.Contains(str, "-A "+ChainSusanin) && strings.Contains(str, "-j ACCEPT") {
+			t.Fatalf("forbidden -j ACCEPT found in ChainSusanin rule: %s", str)
+		}
+	}
+}
+
+func TestDatapath_EnsureChain_PreservesSusaninDnsOut(t *testing.T) {
+	var calls []mockCmdCall
+	dp := NewDatapathController(func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
+		calls = append(calls, mockCmdCall{bin: bin, args: args})
+		return &sysexec.Result{ExitCode: 0}, nil
+	})
+	settings := DefaultSettings()
+	settings.DNS.Enabled = true
+	settings.DNS.Servers = []string{"1.1.1.1"}
+	settings.DNS.RouteViaTunnel = true
+
+	err := dp.EnsureChain(context.Background(), settings, []string{"br0"}, []string{"192.168.1.1"})
+	if err != nil {
+		t.Fatalf("EnsureChain failed: %v", err)
+	}
+
+	addedDnsOut := false
+	deletedDnsOutAfterAdd := false
+	for _, c := range calls {
+		str := strings.Join(c.args, " ")
+		if strings.Contains(str, "-A OUTPUT") && strings.Contains(str, "SUSANIN-DNS-OUT") {
+			addedDnsOut = true
+		}
+		if addedDnsOut && strings.Contains(str, "-D OUTPUT") && strings.Contains(str, "SUSANIN-DNS-OUT") {
+			deletedDnsOutAfterAdd = true
+		}
+	}
+
+	if !addedDnsOut {
+		t.Fatal("expected SUSANIN-DNS-OUT rule in OUTPUT, none found")
+	}
+	if deletedDnsOutAfterAdd {
+		t.Fatal("SUSANIN-DNS-OUT was deleted after being added inside EnsureChain")
+	}
+}
+
+func TestDatapath_EnsureChain_ExcludesRouterDNSFromDNAT(t *testing.T) {
+	var calls []mockCmdCall
+	dp := NewDatapathController(func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
+		calls = append(calls, mockCmdCall{bin: bin, args: args})
+		return &sysexec.Result{ExitCode: 0}, nil
+	})
+	settings := DefaultSettings()
+	settings.DNS.Enabled = true
+	settings.DNS.Servers = []string{"1.1.1.1"}
+	settings.DNS.InterceptPort53 = true
+
+	err := dp.EnsureChain(context.Background(), settings, []string{"br0"}, []string{"192.168.1.1"})
+	if err != nil {
+		t.Fatalf("EnsureChain failed: %v", err)
+	}
+
+	foundRouterReturn := false
+	foundSubnetReturn := false
+	for _, c := range calls {
+		str := strings.Join(c.args, " ")
+		if strings.Contains(str, "-t nat") && strings.Contains(str, "-A "+ChainSusaninDNS) {
+			if strings.Contains(str, "-d 192.168.1.1 -j RETURN") {
+				foundRouterReturn = true
+			}
+			if strings.Contains(str, "-d 192.168.0.0/16 -j RETURN") {
+				foundSubnetReturn = true
+			}
+		}
+	}
+
+	if !foundRouterReturn {
+		t.Fatal("expected -d 192.168.1.1 -j RETURN in ChainSusaninDNS nat table to protect local router DNS")
+	}
+	if !foundSubnetReturn {
+		t.Fatal("expected -d 192.168.0.0/16 -j RETURN in ChainSusaninDNS nat table to protect local private DNS")
+	}
+}
+
+func TestDatapath_EnsureChain_ExcludesPrivateSubnetsEvenWithoutRouterIPs(t *testing.T) {
+	var calls []mockCmdCall
+	dp := NewDatapathController(func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
+		calls = append(calls, mockCmdCall{bin: bin, args: args})
+		return &sysexec.Result{ExitCode: 0}, nil
+	})
+	settings := DefaultSettings()
+	settings.DNS.Enabled = true
+	settings.DNS.Servers = []string{"1.1.1.1"}
+	settings.DNS.InterceptPort53 = true
+
+	// Empty routerIPs
+	err := dp.EnsureChain(context.Background(), settings, []string{"br0"}, nil)
+	if err != nil {
+		t.Fatalf("EnsureChain failed: %v", err)
+	}
+
+	foundLoopback := false
+	found192 := false
+	found10 := false
+	found172 := false
+	for _, c := range calls {
+		str := strings.Join(c.args, " ")
+		if strings.Contains(str, "-t nat") && strings.Contains(str, "-A "+ChainSusaninDNS) {
+			if strings.Contains(str, "-d 127.0.0.0/8 -j RETURN") {
+				foundLoopback = true
+			}
+			if strings.Contains(str, "-d 192.168.0.0/16 -j RETURN") {
+				found192 = true
+			}
+			if strings.Contains(str, "-d 10.0.0.0/8 -j RETURN") {
+				found10 = true
+			}
+			if strings.Contains(str, "-d 172.16.0.0/12 -j RETURN") {
+				found172 = true
+			}
+		}
+	}
+
+	if !foundLoopback || !found192 || !found10 || !found172 {
+		t.Fatalf("expected loopback and RFC1918 bypasses in ChainSusaninDNS even without routerIPs: lb=%v 192=%v 10=%v 172=%v",
+			foundLoopback, found192, found10, found172)
+	}
+}
+
+func TestDatapath_DrainRulesLocked_IgnoresReservedTables(t *testing.T) {
+	var calls []mockCmdCall
+	dp := NewDatapathController(func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
+		calls = append(calls, mockCmdCall{bin: bin, args: args})
+		return &sysexec.Result{ExitCode: 0}, nil
+	})
+
+	dp.drainRulesLocked(context.Background(), 254, 95, 96)
+	dp.drainRulesLocked(context.Background(), 255, 95, 96)
+	dp.drainRulesLocked(context.Background(), 50, 95, 96)
+
+	for _, c := range calls {
+		str := strings.Join(c.args, " ")
+		if strings.Contains(str, "table 254") || strings.Contains(str, "table 255") || strings.Contains(str, "table 50") {
+			t.Fatalf("drainRulesLocked attempted to delete rule for reserved table: %s", str)
+		}
+	}
+}

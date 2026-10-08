@@ -7,7 +7,6 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
 	"github.com/hoaxisr/awg-manager/internal/response"
-	"github.com/hoaxisr/awg-manager/internal/sys/traffic"
 )
 
 type AdaptiveRoutingHandler struct {
@@ -236,7 +235,7 @@ func (h *AdaptiveRoutingHandler) handleLearned(w http.ResponseWriter, r *http.Re
 	knowledgeMap := make(map[string]map[string]string)
 	allLearned := append(append(append([]string{}, okTcp...), okUdp...), okNet...)
 	for _, ip := range allLearned {
-		if info := traffic.FindDomainKnowledge("", ip); info != nil {
+		if info := adaptiverouting.FindDomainKnowledge("", ip); info != nil {
 			knowledgeMap[ip] = map[string]string{
 				"title":       info.Title,
 				"description": info.Description,

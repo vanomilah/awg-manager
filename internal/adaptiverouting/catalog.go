@@ -5,9 +5,34 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 )
+
+type MihomoNativeProvider interface {
+	ListProxies() []MihomoProxyInfo
+	ListSubscriptions() []MihomoSubscriptionInfo
+	ListGroups() []MihomoGroupInfo
+}
+
+type MihomoProxyInfo struct {
+	ID      string
+	Name    string
+	Enabled bool
+}
+
+type MihomoSubscriptionInfo struct {
+	ID      string
+	Name    string
+	Enabled bool
+}
+
+type MihomoGroupInfo struct {
+	ID         string
+	Name       string
+	Enabled    bool
+	Proxies    []string
+	Use        []string
+	DisableUDP bool
+}
 
 type TunnelProvider interface {
 	ListTunnels() []TunnelInfo
@@ -44,12 +69,12 @@ type SingboxOutboundInfo struct {
 }
 
 type Catalog struct {
-	nativeStore     *mihomonative.Store
+	nativeStore     MihomoNativeProvider
 	tunnelProvider  TunnelProvider
 	singboxProvider SingboxProvider
 }
 
-func NewCatalog(nativeStore *mihomonative.Store, tunnelProvider TunnelProvider, sbProviders ...SingboxProvider) *Catalog {
+func NewCatalog(nativeStore MihomoNativeProvider, tunnelProvider TunnelProvider, sbProviders ...SingboxProvider) *Catalog {
 	var sb SingboxProvider
 	if len(sbProviders) > 0 {
 		sb = sbProviders[0]

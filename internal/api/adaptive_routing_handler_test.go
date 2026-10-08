@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/hoaxisr/awg-manager/internal/adaptiverouting"
-	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	sysexec "github.com/hoaxisr/awg-manager/internal/sys/exec"
 )
 
@@ -22,6 +20,14 @@ func (m *mockTP) ListTunnels() []adaptiverouting.TunnelInfo {
 	}
 }
 
+type mockMihomoProvider struct {
+	groups []adaptiverouting.MihomoGroupInfo
+}
+
+func (m *mockMihomoProvider) ListProxies() []adaptiverouting.MihomoProxyInfo { return nil }
+func (m *mockMihomoProvider) ListSubscriptions() []adaptiverouting.MihomoSubscriptionInfo { return nil }
+func (m *mockMihomoProvider) ListGroups() []adaptiverouting.MihomoGroupInfo { return m.groups }
+
 func setupTestAdaptiveRoutingHandler(t *testing.T) (*AdaptiveRoutingHandler, *http.ServeMux) {
 	dir := t.TempDir()
 	store, err := adaptiverouting.NewStore(dir)
@@ -29,24 +35,19 @@ func setupTestAdaptiveRoutingHandler(t *testing.T) (*AdaptiveRoutingHandler, *ht
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	nativeStore, err := mihomonative.NewStore(filepath.Join(dir, "native.json"))
-	if err != nil {
-		t.Fatalf("native NewStore: %v", err)
-	}
-
-	_, err = nativeStore.SaveGroup(mihomonative.ProxyGroup{
-		Name:    "GroupAuto",
-		Type:    "url-test",
-		Proxies: []string{"DIRECT"},
-		Enabled: true,
-	})
-	if err != nil {
-		t.Fatalf("SaveGroup: %v", err)
+	nativeStore := &mockMihomoProvider{
+		groups: []adaptiverouting.MihomoGroupInfo{
+			{
+				ID:      "grp-auto",
+				Name:    "GroupAuto",
+				Enabled: true,
+				Proxies: []string{"DIRECT"},
+			},
+		},
 	}
 
 	catalog := adaptiverouting.NewCatalog(nativeStore, &mockTP{})
 	checker := adaptiverouting.NewReferenceChecker(store)
-	nativeStore.SetInUseChecker(checker.InUseChecker())
 
 	svc := adaptiverouting.NewService(dir, catalog, checker, store)
 	mockRunner := func(ctx context.Context, bin string, args ...string) (*sysexec.Result, error) {
@@ -54,6 +55,7 @@ func setupTestAdaptiveRoutingHandler(t *testing.T) (*AdaptiveRoutingHandler, *ht
 	}
 	dp := adaptiverouting.NewDatapathController(mockRunner)
 	svc.SetDatapathController(dp)
+	svc.SetProcessManager(nil)
 
 	handler := NewAdaptiveRoutingHandler(svc)
 

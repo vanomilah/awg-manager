@@ -5,17 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"reflect"
 	"sync"
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
-	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 )
 
 const (
 	TunInterfaceName = "awgsus0"
 )
+
+var ifaceByName = net.InterfaceByName
 
 type Executor interface {
 	Prepare(ctx context.Context, egress ResolvedEgress) error
@@ -62,25 +64,42 @@ func (s *SystemExecutor) TearDown(ctx context.Context) error {
 }
 
 func (s *SystemExecutor) InterfaceName() string {
+	if s == nil {
+		return ""
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.iface
 }
 
+// MihomoAdaptiveConfig describes the dynamic egress configuration for Mihomo.
+type MihomoAdaptiveConfig = mihomo.AdaptiveEgressConfig
+
 // MihomoExecutor configures Mihomo to host awgsus0 and route to the selected group/proxy.
 type MihomoExecutor struct {
-	nativeStore *mihomonative.Store
-	applyCoord  *mihomo.ApplyCoordinator
+	nativeStore MihomoNativeProvider
 	reloadFn    func(ctx context.Context) error
 	groupName   string
 	committed   bool
 	mu          sync.Mutex
 }
 
-func NewMihomoExecutor(nativeStore *mihomonative.Store, applyCoord *mihomo.ApplyCoordinator) *MihomoExecutor {
+func NewMihomoExecutor(nativeStore MihomoNativeProvider) *MihomoExecutor {
 	return &MihomoExecutor{
 		nativeStore: nativeStore,
-		applyCoord:  applyCoord,
+	}
+}
+
+func isNilProvider(p MihomoNativeProvider) bool {
+	if p == nil {
+		return true
+	}
+	v := reflect.ValueOf(p)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer:
+		return v.IsNil()
+	default:
+		return false
 	}
 }
 
@@ -95,31 +114,40 @@ func (m *MihomoExecutor) Prepare(ctx context.Context, egress ResolvedEgress) err
 	defer m.mu.Unlock()
 
 	targetName := egress.DisplayName
-	if egress.Ref.Kind == EgressKindMihomoGroup && m.nativeStore != nil {
-		for _, g := range m.nativeStore.ListGroups() {
-			if g.ID == egress.Ref.ResourceID || g.Name == egress.Ref.ResourceID {
-				targetName = g.Name
-				break
+	if !isNilProvider(m.nativeStore) {
+		switch egress.Ref.Kind {
+		case EgressKindMihomoGroup:
+			for _, g := range m.nativeStore.ListGroups() {
+				if g.ID == egress.Ref.ResourceID || g.Name == egress.Ref.ResourceID {
+					targetName = g.Name
+					break
+				}
 			}
-		}
-	} else if egress.Ref.Kind == EgressKindMihomoProxy && m.nativeStore != nil {
-		for _, p := range m.nativeStore.ListProxies() {
-			if p.ID == egress.Ref.ResourceID || p.Name == egress.Ref.ResourceID {
-				targetName = p.Name
-				break
+		case EgressKindMihomoProxy:
+			for _, p := range m.nativeStore.ListProxies() {
+				if p.ID == egress.Ref.ResourceID || p.Name == egress.Ref.ResourceID {
+					targetName = p.Name
+					break
+				}
 			}
-		}
-	} else if egress.Ref.Kind == EgressKindMihomoSubscription && m.nativeStore != nil {
-		for _, sub := range m.nativeStore.ListSubscriptions() {
-			if sub.ID == egress.Ref.ResourceID || sub.Name == egress.Ref.ResourceID {
-				targetName = sub.Name
-				break
+		case EgressKindMihomoSubscription:
+			for _, sub := range m.nativeStore.ListSubscriptions() {
+				if sub.ID == egress.Ref.ResourceID || sub.Name == egress.Ref.ResourceID {
+					targetName = sub.Name
+					break
+				}
 			}
 		}
 	}
 
 	if targetName == "" {
-		return fmt.Errorf("unable to resolve Mihomo target name for %s", egress.Ref.ResourceID)
+		if egress.DisplayName != "" {
+			targetName = egress.DisplayName
+		} else if egress.Ref.ResourceID != "" {
+			targetName = egress.Ref.ResourceID
+		} else {
+			return fmt.Errorf("unable to resolve Mihomo target name for %s", egress.Ref.ResourceID)
+		}
 	}
 
 	m.groupName = targetName
@@ -144,7 +172,7 @@ func (m *MihomoExecutor) Commit(ctx context.Context) error {
 	// Wait up to 5 seconds for awgsus0 interface to be created by Mihomo
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := net.InterfaceByName(TunInterfaceName); err == nil {
+		if _, err := ifaceByName(TunInterfaceName); err == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -152,10 +180,18 @@ func (m *MihomoExecutor) Commit(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
+			m.mu.Lock()
+			m.committed = false
+			m.mu.Unlock()
+			_ = m.TearDown(context.Background())
 			return ctx.Err()
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
+	m.mu.Lock()
+	m.committed = false
+	m.mu.Unlock()
+	_ = m.TearDown(context.Background())
 	return fmt.Errorf("интерфейс %s не был поднят Mihomo в течение 5 секунд", TunInterfaceName)
 }
 
@@ -164,6 +200,9 @@ func (m *MihomoExecutor) Rollback(ctx context.Context) error {
 }
 
 func (m *MihomoExecutor) TearDown(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
 	m.mu.Lock()
 	m.committed = false
 	m.groupName = ""
@@ -177,16 +216,27 @@ func (m *MihomoExecutor) TearDown(ctx context.Context) error {
 }
 
 func (m *MihomoExecutor) InterfaceName() string {
+	if m == nil {
+		return ""
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.committed {
+		return ""
+	}
+	if _, err := ifaceByName(TunInterfaceName); err != nil {
+		return ""
+	}
 	return TunInterfaceName
 }
 
-func (m *MihomoExecutor) AdaptiveConfig() *mihomo.AdaptiveEgressConfig {
+func (m *MihomoExecutor) AdaptiveConfig() *MihomoAdaptiveConfig {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !m.committed || m.groupName == "" {
 		return nil
 	}
-	return &mihomo.AdaptiveEgressConfig{
+	return &MihomoAdaptiveConfig{
 		Enabled:       true,
 		Device:        TunInterfaceName,
 		SelectedGroup: m.groupName,
@@ -228,6 +278,11 @@ func (s *SingboxExecutor) Commit(ctx context.Context) error {
 		return nil
 	}
 
+	_ = s.orch.Register(orchestrator.SlotMeta{
+		Slot:     orchestrator.SlotAdaptiveEgress,
+		Filename: "25-adaptive-egress.json",
+	})
+
 	cfg := map[string]any{
 		"inbounds": []map[string]any{
 			{
@@ -261,13 +316,17 @@ func (s *SingboxExecutor) Commit(ctx context.Context) error {
 	if err := s.orch.SetEnabled(orchestrator.SlotAdaptiveEgress, true); err != nil {
 		return fmt.Errorf("enable sing-box adaptive slot: %w", err)
 	}
+	if err := s.orch.ReloadNow(); err != nil {
+		_ = s.orch.SetEnabled(orchestrator.SlotAdaptiveEgress, false)
+		return fmt.Errorf("reload sing-box immediately: %w", err)
+	}
 
 	s.committed = true
 
 	// Wait up to 5 seconds for awgsus0 interface to be created by sing-box
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, err := net.InterfaceByName(TunInterfaceName); err == nil {
+		if _, err := ifaceByName(TunInterfaceName); err == nil {
 			return nil
 		}
 		if time.Now().After(deadline) {
@@ -275,10 +334,20 @@ func (s *SingboxExecutor) Commit(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
+			if s.orch != nil {
+				_ = s.orch.SetEnabled(orchestrator.SlotAdaptiveEgress, false)
+				_ = s.orch.ReloadNow()
+			}
+			s.committed = false
 			return ctx.Err()
 		case <-time.After(150 * time.Millisecond):
 		}
 	}
+	if s.orch != nil {
+		_ = s.orch.SetEnabled(orchestrator.SlotAdaptiveEgress, false)
+		_ = s.orch.ReloadNow()
+	}
+	s.committed = false
 	return fmt.Errorf("интерфейс %s не был поднят sing-box в течение 5 секунд", TunInterfaceName)
 }
 
@@ -287,11 +356,15 @@ func (s *SingboxExecutor) Rollback(ctx context.Context) error {
 }
 
 func (s *SingboxExecutor) TearDown(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if s.orch != nil {
 		_ = s.orch.SetEnabled(orchestrator.SlotAdaptiveEgress, false)
+		_ = s.orch.ReloadNow()
 	}
 	s.committed = false
 	s.outboundTag = ""
@@ -299,5 +372,16 @@ func (s *SingboxExecutor) TearDown(ctx context.Context) error {
 }
 
 func (s *SingboxExecutor) InterfaceName() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.committed {
+		return ""
+	}
+	if _, err := ifaceByName(TunInterfaceName); err != nil {
+		return ""
+	}
 	return TunInterfaceName
 }

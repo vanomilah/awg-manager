@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/hoaxisr/awg-manager/internal/mihomonative"
 )
 
 type mockTunnelProvider struct {
@@ -136,22 +134,26 @@ func TestStore_SettingsAndState(t *testing.T) {
 	}
 }
 
-func TestCatalog_Resolve(t *testing.T) {
-	dir := t.TempDir()
-	nativeStore, err := mihomonative.NewStore(filepath.Join(dir, "native.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+type mockMihomoProvider struct {
+	groups []MihomoGroupInfo
+}
 
-	grp, err := nativeStore.SaveGroup(mihomonative.ProxyGroup{
-		Name:    "FastestProxy",
-		Type:    "url-test",
-		Proxies: []string{"DIRECT"},
-		Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
+func (m *mockMihomoProvider) ListProxies() []MihomoProxyInfo { return nil }
+func (m *mockMihomoProvider) ListSubscriptions() []MihomoSubscriptionInfo { return nil }
+func (m *mockMihomoProvider) ListGroups() []MihomoGroupInfo { return m.groups }
+
+func TestCatalog_Resolve(t *testing.T) {
+	nativeStore := &mockMihomoProvider{
+		groups: []MihomoGroupInfo{
+			{
+				ID:      "grp-fastest",
+				Name:    "FastestProxy",
+				Enabled: true,
+				Proxies: []string{"DIRECT"},
+			},
+		},
 	}
+	grpID := "grp-fastest"
 
 	tp := &mockTunnelProvider{
 		tunnels: []TunnelInfo{
@@ -171,7 +173,7 @@ func TestCatalog_Resolve(t *testing.T) {
 	// Resolve group by ID
 	resolvedGroup, err := catalog.Resolve(context.Background(), EgressRef{
 		Kind:       EgressKindMihomoGroup,
-		ResourceID: grp.ID,
+		ResourceID: grpID,
 		Engine:     EngineMihomo,
 	})
 	if err != nil {

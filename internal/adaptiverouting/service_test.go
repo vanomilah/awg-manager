@@ -1,6 +1,7 @@
 package adaptiverouting
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -36,7 +37,7 @@ func TestParseSusaninLogLine(t *testing.T) {
 }
 
 func TestReleaseBinaries_PinsComplete(t *testing.T) {
-	requiredArches := []string{"aarch64", "mips", "mipsel", "armv7"}
+	requiredArches := []string{"aarch64", "mips", "mipsel", "armv7", "x86_64"}
 	for _, arch := range requiredArches {
 		spec, ok := ReleaseBinaries[arch]
 		if !ok {
@@ -55,6 +56,88 @@ func TestReleaseBinaries_PinsComplete(t *testing.T) {
 		if spec.URL == "" {
 			t.Errorf("missing URL for %q", arch)
 		}
+	}
+}
+
+func TestFindDomainKnowledge_ExactOrSuffixOnly(t *testing.T) {
+	exact := FindDomainKnowledge("x.com", "")
+	if exact == nil || exact.Title != "X (Twitter)" {
+		t.Fatalf("expected X (Twitter) for x.com, got %v", exact)
+	}
+
+	sub := FindDomainKnowledge("api.x.com", "")
+	if sub == nil || sub.Title != "X (Twitter)" {
+		t.Fatalf("expected X (Twitter) for api.x.com, got %v", sub)
+	}
+
+	fox := FindDomainKnowledge("fox.com", "")
+	if fox != nil && fox.Title == "X (Twitter)" {
+		t.Fatalf("fox.com falsely matched X (Twitter)")
+	}
+
+	notion := FindDomainKnowledge("notion.so", "")
+	if notion == nil || notion.Title != "Notion" {
+		t.Fatalf("expected Notion for notion.so, got %v", notion)
+	}
+
+	fakeNotion := FindDomainKnowledge("badnotion.solutions", "")
+	if fakeNotion != nil && fakeNotion.Title == "Notion" {
+		t.Fatalf("badnotion.solutions falsely matched Notion")
+	}
+}
+
+func TestService_ApplyRejectsInvalidRoutingTableID(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	catalog := NewCatalog(nil, nil, nil)
+	checker := NewReferenceChecker(store)
+	svc := NewService(dir, catalog, checker, store)
+
+	settings := DefaultSettings()
+	settings.RoutingTableID = 254 // Reserved table 'main'
+
+	_, err = svc.Apply(t.Context(), settings)
+	if err == nil {
+		t.Fatal("expected Apply to fail when RoutingTableID is 254")
+	}
+	if !strings.Contains(err.Error(), "таблицы маршрутизации") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	settings.RoutingTableID = 50 // Below 100
+	_, err = svc.Apply(t.Context(), settings)
+	if err == nil {
+		t.Fatal("expected Apply to fail when RoutingTableID is < 100")
+	}
+}
+
+func TestProcessManager_GenerateConfigFileRejectsInvalidRoutingTableID(t *testing.T) {
+	pm := NewProcessManager(t.TempDir(), "")
+	settings := DefaultSettings()
+	settings.RoutingTableID = 255 // Reserved table 'local'
+
+	_, err := pm.GenerateConfigFile(settings, "awgsus0", nil, nil, "")
+	if err == nil {
+		t.Fatal("expected GenerateConfigFile to fail when table is 255")
+	}
+}
+
+func TestService_SetLanInterfacesUpdatesIPs(t *testing.T) {
+	dir := t.TempDir()
+	store, _ := NewStore(dir)
+	catalog := NewCatalog(nil, nil, nil)
+	checker := NewReferenceChecker(store)
+	svc := NewService(dir, catalog, checker, store)
+
+	// Explicit override prevents overwriting
+	svc.SetRouterIPs([]string{"10.0.0.1"})
+	svc.SetLanInterfaces([]string{"lo"})
+	ips := svc.currentRouterIPsLocked()
+	if len(ips) != 1 || ips[0] != "10.0.0.1" {
+		t.Fatalf("expected custom router IP 10.0.0.1 to be preserved, got %v", ips)
 	}
 }
 
