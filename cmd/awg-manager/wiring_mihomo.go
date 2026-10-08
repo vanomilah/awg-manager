@@ -196,7 +196,8 @@ func (a *app) mihomoSidecarNeeded() bool {
 	}
 	hasNativeResources := len(a.mihomoNativeStore.ConfigBridgeListeners()) > 0 ||
 		len(a.mihomoNativeStore.ListGroups()) > 0 ||
-		len(a.mihomoNativeStore.ListProxies()) > 0
+		len(a.mihomoNativeStore.ListProxies()) > 0 ||
+		len(a.mihomoNativeStore.ListSubscriptions()) > 0
 	if !hasNativeResources {
 		return false
 	}

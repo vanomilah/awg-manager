@@ -289,6 +289,7 @@ func TestMihomoHandler_DegradedMatrixFailClosed(t *testing.T) {
 		{name: "Update", method: http.MethodPost, path: "/api/mihomo/update", body: ""},
 		{name: "Uninstall", method: http.MethodPost, path: "/api/mihomo/uninstall", body: ""},
 		{name: "Reload", method: http.MethodPost, path: "/api/mihomo/reload", body: ""},
+		{name: "Restart", method: http.MethodPost, path: "/api/mihomo/restart", body: ""},
 		{name: "ProxyCreate", method: http.MethodPost, path: "/api/mihomo/native/proxies", body: `{"uri":"ss://test"}`},
 		{name: "ProxyUpdate", method: http.MethodPut, path: "/api/mihomo/native/proxies/p1", body: `{"uri":"ss://test2"}`},
 		{name: "ProxyDelete", method: http.MethodDelete, path: "/api/mihomo/native/proxies/p1", body: ""},
@@ -311,8 +312,8 @@ func TestMihomoHandler_DegradedMatrixFailClosed(t *testing.T) {
 		{name: "NativeReset", method: http.MethodPost, path: "/api/mihomo/native/reset", body: ""},
 	}
 
-	if len(routes) != 24 {
-		t.Fatalf("expected 24 ordinary mutation routes, got: %d", len(routes))
+	if len(routes) != 25 {
+		t.Fatalf("expected 25 ordinary mutation routes, got: %d", len(routes))
 	}
 
 	for _, tc := range routes {

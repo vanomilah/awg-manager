@@ -100,6 +100,9 @@ func awgKernelIface(t *storage.AWGTunnel) string {
 	if t.Backend == "nativewg" {
 		return nwg.NewNWGNames(t.NWGIndex).IfaceName
 	}
+	if t.Backend == "wdtt-raw" && strings.TrimSpace(t.RawKernelIface) != "" {
+		return strings.TrimSpace(t.RawKernelIface)
+	}
 	return tunnel.NewNames(t.ID).IfaceName
 }
 

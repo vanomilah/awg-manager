@@ -922,7 +922,27 @@ func emitKeeneticCloudUDPOutputRules(b *strings.Builder, spec RestoreInputSpec) 
 	if spec.KeeneticCloudSet {
 		fmt.Fprintf(b, "-A %s -m set --match-set %s dst -p udp -j MARK --set-mark 0x%x\n", CloudOutputUDPChain, bypassset.CloudSetName, Fwmark)
 	}
-	fmt.Fprintf(b, "-A %s -p udp -m multiport --dports 9,3478,3479,4044,5683,5684 -j MARK --set-mark 0x%x\n", CloudOutputUDPChain, Fwmark)
+	cloudCIDRs := []string{
+		"185.162.93.0/24",
+		"95.213.212.0/24",
+		"95.213.181.0/24",
+		"87.228.71.0/24",
+		"91.92.241.0/24",
+		"193.107.216.0/24",
+		"178.250.154.0/24",
+		"178.72.134.0/24",
+		"85.198.119.0/24",
+		"37.0.127.0/24",
+		"5.35.2.0/24",
+		"84.38.177.0/24",
+		"49.12.59.0/24",
+		"167.233.7.0/24",
+		"82.202.218.0/24",
+		"82.202.0.0/16",
+	}
+	for _, cidr := range cloudCIDRs {
+		fmt.Fprintf(b, "-A %s -p udp -d %s -m multiport --dports 9,3478,3479,4044,5683,5684 -j MARK --set-mark 0x%x\n", CloudOutputUDPChain, cidr, Fwmark)
+	}
 	fmt.Fprintf(b, "-A OUTPUT -j %s\n", CloudOutputUDPChain)
 }
 
