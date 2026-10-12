@@ -36,16 +36,24 @@
 		WdttConfig,
 		WdttStatus,
 	} from '$lib/types';
+	import { OpenFluxTab } from '$lib/components/openflux';
 
-	type TabId = 'exit' | 'share';
+	type TabId = 'exit' | 'share' | 'openflux';
 
 	/**
 	 * Глубокая ссылка с карточки туннеля: `?instance=<ключ инстанса бэкенда>`.
 	 * Читаем один раз при инициализации — дальше выбором владеет страница.
 	 */
 	const deepLink = rowKeyFromInstanceKey($page.url.searchParams.get('instance') ?? '');
+	const initialTab = $page.url.searchParams.get('tab');
 
-	let activeTab = $state<TabId>(deepLink?.role === 'server' ? 'share' : 'exit');
+	let activeTab = $state<TabId>(
+		initialTab === 'openflux'
+			? 'openflux'
+			: deepLink?.role === 'server'
+				? 'share'
+				: 'exit'
+	);
 	let loading = $state(true);
 	let loadError = $state('');
 
@@ -96,6 +104,7 @@
 	const tabs = [
 		{ id: 'exit', label: 'Выход' },
 		{ id: 'share', label: 'Раздача' },
+		{ id: 'openflux', label: 'OpenFlux' },
 	];
 
 	const binaries = $derived(binaryStripItems(wdttStatus, ftStatus, installing, install));
@@ -283,61 +292,65 @@
 			onchange={(id) => (activeTab = id as TabId)}
 		/>
 
-		<div class="split">
-			<aside class="rail">
-				<InstanceList
-					title={activeTab === 'exit' ? 'Инстансы выхода' : 'Инстансы раздачи'}
-					rows={activeTab === 'exit' ? exits : shares}
-					selectedKey={activeTab === 'exit' ? selectedExitKey : selectedShareKey}
-					addLabel={activeTab === 'exit' ? 'Вывести трафик' : 'Настроить раздачу'}
-					emptyText={activeTab === 'exit'
-						? 'Выведите трафик роутера наружу'
-						: 'Раздайте выход другим устройствам'}
-					{busyKeys}
-					onselect={(r) => {
-						if (activeTab === 'exit') {
-							selectedExitKey = r.key;
-							exitWizard = null;
-						} else {
-							selectedShareKey = r.key;
-							shareWizard = null;
-						}
-					}}
-					onadd={() => {
-						if (activeTab === 'exit') exitWizard = 'new';
-						else shareWizard = 'new';
-					}}
-					ontoggle={toggleInstance}
-					onrename={renameInstance}
-					ondelete={(r) => (deleteTarget = r)}
-				/>
-			</aside>
+		{#if activeTab === 'openflux'}
+			<OpenFluxTab />
+		{:else}
+			<div class="split">
+				<aside class="rail">
+					<InstanceList
+						title={activeTab === 'exit' ? 'Инстансы выхода' : 'Инстансы раздачи'}
+						rows={activeTab === 'exit' ? exits : shares}
+						selectedKey={activeTab === 'exit' ? selectedExitKey : selectedShareKey}
+						addLabel={activeTab === 'exit' ? 'Вывести трафик' : 'Настроить раздачу'}
+						emptyText={activeTab === 'exit'
+							? 'Выведите трафик роутера наружу'
+							: 'Раздайте выход другим устройствам'}
+						{busyKeys}
+						onselect={(r) => {
+							if (activeTab === 'exit') {
+								selectedExitKey = r.key;
+								exitWizard = null;
+							} else {
+								selectedShareKey = r.key;
+								shareWizard = null;
+							}
+						}}
+						onadd={() => {
+							if (activeTab === 'exit') exitWizard = 'new';
+							else shareWizard = 'new';
+						}}
+						ontoggle={toggleInstance}
+						onrename={renameInstance}
+						ondelete={(r) => (deleteTarget = r)}
+					/>
+				</aside>
 
-			<main class="detail">
-				<ProxyDetailPane
-					{activeTab}
-					exitRow={selectedExit}
-					exitKey={selectedExitKey}
-					shareRow={selectedShare}
-					shareKey={selectedShareKey}
-					{wdttConfig}
-					{ftConfig}
-					{wdttStatus}
-					{ftStatus}
-					{policies}
-					{tunnels}
-					{busyKeys}
-					bind:exitWizard
-					bind:shareWizard
-					ontoggle={toggleInstance}
-					onstatuses={loadStatuses}
-					onconfigs={loadConfigs}
-					onreload={reloadAll}
-					onexitdone={exitWizardDone}
-					onsharedone={shareWizardDone}
-				/>
-			</main>
-		</div>
+				<main class="detail">
+					<ProxyDetailPane
+						{activeTab}
+						exitRow={selectedExit}
+						exitKey={selectedExitKey}
+						shareRow={selectedShare}
+						shareKey={selectedShareKey}
+						{wdttConfig}
+						{ftConfig}
+						{wdttStatus}
+						{ftStatus}
+						{policies}
+						{tunnels}
+						{busyKeys}
+						bind:exitWizard
+						bind:shareWizard
+						ontoggle={toggleInstance}
+						onstatuses={loadStatuses}
+						onconfigs={loadConfigs}
+						onreload={reloadAll}
+						onexitdone={exitWizardDone}
+						onsharedone={shareWizardDone}
+					/>
+				</main>
+			</div>
+		{/if}
 	{/if}
 </PageContainer>
 

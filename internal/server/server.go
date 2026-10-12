@@ -117,6 +117,7 @@ type Server struct {
 	mihomoHandler              *api.MihomoHandler
 	adaptiveRoutingHandler     *api.AdaptiveRoutingHandler
 	telemtHandler              *api.TelemtHandler
+	openfluxHandler            *api.OpenFluxHandler
 	xrayHandler                *api.XrayHandler
 	aiAssistantHandler         *api.AIAssistantHandler
 	aiSentinel                 *aiassistant.Sentinel
@@ -252,6 +253,7 @@ type Deps struct {
 	XrayServerService        *xrayserver.Service
 	TgWebProxyService        *tgwebproxy.Service
 	TelemtHandler            *api.TelemtHandler
+	OpenFluxHandler          *api.OpenFluxHandler
 	CDNDispatcher            *cdndispatcher.Dispatcher
 	ServerIngressCoordinator *serveringress.Coordinator
 
@@ -329,6 +331,7 @@ func New(cfg Config, deps Deps) *Server {
 		mihomoHandler:          deps.MihomoHandler,
 		adaptiveRoutingHandler: deps.AdaptiveRoutingHandler,
 		telemtHandler:          deps.TelemtHandler,
+		openfluxHandler:        deps.OpenFluxHandler,
 		xrayHandler:            deps.XrayHandler,
 		aiAssistantHandler:     deps.AIAssistantHandler,
 		mihomoOrch:             deps.MihomoOrch,

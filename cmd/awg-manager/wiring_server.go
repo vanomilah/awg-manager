@@ -36,6 +36,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
+	"github.com/hoaxisr/awg-manager/internal/openflux"
 	"github.com/hoaxisr/awg-manager/internal/telemt"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
@@ -104,6 +105,17 @@ func (a *app) setupServer() {
 	})
 	_ = a.telemtService.StartIfEnabled(context.Background())
 	a.telemtHandler = api.NewTelemtHandler(a.telemtService)
+
+	openfluxArch := detectArch()
+	a.openfluxService = openflux.New(a.dataDir, openfluxArch, func(ctx context.Context) string {
+		host, _ := a.proxyExternalIP(ctx)
+		return host
+	})
+	a.deferOnExit(func() {
+		_ = a.openfluxService.Stop(context.Background())
+	})
+	_ = a.openfluxService.StartIfEnabled(context.Background())
+	a.openfluxHandler = api.NewOpenFluxHandler(a.openfluxService)
 
 	// Cross-Component Ingress Coordinator and Crash Recovery
 	a.ingressCoordinator = serveringress.New(a.dataDir, a.xrayServerService, a.cdnDispatcher, a.tgWebProxyService)
@@ -234,6 +246,7 @@ func (a *app) setupServer() {
 			XrayServerService:        a.xrayServerService,
 			TgWebProxyService:        a.tgWebProxyService,
 			TelemtHandler:            a.telemtHandler,
+			OpenFluxHandler:          a.openfluxHandler,
 			CDNDispatcher:            a.cdnDispatcher,
 			ServerIngressCoordinator: a.ingressCoordinator,
 			OrphanIfaces:          orphanIfaces(a.opkgPool, a.ndmsQueries.Interfaces),

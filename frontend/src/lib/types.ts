@@ -18,3 +18,4 @@ export * from './types/xray';
 export * from './types/vkCalls';
 export * from './types/adaptiveRouting';
 export * from './types/telemt';
+export * from './types/openflux';

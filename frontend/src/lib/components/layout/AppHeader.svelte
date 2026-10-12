@@ -42,9 +42,9 @@
 			section: 'proxy',
 			href: '/proxy',
 			label: 'ПРОКСИ',
-			// /freeturn и /wdtt — редиректы на /proxy; матчер снят с «ТУННЕЛЕЙ».
+			// /freeturn, /wdtt, /openflux — редиректы на /proxy; матчер снят с «ТУННЕЛЕЙ».
 			matches: (p) =>
-				p.startsWith('/proxy') || p.startsWith('/freeturn') || p.startsWith('/wdtt'),
+				p.startsWith('/proxy') || p.startsWith('/freeturn') || p.startsWith('/wdtt') || p.startsWith('/openflux'),
 		},
 		{
 			section: 'diagnostics',

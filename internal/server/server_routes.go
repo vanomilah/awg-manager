@@ -1467,6 +1467,9 @@ func (s *Server) registerSingboxRoutes(mux *http.ServeMux, h *routeHandlers) {
 	if s.telemtHandler != nil {
 		s.telemtHandler.RegisterRoutes(mux, h.guarded)
 	}
+	if s.openfluxHandler != nil {
+		s.openfluxHandler.RegisterRoutes(mux, h.guarded)
+	}
 	if s.xrayHandler != nil {
 		s.xrayHandler.RegisterRoutes(mux, h.guarded)
 	}
