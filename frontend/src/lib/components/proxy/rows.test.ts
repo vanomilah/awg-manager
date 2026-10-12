@@ -6,7 +6,7 @@ import type {
 	WdttInstanceStatus,
 	WdttProcessStatus,
 } from '$lib/types';
-import { exitRows, rowKeyFromInstanceKey } from './rows';
+import { exitRows, rowKeyFromInstanceKey, shareRows } from './rows';
 
 function instance(id: string, running: boolean, lastError?: string): WdttInstanceStatus {
 	const status: WdttProcessStatus = { running, lastError, binary: 'wdtt', binaryPresent: true };
@@ -75,13 +75,17 @@ describe('rowKeyFromInstanceKey: ключ бэкенда → ключ строк
 		});
 	});
 
-	it('серверы обоих протоколов', () => {
+	it('серверы всех протоколов', () => {
 		expect(rowKeyFromInstanceKey('wdtt-server:default')).toEqual({
 			key: 'wdtt:server:default',
 			role: 'server',
 		});
 		expect(rowKeyFromInstanceKey('freeturn-server:s2')).toEqual({
 			key: 'freeturn:server:s2',
+			role: 'server',
+		});
+		expect(rowKeyFromInstanceKey('openflux-server:default')).toEqual({
+			key: 'openflux:server:default',
 			role: 'server',
 		});
 	});
@@ -100,5 +104,52 @@ describe('rowKeyFromInstanceKey: ключ бэкенда → ключ строк
 
 	it('двоеточие в id ключ не рвёт', () => {
 		expect(rowKeyFromInstanceKey('wdtt-client:a:b')?.key).toBe('wdtt:client:a:b');
+	});
+});
+
+describe('shareRows: поддержка OpenFlux', () => {
+	it('добавляет openflux строку при наличии статуса или конфига', () => {
+		const src = {
+			wdttStatus: null,
+			wdttConfig: null,
+			ftStatus: null,
+			ftConfig: null,
+			openfluxStatus: {
+				installed: true,
+				running: true,
+				pid: 1234,
+				uptimeS: 60,
+				archSupported: true,
+				binary: '/opt/bin/openflux',
+				arch: 'aarch64',
+			},
+			openfluxConfig: {
+				enabled: true,
+				mode: 'l4' as const,
+				transportMode: 'session' as const,
+				transports: ['direct', 'mailru'],
+				directListen: '0.0.0.0:8445',
+				openFirewall: true,
+				debug: 0,
+			},
+		};
+		const rows = shareRows(src);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			key: 'openflux:server:default',
+			id: 'default',
+			protocol: 'openflux',
+			role: 'server',
+			name: 'OpenFlux',
+			state: 'running',
+			autostart: true,
+			pid: 1234,
+			binaryPresent: true,
+		});
+		expect(rows[0].flow).toEqual([
+			{ label: 'Клиенты', detail: 'qThrone / Direct / Mail.ru' },
+			{ label: 'OpenFlux', detail: ':8445' },
+			{ label: 'Интернет', detail: 'L4' },
+		]);
 	});
 });

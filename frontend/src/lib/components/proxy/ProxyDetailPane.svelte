@@ -3,16 +3,20 @@
 	import { listenPortNumber } from '$lib/utils/listenPortUtils';
 	import { proxyInOpsMode } from '$lib/utils/proxyOpsMode';
 	import { errText } from '$lib/utils/errorMessage';
+	import { api } from '$lib/api/client';
 	import type {
 		AccessPolicy,
 		FreeTurnConfig,
 		FreeTurnStatus,
+		OpenFluxConfig,
+		OpenFluxStatus,
 		TunnelListItem,
 		WdttConfig,
 		WdttStatus,
 	} from '$lib/types';
 	import ExitDetail from './ExitDetail.svelte';
 	import ExitWizard from './ExitWizard.svelte';
+	import OpenFluxDetail from './OpenFluxDetail.svelte';
 	import ShareDetail from './ShareDetail.svelte';
 	import ShareWizard from './ShareWizard.svelte';
 	import { exitInstance, saveExitInstance } from './exitConfig';
@@ -34,6 +38,8 @@
 		ftConfig: FreeTurnConfig | null;
 		wdttStatus: WdttStatus | null;
 		ftStatus: FreeTurnStatus | null;
+		openfluxStatus?: OpenFluxStatus | null;
+		openfluxConfig?: OpenFluxConfig | null;
 		policies: AccessPolicy[];
 		tunnels: TunnelListItem[];
 		busyKeys: string[];
@@ -60,6 +66,8 @@
 		ftConfig,
 		wdttStatus,
 		ftStatus,
+		openfluxStatus = null,
+		openfluxConfig = null,
 		policies,
 		tunnels,
 		busyKeys,
@@ -258,6 +266,27 @@
 			onwizard={exitNeverRan ? () => (exitWizard = 'instance') : undefined}
 			onsave={saveExit}
 			{onreload}
+		/>
+	{/key}
+{:else if activeTab === 'share' && shareRow?.protocol === 'openflux'}
+	{#key shareRow.key}
+		<OpenFluxDetail
+			row={shareRow}
+			status={openfluxStatus}
+			config={openfluxConfig ?? openfluxStatus?.config ?? null}
+			routerClock={wdttStatus?.routerClock ?? ftStatus?.routerClock}
+			busy={busyKeys.includes(shareRow.key)}
+			onstart={() => shareRow && ontoggle(shareRow, true)}
+			onstop={() => shareRow && ontoggle(shareRow, false)}
+			onsave={async (cfg) => {
+				await api.openfluxSaveConfig(cfg);
+				await onstatuses();
+				await onconfigs();
+			}}
+			onreload={async () => {
+				await onstatuses();
+				await onconfigs();
+			}}
 		/>
 	{/key}
 {:else if activeTab === 'share' && shareRow}

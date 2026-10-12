@@ -32,13 +32,14 @@
 		AccessPolicy,
 		FreeTurnConfig,
 		FreeTurnStatus,
+		OpenFluxConfig,
+		OpenFluxStatus,
 		TunnelListItem,
 		WdttConfig,
 		WdttStatus,
 	} from '$lib/types';
-	import { OpenFluxTab } from '$lib/components/openflux';
 
-	type TabId = 'exit' | 'share' | 'openflux';
+	type TabId = 'exit' | 'share';
 
 	/**
 	 * Глубокая ссылка с карточки туннеля: `?instance=<ключ инстанса бэкенда>`.
@@ -48,8 +49,8 @@
 	const initialTab = $page.url.searchParams.get('tab');
 
 	let activeTab = $state<TabId>(
-		initialTab === 'openflux'
-			? 'openflux'
+		initialTab === 'share' || initialTab === 'openflux'
+			? 'share'
 			: deepLink?.role === 'server'
 				? 'share'
 				: 'exit'
@@ -59,8 +60,10 @@
 
 	let wdttConfig = $state<WdttConfig | null>(null);
 	let ftConfig = $state<FreeTurnConfig | null>(null);
+	let openfluxConfig = $state<OpenFluxConfig | null>(null);
 	let wdttStatus = $state<WdttStatus | null>(null);
 	let ftStatus = $state<FreeTurnStatus | null>(null);
+	let openfluxStatus = $state<OpenFluxStatus | null>(null);
 	let policies = $state<AccessPolicy[]>([]);
 	/**
 	 * Посев прокси-подсистемы. Признака два: `seeded` — она поднялась,
@@ -71,7 +74,13 @@
 	let seed = $state<ProxySeedView | null>(null);
 	let tunnels = $state<TunnelListItem[]>([]);
 	let selectedExitKey = $state<string | null>(deepLink?.role === 'client' ? deepLink.key : null);
-	let selectedShareKey = $state<string | null>(deepLink?.role === 'server' ? deepLink.key : null);
+	let selectedShareKey = $state<string | null>(
+		deepLink?.role === 'server'
+			? deepLink.key
+			: initialTab === 'openflux'
+				? 'openflux:server:default'
+				: null,
+	);
 	/** Мастер «Выхода», открытый явно: кнопкой списка (новый) или «Мастер». */
 	let exitWizard = $state<'new' | 'instance' | null>(null);
 	/** Мастер «Раздачи», открытый явно: кнопкой списка (новый) или «Мастер». */
@@ -79,10 +88,17 @@
 	let deleteTarget = $state<ProxyInstanceRow | null>(null);
 	let deleting = $state(false);
 	let busyKeys = $state<string[]>([]);
-	let installing = $state<'wdtt' | 'freeturn' | null>(null);
+	let installing = $state<'wdtt' | 'freeturn' | 'openflux' | null>(null);
 
 	// Строки собираются из статуса (жизнь процесса) и конфига (автоподключение, режим).
-	const sources = $derived({ wdttStatus, wdttConfig, ftStatus, ftConfig });
+	const sources = $derived({
+		wdttStatus,
+		wdttConfig,
+		ftStatus,
+		ftConfig,
+		openfluxStatus,
+		openfluxConfig,
+	});
 	const exits = $derived(exitRows(sources));
 	const shares = $derived(shareRows(sources));
 
@@ -104,24 +120,32 @@
 	const tabs = [
 		{ id: 'exit', label: 'Выход' },
 		{ id: 'share', label: 'Раздача' },
-		{ id: 'openflux', label: 'OpenFlux' },
 	];
 
-	const binaries = $derived(binaryStripItems(wdttStatus, ftStatus, installing, install));
+	const binaries = $derived(
+		binaryStripItems(wdttStatus, ftStatus, openfluxStatus, installing, install),
+	);
 	const seedWarning = $derived(seedGateWarning(seed));
 	const listenMoveNotice = $derived(seedListenMoveNotice(seed));
 
 	// ─── Загрузка и поллинг.
 
 	async function loadStatuses() {
-		const [w, f, s] = await Promise.all([
+		const [w, f, s, ofs] = await Promise.all([
 			api.getWdttStatus(),
 			api.getFreeTurnStatus(),
 			api.getProxySeed(),
+			typeof api.openfluxStatus === 'function'
+				? api.openfluxStatus().catch(() => null)
+				: Promise.resolve(null),
 		]);
 		wdttStatus = w;
 		ftStatus = f;
 		seed = s;
+		openfluxStatus = ofs;
+		if (ofs?.config) {
+			openfluxConfig = ofs.config;
+		}
 	}
 
 	// Конфиги страницы — это состояние сервера: их правит только загрузка и
@@ -132,6 +156,9 @@
 		normalizeShareConfigs(w, f);
 		wdttConfig = w;
 		ftConfig = f;
+		if (openfluxStatus?.config) {
+			openfluxConfig = openfluxStatus.config;
+		}
 	}
 
 	// Каталог для секции «Куда идёт трафик»: политики (обратное членство) и
@@ -191,11 +218,12 @@
 		}
 	}
 
-	async function install(kind: 'wdtt' | 'freeturn') {
+	async function install(kind: 'wdtt' | 'freeturn' | 'openflux') {
 		installing = kind;
 		try {
 			if (kind === 'wdtt') await api.installWdttClient();
-			else await api.installFreeTurn();
+			else if (kind === 'freeturn') await api.installFreeTurn();
+			else if (kind === 'openflux') await api.openfluxInstall();
 			await loadStatuses();
 		} catch (e) {
 			notifications.error(errText(e));
@@ -207,8 +235,14 @@
 	async function toggleInstance(row: ProxyInstanceRow, on: boolean) {
 		withBusy(row.key, true);
 		try {
-			await toggleProxyInstance(row, on);
-			await Promise.all([loadConfigs(), loadStatuses()]);
+			if (row.protocol === 'openflux') {
+				if (on) await api.openfluxStart();
+				else await api.openfluxStop();
+				await loadStatuses();
+			} else {
+				await toggleProxyInstance(row, on);
+				await Promise.all([loadConfigs(), loadStatuses()]);
+			}
 		} catch (e) {
 			notifications.error(errText(e));
 		} finally {
@@ -234,8 +268,16 @@
 
 	async function renameInstance(row: ProxyInstanceRow, name: string) {
 		try {
-			await renameProxyInstance(row, name);
-			await Promise.all([loadConfigs(), loadStatuses()]);
+			if (row.protocol === 'openflux') {
+				if (openfluxConfig) {
+					openfluxConfig.name = name;
+					await api.openfluxSaveConfig(openfluxConfig);
+					await loadStatuses();
+				}
+			} else {
+				await renameProxyInstance(row, name);
+				await Promise.all([loadConfigs(), loadStatuses()]);
+			}
 		} catch (e) {
 			notifications.error(errText(e));
 		}
@@ -246,10 +288,21 @@
 		if (!row) return;
 		deleting = true;
 		try {
-			const res = await deleteProxyInstance(row);
-			reportDeletedTunnels(res.deletedTunnels, res.tunnelErrors);
-			deleteTarget = null;
-			await Promise.all([loadConfigs(), loadStatuses()]);
+			if (row.protocol === 'openflux') {
+				await api.openfluxStop();
+				if (openfluxConfig) {
+					openfluxConfig.enabled = false;
+					await api.openfluxSaveConfig(openfluxConfig);
+				}
+				deleteTarget = null;
+				await loadStatuses();
+				notifications.success('OpenFlux остановлен и отключен');
+			} else {
+				const res = await deleteProxyInstance(row);
+				reportDeletedTunnels(res.deletedTunnels, res.tunnelErrors);
+				deleteTarget = null;
+				await Promise.all([loadConfigs(), loadStatuses()]);
+			}
 		} catch (e) {
 			// Отказ мог прийти ПОСЛЕ уборки связей: о снятых туннелях говорим
 			// и здесь, иначе карточка исчезнет без объяснения (PF23).
@@ -292,65 +345,63 @@
 			onchange={(id) => (activeTab = id as TabId)}
 		/>
 
-		{#if activeTab === 'openflux'}
-			<OpenFluxTab />
-		{:else}
-			<div class="split">
-				<aside class="rail">
-					<InstanceList
-						title={activeTab === 'exit' ? 'Инстансы выхода' : 'Инстансы раздачи'}
-						rows={activeTab === 'exit' ? exits : shares}
-						selectedKey={activeTab === 'exit' ? selectedExitKey : selectedShareKey}
-						addLabel={activeTab === 'exit' ? 'Вывести трафик' : 'Настроить раздачу'}
-						emptyText={activeTab === 'exit'
-							? 'Выведите трафик роутера наружу'
-							: 'Раздайте выход другим устройствам'}
-						{busyKeys}
-						onselect={(r) => {
-							if (activeTab === 'exit') {
-								selectedExitKey = r.key;
-								exitWizard = null;
-							} else {
-								selectedShareKey = r.key;
-								shareWizard = null;
-							}
-						}}
-						onadd={() => {
-							if (activeTab === 'exit') exitWizard = 'new';
-							else shareWizard = 'new';
-						}}
-						ontoggle={toggleInstance}
-						onrename={renameInstance}
-						ondelete={(r) => (deleteTarget = r)}
-					/>
-				</aside>
+		<div class="split">
+			<aside class="rail">
+				<InstanceList
+					title={activeTab === 'exit' ? 'Инстансы выхода' : 'Инстансы раздачи'}
+					rows={activeTab === 'exit' ? exits : shares}
+					selectedKey={activeTab === 'exit' ? selectedExitKey : selectedShareKey}
+					addLabel={activeTab === 'exit' ? 'Вывести трафик' : 'Настроить раздачу'}
+					emptyText={activeTab === 'exit'
+						? 'Выведите трафик роутера наружу'
+						: 'Раздайте выход другим устройствам'}
+					{busyKeys}
+					onselect={(r) => {
+						if (activeTab === 'exit') {
+							selectedExitKey = r.key;
+							exitWizard = null;
+						} else {
+							selectedShareKey = r.key;
+							shareWizard = null;
+						}
+					}}
+					onadd={() => {
+						if (activeTab === 'exit') exitWizard = 'new';
+						else shareWizard = 'new';
+					}}
+					ontoggle={toggleInstance}
+					onrename={renameInstance}
+					ondelete={(r) => (deleteTarget = r)}
+				/>
+			</aside>
 
-				<main class="detail">
-					<ProxyDetailPane
-						{activeTab}
-						exitRow={selectedExit}
-						exitKey={selectedExitKey}
-						shareRow={selectedShare}
-						shareKey={selectedShareKey}
-						{wdttConfig}
-						{ftConfig}
-						{wdttStatus}
-						{ftStatus}
-						{policies}
-						{tunnels}
-						{busyKeys}
-						bind:exitWizard
-						bind:shareWizard
-						ontoggle={toggleInstance}
-						onstatuses={loadStatuses}
-						onconfigs={loadConfigs}
-						onreload={reloadAll}
-						onexitdone={exitWizardDone}
-						onsharedone={shareWizardDone}
-					/>
-				</main>
-			</div>
-		{/if}
+			<main class="detail">
+				<ProxyDetailPane
+					{activeTab}
+					exitRow={selectedExit}
+					exitKey={selectedExitKey}
+					shareRow={selectedShare}
+					shareKey={selectedShareKey}
+					{wdttConfig}
+					{ftConfig}
+					{openfluxConfig}
+					{wdttStatus}
+					{ftStatus}
+					{openfluxStatus}
+					{policies}
+					{tunnels}
+					{busyKeys}
+					bind:exitWizard
+					bind:shareWizard
+					ontoggle={toggleInstance}
+					onstatuses={loadStatuses}
+					onconfigs={loadConfigs}
+					onreload={reloadAll}
+					onexitdone={exitWizardDone}
+					onsharedone={shareWizardDone}
+				/>
+			</main>
+		</div>
 	{/if}
 </PageContainer>
 

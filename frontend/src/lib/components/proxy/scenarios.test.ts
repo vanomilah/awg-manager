@@ -88,6 +88,7 @@ const api = vi.hoisted(() => {
     deleteWdttClient: fn(),
     clearWdttLinkedTunnels: fn(),
     ackProxyListenMoves: fn(),
+    openfluxStatus: fn().mockResolvedValue(null),
   };
 });
 vi.mock("$lib/api/client", () => ({ api }));
@@ -133,10 +134,20 @@ function wdttServerCfg(over: Record<string, unknown> = {}) {
 }
 
 function setDefaults(
-  over: { wdtt?: unknown; ft?: unknown; wdttCfg?: unknown } = {},
+  over: { wdtt?: unknown; ft?: unknown; wdttCfg?: unknown; openflux?: unknown } = {},
 ) {
   api.getWdttStatus.mockResolvedValue(over.wdtt ?? subsystemStatus());
   api.getFreeTurnStatus.mockResolvedValue(over.ft ?? subsystemStatus());
+  api.openfluxStatus.mockResolvedValue(
+    over.openflux ?? {
+      installed: true,
+      running: false,
+      archSupported: true,
+      binary: "/opt/bin/openflux",
+      arch: "aarch64",
+      version: "0.1.0",
+    },
+  );
   api.getProxySeed.mockResolvedValue({ seeded: true, certified: true });
   api.getWdttConfig.mockResolvedValue(
     over.wdttCfg ?? { clients: [], servers: [] },

@@ -2,13 +2,14 @@
 // Наличие бинарей берётся из install-статуса подсистемы, а НЕ из инстанса:
 // инстансов может не быть вовсе, а бинари при этом лежат на диске.
 
-import type { FreeTurnStatus, WdttStatus } from '$lib/types';
+import type { FreeTurnStatus, OpenFluxStatus, WdttStatus } from '$lib/types';
 
-export type ProxyBinaryKind = 'wdtt' | 'freeturn';
+export type ProxyBinaryKind = 'wdtt' | 'freeturn' | 'openflux';
 
 export function binaryStripItems(
 	wdtt: WdttStatus | null,
 	ft: FreeTurnStatus | null,
+	openflux: OpenFluxStatus | null,
 	installing: ProxyBinaryKind | null,
 	oninstall: (kind: ProxyBinaryKind) => void,
 ) {
@@ -32,6 +33,21 @@ export function binaryStripItems(
 			installedVersion: ft?.installedVersion,
 			installVersion: ft?.installVersion,
 			oninstall: () => oninstall('freeturn'),
+		},
+		{
+			name: 'openflux',
+			binaryPresent: openflux?.installed === true,
+			installAvailable: openflux?.archSupported !== false,
+			installing: installing === 'openflux',
+			updateAvailable: Boolean(
+				openflux?.latestVersion && openflux?.version && openflux.latestVersion !== openflux.version,
+			),
+			installedVersion: openflux?.version,
+			installVersion:
+				openflux?.latestVersion && openflux?.version !== openflux.latestVersion
+					? openflux.latestVersion
+					: undefined,
+			oninstall: () => oninstall('openflux'),
 		},
 	];
 }

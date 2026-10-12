@@ -7,13 +7,15 @@ import type {
   FreeTurnProcessStatus,
   FreeTurnServerConfig,
   FreeTurnStatus,
+  OpenFluxConfig,
+  OpenFluxStatus,
   WdttConfig,
   WdttProcessStatus,
   WdttServerConfig,
   WdttStatus,
 } from "$lib/types";
 
-export type ProxyProtocol = "wdtt" | "freeturn";
+export type ProxyProtocol = "wdtt" | "freeturn" | "openflux";
 
 export type ProxyRole = "client" | "server";
 
@@ -125,6 +127,7 @@ const INSTANCE_KINDS: Record<string, { protocol: ProxyProtocol; role: ProxyRole 
 	'wdtt-server': { protocol: 'wdtt', role: 'server' },
 	'freeturn-client': { protocol: 'freeturn', role: 'client' },
 	'freeturn-server': { protocol: 'freeturn', role: 'server' },
+	'openflux-server': { protocol: 'openflux', role: 'server' },
 };
 
 /**
@@ -189,11 +192,31 @@ function ftServerFlow(c?: FreeTurnServerConfig): ProxyFlowStep[] {
 	];
 }
 
+/** Поток OpenFlux-сервера: клиенты → OpenFlux → интернет. */
+function openfluxServerFlow(c?: OpenFluxConfig): ProxyFlowStep[] {
+	const transports = c?.transports ?? ['direct'];
+	const transportLabels = transports.map((t) => {
+		if (t === 'mailru') return 'Mail.ru';
+		if (t === 'yandex') return 'Яндекс';
+		if (t === 'direct') return 'Direct';
+		return t;
+	});
+	const clientDetail = transportLabels.length > 0 ? `qThrone / ${transportLabels.join(' / ')}` : 'qThrone';
+	const port = portOf(c?.directListen || ':8445') || ':8445';
+	return [
+		{ label: 'Клиенты', detail: clientDetail },
+		{ label: 'OpenFlux', detail: port },
+		{ label: 'Интернет', detail: (c?.mode ?? 'l4').toUpperCase() },
+	];
+}
+
 export interface ProxySources {
   wdttStatus: WdttStatus | null;
   wdttConfig: WdttConfig | null;
   ftStatus: FreeTurnStatus | null;
   ftConfig: FreeTurnConfig | null;
+  openfluxStatus?: OpenFluxStatus | null;
+  openfluxConfig?: OpenFluxConfig | null;
 }
 
 /** Вкладка «Выход»: клиенты обоих протоколов. */
@@ -227,9 +250,9 @@ export function exitRows(src: ProxySources): ProxyInstanceRow[] {
   ];
 }
 
-/** Вкладка «Раздача»: серверы обоих протоколов. */
+/** Вкладка «Раздача»: серверы всех протоколов (wdtt, freeturn, openflux). */
 export function shareRows(src: ProxySources): ProxyInstanceRow[] {
-  return [
+  const rows: ProxyInstanceRow[] = [
     ...(src.wdttStatus?.servers ?? []).map((i) => {
       const inst = src.wdttConfig?.servers.find((x) => x.id === i.id);
       const c = inst?.config;
@@ -258,4 +281,33 @@ export function shareRows(src: ProxySources): ProxyInstanceRow[] {
       );
     }),
   ];
+
+  const ofCfg = src.openfluxConfig ?? src.openfluxStatus?.config;
+  const ofSt = src.openfluxStatus;
+  if (ofCfg || ofSt?.installed || ofSt?.running) {
+    const autostart = ofCfg?.enabled === true;
+    const isRunning = ofSt?.running === true;
+    const state: ProxyRunState = isRunning ? "running" : autostart ? "error" : "stopped";
+    const startedAt = ofSt?.uptimeS && isRunning
+      ? new Date(Date.now() - ofSt.uptimeS * 1000).toISOString()
+      : undefined;
+
+    rows.push({
+      key: rowKey("openflux", "server", "default"),
+      id: "default",
+      protocol: "openflux",
+      role: "server",
+      name: ofCfg?.name || "OpenFlux",
+      state,
+      autostart,
+      pid: ofSt?.pid,
+      startedAt,
+      orphanedPid: false,
+      binaryPresent: ofSt?.installed === true,
+      mode: undefined,
+      flow: openfluxServerFlow(ofCfg),
+    });
+  }
+
+  return rows;
 }

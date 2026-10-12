@@ -29,6 +29,10 @@ const apiMock = vi.hoisted(() => ({
 	getSettings: vi.fn().mockResolvedValue({}),
 	getWdttServerClients: vi.fn().mockResolvedValue({ clients: [] }),
 	listAccessPolicies: vi.fn().mockResolvedValue([]),
+	openfluxLogs: vi.fn().mockResolvedValue({ logs: '' }),
+	openfluxStart: vi.fn().mockResolvedValue({}),
+	openfluxStop: vi.fn().mockResolvedValue({}),
+	openfluxSaveConfig: vi.fn().mockResolvedValue({}),
 }));
 vi.mock('$lib/api/client', () => ({ api: apiMock }));
 
@@ -138,5 +142,60 @@ describe('ProxyDetailPane: мастер открывается только яв
 			const active = container.querySelector('.step.active');
 			expect(active?.textContent).toContain('Протокол');
 		});
+	});
+
+	it('при выборе строки openflux монтируется OpenFluxDetail', async () => {
+		const ofRow: ProxyInstanceRow = {
+			key: 'openflux:server:default',
+			id: 'default',
+			protocol: 'openflux',
+			role: 'server',
+			name: 'OpenFlux',
+			state: 'stopped',
+			autostart: false,
+			orphanedPid: false,
+			binaryPresent: true,
+		};
+		const { findByRole } = render(ProxyDetailPane, {
+			props: {
+				activeTab: 'share' as const,
+				exitRow: null,
+				exitKey: null,
+				shareRow: ofRow,
+				shareKey: ofRow.key,
+				wdttConfig: null,
+				ftConfig: null,
+				openfluxConfig: {
+					enabled: false,
+					mode: 'l4',
+					transportMode: 'session',
+					transports: ['direct'],
+					openFirewall: true,
+					debug: 0,
+					name: 'OpenFlux',
+				},
+				openfluxStatus: {
+					installed: true,
+					running: false,
+					archSupported: true,
+					binary: '/opt/bin/openflux',
+					arch: 'aarch64',
+				},
+				wdttStatus: null,
+				ftStatus: null,
+				policies: [],
+				tunnels: [],
+				busyKeys: [],
+				exitWizard: null,
+				shareWizard: null,
+				ontoggle: async () => {},
+				onstatuses: async () => {},
+				onconfigs: async () => {},
+				onreload: async () => {},
+				onexitdone: () => {},
+				onsharedone: () => {},
+			},
+		});
+		expect(await findByRole('heading', { name: 'OpenFlux', level: 2 })).toBeTruthy();
 	});
 });

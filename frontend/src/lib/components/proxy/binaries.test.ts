@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { binaryStripItems } from './binaries';
-import type { FreeTurnStatus, WdttStatus } from '$lib/types';
+import type { FreeTurnStatus, OpenFluxStatus, WdttStatus } from '$lib/types';
 
 /**
  * Форма ответа подсистемы БЕЗ инстансов — ровно та, что приходит с роутера,
@@ -37,33 +37,50 @@ function ftNoInstances(binariesPresent: boolean): FreeTurnStatus {
 	};
 }
 
+function ofStatus(installed: boolean): OpenFluxStatus {
+	return {
+		installed,
+		running: false,
+		archSupported: true,
+		binary: '/opt/bin/openflux',
+		arch: 'aarch64',
+		version: '0.1.0',
+	};
+}
+
 describe('binaryStripItems: наличие бинарей — признак подсистемы, не инстанса', () => {
 	it('инстансов нет, бинари на диске — продукт установлен', () => {
-		// Регресс, за который платил пользователь: полоса брала признак из
-		// первого клиентского инстанса. Удалив последнего клиента, он получал
-		// «wdtt не установлен» при живых /opt/bin/wdtt-*, а «Установить»
-		// отрабатывала успешно и молча — признак от неё не зависел.
-		const items = binaryStripItems(wdttNoInstances(true), ftNoInstances(true), null, () => {});
+		const items = binaryStripItems(
+			wdttNoInstances(true),
+			ftNoInstances(true),
+			ofStatus(true),
+			null,
+			() => {},
+		);
 		expect(items.map((i) => [i.name, i.binaryPresent])).toEqual([
 			['wdtt', true],
 			['freeturn', true],
+			['openflux', true],
 		]);
 	});
 
 	it('инстансов нет и бинарей нет — продукт не установлен', () => {
-		const items = binaryStripItems(wdttNoInstances(false), ftNoInstances(false), null, () => {});
-		expect(items.map((i) => i.binaryPresent)).toEqual([false, false]);
+		const items = binaryStripItems(
+			wdttNoInstances(false),
+			ftNoInstances(false),
+			ofStatus(false),
+			null,
+			() => {},
+		);
+		expect(items.map((i) => i.binaryPresent)).toEqual([false, false, false]);
 	});
 
 	it('статуса ещё нет — не установлен, полоса зовёт поставить', () => {
-		const items = binaryStripItems(null, null, null, () => {});
-		expect(items.map((i) => i.binaryPresent)).toEqual([false, false]);
+		const items = binaryStripItems(null, null, null, null, () => {});
+		expect(items.map((i) => i.binaryPresent)).toEqual([false, false, false]);
 	});
 
 	it('признак живого инстанса на полосу не влияет', () => {
-		// Обратная страховка: у инстанса свой `binaryPresent` (им заперт тумблер
-		// запуска). Полоса на него смотреть не должна — иначе вернётся та же
-		// связка «нет инстанса → нет продукта», только с другого конца.
 		const wdtt = wdttNoInstances(false);
 		wdtt.clients = [
 			{
@@ -72,7 +89,7 @@ describe('binaryStripItems: наличие бинарей — признак п�
 				status: { running: false, binary: '/opt/bin/wdtt-client', binaryPresent: true },
 			},
 		];
-		const items = binaryStripItems(wdtt, ftNoInstances(false), null, () => {});
+		const items = binaryStripItems(wdtt, ftNoInstances(false), ofStatus(false), null, () => {});
 		expect(items[0].binaryPresent).toBe(false);
 	});
 });
