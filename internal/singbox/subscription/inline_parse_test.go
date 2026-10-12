@@ -16,17 +16,17 @@ exclusions =["*.ru", "*.su", "*.рф"]
 dns_upstreams =["https://dns.adguard-dns.com/dns-query", "quic://dns.adguard-dns.com"]
 
 [endpoint]
-hostname = "us3.trutun.online"
-addresses =["us3.trutun.online:443"]
+hostname = "us.example.com"
+addresses =["us.example.com:443"]
 has_ipv6 = false
-username = "user_1353818979"
-password = "8eOprVpaxQx6"
+username = "test_user"
+password = "test_pass"
 skip_verification = false
 upstream_protocol = "http3"
 upstream_fallback_protocol = "http2"
 anti_dpi = true
-custom_sni = "us3.trutun.online"
-client_random_prefix = "f70048af"
+custom_sni = "us.example.com"
+client_random_prefix = "01020304"
 
 [listener]
 [listener.tun]
@@ -34,9 +34,9 @@ bound_if = ""
 included_routes =["0.0.0.0/0"]
 `
 
-const deLink = "https://trustunnel.ru/connect/?d=ARFkZTIudHJ1dHVuLm9ubGluZQUPdXNlcl8xMzUzODE4OTc5Bgw4ZU9wclZwYXhReDYCFWRlMi50cnV0dW4ub25saW5lOjQ0MwsIOGE1OGI5MGYDEWRlMi50cnV0dW4ub25saW5lDCjwn4ep8J-HqiBERSAo0JPQtdGA0LzQsNC90LjRjykgKFByZW1pdW0pDUBBJWh0dHBzOi8vZG5zLmFkZ3VhcmQtZG5zLmNvbS9kbnMtcXVlcnkacXVpYzovL2Rucy5hZGd1YXJkLWRucy5jb20EAQAKAQEJAQI"
-const fiLink = "https://trustunnel.ru/connect/?d=ARFmaTEudHJ1dHVuLm9ubGluZQUPdXNlcl8xMzUzODE4OTc5Bgw4ZU9wclZwYXhReDYCFWZpMS50cnV0dW4ub25saW5lOjQ0MwsINzkxYzlhNTIDEWZpMS50cnV0dW4ub25saW5lDCvwn4er8J-HriBGSU4gKNCk0LjQvdC70Y_QvdC00LjRjykgKFByZW1pdW0pDUBBJWh0dHBzOi8vZG5zLmFkZ3VhcmQtZG5zLmNvbS9kbnMtcXVlcnkacXVpYzovL2Rucy5hZGd1YXJkLWRucy5jb20EAQAKAQEJAQI"
-const nlLink = "https://trustunnel.ru/connect/?d=ARFubDIudHJ1dHVuLm9ubGluZQUPdXNlcl8xMzUzODE4OTc5Bgw4ZU9wclVpYXhReDYCFW5sMi50cnV0dW4ub25saW5lOjQ0MwsIODc4NzQ0YTEDEW5sMi50cnV0dW4ub25saW5lDC3wn4ez8J-HsSBORUQgKNCd0LjQtNC10YDQu9Cw0L3QtNGLKSAoUHJlbWl1bSkNQEElaHR0cHM6Ly9kbnMuYWRndWFyZC1kbnMuY29tL2Rucy1xdWVyeRpxdWljOi8vZG5zLmFkZ3VhcmQtZG5zLmNvbQQBAAoBAQkBAg"
+const deLink = "https://trustunnel.example/connect/?d=AAEBAQ5kZS5leGFtcGxlLmNvbQISZGUuZXhhbXBsZS5jb206NDQzAw5kZS5leGFtcGxlLmNvbQUJdGVzdF91c2VyBgl0ZXN0X3Bhc3MJAQEMB0dlcm1hbnk"
+const fiLink = "https://trustunnel.example/connect/?d=AAEBAQ5maS5leGFtcGxlLmNvbQISZmkuZXhhbXBsZS5jb206NDQzAw5maS5leGFtcGxlLmNvbQUJdGVzdF91c2VyBgl0ZXN0X3Bhc3MJAQIMB0ZpbmxhbmQ"
+const nlLink = "https://trustunnel.example/connect/?d=AAEBAQ5ubC5leGFtcGxlLmNvbQISbmwuZXhhbXBsZS5jb206NDQzAw5ubC5leGFtcGxlLmNvbQUJdGVzdF91c2VyBgl0ZXN0X3Bhc3MJAQIMC05ldGhlcmxhbmRz"
 
 func TestParseInlineImportBody_MixedLinksAndTOML(t *testing.T) {
 	body := deLink + "\n" + fiLink + "\n" + nlLink + "\n" + sampleTrustTunnelTOML
@@ -51,7 +51,7 @@ func TestParseInlineImportBody_MixedLinksAndTOML(t *testing.T) {
 	for _, ob := range res.Outbounds {
 		servers[ob.Server] = true
 	}
-	for _, host := range []string{"de2.trutun.online", "fi1.trutun.online", "nl2.trutun.online", "us3.trutun.online"} {
+	for _, host := range []string{"de.example.com", "fi.example.com", "nl.example.com", "us.example.com"} {
 		if !servers[host] {
 			t.Fatalf("missing server %q in %#v", host, servers)
 		}

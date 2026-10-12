@@ -72,7 +72,7 @@ func TestParseTrustTunnelLink_MultiAddressSNIFragment(t *testing.T) {
 
 func TestParseTrustTunnelLink_UpstreamProtocolDetection(t *testing.T) {
 	// Germany (H2, tag 0x09 = 1) -> quic: false
-	deLink := "tt://?AAEBAQtkZS50dG5sLnRvcAUXZHJhdy1zbGljay1jbHVtcC04NmU3YjcGKzVueWVDYzRwR1hhV0NwNVlOSmp1WDdUMnh1eTlaMmpWYW9MMm1aeUxTRmcCKGRyYXctc2xpY2stY2x1bXAtODZlN2I3LnJlbGF5N2FpLm5ldDo0NDMMDUdlcm1hbnlUVDg5OTcEAQAJAQENEAcxLjEuMS4xBzguOC44Ljg"
+	deLink := "tt://?AAEBAQ5kZS5leGFtcGxlLmNvbQISZGUuZXhhbXBsZS5jb206NDQzAw5kZS5leGFtcGxlLmNvbQUJdGVzdF91c2VyBgl0ZXN0X3Bhc3MJAQEMB0dlcm1hbnk"
 	parsedDE, err := ParseLinkMany(deLink)
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestParseTrustTunnelLink_UpstreamProtocolDetection(t *testing.T) {
 	}
 
 	// Netherlands (QUIC/H3, tag 0x09 = 2) -> quic: true
-	nlLink := "tt://?AAEBAQtubC50dG5sLnRvcAUWY2FuZHktd2lzZS1raWNrLTlhNGFjZQYrMkFpWkVlTG41dUpDa0NLeUxiN2pzdHM4MmdIM1gwT19PR2hsRDJwdXIycwInY2FuZHktd2lzZS1raWNrLTlhNGFjZS5yZWxheTdhaS5uZXQ6NDQzDA1OZXRoZXJsVFQyMzY0BAEACQECDRAHMS4xLjEuMQc4LjguOC44"
+	nlLink := "tt://?AAEBAQ5ubC5leGFtcGxlLmNvbQISbmwuZXhhbXBsZS5jb206NDQzAw5ubC5leGFtcGxlLmNvbQUJdGVzdF91c2VyBgl0ZXN0X3Bhc3MJAQIMC05ldGhlcmxhbmRz"
 	parsedNL, err := ParseLinkMany(nlLink)
 	if err != nil {
 		t.Fatal(err)

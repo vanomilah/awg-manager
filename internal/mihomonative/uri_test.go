@@ -2,7 +2,7 @@ package mihomonative
 
 import "testing"
 
-const trustTunnelConnectTestURL = "https://trustunnel.ru/connect/?d=ARF1czMudHJ1dHVuLm9ubGluZQUPdXNlcl8xMzUzODE4OTc5Bgw4ZU9wclZwYXhReDYCFXVzMy50cnV0dW4ub25saW5lOjQ0MwsIZjcwMDQ4YWYDEXVzMy50cnV0dW4ub25saW5lDB_wn4e68J-HuCBVU0EgKNCh0KjQkCkgKFByZW1pdW0pDUBBJWh0dHBzOi8vZG5zLmFkZ3VhcmQtZG5zLmNvbS9kbnMtcXVlcnkacXVpYzovL2Rucy5hZGd1YXJkLWRucy5jb20EAQAKAQEJAQI"
+const trustTunnelConnectTestURL = "https://trustunnel.example/connect/?d=AAEBAQ51cy5leGFtcGxlLmNvbQISdXMuZXhhbXBsZS5jb206NDQzAw51cy5leGFtcGxlLmNvbQUJdGVzdF91c2VyBgl0ZXN0X3Bhc3MJAQIMA1VTQQ"
 
 func TestCompileTrustTunnelConnectURL(t *testing.T) {
 	nodes, err := CompileURI(trustTunnelConnectTestURL, EngineMihomo, EngineSingbox)
@@ -19,10 +19,10 @@ func TestCompileTrustTunnelConnectURL(t *testing.T) {
 	if node.NativeConfig["type"] != "trusttunnel" || node.NativeConfig["port"] != 443 {
 		t.Fatalf("config: %#v", node.NativeConfig)
 	}
-	if node.NativeConfig["username"] != "user_1353818979" || node.NativeConfig["password"] != "8eOprVpaxQx6" {
+	if node.NativeConfig["username"] != "test_user" || node.NativeConfig["password"] != "test_pass" {
 		t.Fatalf("auth: %#v", node.NativeConfig)
 	}
-	if node.NativeConfig["sni"] != "us3.trutun.online" || node.NativeConfig["quic"] != true || node.Transport != "quic" {
+	if node.NativeConfig["sni"] != "us.example.com" || node.NativeConfig["quic"] != true || node.Transport != "quic" {
 		t.Fatalf("transport: %#v (transport=%s)", node.NativeConfig, node.Transport)
 	}
 }

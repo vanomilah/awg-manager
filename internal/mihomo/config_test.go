@@ -363,17 +363,17 @@ func TestGenerateConfig_ConvertsSocksOutbound(t *testing.T) {
 func TestGenerateConfig_ConvertsTrustTunnelOutbound(t *testing.T) {
 	yamlBytes, err := GenerateConfig(storage.SingboxRouterSettings{RoutingMode: "tproxy"}, "", []map[string]any{{
 		"type":        "trusttunnel",
-		"tag":         "NetherlTT2364",
-		"server":      "candy-wise-kick-9a4ace.relay7ai.net",
+		"tag":         "ExampleTT",
+		"server":      "edge.example.net",
 		"server_port": 443,
-		"username":    "candy-wise-kick-9a4ace",
-		"password":    "2AiZEeLn5uJCkCKyLb7jsts82gH3X0O_OGhlD2pur2s",
+		"username":    "test-user",
+		"password":    "test-password",
 		"quic":        true,
 		"tls": map[string]any{
 			"enabled":     true,
-			"server_name": "nl.ttnl.top",
+			"server_name": "nl.example.org",
 		},
-	}}, nil, "NetherlTT2364", nil)
+	}}, nil, "ExampleTT", nil)
 	if err != nil {
 		t.Fatalf("GenerateConfig() error = %v", err)
 	}
@@ -385,8 +385,8 @@ func TestGenerateConfig_ConvertsTrustTunnelOutbound(t *testing.T) {
 		t.Fatalf("Proxies = %#v, want 1 proxy", cfg.Proxies)
 	}
 	p := cfg.Proxies[0]
-	if p["name"] != "NetherlTT2364" || p["type"] != "trusttunnel" || p["sni"] != "nl.ttnl.top" || p["quic"] != true {
-		t.Fatalf("Proxy = %#v, want NetherlTT2364 trusttunnel with sni and quic", p)
+	if p["name"] != "ExampleTT" || p["type"] != "trusttunnel" || p["sni"] != "nl.example.org" || p["quic"] != true {
+		t.Fatalf("Proxy = %#v, want ExampleTT trusttunnel with sni and quic", p)
 	}
 }
 
@@ -882,7 +882,7 @@ func TestGenerateConfigWithResources_DuplicateProxyNamesBetweenSubAndNative(t *t
 			{
 				"name":   "FIN-Premium",
 				"type":   "trusttunnel",
-				"server": "fin.trutun.online",
+				"server": "fin.example.com",
 				"port":   443,
 			},
 		},
