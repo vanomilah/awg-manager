@@ -18,7 +18,7 @@ export type ExitProtocol = 'wdtt' | 'freeturn';
 export type ExitMode = 'wg' | 'raw';
 
 /** Что шаг 1 показывает под полем ссылки. */
-export type ExitSourceKind = 'none' | 'unknown' | 'subscription' | 'freeturn' | 'wdtt';
+export type ExitSourceKind = 'none' | 'unknown' | 'subscription' | 'freeturn' | 'wdtt' | 'openflux';
 
 /** Поля шага 2 — всё, что человек правит руками (WE-30..WE-36). */
 export interface ExitWizardFields {

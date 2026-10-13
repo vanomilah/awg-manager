@@ -112,7 +112,7 @@ func (a *app) setupServer() {
 		return host
 	})
 	a.deferOnExit(func() {
-		_ = a.openfluxService.Stop(context.Background())
+		a.openfluxService.Shutdown(context.Background())
 	})
 	_ = a.openfluxService.StartIfEnabled(context.Background())
 	a.openfluxHandler = api.NewOpenFluxHandler(a.openfluxService)

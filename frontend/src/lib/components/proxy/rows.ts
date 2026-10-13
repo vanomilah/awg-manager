@@ -7,6 +7,8 @@ import type {
   FreeTurnProcessStatus,
   FreeTurnServerConfig,
   FreeTurnStatus,
+  OpenFluxClientConfig,
+  OpenFluxClientStatus,
   OpenFluxConfig,
   OpenFluxStatus,
   WdttConfig,
@@ -127,6 +129,7 @@ const INSTANCE_KINDS: Record<string, { protocol: ProxyProtocol; role: ProxyRole 
 	'wdtt-server': { protocol: 'wdtt', role: 'server' },
 	'freeturn-client': { protocol: 'freeturn', role: 'client' },
 	'freeturn-server': { protocol: 'freeturn', role: 'server' },
+	'openflux-client': { protocol: 'openflux', role: 'client' },
 	'openflux-server': { protocol: 'openflux', role: 'server' },
 };
 
@@ -166,6 +169,30 @@ function clientFlow(listen?: string, peer?: string): ProxyFlowStep[] {
 	return [
 		{ label: 'Этот роутер', detail: portOf(listen) || 'локальный порт' },
 		{ label: hostOf(peer), detail: portOf(peer) || 'адрес сервера' },
+		{ label: 'Интернет', detail: 'через выход' },
+	];
+}
+
+/** Поток OpenFlux-клиента: роутер (SOCKS5) → сервер OpenFlux → интернет. */
+function openfluxClientFlow(c?: OpenFluxClientConfig): ProxyFlowStep[] {
+	const transports = c?.transports ?? ['direct'];
+	const transportLabels = transports.map((t) => {
+		if (t === 'mailru') return 'Mail.ru';
+		if (t === 'yandex') return 'Яндекс';
+		if (t === 'direct') return 'Direct';
+		if (t === 'cupsonline') return 'Cups';
+		if (t === 'telemost') return 'Telemost';
+		return t;
+	});
+	const socksPort = portOf(c?.socks5Listen || ':1085') || ':1085';
+	const peerLabel = c?.directDial ? hostOf(c.directDial) : 'OpenFlux';
+	const peerDetail =
+		transportLabels.length > 0
+			? transportLabels.join(' / ')
+			: portOf(c?.directDial) || 'мульти-транспорт';
+	return [
+		{ label: 'Этот роутер', detail: `SOCKS5 ${socksPort}` },
+		{ label: peerLabel, detail: peerDetail },
 		{ label: 'Интернет', detail: 'через выход' },
 	];
 }
@@ -217,11 +244,13 @@ export interface ProxySources {
   ftConfig: FreeTurnConfig | null;
   openfluxStatus?: OpenFluxStatus | null;
   openfluxConfig?: OpenFluxConfig | null;
+  openfluxClientStatus?: OpenFluxClientStatus | null;
+  openfluxClientConfig?: OpenFluxClientConfig | null;
 }
 
-/** Вкладка «Выход»: клиенты обоих протоколов. */
+/** Вкладка «Выход»: клиенты всех протоколов (wdtt, freeturn, openflux). */
 export function exitRows(src: ProxySources): ProxyInstanceRow[] {
-  return [
+  const rows: ProxyInstanceRow[] = [
     ...(src.wdttStatus?.clients ?? []).map((i) => {
       const inst = src.wdttConfig?.clients.find((x) => x.id === i.id);
       const c = inst?.config;
@@ -248,6 +277,36 @@ export function exitRows(src: ProxySources): ProxyInstanceRow[] {
       );
     }),
   ];
+
+  const ofClientSt = src.openfluxClientStatus ?? src.openfluxStatus?.client ?? null;
+  const ofClientCfg = src.openfluxClientConfig ?? ofClientSt?.config;
+  if (ofClientCfg || ofClientSt) {
+    const autostart = ofClientCfg?.enabled === true;
+    const isRunning = ofClientSt?.running === true;
+    const state: ProxyRunState = isRunning ? "running" : autostart ? "error" : "stopped";
+    const startedAt =
+      ofClientSt?.uptimeS && isRunning
+        ? new Date(Date.now() - ofClientSt.uptimeS * 1000).toISOString()
+        : undefined;
+
+    rows.push({
+      key: rowKey("openflux", "client", "default"),
+      id: "default",
+      protocol: "openflux",
+      role: "client",
+      name: ofClientCfg?.name || "OpenFlux Client",
+      state,
+      autostart,
+      pid: ofClientSt?.pid,
+      startedAt,
+      orphanedPid: false,
+      binaryPresent: (ofClientSt?.installed ?? src.openfluxStatus?.installed) === true,
+      mode: undefined,
+      flow: openfluxClientFlow(ofClientCfg),
+    });
+  }
+
+  return rows;
 }
 
 /** Вкладка «Раздача»: серверы всех протоколов (wdtt, freeturn, openflux). */

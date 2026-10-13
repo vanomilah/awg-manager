@@ -24,7 +24,7 @@
 		shareRows,
 		toggleProxyInstance,
 	} from '$lib/components/proxy';
-	import type { ExitProtocol, ProxyInstanceRow } from '$lib/components/proxy';
+	import type { ExitProtocol, ProxyInstanceRow, ProxyProtocol } from '$lib/components/proxy';
 	import { createSelfReschedulingPoll } from '$lib/utils/selfReschedulingPoll';
 	import { errText } from '$lib/utils/errorMessage';
 	import type { ProxySeedView } from '$lib/api/proxyInstances';
@@ -32,6 +32,8 @@
 		AccessPolicy,
 		FreeTurnConfig,
 		FreeTurnStatus,
+		OpenFluxClientConfig,
+		OpenFluxClientStatus,
 		OpenFluxConfig,
 		OpenFluxStatus,
 		TunnelListItem,
@@ -61,9 +63,11 @@
 	let wdttConfig = $state<WdttConfig | null>(null);
 	let ftConfig = $state<FreeTurnConfig | null>(null);
 	let openfluxConfig = $state<OpenFluxConfig | null>(null);
+	let openfluxClientConfig = $state<OpenFluxClientConfig | null>(null);
 	let wdttStatus = $state<WdttStatus | null>(null);
 	let ftStatus = $state<FreeTurnStatus | null>(null);
 	let openfluxStatus = $state<OpenFluxStatus | null>(null);
+	let openfluxClientStatus = $state<OpenFluxClientStatus | null>(null);
 	let policies = $state<AccessPolicy[]>([]);
 	/**
 	 * Посев прокси-подсистемы. Признака два: `seeded` — она поднялась,
@@ -98,6 +102,8 @@
 		ftConfig,
 		openfluxStatus,
 		openfluxConfig,
+		openfluxClientStatus,
+		openfluxClientConfig,
 	});
 	const exits = $derived(exitRows(sources));
 	const shares = $derived(shareRows(sources));
@@ -146,6 +152,12 @@
 		if (ofs?.config) {
 			openfluxConfig = ofs.config;
 		}
+		if (ofs?.client) {
+			openfluxClientStatus = ofs.client;
+			if (ofs.client.config) {
+				openfluxClientConfig = ofs.client.config;
+			}
+		}
 	}
 
 	// Конфиги страницы — это состояние сервера: их правит только загрузка и
@@ -158,6 +170,9 @@
 		ftConfig = f;
 		if (openfluxStatus?.config) {
 			openfluxConfig = openfluxStatus.config;
+		}
+		if (openfluxStatus?.client?.config) {
+			openfluxClientConfig = openfluxStatus.client.config;
 		}
 	}
 
@@ -236,8 +251,13 @@
 		withBusy(row.key, true);
 		try {
 			if (row.protocol === 'openflux') {
-				if (on) await api.openfluxStart();
-				else await api.openfluxStop();
+				if (row.role === 'client') {
+					if (on) await api.openfluxClientStart();
+					else await api.openfluxClientStop();
+				} else {
+					if (on) await api.openfluxStart();
+					else await api.openfluxStop();
+				}
 				await loadStatuses();
 			} else {
 				await toggleProxyInstance(row, on);
@@ -260,7 +280,7 @@
 	}
 
 	/** Мастер довёл инстанс до запуска — «Готово» уводит в его деталь (ia.md §2.3). */
-	async function exitWizardDone(protocol: ExitProtocol, id: string) {
+	async function exitWizardDone(protocol: ProxyProtocol, id: string) {
 		exitWizard = null;
 		await reloadAll();
 		selectedExitKey = rowKey(protocol, 'client', id);
@@ -269,7 +289,14 @@
 	async function renameInstance(row: ProxyInstanceRow, name: string) {
 		try {
 			if (row.protocol === 'openflux') {
-				if (openfluxConfig) {
+				if (row.role === 'client') {
+					const cfg = openfluxClientConfig ?? openfluxStatus?.client?.config;
+					if (cfg) {
+						cfg.name = name;
+						await api.openfluxSaveClientConfig(cfg);
+						await loadStatuses();
+					}
+				} else if (openfluxConfig) {
 					openfluxConfig.name = name;
 					await api.openfluxSaveConfig(openfluxConfig);
 					await loadStatuses();
@@ -289,14 +316,26 @@
 		deleting = true;
 		try {
 			if (row.protocol === 'openflux') {
-				await api.openfluxStop();
-				if (openfluxConfig) {
-					openfluxConfig.enabled = false;
-					await api.openfluxSaveConfig(openfluxConfig);
+				if (row.role === 'client') {
+					await api.openfluxClientStop();
+					const cfg = openfluxClientConfig ?? openfluxStatus?.client?.config;
+					if (cfg) {
+						cfg.enabled = false;
+						await api.openfluxSaveClientConfig(cfg);
+					}
+					deleteTarget = null;
+					await loadStatuses();
+					notifications.success('OpenFlux-клиент остановлен и отключен');
+				} else {
+					await api.openfluxStop();
+					if (openfluxConfig) {
+						openfluxConfig.enabled = false;
+						await api.openfluxSaveConfig(openfluxConfig);
+					}
+					deleteTarget = null;
+					await loadStatuses();
+					notifications.success('OpenFlux остановлен и отключен');
 				}
-				deleteTarget = null;
-				await loadStatuses();
-				notifications.success('OpenFlux остановлен и отключен');
 			} else {
 				const res = await deleteProxyInstance(row);
 				reportDeletedTunnels(res.deletedTunnels, res.tunnelErrors);
@@ -385,9 +424,11 @@
 					{wdttConfig}
 					{ftConfig}
 					{openfluxConfig}
+					{openfluxClientConfig}
 					{wdttStatus}
 					{ftStatus}
 					{openfluxStatus}
+					{openfluxClientStatus}
 					{policies}
 					{tunnels}
 					{busyKeys}
@@ -410,7 +451,9 @@
 	title={deleteTarget?.role === 'server'
 		? `Удалить раздачу «${deleteTarget?.name}»?`
 		: `Удалить инстанс «${deleteTarget?.name}»?`}
-	message={deleteTarget?.role === 'server' ? '' : 'Связанные с ним AWG-туннели будут удалены.'}
+	message={deleteTarget?.role === 'server' || deleteTarget?.protocol === 'openflux'
+		? ''
+		: 'Связанные с ним AWG-туннели будут удалены.'}
 	busy={deleting}
 	onConfirm={deleteInstance}
 	onClose={() => (deleteTarget = null)}

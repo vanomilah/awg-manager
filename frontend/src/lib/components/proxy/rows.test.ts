@@ -75,6 +75,13 @@ describe('rowKeyFromInstanceKey: ключ бэкенда → ключ строк
 		});
 	});
 
+	it('клиент openflux', () => {
+		expect(rowKeyFromInstanceKey('openflux-client:default')).toEqual({
+			key: 'openflux:client:default',
+			role: 'client',
+		});
+	});
+
 	it('серверы всех протоколов', () => {
 		expect(rowKeyFromInstanceKey('wdtt-server:default')).toEqual({
 			key: 'wdtt:server:default',
@@ -104,6 +111,61 @@ describe('rowKeyFromInstanceKey: ключ бэкенда → ключ строк
 
 	it('двоеточие в id ключ не рвёт', () => {
 		expect(rowKeyFromInstanceKey('wdtt-client:a:b')?.key).toBe('wdtt:client:a:b');
+	});
+});
+
+describe('exitRows: поддержка OpenFlux-клиента', () => {
+	it('добавляет openflux:client:default строку при наличии клиентского статуса или конфига', () => {
+		const src = {
+			wdttStatus: null,
+			wdttConfig: null,
+			ftStatus: null,
+			ftConfig: null,
+			openfluxStatus: {
+				installed: true,
+				running: false,
+				archSupported: true,
+				binary: '/opt/bin/openflux',
+				arch: 'aarch64',
+				client: {
+					installed: true,
+					running: true,
+					pid: 4321,
+					uptimeS: 120,
+					socks5Port: 1085,
+					socks5Uri: 'socks5://127.0.0.1:1085#VPS-OpenFlux',
+					config: {
+						enabled: true,
+						name: 'VPS-OpenFlux',
+						transportMode: 'session' as const,
+						transports: ['direct', 'mailru'],
+						socks5Listen: '127.0.0.1:1085',
+						httpProxyListen: '127.0.0.1:1086',
+						directDial: '203.0.113.10:8445',
+						debug: 0,
+						autoReconnect: true,
+					},
+				},
+			},
+		};
+		const rows = exitRows(src);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			key: 'openflux:client:default',
+			id: 'default',
+			protocol: 'openflux',
+			role: 'client',
+			name: 'VPS-OpenFlux',
+			state: 'running',
+			autostart: true,
+			pid: 4321,
+			binaryPresent: true,
+		});
+		expect(rows[0].flow).toEqual([
+			{ label: 'Этот роутер', detail: 'SOCKS5 :1085' },
+			{ label: '203.0.113.10', detail: 'Direct / Mail.ru' },
+			{ label: 'Интернет', detail: 'через выход' },
+		]);
 	});
 });
 

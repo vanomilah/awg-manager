@@ -33,6 +33,11 @@ const apiMock = vi.hoisted(() => ({
 	openfluxStart: vi.fn().mockResolvedValue({}),
 	openfluxStop: vi.fn().mockResolvedValue({}),
 	openfluxSaveConfig: vi.fn().mockResolvedValue({}),
+	openfluxClientLogs: vi.fn().mockResolvedValue({ logs: '' }),
+	openfluxClientStart: vi.fn().mockResolvedValue({}),
+	openfluxClientStop: vi.fn().mockResolvedValue({}),
+	openfluxSaveClientConfig: vi.fn().mockResolvedValue({}),
+	mihomoNativeProxies: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('$lib/api/client', () => ({ api: apiMock }));
 
@@ -144,7 +149,7 @@ describe('ProxyDetailPane: мастер открывается только яв
 		});
 	});
 
-	it('при выборе строки openflux монтируется OpenFluxDetail', async () => {
+	it('при выборе строки openflux на вкладке раздачи монтируется OpenFluxDetail', async () => {
 		const ofRow: ProxyInstanceRow = {
 			key: 'openflux:server:default',
 			id: 'default',
@@ -198,4 +203,186 @@ describe('ProxyDetailPane: мастер открывается только яв
 		});
 		expect(await findByRole('heading', { name: 'OpenFlux', level: 2 })).toBeTruthy();
 	});
+
+	it('при выборе строки openflux на вкладке выхода монтируется OpenFluxClientDetail', async () => {
+		const ofClientRow: ProxyInstanceRow = {
+			key: 'openflux:client:default',
+			id: 'default',
+			protocol: 'openflux',
+			role: 'client',
+			name: 'OpenFlux Client',
+			state: 'stopped',
+			autostart: false,
+			orphanedPid: false,
+			binaryPresent: true,
+		};
+		const { findByRole, findByText, queryByText } = render(ProxyDetailPane, {
+			props: {
+				activeTab: 'exit' as const,
+				exitRow: ofClientRow,
+				exitKey: ofClientRow.key,
+				shareRow: null,
+				shareKey: null,
+				wdttConfig: null,
+				ftConfig: null,
+				openfluxClientConfig: {
+					enabled: false,
+					name: 'OpenFlux Client',
+					transportMode: 'session',
+					transports: ['direct'],
+					socks5Listen: '127.0.0.1:1085',
+					debug: 0,
+					autoReconnect: true,
+				},
+				openfluxClientStatus: {
+					installed: true,
+					running: false,
+					socks5Port: 1085,
+					socks5Uri: 'socks5://127.0.0.1:1085#OpenFlux',
+				},
+				wdttStatus: null,
+				ftStatus: null,
+				policies: [],
+				tunnels: [],
+				busyKeys: [],
+				exitWizard: null,
+				shareWizard: null,
+				ontoggle: async () => {},
+				onstatuses: async () => {},
+				onconfigs: async () => {},
+				onreload: async () => {},
+				onexitdone: () => {},
+				onsharedone: () => {},
+			},
+		});
+		expect(await findByRole('heading', { name: 'OpenFlux Client', level: 2 })).toBeTruthy();
+		expect(await findByText('OpenFlux-клиент')).toBeTruthy();
+		// Без правок кнопка «Отменить» не должна отображаться даже при omitempty-полях
+		expect(queryByText('Отменить')).toBeNull();
+	});
+
+	it('OpenFluxClientDetail: распознаёт прокси в Mihomo по nativeConfig и сохраняет client.config (не перезатирая серверным config)', async () => {
+		apiMock.mihomoNativeProxies.mockResolvedValueOnce([
+			{
+				id: 'p1',
+				name: 'OpenFlux-Node',
+				protocol: 'socks5',
+				transport: 'tcp',
+				enginePreference: 'mihomo',
+				selectedEngine: 'mihomo',
+				rawUri: 'socks5://127.0.0.1:1085#OpenFlux-Node',
+				nativeConfig: {
+					name: 'OpenFlux-Node',
+					type: 'socks5',
+					server: '127.0.0.1',
+					port: 1085,
+				},
+				compatibility: {
+					'sing-box': { supported: true },
+					mihomo: { supported: true },
+				},
+				enabled: true,
+				bridge: {
+					listenPort: 51100,
+					proxyIndex: 0,
+					proxyInterface: 'Proxy0',
+					kernelInterface: 'prs0',
+				},
+			},
+		]);
+		apiMock.openfluxSaveClientConfig.mockResolvedValueOnce({
+			installed: true,
+			running: true,
+			archSupported: true,
+			binary: '/opt/bin/openflux',
+			arch: 'aarch64',
+			// Серверный конфиг имеет другое имя ("KeeneticServer") — он НЕ должен перезаписать draft клиента!
+			config: {
+				enabled: true,
+				mode: 'l4',
+				transportMode: 'session',
+				transports: ['direct'],
+				openFirewall: true,
+				debug: 0,
+				name: 'KeeneticServer',
+			},
+			client: {
+				installed: true,
+				running: false,
+				socks5Port: 1085,
+				config: {
+					enabled: false,
+					name: 'MyClientProfile',
+					transportMode: 'session',
+					transports: ['direct'],
+					directDial: '203.0.113.10:8445',
+					socks5Listen: '127.0.0.1:1085',
+					debug: 0,
+					autoReconnect: true,
+				},
+			},
+		});
+
+		const ofClientRow: ProxyInstanceRow = {
+			key: 'openflux:client:default',
+			id: 'default',
+			protocol: 'openflux',
+			role: 'client',
+			name: 'MyClientProfile',
+			state: 'stopped',
+			autostart: false,
+			orphanedPid: false,
+			binaryPresent: true,
+		};
+		const { findByText, getByText } = render(ProxyDetailPane, {
+			props: {
+				activeTab: 'exit' as const,
+				exitRow: ofClientRow,
+				exitKey: ofClientRow.key,
+				shareRow: null,
+				shareKey: null,
+				wdttConfig: null,
+				ftConfig: null,
+				openfluxClientConfig: {
+					enabled: false,
+					name: 'MyClientProfile',
+					transportMode: 'session',
+					transports: ['direct'],
+					directDial: '203.0.113.10:8445',
+					socks5Listen: '127.0.0.1:1085',
+					debug: 0,
+					autoReconnect: true,
+				},
+				openfluxClientStatus: {
+					installed: true,
+					running: false,
+					socks5Port: 1085,
+				},
+				wdttStatus: null,
+				ftStatus: null,
+				policies: [],
+				tunnels: [],
+				busyKeys: [],
+				exitWizard: null,
+				shareWizard: null,
+				ontoggle: async () => {},
+				onstatuses: async () => {},
+				onconfigs: async () => {},
+				onreload: async () => {},
+				onexitdone: () => {},
+				onsharedone: () => {},
+			},
+		});
+
+		expect(await findByText('Подключен в Mihomo: OpenFlux-Node')).toBeTruthy();
+		expect(await findByText('Мост: Proxy0')).toBeTruthy();
+
+		const saveBtn = getByText('Сохранить настройки');
+		saveBtn.click();
+		await waitFor(() => {
+			expect(apiMock.openfluxSaveClientConfig).toHaveBeenCalledTimes(1);
+			expect(notify.success).toHaveBeenCalledWith('Настройки клиента OpenFlux сохранены');
+		});
+	});
 });
+

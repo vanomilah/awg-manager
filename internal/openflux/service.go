@@ -30,42 +30,65 @@ var (
 	ErrAlreadyInstalling = errors.New("openflux installation is already in progress")
 )
 
+// ClientStatus represents the operational state of the OpenFlux client.
+type ClientStatus struct {
+	Installed  bool          `json:"installed"`
+	Running    bool          `json:"running"`
+	PID        int           `json:"pid,omitempty"`
+	UptimeS    int64         `json:"uptimeS,omitempty"`
+	Socks5Port int           `json:"socks5Port,omitempty"`
+	Socks5URI  string        `json:"socks5Uri,omitempty"`
+	HttpURI    string        `json:"httpUri,omitempty"`
+	Error      string        `json:"error,omitempty"`
+	Config     *ClientConfig `json:"config,omitempty"`
+	LogTail    string        `json:"logTail,omitempty"`
+}
+
 // Status represents the operational and installation state of OpenFlux.
 type Status struct {
-	Installed       bool    `json:"installed"`
-	Running         bool    `json:"running"`
-	PID             int     `json:"pid,omitempty"`
-	UptimeS         int64   `json:"uptimeS,omitempty"`
-	Version         string  `json:"version,omitempty"`
-	LatestVersion   string  `json:"latestVersion,omitempty"`
-	ArchSupported   bool    `json:"archSupported"`
-	Binary          string  `json:"binary"`
-	Arch            string  `json:"arch"`
-	Link            string  `json:"link,omitempty"`
-	Error           string  `json:"error,omitempty"`
-	Config          *Config `json:"config,omitempty"`
-	LogTail         string  `json:"logTail,omitempty"`
+	Installed     bool          `json:"installed"`
+	Running       bool          `json:"running"`
+	PID           int           `json:"pid,omitempty"`
+	UptimeS       int64         `json:"uptimeS,omitempty"`
+	Version       string        `json:"version,omitempty"`
+	LatestVersion string        `json:"latestVersion,omitempty"`
+	ArchSupported bool          `json:"archSupported"`
+	Binary        string        `json:"binary"`
+	Arch          string        `json:"arch"`
+	Link          string        `json:"link,omitempty"`
+	Error         string        `json:"error,omitempty"`
+	Config        *Config       `json:"config,omitempty"`
+	LogTail       string        `json:"logTail,omitempty"`
+	Client        *ClientStatus `json:"client,omitempty"`
 }
 
 // Service manages the lifecycle, configuration, installation, and link generation for OpenFlux.
 type Service struct {
-	mu            sync.Mutex
-	isInstalling  bool
-	dataDir       string
-	openfluxDir   string
-	binPath       string
-	cfgPath       string
-	keyPath       string
-	pidPath       string
-	logPath       string
-	arch          string
-	spec          BinarySpec
-	httpClient    *http.Client
-	freeDisk      func(path string) (int64, bool)
-	config        Config
-	startedAt     time.Time
-	openedPort    int
-	getPublicHost func(context.Context) string
+	mu              sync.Mutex
+	isInstalling    bool
+	dataDir         string
+	openfluxDir     string
+	binPath         string
+	cfgPath         string
+	keyPath         string
+	pidPath         string
+	logPath         string
+	clientCfgPath   string
+	clientKeyPath   string
+	clientPidPath   string
+	clientLogPath   string
+	arch            string
+	spec            BinarySpec
+	httpClient      *http.Client
+	freeDisk        func(path string) (int64, bool)
+	config          Config
+	startedAt       time.Time
+	openedPort      int
+	clientConfig    ClientConfig
+	clientStartedAt time.Time
+	clientLastErr   string
+	clientStopCh    chan struct{}
+	getPublicHost   func(context.Context) string
 }
 
 // New creates a new OpenFlux service.
@@ -92,15 +115,21 @@ func New(dataDir string, arch string, getPublicHost func(context.Context) string
 		keyPath:       filepath.Join(ofDir, "secret.key"),
 		pidPath:       filepath.Join(ofDir, "openflux.pid"),
 		logPath:       filepath.Join(ofDir, "openflux.log"),
+		clientCfgPath: filepath.Join(ofDir, "client_config.json"),
+		clientKeyPath: filepath.Join(ofDir, "client_secret.key"),
+		clientPidPath: filepath.Join(ofDir, "openflux_client.pid"),
+		clientLogPath: filepath.Join(ofDir, "openflux_client.log"),
 		arch:          normArch,
 		spec:          spec,
 		httpClient:    &http.Client{Timeout: 3 * time.Minute},
 		freeDisk:      routerinfo.FreeBytes,
 		config:        DefaultConfig(),
+		clientConfig:  DefaultClientConfig(),
 		getPublicHost: getPublicHost,
 	}
 
 	s.loadConfig()
+	s.loadClientConfig()
 	return s
 }
 
@@ -128,6 +157,32 @@ func (s *Service) saveConfigLocked() error {
 	return os.WriteFile(s.cfgPath, data, 0644)
 }
 
+func (s *Service) loadClientConfig() {
+	data, err := os.ReadFile(s.clientCfgPath)
+	if err == nil {
+		var cfg ClientConfig
+		if err := json.Unmarshal(data, &cfg); err == nil {
+			if strings.TrimSpace(cfg.Socks5Listen) == "" {
+				cfg.Socks5Listen = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
+			}
+			if strings.TrimSpace(cfg.Name) == "" {
+				cfg.Name = "OpenFlux Выход"
+			}
+			s.clientConfig = cfg
+		}
+	} else {
+		_ = s.saveClientConfigLocked()
+	}
+}
+
+func (s *Service) saveClientConfigLocked() error {
+	data, err := json.MarshalIndent(s.clientConfig, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.clientCfgPath, data, 0644)
+}
+
 // IsInstalled checks if the binary exists and is executable.
 func (s *Service) IsInstalled() bool {
 	info, err := os.Stat(s.binPath)
@@ -145,7 +200,16 @@ func (s *Service) IsInstalled() bool {
 
 // GetRunningState inspects the PID file and process table.
 func (s *Service) GetRunningState() (bool, int) {
-	data, err := os.ReadFile(s.pidPath)
+	return s.checkRunningState(s.pidPath)
+}
+
+// GetClientRunningState inspects the client PID file and process table.
+func (s *Service) GetClientRunningState() (bool, int) {
+	return s.checkRunningState(s.clientPidPath)
+}
+
+func (s *Service) checkRunningState(pidPath string) (bool, int) {
+	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		return false, 0
 	}
@@ -156,19 +220,66 @@ func (s *Service) GetRunningState() (bool, int) {
 
 	if !childproc.IsAlive(pid) {
 		// Process is dead, clean up stale PID file
-		_ = os.Remove(s.pidPath)
+		_ = os.Remove(pidPath)
 		return false, 0
 	}
 
 	if !childproc.MatchesBinary(pid, s.binPath) && !childproc.MatchesBinary(pid, "openflux") {
-		_ = os.Remove(s.pidPath)
+		_ = os.Remove(pidPath)
 		return false, 0
 	}
 
 	return true, pid
 }
 
-// GetStatus returns the current service status.
+func (s *Service) getClientStatusLocked() ClientStatus {
+	installed := s.IsInstalled()
+	running, pid := s.GetClientRunningState()
+	var uptimeS int64
+	if running {
+		startedAt := s.clientStartedAt
+		if startedAt.IsZero() {
+			if fi, err := os.Stat(s.clientPidPath); err == nil {
+				startedAt = fi.ModTime()
+			}
+		}
+		if !startedAt.IsZero() {
+			uptimeS = int64(time.Since(startedAt).Seconds())
+		}
+		if uptimeS < 1 {
+			uptimeS = 1
+		}
+	}
+
+	cfgCopy := s.clientConfig
+	logTail := s.getFileLogTailLocked(s.clientLogPath, 100)
+	errStr := s.clientLastErr
+	if running && strings.Contains(logTail, "[SOCKS5] Listening on") {
+		errStr = ""
+	}
+
+	return ClientStatus{
+		Installed:  installed,
+		Running:    running,
+		PID:        pid,
+		UptimeS:    uptimeS,
+		Socks5Port: s.clientConfig.Socks5Port(),
+		Socks5URI:  s.clientConfig.Socks5URI(),
+		HttpURI:    s.clientConfig.HttpURI(),
+		Error:      errStr,
+		Config:     &cfgCopy,
+		LogTail:    logTail,
+	}
+}
+
+// GetClientStatus returns the current OpenFlux client status.
+func (s *Service) GetClientStatus() ClientStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getClientStatusLocked()
+}
+
+// GetStatus returns the current service status (both server and client).
 func (s *Service) GetStatus(ctx context.Context) Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,8 +288,19 @@ func (s *Service) GetStatus(ctx context.Context) Status {
 	running, pid := s.GetRunningState()
 
 	var uptimeS int64
-	if running && !s.startedAt.IsZero() {
-		uptimeS = int64(time.Since(s.startedAt).Seconds())
+	if running {
+		startedAt := s.startedAt
+		if startedAt.IsZero() {
+			if fi, err := os.Stat(s.pidPath); err == nil {
+				startedAt = fi.ModTime()
+			}
+		}
+		if !startedAt.IsZero() {
+			uptimeS = int64(time.Since(startedAt).Seconds())
+		}
+		if uptimeS < 1 {
+			uptimeS = 1
+		}
 	}
 
 	host := ""
@@ -190,6 +312,7 @@ func (s *Service) GetStatus(ctx context.Context) Status {
 
 	supported := IsArchSupported(s.arch)
 	cfgCopy := s.config
+	clientSt := s.getClientStatusLocked()
 
 	return Status{
 		Installed:     installed,
@@ -204,6 +327,7 @@ func (s *Service) GetStatus(ctx context.Context) Status {
 		Link:          link,
 		Config:        &cfgCopy,
 		LogTail:       s.getLogTailLocked(100),
+		Client:        &clientSt,
 	}
 }
 
@@ -269,15 +393,122 @@ func (s *Service) Restart(ctx context.Context) error {
 	return s.restartProcess(ctx)
 }
 
-// StartIfEnabled starts the service if configured as enabled and installed.
+// SaveClientConfig validates and saves the client configuration, applying changes if needed.
+func (s *Service) SaveClientConfig(ctx context.Context, cfg ClientConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if strings.TrimSpace(cfg.Socks5Listen) == "" {
+		cfg.Socks5Listen = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
+	}
+	if strings.TrimSpace(cfg.Name) == "" {
+		cfg.Name = "OpenFlux Выход"
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+
+	s.clientConfig = cfg
+	if err := s.saveClientConfigLocked(); err != nil {
+		return err
+	}
+
+	running, _ := s.GetClientRunningState()
+	if running {
+		if !s.clientConfig.Enabled {
+			return s.stopClientProcess(ctx)
+		}
+		return s.restartClientProcess(ctx)
+	} else if s.clientConfig.Enabled && s.IsInstalled() {
+		if err := s.startClientProcess(ctx, true); err != nil {
+			s.clientConfig.Enabled = false
+			_ = s.saveClientConfigLocked()
+			return err
+		}
+	}
+
+	return nil
+}
+
+// StartClient launches the OpenFlux client process.
+func (s *Service) StartClient(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.startClientProcess(ctx, true); err != nil {
+		return err
+	}
+	s.clientConfig.Enabled = true
+	_ = s.saveClientConfigLocked()
+	return nil
+}
+
+// StopClient stops the OpenFlux client process.
+func (s *Service) StopClient(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.stopClientProcess(ctx); err != nil {
+		return err
+	}
+	s.clientConfig.Enabled = false
+	s.clientLastErr = ""
+	_ = s.saveClientConfigLocked()
+	return nil
+}
+
+// RestartClient restarts the OpenFlux client process.
+func (s *Service) RestartClient(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.restartClientProcess(ctx)
+}
+
+// ParseClientLink decodes an openflux://v1/... link and builds a ClientConfig preserving local listen settings.
+func (s *Service) ParseClientLink(link string) (ShareConfig, ClientConfig, error) {
+	sc, err := Decode(link)
+	if err != nil {
+		return ShareConfig{}, ClientConfig{}, err
+	}
+	s.mu.Lock()
+	base := s.clientConfig
+	s.mu.Unlock()
+
+	cfg := ClientConfigFromShare(sc, base)
+	return sc, cfg, nil
+}
+
+// Shutdown stops running server and client processes on daemon exit without clearing their Enabled flags.
+func (s *Service) Shutdown(ctx context.Context) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_ = s.stopProcess(ctx)
+	_ = s.stopClientProcess(ctx)
+}
+
+// StartIfEnabled starts server and client processes if configured as enabled and installed.
 func (s *Service) StartIfEnabled(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.config.Enabled && s.IsInstalled() {
-		return s.startProcess(ctx)
+	if !s.IsInstalled() {
+		return nil
 	}
-	return nil
+	var firstErr error
+	if s.config.Enabled {
+		if err := s.startProcess(ctx); err != nil {
+			firstErr = err
+		}
+	}
+	if s.clientConfig.Enabled {
+		if err := s.startClientProcess(ctx, true); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *Service) startProcess(ctx context.Context) error {
@@ -344,8 +575,189 @@ func (s *Service) stopProcess(ctx context.Context) error {
 	}
 
 	s.removeFirewall(ctx)
+	terminatePID(pid, s.pidPath)
+	return nil
+}
 
-	// Graceful termination
+func (s *Service) restartProcess(ctx context.Context) error {
+	_ = s.stopProcess(ctx)
+	time.Sleep(500 * time.Millisecond)
+	return s.startProcess(ctx)
+}
+
+func extractLastErrorFromLog(logTail string) string {
+	lines := strings.Split(strings.TrimSpace(logTail), "\n")
+	lastNonEmpty := ""
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if lastNonEmpty == "" {
+			lastNonEmpty = line
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "failed") || strings.Contains(lower, "error") || strings.Contains(lower, "handshake not complete") || strings.Contains(lower, "fatal") || strings.Contains(lower, "bind:") || strings.Contains(lower, "panic") {
+			return line
+		}
+	}
+	return lastNonEmpty
+}
+
+func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) error {
+	if !s.IsInstalled() {
+		return ErrNotInstalled
+	}
+
+	running, _ := s.GetClientRunningState()
+	if running {
+		return nil
+	}
+
+	if err := s.clientConfig.Validate(); err != nil {
+		return fmt.Errorf("ошибка валидации настроек клиента: %w", err)
+	}
+	if err := s.clientConfig.ValidateForStart(); err != nil {
+		return err
+	}
+
+	if resetStopCh {
+		if s.clientStopCh != nil {
+			close(s.clientStopCh)
+		}
+		s.clientStopCh = make(chan struct{})
+		s.clientLastErr = ""
+	}
+	stopCh := s.clientStopCh
+	if stopCh == nil {
+		stopCh = make(chan struct{})
+		s.clientStopCh = stopCh
+	}
+
+	_ = os.MkdirAll(s.openfluxDir, 0755)
+	if strings.TrimSpace(s.clientConfig.Secret) != "" {
+		if err := os.WriteFile(s.clientKeyPath, []byte(strings.TrimSpace(s.clientConfig.Secret)+"\n"), 0600); err != nil {
+			return fmt.Errorf("не удалось записать ключ шифрования клиента: %w", err)
+		}
+	}
+
+	_ = os.Remove(s.clientPidPath)
+
+	args := s.clientConfig.BuildArgs(s.clientKeyPath)
+
+	// Truncate log if manual start or if file exceeds 128 KB
+	openFlags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
+	if resetStopCh {
+		openFlags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	} else if fi, stErr := os.Stat(s.clientLogPath); stErr == nil && fi.Size() > 128*1024 {
+		openFlags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
+	}
+
+	logFile, err := os.OpenFile(s.clientLogPath, openFlags, 0644)
+	if err != nil {
+		return fmt.Errorf("не удалось открыть файл журнала клиента: %w", err)
+	}
+
+	cmd := exec.Command(s.binPath, args...)
+	cmd.Dir = s.openfluxDir
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+
+	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
+		return fmt.Errorf("не удалось запустить клиент openflux: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+	_ = os.WriteFile(s.clientPidPath, []byte(strconv.Itoa(pid)+"\n"), 0644)
+	s.clientStartedAt = time.Now()
+
+	waitDone := make(chan error, 1)
+	go func(stop <-chan struct{}) {
+		waitErr := cmd.Wait()
+		_ = logFile.Close()
+		waitDone <- waitErr
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		if waitErr != nil {
+			if msg := extractLastErrorFromLog(s.getFileLogTailLocked(s.clientLogPath, 30)); msg != "" {
+				s.clientLastErr = msg
+			} else {
+				s.clientLastErr = fmt.Sprintf("процесс завершился: %v", waitErr)
+			}
+		}
+
+		if s.clientConfig.Enabled && s.clientConfig.AutoReconnect {
+			go func() {
+				select {
+				case <-stop:
+					return
+				case <-time.After(5 * time.Second):
+				}
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if s.clientConfig.Enabled {
+					_ = s.startClientProcess(context.Background(), false)
+				}
+			}()
+		}
+	}(stopCh)
+
+	if resetStopCh {
+		select {
+		case waitErr := <-waitDone:
+			_ = os.Remove(s.clientPidPath)
+			msg := extractLastErrorFromLog(s.getFileLogTailLocked(s.clientLogPath, 30))
+			if msg == "" && waitErr != nil {
+				msg = fmt.Sprintf("процесс завершился сразу после запуска: %v", waitErr)
+			} else if msg == "" {
+				msg = "процесс завершился сразу после запуска"
+			}
+			s.clientLastErr = msg
+			return fmt.Errorf("%s", msg)
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+
+	return nil
+}
+
+func (s *Service) stopClientProcess(ctx context.Context) error {
+	if s.clientStopCh != nil {
+		close(s.clientStopCh)
+		s.clientStopCh = nil
+	}
+
+	running, pid := s.GetClientRunningState()
+	if !running {
+		_ = os.Remove(s.clientPidPath)
+		return nil
+	}
+
+	terminatePID(pid, s.clientPidPath)
+	return nil
+}
+
+func (s *Service) restartClientProcess(ctx context.Context) error {
+	_ = s.stopClientProcess(ctx)
+	time.Sleep(500 * time.Millisecond)
+	return s.startClientProcess(ctx, true)
+}
+
+func terminatePID(pid int, pidPath string) {
 	_ = childproc.Terminate(pid)
 
 	done := make(chan struct{})
@@ -357,7 +769,6 @@ func (s *Service) stopProcess(ctx context.Context) error {
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
-		// Force kill if still running
 		_ = childproc.Kill(pid)
 		close(done)
 	}()
@@ -368,14 +779,7 @@ func (s *Service) stopProcess(ctx context.Context) error {
 		_ = childproc.Kill(pid)
 	}
 
-	_ = os.Remove(s.pidPath)
-	return nil
-}
-
-func (s *Service) restartProcess(ctx context.Context) error {
-	_ = s.stopProcess(ctx)
-	time.Sleep(500 * time.Millisecond)
-	return s.startProcess(ctx)
+	_ = os.Remove(pidPath)
 }
 
 func (s *Service) applyFirewall(ctx context.Context) {
@@ -492,6 +896,7 @@ func (s *Service) Install(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	_ = s.stopProcess(ctx)
+	_ = s.stopClientProcess(ctx)
 
 	// Ensure target directory exists
 	_ = os.MkdirAll(filepath.Dir(s.binPath), 0755)
@@ -516,18 +921,29 @@ func (s *Service) Install(ctx context.Context) error {
 	return nil
 }
 
-// GetLogTail returns the last N lines from the process log file.
+// GetLogTail returns the last N lines from the server process log file.
 func (s *Service) GetLogTail(maxLines int) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.getLogTailLocked(maxLines)
 }
 
+// GetClientLogTail returns the last N lines from the client process log file.
+func (s *Service) GetClientLogTail(maxLines int) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.getFileLogTailLocked(s.clientLogPath, maxLines)
+}
+
 func (s *Service) getLogTailLocked(maxLines int) string {
+	return s.getFileLogTailLocked(s.logPath, maxLines)
+}
+
+func (s *Service) getFileLogTailLocked(path string, maxLines int) string {
 	if maxLines <= 0 {
 		maxLines = 100
 	}
-	data, err := os.ReadFile(s.logPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -537,3 +953,4 @@ func (s *Service) getLogTailLocked(maxLines int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+

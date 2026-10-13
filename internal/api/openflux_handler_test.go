@@ -97,6 +97,60 @@ func TestOpenFluxHandler_Routes(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected logs 200, got %d: %s", w.Code, w.Body.String())
 	}
+
+	// 5. POST /api/openflux/client/parse-link
+	parseBody, _ := json.Marshal(map[string]string{"link": linkResp.Data["link"]})
+	req = httptest.NewRequest(http.MethodPost, "/api/openflux/client/parse-link", bytes.NewReader(parseBody))
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected parse-link 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var parseResp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Config openflux.ClientConfig `json:"config"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &parseResp); err != nil {
+		t.Fatalf("unmarshal parse-link response: %v", err)
+	}
+	if parseResp.Data.Config.Name != "TestNode" {
+		t.Fatalf("expected parsed client config name TestNode, got %q", parseResp.Data.Config.Name)
+	}
+	if parseResp.Data.Config.DirectDial != "192.168.90.1:9999" {
+		t.Fatalf("expected parsed DirectDial 192.168.90.1:9999, got %q", parseResp.Data.Config.DirectDial)
+	}
+
+	// 6. POST /api/openflux/client/config
+	cliBytes, _ := json.Marshal(parseResp.Data.Config)
+	req = httptest.NewRequest(http.MethodPost, "/api/openflux/client/config", bytes.NewReader(cliBytes))
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected client/config 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 7. GET /api/openflux/client/status
+	req = httptest.NewRequest(http.MethodGet, "/api/openflux/client/status", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected client/status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 8. GET /api/openflux/client/logs
+	req = httptest.NewRequest(http.MethodGet, "/api/openflux/client/logs?lines=50", nil)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected client/logs 200, got %d: %s", w.Code, w.Body.String())
+	}
 }
 
 func TestOpenFluxHandler_NilService(t *testing.T) {

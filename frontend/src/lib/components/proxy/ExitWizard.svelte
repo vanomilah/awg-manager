@@ -31,11 +31,12 @@
 		type ExitProtocol,
 		type ExitSourceKind,
 	} from './exitWizard';
-	import type { ProxyInstanceRow } from './rows';
+	import type { ProxyInstanceRow, ProxyProtocol } from './rows';
 	import type {
 		AccessPolicy,
 		FreeTurnClientConfig,
 		FreeTurnLinkPayload,
+		OpenFluxClientConfig,
 		WdttClientConfig,
 		WdttImportPayload,
 		WdttSubscriptionPreview,
@@ -50,7 +51,7 @@
 		/** WE-02: выход из мастера. */
 		onclose: () => void;
 		/** Инстанс настроен и запущен — страница уводит в его деталь. */
-		ondone: (protocol: ExitProtocol, id: string) => Promise<void> | void;
+		ondone: (protocol: ProxyProtocol, id: string) => Promise<void> | void;
 	}
 
 	let { policies, row = null, wdttClient, ftClient, onclose, ondone }: Props = $props();
@@ -83,12 +84,15 @@
 
 	let wdttPayload = $state<WdttImportPayload | null>(null);
 	let ftPayload = $state<FreeTurnLinkPayload | null>(null);
+	let openfluxPayload = $state<OpenFluxClientConfig | null>(null);
 	let subscription = $state<WdttSubscriptionPreview | null>(null);
 	let profileIdx = $state('0');
 
 	// Протокол и режим — состояние мастера: их задаёт разбор ссылки, ручной
 	// выбор или инстанс, ради которого мастер открыли.
-	let protocol = $state<ExitProtocol>(untrack(() => row?.protocol ?? 'wdtt'));
+	let protocol = $state<ExitProtocol>(
+		untrack(() => (row?.protocol === 'freeturn' ? 'freeturn' : 'wdtt')),
+	);
 	let mode = $state<ExitMode>(untrack(() => row?.mode ?? 'wg'));
 
 	// Стартовое значение: дальше поля живут своей жизнью и обновляются разбором
@@ -124,13 +128,15 @@
 	const detected = $derived<ExitSourceKind>(
 		scheme === 'unknown' && link.trim()
 			? 'unknown'
-			: subscription
-				? 'subscription'
-				: ftPayload
-					? 'freeturn'
-					: wdttPayload
-						? 'wdtt'
-						: 'none',
+			: openfluxPayload
+				? 'openflux'
+				: subscription
+					? 'subscription'
+					: ftPayload
+						? 'freeturn'
+						: wdttPayload
+							? 'wdtt'
+							: 'none',
 	);
 	const profileOptions = $derived(
 		(subscription?.profiles ?? []).map((p, i) => ({
@@ -158,6 +164,7 @@
 		if (!text || kind === 'unknown') {
 			wdttPayload = null;
 			ftPayload = null;
+			openfluxPayload = null;
 			subscription = null;
 			pendingLinkError = '';
 			return;
@@ -165,10 +172,20 @@
 		const seq = ++decodeSeq;
 		pendingLinkError = '';
 		try {
+			if (kind === 'openflux') {
+				const res = await api.openfluxParseLink(text);
+				if (seq !== decodeSeq) return;
+				wdttPayload = null;
+				ftPayload = null;
+				subscription = null;
+				openfluxPayload = res.config;
+				return;
+			}
 			if (kind === 'freeturn') {
 				const payload = await api.decodeFreeTurnLink(text);
 				if (seq !== decodeSeq) return;
 				wdttPayload = null;
+				openfluxPayload = null;
 				subscription = null;
 				ftPayload = payload;
 				protocol = 'freeturn';
@@ -179,6 +196,7 @@
 			const res = await api.decodeWdttLink(text);
 			if (seq !== decodeSeq) return;
 			ftPayload = null;
+			openfluxPayload = null;
 			protocol = 'wdtt';
 			if (res.subscription?.profiles.length) {
 				subscription = res.subscription;
@@ -192,6 +210,21 @@
 			}
 		} catch (e) {
 			pendingLinkError = errText(e);
+		}
+	}
+
+	async function applyOpenfluxLink() {
+		if (!openfluxPayload) return;
+		busy = true;
+		try {
+			await api.openfluxSaveClientConfig({ ...openfluxPayload, enabled: true });
+			await api.openfluxClientStart();
+			notifications.success('Клиент OpenFlux настроен и запущен');
+			await ondone('openflux', 'default');
+		} catch (e) {
+			notifications.error(errText(e));
+		} finally {
+			busy = false;
 		}
 	}
 
@@ -232,6 +265,7 @@
 		link = '';
 		wdttPayload = null;
 		ftPayload = null;
+		openfluxPayload = null;
 		subscription = null;
 		fields = emptyFields(protocol);
 	}
@@ -317,6 +351,10 @@
 				{profileIdx}
 				ftClientId={ftPayload?.cid ?? ''}
 				ftHasWg={hasWg}
+				openfluxName={openfluxPayload?.name ?? ''}
+				openfluxTransports={openfluxPayload?.transports ?? []}
+				openfluxBusy={busy}
+				onapplyopenflux={applyOpenfluxLink}
 				oninput={onLinkInput}
 				oncommit={() => {
 					clearTimeout(debounce);

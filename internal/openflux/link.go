@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -13,6 +14,9 @@ import (
 
 // Prefix starts every openflux share link.
 const Prefix = "openflux://v1/"
+
+// maxLinkPayload bounds the decompressed JSON payload of an openflux:// link.
+const maxLinkPayload = 16 << 10
 
 // ShareTransport describes one transport in an OpenFlux shareable profile.
 type ShareTransport struct {
@@ -64,6 +68,163 @@ func Encode(c ShareConfig) (string, error) {
 	}
 
 	return Prefix + base64.RawURLEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+func normalizeLinkBody(b string) string {
+	b = strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\t', '\r', '\n', '\u00a0', '\u200b':
+			return -1
+		case '+':
+			return '-'
+		case '/':
+			return '_'
+		}
+		return r
+	}, b)
+	return strings.TrimRight(b, "=")
+}
+
+// Decode parses and validates an openflux://v1/... link into ShareConfig.
+func Decode(link string) (ShareConfig, error) {
+	link = strings.TrimSpace(link)
+	if !strings.HasPrefix(link, Prefix) {
+		if strings.HasPrefix(strings.ToLower(link), "openflux://") && !strings.HasPrefix(link, "openflux://") {
+			return ShareConfig{}, fmt.Errorf("регистр символов в ссылке изменён (ссылки openflux:// чувствительны к регистру); скопируйте её заново")
+		}
+		if strings.HasPrefix(link, "openflux://") {
+			return ShareConfig{}, fmt.Errorf("неподдерживаемая версия ссылки openflux:// (ожидается %s)", Prefix)
+		}
+		return ShareConfig{}, fmt.Errorf("некорректная ссылка: должна начинаться с %s", Prefix)
+	}
+
+	body := normalizeLinkBody(strings.TrimPrefix(link, Prefix))
+	if body == "" {
+		return ShareConfig{}, fmt.Errorf("ссылка повреждена: пустое тело после %s", Prefix)
+	}
+
+	packed, err := base64.RawURLEncoding.DecodeString(body)
+	if err != nil {
+		return ShareConfig{}, fmt.Errorf("ссылка повреждена (ошибка кодирования base64url): %w", err)
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(flate.NewReader(bytes.NewReader(packed)), maxLinkPayload+1))
+	if err != nil {
+		return ShareConfig{}, fmt.Errorf("ссылка повреждена (ошибка распаковки DEFLATE): %w", err)
+	}
+	if len(raw) > maxLinkPayload {
+		return ShareConfig{}, fmt.Errorf("слишком большой размер данных в ссылке")
+	}
+
+	var sc ShareConfig
+	if err := json.Unmarshal(raw, &sc); err != nil {
+		return ShareConfig{}, fmt.Errorf("некорректный JSON-профиль в ссылке: %w", err)
+	}
+
+	if len(sc.Transports) == 0 {
+		return ShareConfig{}, fmt.Errorf("в ссылке отсутствуют транспорты")
+	}
+	if sc.Negotiate && SecretChars(sc.Secret) < MinSecretChars {
+		return ShareConfig{}, fmt.Errorf("в сессионной ссылке ключ шифрования короче %d символов", MinSecretChars)
+	}
+	if sc.Secret != "" && SecretChars(sc.Secret) < MinSecretChars {
+		return ShareConfig{}, fmt.Errorf("ключ шифрования в ссылке короче %d символов", MinSecretChars)
+	}
+
+	return sc, nil
+}
+
+// ClientConfigFromShare converts a decoded ShareConfig into a ClientConfig while preserving local listen settings from base.
+func ClientConfigFromShare(sc ShareConfig, base ClientConfig) ClientConfig {
+	out := base
+	if out.Socks5Listen == "" {
+		out.Socks5Listen = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
+	}
+	if strings.TrimSpace(sc.Name) != "" {
+		out.Name = strings.TrimSpace(sc.Name)
+	} else if strings.TrimSpace(out.Name) == "" {
+		out.Name = "OpenFlux Выход"
+	}
+
+	if strings.EqualFold(strings.TrimSpace(sc.Mode), "stream") {
+		out.TransportMode = "stream"
+	} else if sc.Negotiate || len(sc.Transports) > 1 {
+		out.TransportMode = "session"
+	} else {
+		out.TransportMode = "single"
+	}
+
+	if strings.EqualFold(strings.TrimSpace(sc.Codec), "legacy") {
+		out.Codec = "legacy"
+	} else {
+		out.Codec = "batched"
+	}
+
+	out.Secret = strings.TrimSpace(sc.Secret)
+
+	// Derive KDF context if not explicitly provided in link
+	if strings.TrimSpace(sc.Context) != "" {
+		out.Context = strings.TrimSpace(sc.Context)
+	} else {
+		bestPrio := -1
+		bestURL := ""
+		for _, t := range sc.Transports {
+			if u := strings.TrimSpace(t.URL); u != "" {
+				if bestURL == "" || t.Priority > bestPrio {
+					bestPrio = t.Priority
+					bestURL = u
+				}
+			}
+		}
+		if bestURL != "" {
+			out.Context = bestURL
+		} else {
+			out.Context = "http://#"
+		}
+	}
+
+	out.Transports = nil
+	out.DirectDial = ""
+	out.MailruURL = ""
+	out.YandexURL = ""
+	out.CupsonlineURL = ""
+	out.TelemostURL = ""
+
+	seen := make(map[string]bool)
+	for _, t := range sc.Transports {
+		norm := strings.ToLower(strings.TrimSpace(t.Type))
+		if norm == "" {
+			continue
+		}
+		if !seen[norm] {
+			seen[norm] = true
+			out.Transports = append(out.Transports, norm)
+		}
+		switch norm {
+		case "direct":
+			if strings.TrimSpace(t.Dial) != "" {
+				out.DirectDial = strings.TrimSpace(t.Dial)
+			}
+		case "mailru":
+			if strings.TrimSpace(t.URL) != "" {
+				out.MailruURL = strings.TrimSpace(t.URL)
+			}
+		case "yandex", "vyandex":
+			if strings.TrimSpace(t.URL) != "" {
+				out.YandexURL = strings.TrimSpace(t.URL)
+			}
+		case "cupsonline":
+			if strings.TrimSpace(t.URL) != "" {
+				out.CupsonlineURL = strings.TrimSpace(t.URL)
+			}
+		case "telemost":
+			if strings.TrimSpace(t.URL) != "" {
+				out.TelemostURL = strings.TrimSpace(t.URL)
+			}
+		}
+	}
+
+	return out
 }
 
 // GenerateLink constructs an openflux:// link from the server configuration and given public host/IP.
@@ -170,3 +331,4 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 
 	return Encode(sc)
 }
+

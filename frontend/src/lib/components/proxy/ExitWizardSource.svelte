@@ -19,6 +19,10 @@
 		ftClientId?: string;
 		/** Ссылка FreeTurn принесла WireGuard-конфиг. */
 		ftHasWg?: boolean;
+		openfluxName?: string;
+		openfluxTransports?: string[];
+		openfluxBusy?: boolean;
+		onapplyopenflux?: () => void;
 		oninput: (v: string) => void;
 		/** Ввод завершён (blur/Enter): мастер показывает отложенную ошибку разбора. */
 		oncommit: () => void;
@@ -39,6 +43,10 @@
 		profileIdx = '0',
 		ftClientId = '',
 		ftHasWg = false,
+		openfluxName = '',
+		openfluxTransports = [],
+		openfluxBusy = false,
+		onapplyopenflux,
 		oninput,
 		oncommit,
 		onfile,
@@ -56,7 +64,7 @@
 	value={link}
 	{oninput}
 	onchange={() => oncommit()}
-	placeholder="wdtt:// · qwdtt:// · freeturn:// · https://… · JSON"
+	placeholder="wdtt:// · qwdtt:// · freeturn:// · openflux:// · https://… · JSON"
 	hint="Протокол определится по ссылке. Профиль или подписку можно вставить JSON-ом"
 	disabled={manual}
 	fullWidth
@@ -130,7 +138,7 @@
 		<p class="detect-note">
 			Схема ссылки не распознана
 			<FieldHint
-				text="Ожидаются wdtt://, qwdtt://, freeturn://, http(s):// для подписки или JSON профиля/подписки."
+				text="Ожидаются wdtt://, qwdtt://, freeturn://, openflux://, http(s):// для подписки или JSON профиля/подписки."
 				ariaLabel="Подсказка: схема ссылки"
 			/>
 		</p>
@@ -169,6 +177,26 @@
 				/>
 			{/if}
 		</p>
+	</div>
+{:else if detected === 'openflux'}
+	<div class="detect-box">
+		<div class="detect-badge-row">
+			<Badge size="sm" variant="info">OpenFlux</Badge>
+			{#if openfluxName}
+				<Badge size="sm" variant="default">{openfluxName}</Badge>
+			{/if}
+			{#if openfluxTransports.length > 0}
+				<Badge size="sm" variant="success">{openfluxTransports.join(' / ')}</Badge>
+			{/if}
+		</div>
+		<p class="detect-note">
+			Ссылка OpenFlux V1 содержит ключ шифрования и параметры транспортов. Нажмите кнопку ниже, чтобы применить ссылку и запустить клиент OpenFlux (SOCKS5 :1085).
+		</p>
+		{#if onapplyopenflux}
+			<Button variant="primary" size="sm" loading={openfluxBusy} onclick={onapplyopenflux}>
+				Применить и запустить OpenFlux-клиент
+			</Button>
+		{/if}
 	</div>
 {:else if detected === 'wdtt'}
 	<div class="detect-box">

@@ -14,6 +14,56 @@ export interface OpenFluxConfig {
 	name?: string;
 }
 
+export interface OpenFluxClientConfig {
+	enabled: boolean;
+	name?: string;
+	transportMode: 'session' | 'single' | 'stream';
+	transports: string[];
+	directDial?: string;
+	mailruUrl?: string;
+	yandexUrl?: string;
+	cupsonlineUrl?: string;
+	telemostUrl?: string;
+	secret?: string;
+	context?: string;
+	codec?: 'batched' | 'legacy';
+	socks5Listen?: string;
+	httpProxyListen?: string;
+	autoReconnect: boolean;
+	debug: number;
+}
+
+export interface OpenFluxShareTransport {
+	type: string;
+	name?: string;
+	url?: string;
+	priority?: number;
+	dial?: string;
+}
+
+export interface OpenFluxShareConfig {
+	name?: string;
+	negotiate?: boolean;
+	codec?: string;
+	secret?: string;
+	context?: string;
+	mode?: string;
+	transports: OpenFluxShareTransport[];
+}
+
+export interface OpenFluxClientStatus {
+	installed?: boolean;
+	running: boolean;
+	pid?: number;
+	uptimeS?: number;
+	socks5Port?: number;
+	socks5Uri?: string;
+	httpUri?: string;
+	error?: string;
+	config?: OpenFluxClientConfig;
+	logTail?: string;
+}
+
 export interface OpenFluxStatus {
 	installed: boolean;
 	running: boolean;
@@ -28,4 +78,6 @@ export interface OpenFluxStatus {
 	error?: string;
 	config?: OpenFluxConfig;
 	logTail?: string;
+	client?: OpenFluxClientStatus;
 }
+

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -15,6 +16,12 @@ const MinSecretChars = 16
 
 // DefaultDirectPort is the default listen port for direct TCP transport.
 const DefaultDirectPort = 8445
+
+// DefaultClientSocks5Port is the default local SOCKS5 port for OpenFlux client mode.
+const DefaultClientSocks5Port = 1085
+
+// DefaultClientHttpPort is the default local HTTP proxy port when enabled.
+const DefaultClientHttpPort = 1086
 
 // Config represents OpenFlux exit node server configuration.
 type Config struct {
@@ -252,3 +259,395 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 
 	return args
 }
+
+// ClientConfig represents OpenFlux client configuration (SOCKS5 / HTTP proxy outbound on router).
+type ClientConfig struct {
+	Enabled         bool     `json:"enabled"`
+	Name            string   `json:"name,omitempty"`
+	TransportMode   string   `json:"transportMode"`           // "session" (default, --negotiate) | "single" | "stream"
+	Transports      []string `json:"transports"`              // list of enabled transports: "direct", "mailru", "yandex", "cupsonline", "telemost"
+	DirectDial      string   `json:"directDial,omitempty"`    // remote exit host:port for direct transport
+	MailruURL       string   `json:"mailruUrl,omitempty"`     // document URL for mailru
+	YandexURL       string   `json:"yandexUrl,omitempty"`     // document URL for yandex / vyandex
+	CupsonlineURL   string   `json:"cupsonlineUrl,omitempty"` // room URL for cupsonline
+	TelemostURL     string   `json:"telemostUrl,omitempty"`   // conference URL for telemost
+	Secret          string   `json:"secret,omitempty"`        // AES-256-GCM shared secret
+	Context         string   `json:"context,omitempty"`       // KDF context (--session-context)
+	Codec           string   `json:"codec,omitempty"`         // "batched" (default) | "legacy"
+	Socks5Listen    string   `json:"socks5Listen,omitempty"`  // default "127.0.0.1:1085"
+	HttpProxyListen string   `json:"httpProxyListen,omitempty"`
+	AutoReconnect   bool     `json:"autoReconnect"`
+	Debug           int      `json:"debug"`
+}
+
+// DefaultClientConfig returns recommended default settings for an OpenFlux client.
+func DefaultClientConfig() ClientConfig {
+	return ClientConfig{
+		Enabled:       false,
+		Name:          "OpenFlux Выход",
+		TransportMode: "session",
+		Transports:    []string{"direct", "mailru", "yandex"},
+		Socks5Listen:  fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port),
+		Codec:         "batched",
+		AutoReconnect: true,
+		Debug:         0,
+	}
+}
+
+func validateListenAddr(addr string, defaultPort int, fieldName string) (int, error) {
+	a := strings.TrimSpace(addr)
+	if a == "" {
+		return defaultPort, nil
+	}
+	if strings.HasPrefix(a, ":") {
+		a = "127.0.0.1" + a
+	}
+	_, portStr, err := net.SplitHostPort(a)
+	if err != nil {
+		return 0, fmt.Errorf("некорректный адрес %s %q: %w", fieldName, addr, err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return 0, fmt.Errorf("некорректный порт в %s %q", fieldName, addr)
+	}
+	switch port {
+	case 22, 2222, 53, 80, 443, 1099, 8443, 9090, 51820:
+		return 0, fmt.Errorf("порт %d зарезервирован системой", port)
+	}
+	return port, nil
+}
+
+// Validate checks structural validity of ClientConfig. If Enabled is true, it also checks readiness for start.
+func (c *ClientConfig) Validate() error {
+	tm := strings.ToLower(strings.TrimSpace(c.TransportMode))
+	if tm != "" && tm != "session" && tm != "single" && tm != "stream" {
+		return fmt.Errorf("недопустимый режим транспорта %q: ожидается session, single или stream", c.TransportMode)
+	}
+
+	codec := strings.ToLower(strings.TrimSpace(c.Codec))
+	if codec != "" && codec != "batched" && codec != "legacy" {
+		return fmt.Errorf("недопустимый кодек %q: ожидается batched или legacy", c.Codec)
+	}
+
+	socksPort, err := validateListenAddr(c.Socks5Listen, DefaultClientSocks5Port, "socks5Listen")
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(c.HttpProxyListen) != "" {
+		httpPort, err := validateListenAddr(c.HttpProxyListen, DefaultClientHttpPort, "httpProxyListen")
+		if err != nil {
+			return err
+		}
+		if httpPort == socksPort {
+			return fmt.Errorf("порты SOCKS5 и HTTP-прокси не должны совпадать (%d)", socksPort)
+		}
+	}
+
+	if dd := strings.TrimSpace(c.DirectDial); dd != "" {
+		host, portStr, err := net.SplitHostPort(dd)
+		if err != nil || strings.TrimSpace(host) == "" {
+			return fmt.Errorf("некорректный адрес directDial %q (ожидается host:port)", dd)
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port <= 0 || port > 65535 {
+			return fmt.Errorf("некорректный порт в directDial %q", dd)
+		}
+	}
+
+	if sec := strings.TrimSpace(c.Secret); sec != "" && SecretChars(sec) < MinSecretChars {
+		return fmt.Errorf("ключ шифрования слишком короткий (%d символов, требуется минимум %d)", SecretChars(sec), MinSecretChars)
+	}
+
+	if c.Enabled {
+		return c.ValidateForStart()
+	}
+	return nil
+}
+
+// ValidateForStart checks that the client configuration has all required fields to establish a connection.
+func (c *ClientConfig) ValidateForStart() error {
+	tm := strings.ToLower(strings.TrimSpace(c.TransportMode))
+	if tm == "" {
+		tm = "session"
+	}
+
+	if tm == "stream" {
+		if strings.TrimSpace(c.MailruURL) == "" && strings.TrimSpace(c.CupsonlineURL) == "" {
+			return fmt.Errorf("для stream-режима укажите URL документа Mail.ru или комнаты Cups.online")
+		}
+		return nil
+	}
+
+	isSession := tm == "session" || len(c.Transports) > 1
+	if isSession {
+		sec := strings.TrimSpace(c.Secret)
+		if sec == "" {
+			return fmt.Errorf("для сессионного режима требуется общий ключ шифрования (минимум %d символов)", MinSecretChars)
+		}
+		if SecretChars(sec) < MinSecretChars {
+			return fmt.Errorf("ключ шифрования слишком короткий (%d символов, требуется минимум %d)", SecretChars(sec), MinSecretChars)
+		}
+	}
+
+	hasUsableTransport := false
+	for _, t := range c.Transports {
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "direct":
+			if strings.TrimSpace(c.DirectDial) != "" {
+				hasUsableTransport = true
+			}
+		case "mailru":
+			if strings.TrimSpace(c.MailruURL) != "" {
+				hasUsableTransport = true
+			}
+		case "yandex", "vyandex":
+			if strings.TrimSpace(c.YandexURL) != "" {
+				hasUsableTransport = true
+			}
+		case "cupsonline":
+			if strings.TrimSpace(c.CupsonlineURL) != "" {
+				hasUsableTransport = true
+			}
+		case "telemost":
+			if strings.TrimSpace(c.TelemostURL) != "" {
+				hasUsableTransport = true
+			}
+		}
+	}
+
+	if !hasUsableTransport {
+		return fmt.Errorf("нет настроенных транспортов: импортируйте ссылку openflux:// или укажите адрес Direct-сервера (host:port) либо URL документа (Mail.ru / Яндекс)")
+	}
+
+	return nil
+}
+
+// Socks5Port returns the TCP port number from Socks5Listen, or DefaultClientSocks5Port.
+func (c *ClientConfig) Socks5Port() int {
+	a := strings.TrimSpace(c.Socks5Listen)
+	if a == "" {
+		return DefaultClientSocks5Port
+	}
+	if strings.HasPrefix(a, ":") {
+		a = "127.0.0.1" + a
+	}
+	_, portStr, err := net.SplitHostPort(a)
+	if err != nil {
+		return DefaultClientSocks5Port
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return DefaultClientSocks5Port
+	}
+	return port
+}
+
+// Socks5URI returns a local socks5:// share URI usable by Mihomo or other router services.
+func (c *ClientConfig) Socks5URI() string {
+	port := c.Socks5Port()
+	name := strings.TrimSpace(c.Name)
+	if name == "" {
+		name = "OpenFlux"
+	}
+	return fmt.Sprintf("socks5://127.0.0.1:%d#%s", port, url.PathEscape(name))
+}
+
+// HttpURI returns the local HTTP proxy URL if HttpProxyListen is configured.
+func (c *ClientConfig) HttpURI() string {
+	a := strings.TrimSpace(c.HttpProxyListen)
+	if a == "" {
+		return ""
+	}
+	if strings.HasPrefix(a, ":") {
+		a = "127.0.0.1" + a
+	}
+	_, portStr, err := net.SplitHostPort(a)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%s", portStr)
+}
+
+// BuildArgs converts ClientConfig to OpenFlux CLI arguments for --role=client.
+func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
+	args := []string{
+		"--role=client",
+		"--inbound=socks5",
+	}
+
+	socks := strings.TrimSpace(c.Socks5Listen)
+	if socks == "" {
+		socks = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
+	}
+	args = append(args, "--socks5="+socks)
+
+	if hp := strings.TrimSpace(c.HttpProxyListen); hp != "" {
+		args = append(args, "--http-proxy="+hp)
+	}
+
+	codec := strings.ToLower(strings.TrimSpace(c.Codec))
+	if codec == "" {
+		codec = "batched"
+	}
+	args = append(args, "--codec="+codec)
+
+	tm := strings.ToLower(strings.TrimSpace(c.TransportMode))
+	if tm == "" {
+		tm = "session"
+	}
+
+	var sessionParts []string
+	hasDirect := false
+	hasMailru := false
+	hasYandex := false
+	hasVyandex := false
+	hasCups := false
+	hasTelemost := false
+
+	for _, t := range c.Transports {
+		norm := strings.ToLower(strings.TrimSpace(t))
+		switch norm {
+		case "direct":
+			if strings.TrimSpace(c.DirectDial) != "" {
+				sessionParts = append(sessionParts, "direct:100")
+				hasDirect = true
+			}
+		case "mailru":
+			if strings.TrimSpace(c.MailruURL) != "" {
+				sessionParts = append(sessionParts, "mailru:60")
+				hasMailru = true
+			}
+		case "yandex":
+			if strings.TrimSpace(c.YandexURL) != "" {
+				sessionParts = append(sessionParts, "yandex:50")
+				hasYandex = true
+			}
+		case "vyandex":
+			if strings.TrimSpace(c.YandexURL) != "" {
+				sessionParts = append(sessionParts, "vyandex:55")
+				hasVyandex = true
+			}
+		case "cupsonline":
+			if strings.TrimSpace(c.CupsonlineURL) != "" {
+				sessionParts = append(sessionParts, "cupsonline:40")
+				hasCups = true
+			}
+		case "telemost":
+			if strings.TrimSpace(c.TelemostURL) != "" {
+				hasTelemost = true
+			}
+		}
+	}
+
+	if len(sessionParts) == 0 && strings.TrimSpace(c.DirectDial) != "" {
+		sessionParts = append(sessionParts, "direct:100")
+		hasDirect = true
+	}
+
+	if tm == "stream" {
+		args = append(args, "--mode=stream")
+		singleType := "mailru"
+		if len(c.Transports) > 0 && strings.EqualFold(strings.TrimSpace(c.Transports[0]), "cupsonline") {
+			singleType = "cupsonline"
+		} else if strings.TrimSpace(c.MailruURL) == "" && strings.TrimSpace(c.CupsonlineURL) != "" {
+			singleType = "cupsonline"
+		}
+		args = append(args, "--transport="+singleType)
+		if singleType == "cupsonline" && strings.TrimSpace(c.CupsonlineURL) != "" {
+			args = append(args, "--url="+strings.TrimSpace(c.CupsonlineURL))
+		} else if strings.TrimSpace(c.MailruURL) != "" {
+			args = append(args, "--url="+strings.TrimSpace(c.MailruURL))
+		}
+	} else if (tm == "session" || len(c.Transports) > 1) && (len(sessionParts) > 0 || !hasTelemost) {
+		args = append(args, "--negotiate")
+		if keyFilePath != "" {
+			args = append(args, "--encryption-key-file="+keyFilePath)
+		}
+
+		contextURL := strings.TrimSpace(c.Context)
+		if contextURL == "" {
+			if strings.TrimSpace(c.MailruURL) != "" {
+				contextURL = strings.TrimSpace(c.MailruURL)
+			} else if strings.TrimSpace(c.YandexURL) != "" {
+				contextURL = strings.TrimSpace(c.YandexURL)
+			} else if strings.TrimSpace(c.CupsonlineURL) != "" {
+				contextURL = strings.TrimSpace(c.CupsonlineURL)
+			} else {
+				contextURL = "http://#"
+			}
+		}
+		args = append(args, "--session-context="+contextURL)
+
+		if len(sessionParts) > 0 {
+			args = append(args, "--transports="+strings.Join(sessionParts, ","))
+		}
+
+		if hasDirect {
+			args = append(args, "--direct-dial="+strings.TrimSpace(c.DirectDial))
+		}
+		if hasMailru {
+			args = append(args, "--mailru-url="+strings.TrimSpace(c.MailruURL))
+		}
+		if hasYandex {
+			args = append(args, "--yandex-url="+strings.TrimSpace(c.YandexURL))
+		}
+		if hasVyandex {
+			args = append(args, "--vyandex-url="+strings.TrimSpace(c.YandexURL))
+		}
+		if hasCups {
+			args = append(args, "--cupsonline-url="+strings.TrimSpace(c.CupsonlineURL))
+		}
+	} else {
+		// Single transport mode (or telemost-only fallback)
+		singleType := "direct"
+		if hasTelemost && len(sessionParts) == 0 {
+			singleType = "telemost"
+		} else if len(c.Transports) > 0 {
+			singleType = strings.ToLower(strings.TrimSpace(c.Transports[0]))
+		}
+		args = append(args, "--transport="+singleType)
+
+		if keyFilePath != "" && strings.TrimSpace(c.Secret) != "" {
+			args = append(args, "--encryption-key-file="+keyFilePath)
+			if strings.TrimSpace(c.Context) != "" {
+				args = append(args, "--session-context="+strings.TrimSpace(c.Context))
+			}
+		}
+
+		switch singleType {
+		case "direct":
+			if strings.TrimSpace(c.DirectDial) != "" {
+				args = append(args, "--direct-dial="+strings.TrimSpace(c.DirectDial))
+			}
+		case "mailru":
+			if strings.TrimSpace(c.MailruURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.MailruURL))
+			}
+		case "yandex", "vyandex":
+			if strings.TrimSpace(c.YandexURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.YandexURL))
+			}
+		case "cupsonline":
+			if strings.TrimSpace(c.CupsonlineURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.CupsonlineURL))
+			}
+		case "telemost":
+			if strings.TrimSpace(c.TelemostURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.TelemostURL))
+			}
+		}
+	}
+
+	switch c.Debug {
+	case 1:
+		args = append(args, "-d")
+	case 2:
+		args = append(args, "-dd")
+	case 3:
+		args = append(args, "-ddd")
+	}
+
+	return args
+}
+

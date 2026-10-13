@@ -60,6 +60,9 @@
 	let draft = $state<OpenFluxConfig | null>(
 		untrack(() => normalizeDraft(config)),
 	);
+	let lastSyncedConfigJson = $state(
+		untrack(() => JSON.stringify(normalizeDraft(config))),
+	);
 	let logs = $state('');
 	let starting = $state(false);
 	let stopping = $state(false);
@@ -68,13 +71,28 @@
 
 	const running = $derived(row.state === 'running');
 	const uptimeValue = $derived(running ? formatUptime(row.startedAt) || '—' : '—');
+	const normalizedConfig = $derived(normalizeDraft(config));
 	const isDirty = $derived(
-		draft && config ? JSON.stringify(draft) !== JSON.stringify(config) : false,
+		draft && normalizedConfig
+			? JSON.stringify(draft) !== JSON.stringify(normalizedConfig)
+			: false,
 	);
 
 	$effect(() => {
-		if (config && !draft) {
-			draft = normalizeDraft(config);
+		const norm = normalizedConfig;
+		if (!norm) return;
+		const normJson = JSON.stringify(norm);
+		if (!draft) {
+			draft = JSON.parse(normJson);
+			lastSyncedConfigJson = normJson;
+		} else if (normJson !== lastSyncedConfigJson) {
+			const wasDirty = JSON.stringify(draft) !== lastSyncedConfigJson;
+			lastSyncedConfigJson = normJson;
+			if (!wasDirty) {
+				draft = JSON.parse(normJson);
+			} else {
+				draft.enabled = norm.enabled;
+			}
 		}
 	});
 
@@ -118,7 +136,13 @@
 	async function handleStart() {
 		starting = true;
 		try {
-			await api.openfluxStart();
+			const st = await api.openfluxStart();
+			if (st?.config) {
+				draft = normalizeDraft(st.config);
+				lastSyncedConfigJson = JSON.stringify(draft);
+			} else if (draft) {
+				draft.enabled = true;
+			}
 			notifications.success('OpenFlux запущен');
 			await onreload();
 			await fetchLogs();
@@ -132,7 +156,13 @@
 	async function handleStop() {
 		stopping = true;
 		try {
-			await api.openfluxStop();
+			const st = await api.openfluxStop();
+			if (st?.config) {
+				draft = normalizeDraft(st.config);
+				lastSyncedConfigJson = JSON.stringify(draft);
+			} else if (draft) {
+				draft.enabled = false;
+			}
 			notifications.success('OpenFlux остановлен');
 			await onreload();
 			await fetchLogs();
@@ -162,6 +192,7 @@
 		localSaving = true;
 		try {
 			await onsave(draft);
+			lastSyncedConfigJson = JSON.stringify(draft);
 			notifications.success('Настройки сохранены');
 			await onreload();
 			await fetchLogs();

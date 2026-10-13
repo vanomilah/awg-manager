@@ -8,6 +8,8 @@
 		AccessPolicy,
 		FreeTurnConfig,
 		FreeTurnStatus,
+		OpenFluxClientConfig,
+		OpenFluxClientStatus,
 		OpenFluxConfig,
 		OpenFluxStatus,
 		TunnelListItem,
@@ -16,6 +18,7 @@
 	} from '$lib/types';
 	import ExitDetail from './ExitDetail.svelte';
 	import ExitWizard from './ExitWizard.svelte';
+	import OpenFluxClientDetail from './OpenFluxClientDetail.svelte';
 	import OpenFluxDetail from './OpenFluxDetail.svelte';
 	import ShareDetail from './ShareDetail.svelte';
 	import ShareWizard from './ShareWizard.svelte';
@@ -25,7 +28,7 @@
 	import type { ExitConfig } from './exitConfig';
 	import type { ExitProtocol } from './exitWizard';
 	import type { ShareConfig } from './shareConfig';
-	import type { ProxyInstanceRow } from './rows';
+	import type { ProxyInstanceRow, ProxyProtocol } from './rows';
 
 	interface Props {
 		activeTab: 'exit' | 'share';
@@ -40,6 +43,8 @@
 		ftStatus: FreeTurnStatus | null;
 		openfluxStatus?: OpenFluxStatus | null;
 		openfluxConfig?: OpenFluxConfig | null;
+		openfluxClientStatus?: OpenFluxClientStatus | null;
+		openfluxClientConfig?: OpenFluxClientConfig | null;
 		policies: AccessPolicy[];
 		tunnels: TunnelListItem[];
 		busyKeys: string[];
@@ -52,7 +57,7 @@
 		/** Перечитать конфиги — мастер раздачи заводит сервер по ходу шагов. */
 		onconfigs: () => Promise<void>;
 		onreload: () => Promise<void>;
-		onexitdone: (protocol: ExitProtocol, id: string) => void;
+		onexitdone: (protocol: ProxyProtocol, id: string) => void;
 		onsharedone: (protocol: ExitProtocol, id: string) => void;
 	}
 
@@ -68,6 +73,8 @@
 		ftStatus,
 		openfluxStatus = null,
 		openfluxConfig = null,
+		openfluxClientStatus = null,
+		openfluxClientConfig = null,
 		policies,
 		tunnels,
 		busyKeys,
@@ -246,6 +253,28 @@
 			onclose={() => (shareWizard = null)}
 			onreload={onconfigs}
 			ondone={onsharedone}
+		/>
+	{/key}
+{:else if activeTab === 'exit' && exitRow?.protocol === 'openflux'}
+	{#key exitRow.key}
+		<OpenFluxClientDetail
+			row={exitRow}
+			status={openfluxClientStatus ?? openfluxStatus?.client ?? null}
+			config={openfluxClientConfig ?? openfluxClientStatus?.config ?? openfluxStatus?.client?.config ?? null}
+			routerClock={wdttStatus?.routerClock ?? ftStatus?.routerClock}
+			busy={busyKeys.includes(exitRow.key)}
+			onstart={() => exitRow && ontoggle(exitRow, true)}
+			onstop={() => exitRow && ontoggle(exitRow, false)}
+			onsave={async (cfg) => {
+				const res = await api.openfluxSaveClientConfig(cfg);
+				await onstatuses();
+				await onconfigs();
+				return res?.client?.config ?? cfg;
+			}}
+			onreload={async () => {
+				await onstatuses();
+				await onconfigs();
+			}}
 		/>
 	{/key}
 {:else if activeTab === 'exit' && exitRow}
