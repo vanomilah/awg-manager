@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/childproc"
+	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/routerinfo"
 )
 
@@ -30,6 +31,15 @@ var (
 	ErrDiskSpace         = errors.New("insufficient disk space for openflux installation")
 	ErrAlreadyInstalling = errors.New("openflux installation is already in progress")
 )
+
+// TunnelStore defines tunnel store operations needed for OpenFlux client mirroring in /tunnels.
+type TunnelStore interface {
+	Get(id string) (*storage.AWGTunnel, error)
+	Exists(id string) bool
+	Create(t *storage.AWGTunnel) error
+	Update(id string, mut func(*storage.AWGTunnel) error) error
+	Delete(id string) error
+}
 
 // RouterCommands defines router network operations needed for OpenFlux client TUN mode.
 type RouterCommands interface {
@@ -107,6 +117,7 @@ type Service struct {
 	getPublicHost   func(context.Context) string
 	routerCmds      RouterCommands
 	policyResolver  PolicyResolver
+	tunnelStore     TunnelStore
 }
 
 // PolicyResolver resolves a Keenetic Access Policy name (e.g. "Policy0", "Policy1") to an egress IPv4 address.
@@ -124,6 +135,16 @@ func (s *Service) SetPolicyResolver(pr PolicyResolver) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.policyResolver = pr
+}
+
+// SetTunnelStore wires the tunnel store for mirroring the OpenFlux client tunnel into /tunnels.
+func (s *Service) SetTunnelStore(st TunnelStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tunnelStore = st
+	if s.hasClientConfigLocked() {
+		s.syncClientMirrorLocked()
+	}
 }
 
 // New creates a new OpenFlux service.
@@ -521,6 +542,18 @@ func (s *Service) SaveConfig(ctx context.Context, cfg Config) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if strings.EqualFold(strings.TrimSpace(cfg.Mode), "l3") {
+		preferred := strings.TrimSpace(cfg.NdmsIface)
+		if idx, ok := opkgTunNum(preferred); ok && idx < 2 {
+			preferred = ""
+		}
+		ndms, tun := s.allocateTunLocked(ctx, preferred)
+		if ndms != "" && tun != "" {
+			cfg.NdmsIface = ndms
+			cfg.TunIface = tun
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -641,17 +674,23 @@ func (s *Service) SaveClientConfig(ctx context.Context, cfg ClientConfig) error 
 	running, _ := s.GetClientRunningState()
 	if running {
 		if !s.clientConfig.Enabled {
-			return s.stopClientProcess(ctx)
+			err := s.stopClientProcess(ctx)
+			s.syncClientMirrorLocked()
+			return err
 		}
-		return s.restartClientProcess(ctx)
+		err := s.restartClientProcess(ctx)
+		s.syncClientMirrorLocked()
+		return err
 	} else if s.clientConfig.Enabled && s.IsInstalled() {
 		if err := s.startClientProcess(ctx, true); err != nil {
 			s.clientConfig.Enabled = false
 			_ = s.saveClientConfigLocked()
+			s.syncClientMirrorLocked()
 			return err
 		}
 	}
 
+	s.syncClientMirrorLocked()
 	return nil
 }
 
@@ -667,6 +706,7 @@ func (s *Service) StartClient(ctx context.Context) error {
 	if err := s.saveClientConfigLocked(); err != nil {
 		return fmt.Errorf("не удалось сохранить конфигурацию клиента: %w", err)
 	}
+	s.syncClientMirrorLocked()
 	return nil
 }
 
@@ -683,6 +723,7 @@ func (s *Service) StopClient(ctx context.Context) error {
 	if err := s.saveClientConfigLocked(); err != nil {
 		return fmt.Errorf("не удалось сохранить конфигурацию клиента: %w", err)
 	}
+	s.syncClientMirrorLocked()
 	return nil
 }
 
@@ -704,6 +745,10 @@ func (s *Service) DeleteClient(ctx context.Context) error {
 		}
 	}
 
+	if s.tunnelStore != nil {
+		_ = s.tunnelStore.Delete("openflux-client")
+	}
+
 	_ = os.Remove(s.clientCfgPath)
 	secureZeroAndRemoveFile(s.clientKeyPath)
 	_ = os.Remove(s.clientPidPath)
@@ -712,6 +757,80 @@ func (s *Service) DeleteClient(ctx context.Context) error {
 	s.clientLastErr = ""
 
 	return nil
+}
+
+func (s *Service) syncClientMirrorLocked() {
+	if s.tunnelStore == nil {
+		return
+	}
+	inbound := strings.ToLower(strings.TrimSpace(s.clientConfig.InboundMode))
+	if inbound == "" {
+		inbound = "tun"
+	}
+	if inbound != "tun" {
+		if s.tunnelStore.Exists("openflux-client") {
+			_ = s.tunnelStore.Delete("openflux-client")
+		}
+		return
+	}
+
+	name := strings.TrimSpace(s.clientConfig.Name)
+	if name == "" {
+		name = "OpenFlux Выход"
+	}
+
+	tunAddr := strings.TrimSpace(s.clientConfig.TunAddr)
+	if tunAddr == "" {
+		tunAddr = "10.10.10.2/24"
+	}
+	mtu := s.clientConfig.TunMTU
+	if mtu <= 0 {
+		mtu = 1280
+	}
+
+	endpoint := "cloud:openflux"
+	if strings.TrimSpace(s.clientConfig.DirectDial) != "" {
+		endpoint = strings.TrimSpace(s.clientConfig.DirectDial)
+	} else if len(s.clientConfig.Transports) > 0 {
+		endpoint = "cloud:" + strings.Join(s.clientConfig.Transports, "+")
+	}
+
+	mutate := func(rec *storage.AWGTunnel) {
+		rec.ID = "openflux-client"
+		rec.Type = "awg"
+		rec.Backend = "wdtt-raw"
+		rec.OpenFluxClientID = "default"
+		rec.Name = name
+		rec.RawNdmsIface = strings.TrimSpace(s.clientConfig.NdmsIface)
+		rec.RawKernelIface = strings.TrimSpace(s.clientConfig.TunIface)
+		rec.Enabled = s.clientConfig.Enabled
+		rec.DefaultRoute = s.clientConfig.DefaultRoute
+		rec.Interface = storage.AWGInterface{
+			Address: tunAddr,
+			MTU:     mtu,
+		}
+		rec.Peer = storage.AWGPeer{
+			Endpoint:   endpoint,
+			AllowedIPs: []string{"0.0.0.0/0"},
+		}
+		if rec.ConnectivityCheck == nil || rec.ConnectivityCheck.Method == "" {
+			rec.ConnectivityCheck = &storage.ConnectivityCheckConfig{Method: "http"}
+		}
+	}
+
+	if !s.tunnelStore.Exists("openflux-client") {
+		rec := storage.AWGTunnel{
+			Type:      "awg",
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+		mutate(&rec)
+		_ = s.tunnelStore.Create(&rec)
+	} else {
+		_ = s.tunnelStore.Update("openflux-client", func(rec *storage.AWGTunnel) error {
+			mutate(rec)
+			return nil
+		})
+	}
 }
 
 // RestartClient restarts the OpenFlux client process.
@@ -764,6 +883,9 @@ func (s *Service) StartIfEnabled(ctx context.Context) error {
 			firstErr = err
 		}
 	}
+	if s.hasClientConfigLocked() {
+		s.syncClientMirrorLocked()
+	}
 	return firstErr
 }
 
@@ -801,6 +923,38 @@ func (s *Service) startProcess(ctx context.Context) error {
 		s.config.PolicyIP = ""
 	}
 
+	if strings.EqualFold(strings.TrimSpace(s.config.Mode), "l3") {
+		ndmsIface := strings.TrimSpace(s.config.NdmsIface)
+		idx, ok := opkgTunNum(ndmsIface)
+		if ndmsIface == "" || (ok && idx < 2) {
+			ndms, tun := s.allocateTunLocked(ctx, "")
+			if ndms != "" && tun != "" {
+				s.config.NdmsIface = ndms
+				s.config.TunIface = tun
+				_ = s.saveConfigLocked()
+				ndmsIface = ndms
+			}
+		}
+		if ndmsIface == "" || ndmsIface == "OpkgTun0" || ndmsIface == "OpkgTun1" {
+			secureZeroAndRemoveFile(s.keyPath)
+			return fmt.Errorf("недопустимый или невыделенный интерфейс OpkgTun для exit-сервера: %q", ndmsIface)
+		}
+		if s.routerCmds != nil {
+			desc := "OpenFlux Server"
+			if name := strings.TrimSpace(s.config.Name); name != "" {
+				desc = "OpenFlux " + name
+			}
+			mtu := s.config.TunMTU
+			if mtu <= 0 {
+				mtu = 1300
+			}
+			if err := s.routerCmds.CreateInterface(ctx, ndmsIface, desc, mtu, "", s.config.ExposeToPolicies, false); err != nil {
+				secureZeroAndRemoveFile(s.keyPath)
+				return fmt.Errorf("ошибка создания интерфейса %s в NDMS: %w", ndmsIface, err)
+			}
+		}
+	}
+
 	args := s.config.BuildArgs(s.keyPath)
 
 	logFile, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -817,6 +971,14 @@ func (s *Service) startProcess(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
 		secureZeroAndRemoveFile(s.keyPath)
+		if strings.EqualFold(strings.TrimSpace(s.config.Mode), "l3") && s.routerCmds != nil {
+			ndmsIface := strings.TrimSpace(s.config.NdmsIface)
+			if ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = s.routerCmds.DownInterface(cleanupCtx, ndmsIface)
+				cancel()
+			}
+		}
 		return fmt.Errorf("не удалось запустить openflux: %w", err)
 	}
 
@@ -840,11 +1002,24 @@ func (s *Service) stopProcess(ctx context.Context) error {
 	if !running {
 		_ = os.Remove(s.pidPath)
 		s.removeFirewall(ctx)
+		if strings.EqualFold(strings.TrimSpace(s.config.Mode), "l3") && s.routerCmds != nil {
+			ndmsIface := strings.TrimSpace(s.config.NdmsIface)
+			if ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+				_ = s.routerCmds.DownInterface(ctx, ndmsIface)
+			}
+		}
 		return nil
 	}
 
 	s.removeFirewall(ctx)
 	terminatePID(pid, s.pidPath)
+
+	if strings.EqualFold(strings.TrimSpace(s.config.Mode), "l3") && s.routerCmds != nil {
+		ndmsIface := strings.TrimSpace(s.config.NdmsIface)
+		if ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+			_ = s.routerCmds.DownInterface(ctx, ndmsIface)
+		}
+	}
 	return nil
 }
 
@@ -974,7 +1149,7 @@ func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) erro
 
 	inboundMode := strings.ToLower(strings.TrimSpace(s.clientConfig.InboundMode))
 	if inboundMode == "" {
-		inboundMode = "socks5"
+		inboundMode = "tun"
 	}
 	if inboundMode == "tun" {
 		s.ensureClientTunAllocatedLocked(ctx)
@@ -1257,8 +1432,16 @@ func (s *Service) applyFirewall(ctx context.Context) {
 	if runtime.GOOS != "linux" {
 		return
 	}
+	hasDirect := false
+	for _, t := range s.config.Transports {
+		if strings.EqualFold(strings.TrimSpace(t), "direct") {
+			hasDirect = true
+			break
+		}
+	}
+
 	// Manage INPUT port firewall rule
-	if s.openedPort > 0 && (!s.config.OpenFirewall || s.openedPort != s.config.DirectPort()) {
+	if s.openedPort > 0 && (!s.config.OpenFirewall || !hasDirect || s.openedPort != s.config.DirectPort()) {
 		portStr := strconv.Itoa(s.openedPort)
 		for {
 			delCmd := exec.CommandContext(ctx, "iptables", "-D", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
@@ -1268,7 +1451,7 @@ func (s *Service) applyFirewall(ctx context.Context) {
 		}
 		s.openedPort = 0
 	}
-	if s.config.OpenFirewall {
+	if s.config.OpenFirewall && hasDirect {
 		port := s.config.DirectPort()
 		if port > 0 {
 			portStr := strconv.Itoa(port)

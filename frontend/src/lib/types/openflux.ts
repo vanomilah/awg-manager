@@ -5,6 +5,9 @@ export interface OpenFluxConfig {
 	transports: string[];
 	mailruUrl?: string;
 	yandexUrl?: string;
+	vyandexUrl?: string;
+	cupsonlineUrl?: string;
+	telemostUrl?: string;
 	directListen?: string;
 	directHost?: string;
 	secret?: string;
@@ -41,6 +44,7 @@ export interface OpenFluxClientConfig {
 	directDial?: string;
 	mailruUrl?: string;
 	yandexUrl?: string;
+	vyandexUrl?: string;
 	cupsonlineUrl?: string;
 	telemostUrl?: string;
 	secret?: string;

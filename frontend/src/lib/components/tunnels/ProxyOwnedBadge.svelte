@@ -17,6 +17,7 @@
 		if (ft) return `freeturn-client:${ft}`;
 		const of = t.openfluxClientId?.trim();
 		if (of) return `openflux-client:${of}`;
+		if (t.id === 'openflux-client') return 'openflux-client:default';
 		return '';
 	}
 </script>

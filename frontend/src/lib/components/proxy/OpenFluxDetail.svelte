@@ -75,8 +75,11 @@
 		c.directHost = c.directHost ?? '';
 		c.mailruUrl = c.mailruUrl ?? '';
 		c.yandexUrl = c.yandexUrl ?? '';
+		c.vyandexUrl = c.vyandexUrl ?? '';
+		c.cupsonlineUrl = c.cupsonlineUrl ?? '';
+		c.telemostUrl = c.telemostUrl ?? '';
 		c.directListen = c.directListen ?? '0.0.0.0:8445';
-		c.transports = c.transports ?? ['direct', 'mailru', 'yandex'];
+		c.transports = c.transports ?? ['mailru', 'yandex', 'vyandex'];
 		c.mode = c.mode ?? 'l4';
 		c.transportMode = c.transportMode ?? 'session';
 		c.codec = c.codec ?? 'batched';
@@ -133,6 +136,9 @@
 						if (t === 'direct') return 'Direct';
 						if (t === 'mailru') return 'Mail.ru';
 						if (t === 'yandex') return 'Яндекс';
+						if (t === 'vyandex') return 'ВК/Яндекс';
+						if (t === 'cupsonline') return 'Cups';
+						if (t === 'telemost') return 'Telemost';
 						return t;
 					})
 					.join(' / '),
@@ -440,12 +446,25 @@
 	<DetailSection title="Куда идёт трафик">
 		<div class="line-row">
 			<span class="line-label">Вход (абоненты):</span>
-			<code>0.0.0.0:{getDirectPort()}</code>
+			{#if isTransportEnabled('direct')}
+				<code>0.0.0.0:{getDirectPort()}</code>
+			{:else}
+				<code>Облачный транспорт</code>
+			{/if}
 			{#if isTransportEnabled('mailru')}
 				<Badge size="sm" variant="default">Mail.ru Docs</Badge>
 			{/if}
 			{#if isTransportEnabled('yandex')}
 				<Badge size="sm" variant="default">Яндекс Docs</Badge>
+			{/if}
+			{#if isTransportEnabled('vyandex')}
+				<Badge size="sm" variant="default">ВК/Яндекс</Badge>
+			{/if}
+			{#if isTransportEnabled('cupsonline')}
+				<Badge size="sm" variant="default">Cups</Badge>
+			{/if}
+			{#if isTransportEnabled('telemost')}
+				<Badge size="sm" variant="default">Telemost</Badge>
 			{/if}
 			<FieldHint
 				text="Входящий трафик абонентов qThrone / OpenFlux через прямой TCP-порт или облачные документы."
@@ -685,28 +704,6 @@
 			</div>
 
 			<div class="transports-container">
-				<!-- Direct TCP -->
-				<div class="transport-card">
-					<div class="transport-title-row">
-						<input
-							type="checkbox"
-							id="drawer-of-direct"
-							checked={isTransportEnabled('direct')}
-							onchange={() => toggleTransport('direct')}
-						/>
-						<label for="drawer-of-direct"><strong>Прямой TCP (Direct)</strong></label>
-					</div>
-					{#if isTransportEnabled('direct')}
-						<div class="transport-inputs">
-							<Input
-								bind:value={draft.directHost}
-								placeholder="Внешний хост / KeenDNS (автоопределение)"
-								fullWidth
-							/>
-						</div>
-					{/if}
-				</div>
-
 				<!-- Mail.ru Docs -->
 				<div class="transport-card">
 					<div class="transport-title-row">
@@ -716,7 +713,7 @@
 							checked={isTransportEnabled('mailru')}
 							onchange={() => toggleTransport('mailru')}
 						/>
-						<label for="drawer-of-mailru"><strong>Mail.ru Документы</strong></label>
+						<label for="drawer-of-mailru"><strong>Mail.ru Документы (Обход белых списков)</strong></label>
 					</div>
 					{#if isTransportEnabled('mailru')}
 						<div class="transport-inputs">
@@ -738,13 +735,101 @@
 							checked={isTransportEnabled('yandex')}
 							onchange={() => toggleTransport('yandex')}
 						/>
-						<label for="drawer-of-yandex"><strong>Яндекс Документы</strong></label>
+						<label for="drawer-of-yandex"><strong>Яндекс Документы (Yandex Docs)</strong></label>
 					</div>
 					{#if isTransportEnabled('yandex')}
 						<div class="transport-inputs">
 							<Input
 								bind:value={draft.yandexUrl}
 								placeholder="https://docs.yandex.ru/docs/view?url=..."
+								fullWidth
+							/>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Vyandex -->
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-vyandex"
+							checked={isTransportEnabled('vyandex')}
+							onchange={() => toggleTransport('vyandex')}
+						/>
+						<label for="drawer-of-vyandex"><strong>Vyandex (Voice/Docs)</strong></label>
+					</div>
+					{#if isTransportEnabled('vyandex')}
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.vyandexUrl}
+								placeholder="https://docs.yandex.ru/docs/view?url=... (или пусто для использования Yandex URL)"
+								fullWidth
+							/>
+						</div>
+					{/if}
+				</div>
+
+				<!-- CupsOnline -->
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-cupsonline"
+							checked={isTransportEnabled('cupsonline')}
+							onchange={() => toggleTransport('cupsonline')}
+						/>
+						<label for="drawer-of-cupsonline"><strong>CupsOnline</strong></label>
+					</div>
+					{#if isTransportEnabled('cupsonline')}
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.cupsonlineUrl}
+								placeholder="https://..."
+								fullWidth
+							/>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Telemost -->
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-telemost"
+							checked={isTransportEnabled('telemost')}
+							onchange={() => toggleTransport('telemost')}
+						/>
+						<label for="drawer-of-telemost"><strong>Яндекс Телемост (Telemost)</strong></label>
+					</div>
+					{#if isTransportEnabled('telemost')}
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.telemostUrl}
+								placeholder="https://telemost.yandex.ru/j/..."
+								fullWidth
+							/>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Direct TCP -->
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-direct"
+							checked={isTransportEnabled('direct')}
+							onchange={() => toggleTransport('direct')}
+						/>
+						<label for="drawer-of-direct"><strong>Прямой TCP (Direct TCP, резервный)</strong></label>
+					</div>
+					{#if isTransportEnabled('direct')}
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.directHost}
+								placeholder="Внешний хост / KeenDNS (автоопределение)"
 								fullWidth
 							/>
 						</div>

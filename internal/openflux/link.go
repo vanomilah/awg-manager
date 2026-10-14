@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -209,7 +210,14 @@ func ClientConfigFromShare(sc ShareConfig, base ClientConfig) ClientConfig {
 			if strings.TrimSpace(t.URL) != "" {
 				out.MailruURL = strings.TrimSpace(t.URL)
 			}
-		case "yandex", "vyandex":
+		case "vyandex":
+			if strings.TrimSpace(t.URL) != "" {
+				out.VyandexURL = strings.TrimSpace(t.URL)
+				if out.YandexURL == "" {
+					out.YandexURL = strings.TrimSpace(t.URL)
+				}
+			}
+		case "yandex":
 			if strings.TrimSpace(t.URL) != "" {
 				out.YandexURL = strings.TrimSpace(t.URL)
 			}
@@ -246,8 +254,12 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 	// Determine context URL
 	if strings.TrimSpace(cfg.MailruURL) != "" {
 		sc.Context = strings.TrimSpace(cfg.MailruURL)
+	} else if strings.TrimSpace(cfg.VyandexURL) != "" {
+		sc.Context = strings.TrimSpace(cfg.VyandexURL)
 	} else if strings.TrimSpace(cfg.YandexURL) != "" {
 		sc.Context = strings.TrimSpace(cfg.YandexURL)
+	} else if strings.TrimSpace(cfg.CupsonlineURL) != "" {
+		sc.Context = strings.TrimSpace(cfg.CupsonlineURL)
 	} else {
 		sc.Context = "http://#"
 	}
@@ -268,12 +280,18 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 	if isSession {
 		for _, t := range cfg.Transports {
 			norm := strings.ToLower(strings.TrimSpace(t))
+			prio := DefaultTransportPriority(norm)
+			if cfg.TransportPriorities != nil {
+				if custom, ok := cfg.TransportPriorities[norm]; ok && custom > 0 {
+					prio = custom
+				}
+			}
 			switch norm {
 			case "direct":
 				if dialHost != "" {
 					sc.Transports = append(sc.Transports, ShareTransport{
 						Type:     "direct",
-						Priority: 100,
+						Priority: prio,
 						Dial:     dialHost,
 					})
 				}
@@ -281,22 +299,54 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 				if strings.TrimSpace(cfg.MailruURL) != "" {
 					sc.Transports = append(sc.Transports, ShareTransport{
 						Type:     "mailru",
-						Priority: 60,
+						Priority: prio,
 						URL:      strings.TrimSpace(cfg.MailruURL),
+					})
+				}
+			case "vyandex":
+				vyURL := strings.TrimSpace(cfg.VyandexURL)
+				if vyURL == "" {
+					vyURL = strings.TrimSpace(cfg.YandexURL)
+				}
+				if vyURL != "" {
+					sc.Transports = append(sc.Transports, ShareTransport{
+						Type:     "vyandex",
+						Priority: prio,
+						URL:      vyURL,
 					})
 				}
 			case "yandex":
 				if strings.TrimSpace(cfg.YandexURL) != "" {
 					sc.Transports = append(sc.Transports, ShareTransport{
 						Type:     "yandex",
-						Priority: 50,
+						Priority: prio,
 						URL:      strings.TrimSpace(cfg.YandexURL),
+					})
+				}
+			case "cupsonline":
+				if strings.TrimSpace(cfg.CupsonlineURL) != "" {
+					sc.Transports = append(sc.Transports, ShareTransport{
+						Type:     "cupsonline",
+						Priority: prio,
+						URL:      strings.TrimSpace(cfg.CupsonlineURL),
+					})
+				}
+			case "telemost":
+				if strings.TrimSpace(cfg.TelemostURL) != "" {
+					sc.Transports = append(sc.Transports, ShareTransport{
+						Type:     "telemost",
+						Priority: prio,
+						URL:      strings.TrimSpace(cfg.TelemostURL),
 					})
 				}
 			}
 		}
+
+		sort.SliceStable(sc.Transports, func(i, j int) bool {
+			return sc.Transports[i].Priority > sc.Transports[j].Priority
+		})
 	} else {
-		single := "direct"
+		single := ""
 		if len(cfg.Transports) > 0 {
 			single = strings.ToLower(strings.TrimSpace(cfg.Transports[0]))
 		}
@@ -315,6 +365,17 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 					URL:  strings.TrimSpace(cfg.MailruURL),
 				})
 			}
+		case "vyandex":
+			vyURL := strings.TrimSpace(cfg.VyandexURL)
+			if vyURL == "" {
+				vyURL = strings.TrimSpace(cfg.YandexURL)
+			}
+			if vyURL != "" {
+				sc.Transports = append(sc.Transports, ShareTransport{
+					Type: "vyandex",
+					URL:  vyURL,
+				})
+			}
 		case "yandex":
 			if strings.TrimSpace(cfg.YandexURL) != "" {
 				sc.Transports = append(sc.Transports, ShareTransport{
@@ -322,11 +383,25 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 					URL:  strings.TrimSpace(cfg.YandexURL),
 				})
 			}
+		case "cupsonline":
+			if strings.TrimSpace(cfg.CupsonlineURL) != "" {
+				sc.Transports = append(sc.Transports, ShareTransport{
+					Type: "cupsonline",
+					URL:  strings.TrimSpace(cfg.CupsonlineURL),
+				})
+			}
+		case "telemost":
+			if strings.TrimSpace(cfg.TelemostURL) != "" {
+				sc.Transports = append(sc.Transports, ShareTransport{
+					Type: "telemost",
+					URL:  strings.TrimSpace(cfg.TelemostURL),
+				})
+			}
 		}
 	}
 
 	if len(sc.Transports) == 0 {
-		return "", fmt.Errorf("нет доступных транспортов для ссылки (укажите адрес сервера для direct или URL документа для mailru/yandex)")
+		return "", fmt.Errorf("нет доступных транспортов для ссылки (укажите URL документа для mailru/yandex или адрес сервера для direct)")
 	}
 
 	return Encode(sc)

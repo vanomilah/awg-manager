@@ -237,10 +237,13 @@
 		try {
 			await api.openfluxSaveClientConfig({
 				name: 'OpenFlux Выход',
-				inboundMode: 'socks5',
+				inboundMode: 'tun',
+				tunAddr: '10.10.10.2/24',
+				tunMtu: 1280,
+				exposeToPolicies: true,
 				enabled: false,
 				transportMode: 'session',
-				transports: ['direct'],
+				transports: ['mailru', 'yandex', 'vyandex'],
 				autoReconnect: true,
 				debug: 0,
 			});

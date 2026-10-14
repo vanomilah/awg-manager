@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -24,21 +24,55 @@ const DefaultClientSocks5Port = 1085
 // DefaultClientHttpPort is the default local HTTP proxy port when enabled.
 const DefaultClientHttpPort = 1086
 
+// Default transport priorities for whitelist bypass (cloud first, direct fallback).
+const (
+	PriorityMailru     = 100
+	PriorityVyandex    = 95
+	PriorityYandex     = 90
+	PriorityCupsonline = 80
+	PriorityTelemost   = 75
+	PriorityDirect     = 50
+)
+
+// DefaultTransportPriority returns the default priority for an OpenFlux transport.
+func DefaultTransportPriority(t string) int {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "mailru":
+		return PriorityMailru
+	case "vyandex":
+		return PriorityVyandex
+	case "yandex":
+		return PriorityYandex
+	case "cupsonline":
+		return PriorityCupsonline
+	case "telemost":
+		return PriorityTelemost
+	case "direct":
+		return PriorityDirect
+	default:
+		return 50
+	}
+}
+
 // Config represents OpenFlux exit node server configuration.
 type Config struct {
-	Enabled       bool     `json:"enabled"`
-	Mode          string   `json:"mode"`          // "l4" (default, gVisor stream proxy) | "l3" (packet forward)
-	TransportMode string   `json:"transportMode"` // "session" (multi-transport, recommended) | "single"
-	Transports    []string `json:"transports"`    // list of enabled transports: "direct", "mailru", "yandex"
-	MailruURL     string   `json:"mailruUrl,omitempty"`
-	YandexURL     string   `json:"yandexUrl,omitempty"`
-	DirectListen  string   `json:"directListen,omitempty"` // "0.0.0.0:8445"
-	DirectHost    string   `json:"directHost,omitempty"`   // host/IP used in client links
-	Secret        string   `json:"secret,omitempty"`       // AES-256-GCM shared secret
-	Codec         string   `json:"codec,omitempty"`        // "batched" (default) | "legacy"
-	OpenFirewall  bool     `json:"openFirewall"`           // open DirectListen port in WAN firewall
-	Debug         int      `json:"debug"`                  // 0 = off, 1 = -d, 2 = -dd, 3 = -ddd
-	Name          string   `json:"name,omitempty"`         // profile name for generated link
+	Enabled             bool           `json:"enabled"`
+	Mode                string         `json:"mode"`          // "l4" (default, gVisor stream proxy) | "l3" (packet forward)
+	TransportMode       string         `json:"transportMode"` // "session" (multi-transport, recommended) | "single"
+	Transports          []string       `json:"transports"`    // list of enabled transports: "mailru", "yandex", "vyandex", "direct", "cupsonline"
+	MailruURL           string         `json:"mailruUrl,omitempty"`
+	YandexURL           string         `json:"yandexUrl,omitempty"`
+	VyandexURL          string         `json:"vyandexUrl,omitempty"`
+	CupsonlineURL       string         `json:"cupsonlineUrl,omitempty"`
+	TelemostURL         string         `json:"telemostUrl,omitempty"`
+	DirectListen        string         `json:"directListen,omitempty"` // "0.0.0.0:8445"
+	DirectHost          string         `json:"directHost,omitempty"`   // host/IP used in client links
+	TransportPriorities map[string]int `json:"transportPriorities,omitempty"`
+	Secret              string         `json:"secret,omitempty"`       // AES-256-GCM shared secret
+	Codec               string         `json:"codec,omitempty"`        // "batched" (default) | "legacy"
+	OpenFirewall        bool           `json:"openFirewall"`           // open DirectListen port in WAN firewall
+	Debug               int            `json:"debug"`                  // 0 = off, 1 = -d, 2 = -dd, 3 = -ddd
+	Name                string         `json:"name,omitempty"`         // profile name for generated link
 
 	// Routing, NAT and Egress settings matching WDTT server:
 	NatMode          string   `json:"natMode,omitempty"`          // "full" (default) | "internet-only" | "none"
@@ -50,6 +84,7 @@ type Config struct {
 	EgressInterface  string   `json:"egressInterface,omitempty"`  // specific egress WAN / interface (can map to --local-ip)
 	NdmsIface        string   `json:"ndmsIface,omitempty"`
 	TunIface         string   `json:"tunIface,omitempty"`
+	TunMTU           int      `json:"tunMtu,omitempty"`
 	PolicyIP         string   `json:"policyIp,omitempty"`         // resolved egress IPv4 from policy or manual setting
 }
 
@@ -60,7 +95,7 @@ func DefaultConfig() Config {
 		Enabled:          false,
 		Mode:             "l4",
 		TransportMode:    "session",
-		Transports:       []string{"direct", "mailru", "yandex"},
+		Transports:       []string{"mailru", "yandex", "vyandex"},
 		DirectListen:     fmt.Sprintf("0.0.0.0:%d", DefaultDirectPort),
 		Secret:           sec,
 		Codec:            "batched",
@@ -222,6 +257,19 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 	}
 	args = append(args, "--mode="+mode)
 
+	if mode == "l3" {
+		tunName := strings.TrimSpace(c.TunIface)
+		if tunName == "" && strings.TrimSpace(c.NdmsIface) != "" {
+			tunName = strings.ToLower(strings.TrimSpace(c.NdmsIface))
+		}
+		if tunName != "" {
+			args = append(args, "--tun-name="+tunName)
+		}
+		if c.TunMTU > 0 {
+			args = append(args, fmt.Sprintf("--tun-mtu=%d", c.TunMTU))
+		}
+	}
+
 	egressTarget := strings.TrimSpace(c.EgressInterface)
 	if egressTarget == "" && c.NatMode == "internet-only" && len(c.StaticNATList()) > 0 {
 		egressTarget = strings.TrimSpace(c.StaticNATList()[0])
@@ -253,35 +301,69 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 			contextURL = strings.TrimSpace(c.MailruURL)
 		} else if strings.TrimSpace(c.YandexURL) != "" {
 			contextURL = strings.TrimSpace(c.YandexURL)
+		} else if strings.TrimSpace(c.VyandexURL) != "" {
+			contextURL = strings.TrimSpace(c.VyandexURL)
+		} else if strings.TrimSpace(c.CupsonlineURL) != "" {
+			contextURL = strings.TrimSpace(c.CupsonlineURL)
+		} else if strings.TrimSpace(c.TelemostURL) != "" {
+			contextURL = strings.TrimSpace(c.TelemostURL)
 		}
 		args = append(args, "--session-context="+contextURL)
 
-		// Build transports list with priorities
-		var parts []string
+		// Build transports list with priorities sorted descending
+		type transportPrioItem struct {
+			part string
+			prio int
+		}
+		var transportItems []transportPrioItem
 		hasDirect := false
 		hasMailru := false
 		hasYandex := false
+		hasVyandex := false
+		hasCups := false
+		hasTelemost := false
 
 		for _, t := range c.Transports {
 			norm := strings.ToLower(strings.TrimSpace(t))
+			prio := DefaultTransportPriority(norm)
+			if c.TransportPriorities != nil {
+				if custom, ok := c.TransportPriorities[norm]; ok && custom > 0 {
+					prio = custom
+				}
+			}
 			switch norm {
 			case "direct":
-				parts = append(parts, "direct:100")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("direct:%d", prio), prio: prio})
 				hasDirect = true
 			case "mailru":
-				parts = append(parts, "mailru:60")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("mailru:%d", prio), prio: prio})
 				hasMailru = true
 			case "yandex":
-				parts = append(parts, "yandex:50")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("yandex:%d", prio), prio: prio})
 				hasYandex = true
+			case "vyandex":
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("vyandex:%d", prio), prio: prio})
+				hasVyandex = true
+			case "cupsonline":
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("cupsonline:%d", prio), prio: prio})
+				hasCups = true
+			case "telemost":
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("telemost:%d", prio), prio: prio})
+				hasTelemost = true
 			}
 		}
 
-		if len(parts) == 0 {
-			parts = append(parts, "direct:100")
-			hasDirect = true
+		sort.SliceStable(transportItems, func(i, j int) bool {
+			return transportItems[i].prio > transportItems[j].prio
+		})
+
+		var parts []string
+		for _, item := range transportItems {
+			parts = append(parts, item.part)
 		}
-		args = append(args, "--transports="+strings.Join(parts, ","))
+		if len(parts) > 0 {
+			args = append(args, "--transports="+strings.Join(parts, ","))
+		}
 
 		if hasDirect {
 			dl := strings.TrimSpace(c.DirectListen)
@@ -296,9 +378,24 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 		if hasYandex && strings.TrimSpace(c.YandexURL) != "" {
 			args = append(args, "--yandex-url="+strings.TrimSpace(c.YandexURL))
 		}
+		if hasVyandex {
+			vyURL := strings.TrimSpace(c.VyandexURL)
+			if vyURL == "" {
+				vyURL = strings.TrimSpace(c.YandexURL)
+			}
+			if vyURL != "" {
+				args = append(args, "--vyandex-url="+vyURL)
+			}
+		}
+		if hasCups && strings.TrimSpace(c.CupsonlineURL) != "" {
+			args = append(args, "--cupsonline-url="+strings.TrimSpace(c.CupsonlineURL))
+		}
+		if hasTelemost && strings.TrimSpace(c.TelemostURL) != "" {
+			args = append(args, "--telemost-url="+strings.TrimSpace(c.TelemostURL))
+		}
 	} else {
 		// Single transport mode
-		singleType := "direct"
+		singleType := "mailru"
 		if len(c.Transports) > 0 {
 			singleType = strings.ToLower(strings.TrimSpace(c.Transports[0]))
 		}
@@ -322,6 +419,22 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 		case "yandex":
 			if strings.TrimSpace(c.YandexURL) != "" {
 				args = append(args, "--url="+strings.TrimSpace(c.YandexURL))
+			}
+		case "vyandex":
+			vyURL := strings.TrimSpace(c.VyandexURL)
+			if vyURL == "" {
+				vyURL = strings.TrimSpace(c.YandexURL)
+			}
+			if vyURL != "" {
+				args = append(args, "--url="+vyURL)
+			}
+		case "cupsonline":
+			if strings.TrimSpace(c.CupsonlineURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.CupsonlineURL))
+			}
+		case "telemost":
+			if strings.TrimSpace(c.TelemostURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.TelemostURL))
 			}
 		}
 	}
@@ -354,7 +467,8 @@ type ClientConfig struct {
 	Transports       []string `json:"transports"`                 // list of enabled transports: "direct", "mailru", "yandex", "cupsonline", "telemost"
 	DirectDial       string   `json:"directDial,omitempty"`       // remote exit host:port for direct transport
 	MailruURL        string   `json:"mailruUrl,omitempty"`        // document URL for mailru
-	YandexURL        string   `json:"yandexUrl,omitempty"`        // document URL for yandex / vyandex
+	YandexURL        string   `json:"yandexUrl,omitempty"`        // document URL for yandex
+	VyandexURL       string   `json:"vyandexUrl,omitempty"`       // document URL for vyandex
 	CupsonlineURL    string   `json:"cupsonlineUrl,omitempty"`    // room URL for cupsonline
 	TelemostURL      string   `json:"telemostUrl,omitempty"`      // conference URL for telemost
 	Secret           string   `json:"secret,omitempty"`           // AES-256-GCM shared secret
@@ -371,7 +485,7 @@ func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
 		Enabled:          false,
 		Name:             "OpenFlux Выход",
-		InboundMode:      "socks5",
+		InboundMode:      "tun",
 		NdmsIface:        "",
 		TunIface:         "",
 		TunAddr:          "10.10.10.2/24",
@@ -380,7 +494,7 @@ func DefaultClientConfig() ClientConfig {
 		ExposeToPolicies: true,
 		DefaultRoute:     false,
 		TransportMode:    "session",
-		Transports:       []string{"direct", "mailru", "yandex"},
+		Transports:       []string{"mailru", "yandex", "vyandex"},
 		Socks5Listen:     fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port),
 		Codec:            "batched",
 		AutoReconnect:    true,
@@ -513,7 +627,11 @@ func (c *ClientConfig) ValidateForStart() error {
 			if strings.TrimSpace(c.MailruURL) != "" {
 				hasUsableTransport = true
 			}
-		case "yandex", "vyandex":
+		case "vyandex":
+			if strings.TrimSpace(c.VyandexURL) != "" || strings.TrimSpace(c.YandexURL) != "" {
+				hasUsableTransport = true
+			}
+		case "yandex":
 			if strings.TrimSpace(c.YandexURL) != "" {
 				hasUsableTransport = true
 			}
@@ -584,8 +702,8 @@ func (c *ClientConfig) HttpURI() string {
 // BuildArgs converts ClientConfig to OpenFlux CLI arguments for --role=client.
 func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 	inbound := strings.ToLower(strings.TrimSpace(c.InboundMode))
-	if inbound == "" || (runtime.GOOS == "linux" && inbound == "tun") {
-		inbound = "socks5"
+	if inbound == "" {
+		inbound = "tun"
 	}
 
 	args := []string{
@@ -594,6 +712,15 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 
 	if inbound == "tun" {
 		args = append(args, "--inbound=tun")
+		if tunIface := strings.TrimSpace(c.TunIface); tunIface != "" {
+			args = append(args, "--tun-name="+tunIface)
+		}
+		if tunAddr := strings.TrimSpace(c.TunAddr); tunAddr != "" {
+			args = append(args, "--tun-addr="+tunAddr)
+		}
+		if c.TunMTU > 0 {
+			args = append(args, fmt.Sprintf("--tun-mtu=%d", c.TunMTU))
+		}
 	} else {
 		args = append(args, "--inbound=socks5")
 		socks := strings.TrimSpace(c.Socks5Listen)
@@ -618,7 +745,11 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 		tm = "session"
 	}
 
-	var sessionParts []string
+	type transportPrioItem struct {
+		part string
+		prio int
+	}
+	var transportItems []transportPrioItem
 	hasDirect := false
 	hasMailru := false
 	hasYandex := false
@@ -628,42 +759,52 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 
 	for _, t := range c.Transports {
 		norm := strings.ToLower(strings.TrimSpace(t))
+		prio := DefaultTransportPriority(norm)
 		switch norm {
 		case "direct":
 			if strings.TrimSpace(c.DirectDial) != "" {
-				sessionParts = append(sessionParts, "direct:100")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("direct:%d", prio), prio: prio})
 				hasDirect = true
 			}
 		case "mailru":
 			if strings.TrimSpace(c.MailruURL) != "" {
-				sessionParts = append(sessionParts, "mailru:60")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("mailru:%d", prio), prio: prio})
 				hasMailru = true
 			}
 		case "yandex":
 			if strings.TrimSpace(c.YandexURL) != "" {
-				sessionParts = append(sessionParts, "yandex:50")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("yandex:%d", prio), prio: prio})
 				hasYandex = true
 			}
 		case "vyandex":
-			if strings.TrimSpace(c.YandexURL) != "" {
-				sessionParts = append(sessionParts, "vyandex:55")
+			vyURL := strings.TrimSpace(c.VyandexURL)
+			if vyURL == "" {
+				vyURL = strings.TrimSpace(c.YandexURL)
+			}
+			if vyURL != "" {
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("vyandex:%d", prio), prio: prio})
 				hasVyandex = true
 			}
 		case "cupsonline":
 			if strings.TrimSpace(c.CupsonlineURL) != "" {
-				sessionParts = append(sessionParts, "cupsonline:40")
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("cupsonline:%d", prio), prio: prio})
 				hasCups = true
 			}
 		case "telemost":
 			if strings.TrimSpace(c.TelemostURL) != "" {
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("telemost:%d", prio), prio: prio})
 				hasTelemost = true
 			}
 		}
 	}
 
-	if len(sessionParts) == 0 && strings.TrimSpace(c.DirectDial) != "" {
-		sessionParts = append(sessionParts, "direct:100")
-		hasDirect = true
+	sort.SliceStable(transportItems, func(i, j int) bool {
+		return transportItems[i].prio > transportItems[j].prio
+	})
+
+	var sessionParts []string
+	for _, item := range transportItems {
+		sessionParts = append(sessionParts, item.part)
 	}
 
 	if tm == "stream" {
@@ -680,7 +821,20 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 		} else if strings.TrimSpace(c.MailruURL) != "" {
 			args = append(args, "--url="+strings.TrimSpace(c.MailruURL))
 		}
-	} else if (tm == "session" || len(c.Transports) > 1) && (len(sessionParts) > 0 || !hasTelemost) {
+	} else if len(c.Transports) == 1 && strings.EqualFold(strings.TrimSpace(c.Transports[0]), "telemost") {
+		// Telemost-only: OpenFlux CLI uses single-transport invocation
+		singleType := "telemost"
+		args = append(args, "--transport="+singleType)
+		if keyFilePath != "" && strings.TrimSpace(c.Secret) != "" {
+			args = append(args, "--encryption-key-file="+keyFilePath)
+			if strings.TrimSpace(c.Context) != "" {
+				args = append(args, "--session-context="+strings.TrimSpace(c.Context))
+			}
+		}
+		if strings.TrimSpace(c.TelemostURL) != "" {
+			args = append(args, "--url="+strings.TrimSpace(c.TelemostURL))
+		}
+	} else if (tm == "session" || len(c.Transports) > 1) && len(sessionParts) > 0 {
 		args = append(args, "--negotiate")
 		if keyFilePath != "" {
 			args = append(args, "--encryption-key-file="+keyFilePath)
@@ -692,8 +846,12 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 				contextURL = strings.TrimSpace(c.MailruURL)
 			} else if strings.TrimSpace(c.YandexURL) != "" {
 				contextURL = strings.TrimSpace(c.YandexURL)
+			} else if strings.TrimSpace(c.VyandexURL) != "" {
+				contextURL = strings.TrimSpace(c.VyandexURL)
 			} else if strings.TrimSpace(c.CupsonlineURL) != "" {
 				contextURL = strings.TrimSpace(c.CupsonlineURL)
+			} else if strings.TrimSpace(c.TelemostURL) != "" {
+				contextURL = strings.TrimSpace(c.TelemostURL)
 			} else {
 				contextURL = "http://#"
 			}
@@ -714,17 +872,24 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 			args = append(args, "--yandex-url="+strings.TrimSpace(c.YandexURL))
 		}
 		if hasVyandex {
-			args = append(args, "--vyandex-url="+strings.TrimSpace(c.YandexURL))
+			vyURL := strings.TrimSpace(c.VyandexURL)
+			if vyURL == "" {
+				vyURL = strings.TrimSpace(c.YandexURL)
+			}
+			if vyURL != "" {
+				args = append(args, "--vyandex-url="+vyURL)
+			}
 		}
 		if hasCups {
 			args = append(args, "--cupsonline-url="+strings.TrimSpace(c.CupsonlineURL))
 		}
+		if hasTelemost && strings.TrimSpace(c.TelemostURL) != "" {
+			args = append(args, "--telemost-url="+strings.TrimSpace(c.TelemostURL))
+		}
 	} else {
-		// Single transport mode (or telemost-only fallback)
-		singleType := "direct"
-		if hasTelemost && len(sessionParts) == 0 {
-			singleType = "telemost"
-		} else if len(c.Transports) > 0 {
+		// Single transport mode
+		singleType := "mailru"
+		if len(c.Transports) > 0 {
 			singleType = strings.ToLower(strings.TrimSpace(c.Transports[0]))
 		}
 		args = append(args, "--transport="+singleType)
@@ -745,9 +910,17 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 			if strings.TrimSpace(c.MailruURL) != "" {
 				args = append(args, "--url="+strings.TrimSpace(c.MailruURL))
 			}
-		case "yandex", "vyandex":
+		case "yandex":
 			if strings.TrimSpace(c.YandexURL) != "" {
 				args = append(args, "--url="+strings.TrimSpace(c.YandexURL))
+			}
+		case "vyandex":
+			vyURL := strings.TrimSpace(c.VyandexURL)
+			if vyURL == "" {
+				vyURL = strings.TrimSpace(c.YandexURL)
+			}
+			if vyURL != "" {
+				args = append(args, "--url="+vyURL)
 			}
 		case "cupsonline":
 			if strings.TrimSpace(c.CupsonlineURL) != "" {

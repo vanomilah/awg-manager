@@ -115,7 +115,10 @@ func (a *app) setupServer() {
 		return host
 	})
 	if a.ndmsCommands != nil {
-		a.openfluxService.SetRouterCommands(&openfluxRouterAdapter{cmds: a.ndmsCommands, pool: a.opkgPool})
+		a.openfluxService.SetRouterCommands(&openfluxRouterAdapter{cmds: a.ndmsCommands, pool: a.opkgPool, leases: make(map[string]*opkgtun.Reservation)})
+	}
+	if a.awgStore != nil {
+		a.openfluxService.SetTunnelStore(a.awgStore)
 	}
 	a.openfluxService.SetPolicyResolver(func(ctx context.Context, policyName string) (string, error) {
 		if a.ndmsQueries == nil || a.ndmsQueries.Policies == nil {
@@ -1053,34 +1056,45 @@ func shutdownIngressRuntime(ctx context.Context, xray *xrayserver.Service, tg *t
 }
 
 type openfluxRouterAdapter struct {
-	mu    sync.Mutex
-	cmds  *ndmscommand.Commands
-	pool  *opkgtun.Pool
-	lease *opkgtun.Reservation
+	mu     sync.Mutex
+	cmds   *ndmscommand.Commands
+	pool   *opkgtun.Pool
+	leases map[string]*opkgtun.Reservation
 }
 
-func (r *openfluxRouterAdapter) releaseLeaseLocked() {
-	if r.lease != nil {
-		r.lease.Close()
-		r.lease = nil
+func (r *openfluxRouterAdapter) releaseLeaseLocked(ndmsName string) {
+	if r.leases == nil {
+		return
+	}
+	if lease, ok := r.leases[ndmsName]; ok && lease != nil {
+		lease.Close()
+		delete(r.leases, ndmsName)
 	}
 }
 
 func (r *openfluxRouterAdapter) AllocateTunInterface(ctx context.Context, preferred string) (string, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.leases == nil {
+		r.leases = make(map[string]*opkgtun.Reservation)
+	}
 	if r.pool != nil {
-		r.releaseLeaseLocked()
-		self := opkgtun.ProxyHolder("openflux-client", "tun", "OpenFlux Client")
+		if preferred != "" {
+			r.releaseLeaseLocked(preferred)
+		}
+		self := opkgtun.ProxyHolder("openflux", "tun", "OpenFlux")
 		req := opkgtun.Want(self)
 		if idx, ok := opkgtun.NDMSIndexOf(preferred); ok && idx >= 2 {
 			req = opkgtun.WantPinned(self, idx)
 		}
 		res, err := r.pool.Reserve(ctx, req)
 		if err == nil {
-			r.lease = res
 			num := res.Numbers()[0]
-			return fmt.Sprintf("OpkgTun%d", num), fmt.Sprintf("opkgtun%d", num), nil
+			ndms := fmt.Sprintf("OpkgTun%d", num)
+			tun := fmt.Sprintf("opkgtun%d", num)
+			r.releaseLeaseLocked(ndms)
+			r.leases[ndms] = res
+			return ndms, tun, nil
 		}
 	}
 	ndms, tun := openflux.AutoDiscoverFreeTun(preferred)
@@ -1094,14 +1108,14 @@ func (r *openfluxRouterAdapter) CreateInterface(ctx context.Context, ndmsName, d
 	ip, mask := parseIPAndMask(ipWithMask)
 	if err := r.cmds.Interfaces.CreateOpkgTunWithSecurityLevel(ctx, ndmsName, desc, "public"); err != nil {
 		r.mu.Lock()
-		r.releaseLeaseLocked()
+		r.releaseLeaseLocked(ndmsName)
 		r.mu.Unlock()
 		return fmt.Errorf("create %s: %w", ndmsName, err)
 	}
 
 	rollback := func(cause error) error {
 		r.mu.Lock()
-		r.releaseLeaseLocked()
+		r.releaseLeaseLocked(ndmsName)
 		r.mu.Unlock()
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1140,7 +1154,7 @@ func (r *openfluxRouterAdapter) CreateInterface(ctx context.Context, ndmsName, d
 
 func (r *openfluxRouterAdapter) DownInterface(ctx context.Context, ndmsName string) error {
 	r.mu.Lock()
-	r.releaseLeaseLocked()
+	r.releaseLeaseLocked(ndmsName)
 	r.mu.Unlock()
 	if r.cmds == nil || ndmsName == "" {
 		return nil
@@ -1150,7 +1164,7 @@ func (r *openfluxRouterAdapter) DownInterface(ctx context.Context, ndmsName stri
 
 func (r *openfluxRouterAdapter) DeleteInterface(ctx context.Context, ndmsName string) error {
 	r.mu.Lock()
-	r.releaseLeaseLocked()
+	r.releaseLeaseLocked(ndmsName)
 	r.mu.Unlock()
 	if r.cmds == nil || ndmsName == "" {
 		return nil

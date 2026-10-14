@@ -55,7 +55,7 @@
 		const c = JSON.parse(JSON.stringify(cfg));
 		c.enabled = !!c.enabled;
 		c.name = c.name ?? 'OpenFlux Выход';
-		c.inboundMode = c.inboundMode ?? 'socks5';
+		c.inboundMode = c.inboundMode ?? 'tun';
 		c.ndmsIface = c.ndmsIface ?? '';
 		c.tunIface = c.tunIface ?? '';
 		if (c.ndmsIface === 'OpkgTun0' || c.ndmsIface === 'OpkgTun1') {
@@ -74,9 +74,10 @@
 		c.directDial = c.directDial ?? '';
 		c.mailruUrl = c.mailruUrl ?? '';
 		c.yandexUrl = c.yandexUrl ?? '';
+		c.vyandexUrl = c.vyandexUrl ?? '';
 		c.cupsonlineUrl = c.cupsonlineUrl ?? '';
 		c.telemostUrl = c.telemostUrl ?? '';
-		c.transports = c.transports ?? ['direct'];
+		c.transports = c.transports ?? ['mailru', 'yandex', 'vyandex'];
 		c.transportMode = c.transportMode ?? 'session';
 		c.codec = c.codec ?? 'batched';
 		c.debug = c.debug ?? 0;
@@ -191,15 +192,26 @@
 		if (tr.length === 0) return 'не выбраны';
 		return tr
 			.map((t) => {
-				if (t === 'direct') return 'Direct';
 				if (t === 'mailru') return 'Mail.ru';
 				if (t === 'yandex') return 'Яндекс';
+				if (t === 'vyandex') return 'ВК/Яндекс';
 				if (t === 'cupsonline') return 'Cups';
 				if (t === 'telemost') return 'Telemost';
+				if (t === 'direct') return 'Direct';
 				return t;
 			})
 			.join(' / ');
 	});
+
+	const activeNdmsIface = $derived(
+		status?.ndmsIface?.trim() || draft?.ndmsIface?.trim() || '',
+	);
+	const activePolicy = $derived(
+		activeNdmsIface ? findPolicyForInterface(policies, activeNdmsIface) : null,
+	);
+	const activePolicyLabel = $derived(
+		activePolicy ? activePolicy.description || activePolicy.name : '',
+	);
 
 	async function fetchMihomoProxies() {
 		if (typeof api.mihomoNativeProxies !== 'function') return;
@@ -237,7 +249,7 @@
 			const nextCfg = normalizeDraft({
 				...res.config,
 				enabled: applyAndStart ? true : (draft?.enabled ?? res.config.enabled),
-				inboundMode: draft?.inboundMode ?? 'socks5',
+				inboundMode: draft?.inboundMode ?? res.config.inboundMode ?? 'tun',
 				ndmsIface: draft?.ndmsIface || '',
 				tunIface: draft?.tunIface || '',
 				tunAddr: draft?.tunAddr || '10.10.10.2/24',
@@ -247,6 +259,7 @@
 				defaultRoute: draft?.defaultRoute ?? false,
 				socks5Listen: draft?.socks5Listen || res.config.socks5Listen || '127.0.0.1:1085',
 				httpProxyListen: draft?.httpProxyListen ?? res.config.httpProxyListen ?? '',
+				vyandexUrl: draft?.vyandexUrl ?? res.config.vyandexUrl ?? '',
 				autoReconnect: draft?.autoReconnect ?? true,
 			});
 			draft = nextCfg;
@@ -396,7 +409,11 @@
 	<div class="head">
 		<h2>{row.name}</h2>
 		<Badge size="sm" variant="info">OpenFlux-клиент</Badge>
-		<Badge size="sm" variant="default">SOCKS5 :{getSocks5Port()}</Badge>
+		{#if draft?.inboundMode === 'tun'}
+			<Badge size="sm" variant="default">L3 TUN ({activeNdmsIface || 'OpkgTun'})</Badge>
+		{:else}
+			<Badge size="sm" variant="default">SOCKS5 :{getSocks5Port()}</Badge>
+		{/if}
 		<Badge size="sm" variant={running ? 'success' : 'muted'}>{running ? 'Запущен' : 'Остановлен'}</Badge>
 		<div class="head-actions">
 			{#if running}
@@ -445,11 +462,19 @@
 			label="Процесс"
 			sub={running ? 'активен' : 'не запущен'}
 		/>
-		<Stat
-			value={`:${getSocks5Port()}`}
-			label="SOCKS5 порт"
-			sub={draft?.httpProxyListen ? `HTTP ${draft.httpProxyListen}` : 'локальный прокси'}
-		/>
+		{#if draft?.inboundMode === 'tun'}
+			<Stat
+				value={activeNdmsIface || 'OpkgTunN'}
+				label="Интерфейс NDMS"
+				sub={draft?.tunAddr || '10.10.10.2/24'}
+			/>
+		{:else}
+			<Stat
+				value={`:${getSocks5Port()}`}
+				label="SOCKS5 порт"
+				sub={draft?.httpProxyListen ? `HTTP ${draft.httpProxyListen}` : 'локальный прокси'}
+			/>
+		{/if}
 		<Stat
 			value={draft?.transportMode === 'session' ? 'Сессия' : 'Single'}
 			label="Транспорты"
@@ -474,45 +499,78 @@
 	{/if}
 
 	<DetailSection title="Куда идёт трафик">
-		<div class="line-row">
-			<span class="line-label">Локальный SOCKS5:</span>
-			<code>127.0.0.1:{getSocks5Port()}</code>
-			{#if draft?.httpProxyListen}
-				<span class="line-sub">(HTTP: {draft.httpProxyListen})</span>
-			{/if}
-			<FieldHint
-				text="Режим SOCKS5: локальный прокси-порт для маршрутизатора или локальных приложений."
-				ariaLabel="Подсказка: SOCKS5"
-			/>
-		</div>
-
-		<LinkBox link={socks5Uri} title="Локальный SOCKS5 URI для маршрутизатора" />
-
-		<div class="mihomo-bar">
-			{#if matchedMihomoProxy}
-				<div class="mihomo-connected">
-					<Badge size="sm" variant="success">Подключен в маршрутизаторе: {matchedMihomoProxy.name}</Badge>
-					{#if matchedMihomoProxy.bridge?.proxyInterface}
-						<Badge size="sm" variant="default">Мост: {matchedMihomoProxy.bridge.proxyInterface}</Badge>
-					{/if}
-				</div>
-			{:else}
-				<Button
-					variant="secondary"
-					size="sm"
-					loading={addingToMihomo}
-					disabled={addingToMihomo}
-					onclick={handleAddToMihomo}
-				>
-					{#snippet iconBefore()}<Layers size={14} />{/snippet}
-					Добавить прокси-узел в маршрутизатор
+		{#if draft?.inboundMode === 'tun'}
+			<div class="line-row">
+				<span class="line-label">Интерфейс в роутере:</span>
+				<code>{activeNdmsIface || 'OpkgTunN'}</code>
+				<span class="line-sub">({draft?.tunAddr || '10.10.10.2/24'}, MTU {draft?.tunMtu || 1280})</span>
+				<FieldHint
+					text="Режим L3 TUN: трафик направляется через системный интерфейс Keenetic (OpkgTunN), управляемый OpenFlux."
+					ariaLabel="Подсказка: L3 TUN интерфейс"
+				/>
+				<Button variant="ghost" size="sm" href="/tunnels/openflux-client">
+					В туннели
+					{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
 				</Button>
-			{/if}
-			<Button variant="ghost" size="sm" href="/routing">
-				Маршрутизация
-				{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
-			</Button>
-		</div>
+			</div>
+
+			<div class="line-row">
+				<span class="line-label">Политика доступа:</span>
+				{#if activePolicyLabel}
+					<Badge size="sm" variant="success">{activePolicyLabel}</Badge>
+				{:else}
+					<Badge size="sm" variant="muted">не заведён в политику</Badge>
+				{/if}
+				<FieldHint
+					text="Привязка интерфейса к политике маршрутизации Keenetic. В политике интерфейс становится одним из шлюзов выхода."
+					ariaLabel="Подсказка: политика доступа"
+				/>
+				<Button variant="ghost" size="sm" href="/routing">
+					Маршрутизация
+					{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
+				</Button>
+			</div>
+		{:else}
+			<div class="line-row">
+				<span class="line-label">Локальный SOCKS5:</span>
+				<code>127.0.0.1:{getSocks5Port()}</code>
+				{#if draft?.httpProxyListen}
+					<span class="line-sub">(HTTP: {draft.httpProxyListen})</span>
+				{/if}
+				<FieldHint
+					text="Режим SOCKS5: локальный прокси-порт для маршрутизатора или локальных приложений."
+					ariaLabel="Подсказка: SOCKS5"
+				/>
+			</div>
+
+			<LinkBox link={socks5Uri} title="Локальный SOCKS5 URI для маршрутизатора" />
+
+			<div class="mihomo-bar">
+				{#if matchedMihomoProxy}
+					<div class="mihomo-connected">
+						<Badge size="sm" variant="success">Подключен в маршрутизаторе: {matchedMihomoProxy.name}</Badge>
+						{#if matchedMihomoProxy.bridge?.proxyInterface}
+							<Badge size="sm" variant="default">Мост: {matchedMihomoProxy.bridge.proxyInterface}</Badge>
+						{/if}
+					</div>
+				{:else}
+					<Button
+						variant="secondary"
+						size="sm"
+						loading={addingToMihomo}
+						disabled={addingToMihomo}
+						onclick={handleAddToMihomo}
+					>
+						{#snippet iconBefore()}<Layers size={14} />{/snippet}
+						Добавить прокси-узел в маршрутизатор
+					</Button>
+				{/if}
+				<Button variant="ghost" size="sm" href="/routing">
+					Маршрутизация
+					{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
+				</Button>
+			</div>
+		{/if}
 	</DetailSection>
 
 	<LogSection log={logs || status?.logTail} {routerClock} hint="Журнал работы клиента OpenFlux" />
@@ -593,23 +651,114 @@
 
 				<div class="config-row">
 					<div class="config-label">
-						<strong>Локальный SOCKS5 прокси (--socks5)</strong>
-						<span class="subtext">Адрес и порт, на котором клиент принимает трафик от маршрутизатора или локальных приложений</span>
+						<strong>Режим входящего трафика (Inbound Mode)</strong>
+						<span class="subtext">
+							L3 TUN создаёт системный сетевой интерфейс Keenetic (OpkgTunN). SOCKS5 открывает локальный прокси-порт.
+						</span>
 					</div>
-					<div class="config-ctrl">
-						<Input bind:value={draft.socks5Listen} placeholder="127.0.0.1:1085" fullWidth />
+					<div class="config-ctrl select-ctrl">
+						<select bind:value={draft.inboundMode} class="form-select">
+							<option value="tun">L3 TUN интерфейс (OpkgTunN, рекомендуется)</option>
+							<option value="socks5">Локальный SOCKS5 прокси (--socks5)</option>
+						</select>
 					</div>
 				</div>
 
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Локальный HTTP CONNECT прокси (--http-proxy)</strong>
-						<span class="subtext">Дополнительный HTTP прокси порт (оставьте пустым для отключения)</span>
+				{#if draft.inboundMode === 'tun'}
+					<div class="config-row">
+						<div class="config-label">
+							<strong>TUN IP адрес</strong>
+							<span class="subtext">Локальный IP адрес туннеля с маской подсети (по умолчанию 10.10.10.2/24)</span>
+						</div>
+						<div class="config-ctrl">
+							<Input bind:value={draft.tunAddr} placeholder="10.10.10.2/24" fullWidth />
+						</div>
 					</div>
-					<div class="config-ctrl">
-						<Input bind:value={draft.httpProxyListen} placeholder="127.0.0.1:1086" fullWidth />
+
+					<div class="config-row">
+						<div class="config-label">
+							<strong>TUN MTU</strong>
+							<span class="subtext">Максимальный размер пакета интерфейса (по умолчанию 1280)</span>
+						</div>
+						<div class="config-ctrl">
+							<input
+								type="number"
+								class="form-input"
+								bind:value={draft.tunMtu}
+								placeholder="1280"
+								min="1200"
+								max="1500"
+							/>
+						</div>
 					</div>
-				</div>
+
+					<div class="config-row">
+						<div class="config-label">
+							<strong>Политика маршрутизации Keenetic</strong>
+							<span class="subtext">Автоматически привязать интерфейс к выбранной политике доступа</span>
+						</div>
+						<div class="config-ctrl select-ctrl">
+							<select bind:value={draft.policy} class="form-select">
+								<option value="">(Основная таблица / Без явной политики)</option>
+								{#each policies as p}
+									<option value={p.name || p.id}>{p.description || p.name} ({p.name || p.id})</option>
+								{/each}
+							</select>
+						</div>
+					</div>
+
+					<div class="config-row">
+						<div class="config-label">
+							<strong>Доступ другим политикам</strong>
+							<span class="subtext">Разрешить использование интерфейса другим сегментам и политикам (expose to policies)</span>
+						</div>
+						<div class="config-ctrl">
+							<Toggle
+								label="Разрешить"
+								checked={draft.exposeToPolicies ?? true}
+								onchange={(v) => {
+									if (draft) draft.exposeToPolicies = v;
+								}}
+							/>
+						</div>
+					</div>
+
+					<div class="config-row">
+						<div class="config-label">
+							<strong>Маршрут по умолчанию в политике</strong>
+							<span class="subtext">Назначить интерфейс шлюзом по умолчанию (default-route) внутри политики</span>
+						</div>
+						<div class="config-ctrl">
+							<Toggle
+								label="Шлюз по умолчанию"
+								checked={draft.defaultRoute ?? false}
+								onchange={(v) => {
+									if (draft) draft.defaultRoute = v;
+								}}
+							/>
+						</div>
+					</div>
+				{:else}
+					<div class="config-row">
+						<div class="config-label">
+							<strong>Локальный SOCKS5 прокси (--socks5)</strong>
+							<span class="subtext">Адрес и порт, на котором клиент принимает трафик от маршрутизатора или локальных приложений</span>
+						</div>
+						<div class="config-ctrl">
+							<Input bind:value={draft.socks5Listen} placeholder="127.0.0.1:1085" fullWidth />
+						</div>
+					</div>
+
+					<div class="config-row">
+						<div class="config-label">
+							<strong>Локальный HTTP CONNECT прокси (--http-proxy)</strong>
+							<span class="subtext">Дополнительный HTTP прокси порт (оставьте пустым для отключения)</span>
+						</div>
+						<div class="config-ctrl">
+							<Input bind:value={draft.httpProxyListen} placeholder="127.0.0.1:1086" fullWidth />
+						</div>
+					</div>
+				{/if}
 
 				<div class="config-row">
 					<div class="config-label">
@@ -644,37 +793,6 @@
 
 				<div class="section-divider">
 					<span>Транспорты подключения к серверу</span>
-				</div>
-
-				<!-- Direct TCP -->
-				<div class="transport-block">
-					<div class="transport-header">
-						<div class="transport-title-row">
-							<input
-								type="checkbox"
-								id="ofc-transport-direct"
-								checked={isTransportEnabled('direct')}
-								onchange={() => toggleTransport('direct')}
-							/>
-							<label for="ofc-transport-direct"><strong>Прямой TCP транспорт (Direct TCP)</strong></label>
-						</div>
-						<span class="subtext">Прямое зашифрованное TCP соединение до удалённого сервера OpenFlux</span>
-					</div>
-
-					{#if isTransportEnabled('direct')}
-						<div class="transport-fields">
-							<div class="field-item full-width">
-								<label for="ofc-direct-dial">Адрес сервера (IP:порт или домен:порт):</label>
-								<input
-									id="ofc-direct-dial"
-									type="text"
-									class="form-input"
-									placeholder="203.0.113.10:8445"
-									bind:value={draft.directDial}
-								/>
-							</div>
-						</div>
-					{/if}
 				</div>
 
 				<!-- Mail.ru Docs -->
@@ -739,6 +857,37 @@
 					{/if}
 				</div>
 
+				<!-- Vyandex / VK Cloud -->
+				<div class="transport-block">
+					<div class="transport-header">
+						<div class="transport-title-row">
+							<input
+								type="checkbox"
+								id="ofc-transport-vyandex"
+								checked={isTransportEnabled('vyandex')}
+								onchange={() => toggleTransport('vyandex')}
+							/>
+							<label for="ofc-transport-vyandex"><strong>ВК / Яндекс Облако (Vyandex)</strong></label>
+						</div>
+						<span class="subtext">Передача трафика через облачный прокси-канал Vyandex</span>
+					</div>
+
+					{#if isTransportEnabled('vyandex')}
+						<div class="transport-fields">
+							<div class="field-item full-width">
+								<label for="ofc-vyandex-url">URL Vyandex:</label>
+								<input
+									id="ofc-vyandex-url"
+									type="text"
+									class="form-input"
+									placeholder="https://..."
+									bind:value={draft.vyandexUrl}
+								/>
+							</div>
+						</div>
+					{/if}
+				</div>
+
 				<!-- CupsOnline -->
 				<div class="transport-block">
 					<div class="transport-header">
@@ -795,6 +944,37 @@
 									class="form-input"
 									placeholder="https://telemost.yandex.ru/j/..."
 									bind:value={draft.telemostUrl}
+								/>
+							</div>
+						</div>
+					{/if}
+				</div>
+
+				<!-- Direct TCP -->
+				<div class="transport-block">
+					<div class="transport-header">
+						<div class="transport-title-row">
+							<input
+								type="checkbox"
+								id="ofc-transport-direct"
+								checked={isTransportEnabled('direct')}
+								onchange={() => toggleTransport('direct')}
+							/>
+							<label for="ofc-transport-direct"><strong>Прямой TCP транспорт (Direct TCP)</strong></label>
+						</div>
+						<span class="subtext">Прямое зашифрованное TCP соединение до удалённого сервера OpenFlux (запасной канал)</span>
+					</div>
+
+					{#if isTransportEnabled('direct')}
+						<div class="transport-fields">
+							<div class="field-item full-width">
+								<label for="ofc-direct-dial">Адрес сервера (IP:порт или домен:порт):</label>
+								<input
+									id="ofc-direct-dial"
+									type="text"
+									class="form-input"
+									placeholder="203.0.113.10:8445"
+									bind:value={draft.directDial}
 								/>
 							</div>
 						</div>

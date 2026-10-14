@@ -12,6 +12,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
 func TestConfigValidation(t *testing.T) {
@@ -32,7 +34,8 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatalf("expected valid secret, got %v", err)
 	}
 
-	// Invalid direct port
+	// Invalid direct port when direct is enabled
+	cfg.Transports = append(cfg.Transports, "direct")
 	cfg.DirectListen = "0.0.0.0:22"
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error for reserved port 22, got nil")
@@ -61,6 +64,7 @@ func TestConfigValidation(t *testing.T) {
 func TestBuildArgs(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Secret = "supersecretkey12345"
+	cfg.Transports = []string{"mailru", "yandex", "direct"}
 	cfg.MailruURL = "https://docs.mail.ru/sample"
 	cfg.YandexURL = "https://docs.yandex.ru/sample"
 
@@ -225,6 +229,7 @@ func TestDecodeLinkAndClientConfigFromShare(t *testing.T) {
 	srvCfg := DefaultConfig()
 	srvCfg.Name = "KeeneticDacha"
 	srvCfg.Secret = "supersecretkey12345"
+	srvCfg.Transports = []string{"mailru", "yandex", "direct"}
 	srvCfg.MailruURL = "https://docs.mail.ru/sample"
 	srvCfg.YandexURL = "https://docs.yandex.ru/sample"
 
@@ -280,6 +285,7 @@ func TestDecodeLinkAndClientConfigFromShare(t *testing.T) {
 		"--socks5=127.0.0.1:1088",
 		"--negotiate",
 		"--encryption-key-file=/tmp/client.key",
+		"--transports=mailru:100,yandex:90,direct:50",
 		"--direct-dial=203.0.113.10:8445",
 		"--mailru-url=https://docs.mail.ru/sample",
 		"--yandex-url=https://docs.yandex.ru/sample",
@@ -289,29 +295,24 @@ func TestDecodeLinkAndClientConfigFromShare(t *testing.T) {
 		}
 	}
 
-	// Test TUN mode build args
+	// Test TUN mode build args (must NOT be downgraded to socks5, must pass real TUN flags)
 	tunBase := DefaultClientConfig()
 	tunBase.InboundMode = "tun"
-	tunBase.TunIface = "opkgtun0"
+	tunBase.TunIface = "opkgtun2"
 	tunBase.TunAddr = "10.10.10.2/24"
 	tunBase.TunMTU = 1280
 	tunCfg := ClientConfigFromShare(sc, tunBase)
 	tunArgs := tunCfg.BuildArgs("/tmp/client.key")
 	tunArgsStr := strings.Join(tunArgs, " ")
-	if runtime.GOOS == "linux" {
-		// On Linux, client forces socks5 mode because Linux kernel utun is unsupported by OpenFlux
-		if !strings.Contains(tunArgsStr, "--inbound=socks5") {
-			t.Errorf("expected Linux client to force --inbound=socks5, got %s", tunArgsStr)
-		}
-	} else {
-		if !strings.Contains(tunArgsStr, "--inbound=tun") {
-			t.Errorf("expected non-Linux client to have --inbound=tun, got %s", tunArgsStr)
-		}
-	}
-	// Verify unsupported flags are never passed
-	for _, forbidden := range []string{"--tun-name", "--tun-addr", "--tun-mtu", "--manage-routes"} {
-		if strings.Contains(tunArgsStr, forbidden) {
-			t.Errorf("forbidden flag %q found in client BuildArgs: %s", forbidden, tunArgsStr)
+	for _, expected := range []string{
+		"--inbound=tun",
+		"--tun-name=opkgtun2",
+		"--tun-addr=10.10.10.2/24",
+		"--tun-mtu=1280",
+		"--transports=mailru:100,yandex:90,direct:50",
+	} {
+		if !strings.Contains(tunArgsStr, expected) {
+			t.Errorf("expected TUN client args to have %q, got: %s", expected, tunArgsStr)
 		}
 	}
 }
@@ -391,6 +392,7 @@ func TestClientServiceConfigPersistenceAndStatus(t *testing.T) {
 	srvCfg := DefaultConfig()
 	srvCfg.Name = "RouterExit"
 	srvCfg.Secret = "0123456789abcdef0123456789abcdef"
+	srvCfg.Transports = []string{"mailru", "yandex", "direct"}
 	srvCfg.MailruURL = "https://docs.mail.ru/d/testdoc"
 	if err := svc.SaveConfig(ctx, srvCfg); err != nil {
 		t.Fatalf("SaveConfig failed: %v", err)
@@ -833,4 +835,264 @@ func TestStopProcessesWipesKeyFiles(t *testing.T) {
 		t.Fatalf("expected client key file to be wiped on stopClientProcess, got err: %v", err)
 	}
 }
+
+type mockTunnelStore struct {
+	tunnels map[string]*storage.AWGTunnel
+}
+
+func newMockTunnelStore() *mockTunnelStore {
+	return &mockTunnelStore{tunnels: make(map[string]*storage.AWGTunnel)}
+}
+
+func (m *mockTunnelStore) Get(id string) (*storage.AWGTunnel, error) {
+	if t, ok := m.tunnels[id]; ok {
+		cp := *t
+		return &cp, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func (m *mockTunnelStore) Exists(id string) bool {
+	_, ok := m.tunnels[id]
+	return ok
+}
+
+func (m *mockTunnelStore) Create(t *storage.AWGTunnel) error {
+	cp := *t
+	m.tunnels[t.ID] = &cp
+	return nil
+}
+
+func (m *mockTunnelStore) Update(id string, mut func(*storage.AWGTunnel) error) error {
+	t, ok := m.tunnels[id]
+	if !ok {
+		return os.ErrNotExist
+	}
+	return mut(t)
+}
+
+func (m *mockTunnelStore) Delete(id string) error {
+	delete(m.tunnels, id)
+	return nil
+}
+
+func TestTunnelStoreMirroring(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+
+	svc := New(tmpDir, "aarch64", nil)
+	store := newMockTunnelStore()
+	svc.SetTunnelStore(store)
+
+	// Initially, store is empty
+	if store.Exists("openflux-client") {
+		t.Fatalf("expected store to not have openflux-client initially")
+	}
+
+	// 1. Save client config with TUN mode
+	cfg := DefaultClientConfig()
+	cfg.Name = "MyOpenFlux"
+	cfg.InboundMode = "tun"
+	cfg.NdmsIface = "OpkgTun5"
+	cfg.TunIface = "opkgtun5"
+	cfg.TunAddr = "10.10.10.2/24"
+	cfg.TunMTU = 1300
+	cfg.Transports = []string{"mailru", "yandex"}
+	cfg.MailruURL = "https://docs.mail.ru/sample"
+	cfg.Secret = "1234567890123456"
+	cfg.Enabled = true
+
+	if err := svc.SaveClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("SaveClientConfig failed: %v", err)
+	}
+
+	// Store must now contain mirrored tunnel "openflux-client"
+	if !store.Exists("openflux-client") {
+		t.Fatalf("expected openflux-client mirror in store after SaveClientConfig")
+	}
+
+	tun, err := store.Get("openflux-client")
+	if err != nil {
+		t.Fatalf("failed to get openflux-client from store: %v", err)
+	}
+	if tun.Backend != "wdtt-raw" {
+		t.Errorf("expected Backend=wdtt-raw, got %q", tun.Backend)
+	}
+	if tun.OpenFluxClientID != "default" {
+		t.Errorf("expected OpenFluxClientID=default, got %q", tun.OpenFluxClientID)
+	}
+	if tun.RawNdmsIface != "OpkgTun5" || tun.RawKernelIface != "opkgtun5" {
+		t.Errorf("expected OpkgTun5/opkgtun5, got %q/%q", tun.RawNdmsIface, tun.RawKernelIface)
+	}
+	if tun.Interface.Address != "10.10.10.2/24" || tun.Interface.MTU != 1300 {
+		t.Errorf("expected 10.10.10.2/24 MTU 1300, got %q MTU %d", tun.Interface.Address, tun.Interface.MTU)
+	}
+	if tun.Enabled != true {
+		t.Errorf("expected Enabled=true, got false")
+	}
+
+	// 2. Stop client
+	if err := svc.StopClient(ctx); err != nil {
+		t.Fatalf("StopClient failed: %v", err)
+	}
+	tun, _ = store.Get("openflux-client")
+	if tun.Enabled != false {
+		t.Errorf("expected Enabled=false after StopClient, got true")
+	}
+
+	// 3. Switch to socks5 mode -> mirror should be removed from AWGTunnelStore
+	cfgSocks := cfg
+	cfgSocks.InboundMode = "socks5"
+	cfgSocks.Enabled = false
+	if err := svc.SaveClientConfig(ctx, cfgSocks); err != nil {
+		t.Fatalf("SaveClientConfig with socks5 failed: %v", err)
+	}
+	if store.Exists("openflux-client") {
+		t.Errorf("expected openflux-client mirror to be removed when switched to socks5 mode")
+	}
+
+	// 4. Switch back to tun mode and delete
+	cfg.Enabled = false
+	if err := svc.SaveClientConfig(ctx, cfg); err != nil {
+		t.Fatalf("SaveClientConfig failed: %v", err)
+	}
+	if !store.Exists("openflux-client") {
+		t.Fatalf("expected openflux-client mirror recreated")
+	}
+
+	if err := svc.DeleteClient(ctx); err != nil {
+		t.Fatalf("DeleteClient failed: %v", err)
+	}
+	if store.Exists("openflux-client") {
+		t.Errorf("expected openflux-client mirror deleted after DeleteClient")
+	}
+}
+
+func TestCloudFirstTransportPriorities(t *testing.T) {
+	// Verify priority ordering: Mail.ru > Vyandex > Yandex > CupsOnline > Telemost > Direct
+	if DefaultTransportPriority("mailru") != 100 {
+		t.Errorf("expected mailru=100, got %d", DefaultTransportPriority("mailru"))
+	}
+	if DefaultTransportPriority("vyandex") != 95 {
+		t.Errorf("expected vyandex=95, got %d", DefaultTransportPriority("vyandex"))
+	}
+	if DefaultTransportPriority("yandex") != 90 {
+		t.Errorf("expected yandex=90, got %d", DefaultTransportPriority("yandex"))
+	}
+	if DefaultTransportPriority("cupsonline") != 80 {
+		t.Errorf("expected cupsonline=80, got %d", DefaultTransportPriority("cupsonline"))
+	}
+	if DefaultTransportPriority("telemost") != 75 {
+		t.Errorf("expected telemost=75, got %d", DefaultTransportPriority("telemost"))
+	}
+	if DefaultTransportPriority("direct") != 50 {
+		t.Errorf("expected direct=50, got %d", DefaultTransportPriority("direct"))
+	}
+
+	// Verify DefaultConfig and DefaultClientConfig defaults
+	srvDef := DefaultConfig()
+	for _, tr := range srvDef.Transports {
+		if tr == "direct" {
+			t.Errorf("DefaultConfig must NOT include direct by default (cloud whitelist bypass first)")
+		}
+	}
+	if srvDef.Transports[0] != "mailru" {
+		t.Errorf("DefaultConfig expected mailru first, got %s", srvDef.Transports[0])
+	}
+
+	cliDef := DefaultClientConfig()
+	for _, tr := range cliDef.Transports {
+		if tr == "direct" {
+			t.Errorf("DefaultClientConfig must NOT include direct by default")
+		}
+	}
+	if cliDef.InboundMode != "tun" {
+		t.Errorf("DefaultClientConfig InboundMode must default to 'tun', got %q", cliDef.InboundMode)
+	}
+
+	// Verify BuildArgs does NOT include direct if not configured
+	srvCfg := DefaultConfig()
+	srvCfg.Secret = "1234567890123456"
+	srvCfg.MailruURL = "https://docs.mail.ru/sample"
+	srvArgs := strings.Join(srvCfg.BuildArgs("/tmp/key"), " ")
+	if strings.Contains(srvArgs, "direct") {
+		t.Errorf("srvArgs must NOT contain direct when omitted from Transports: %s", srvArgs)
+	}
+	if strings.Contains(srvArgs, "--direct-listen") {
+		t.Errorf("srvArgs must NOT contain --direct-listen when direct omitted: %s", srvArgs)
+	}
+
+	cliCfg := DefaultClientConfig()
+	cliCfg.Secret = "1234567890123456"
+	cliCfg.MailruURL = "https://docs.mail.ru/sample"
+	cliArgs := strings.Join(cliCfg.BuildArgs("/tmp/key"), " ")
+	if strings.Contains(cliArgs, "direct") {
+		t.Errorf("cliArgs must NOT contain direct when omitted from Transports: %s", cliArgs)
+	}
+}
+
+func TestDeterministicPrioritySorting(t *testing.T) {
+	// 1. Config.BuildArgs sorting
+	srvCfg := DefaultConfig()
+	srvCfg.Secret = "1234567890123456"
+	srvCfg.Transports = []string{"direct", "yandex", "mailru"}
+	srvCfg.MailruURL = "https://docs.mail.ru/sample"
+	srvCfg.YandexURL = "https://docs.yandex.ru/sample"
+	srvArgs := srvCfg.BuildArgs("/tmp/key")
+
+	foundSrvTransports := ""
+	for _, a := range srvArgs {
+		if strings.HasPrefix(a, "--transports=") {
+			foundSrvTransports = strings.TrimPrefix(a, "--transports=")
+			break
+		}
+	}
+	expectedOrder := "mailru:100,yandex:90,direct:50"
+	if foundSrvTransports != expectedOrder {
+		t.Fatalf("expected srv --transports=%q, got %q", expectedOrder, foundSrvTransports)
+	}
+
+	// 2. ClientConfig.BuildArgs sorting
+	cliCfg := DefaultClientConfig()
+	cliCfg.Secret = "1234567890123456"
+	cliCfg.Transports = []string{"direct", "yandex", "mailru"}
+	cliCfg.DirectDial = "203.0.113.10:8445"
+	cliCfg.MailruURL = "https://docs.mail.ru/sample"
+	cliCfg.YandexURL = "https://docs.yandex.ru/sample"
+	cliArgs := cliCfg.BuildArgs("/tmp/key")
+
+	foundCliTransports := ""
+	for _, a := range cliArgs {
+		if strings.HasPrefix(a, "--transports=") {
+			foundCliTransports = strings.TrimPrefix(a, "--transports=")
+			break
+		}
+	}
+	if foundCliTransports != expectedOrder {
+		t.Fatalf("expected cli --transports=%q, got %q", expectedOrder, foundCliTransports)
+	}
+
+	// 3. GenerateLink sorting
+	link, err := GenerateLink(srvCfg, "203.0.113.10:8445")
+	if err != nil {
+		t.Fatalf("GenerateLink failed: %v", err)
+	}
+	sc, err := Decode(link)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if len(sc.Transports) != 3 {
+		t.Fatalf("expected 3 transports in link, got %d", len(sc.Transports))
+	}
+	if sc.Transports[0].Type != "mailru" || sc.Transports[0].Priority != 100 {
+		t.Errorf("expected 1st transport mailru:100, got %s:%d", sc.Transports[0].Type, sc.Transports[0].Priority)
+	}
+	if sc.Transports[1].Type != "yandex" || sc.Transports[1].Priority != 90 {
+		t.Errorf("expected 2nd transport yandex:90, got %s:%d", sc.Transports[1].Type, sc.Transports[1].Priority)
+	}
+	if sc.Transports[2].Type != "direct" || sc.Transports[2].Priority != 50 {
+		t.Errorf("expected 3rd transport direct:50, got %s:%d", sc.Transports[2].Type, sc.Transports[2].Priority)
+	}
+}
+
 
