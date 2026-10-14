@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -38,23 +39,48 @@ type Config struct {
 	OpenFirewall  bool     `json:"openFirewall"`           // open DirectListen port in WAN firewall
 	Debug         int      `json:"debug"`                  // 0 = off, 1 = -d, 2 = -dd, 3 = -ddd
 	Name          string   `json:"name,omitempty"`         // profile name for generated link
+
+	// Routing, NAT and Egress settings matching WDTT server:
+	NatMode          string   `json:"natMode,omitempty"`          // "full" (default) | "internet-only" | "none"
+	NatStaticWAN     string   `json:"natStaticWan,omitempty"`     // legacy single WAN
+	NatStaticWANs    []string `json:"natStaticWans,omitempty"`    // WAN interface(s) for internet-only NAT
+	Policy           string   `json:"policy,omitempty"`           // Keenetic Access Policy name, e.g. "Policy0" or ""
+	LanSegments      []string `json:"lanSegments,omitempty"`      // LAN segments allowed for clients
+	ExposeToPolicies bool     `json:"exposeToPolicies"`           // whether to expose to access policies
+	EgressInterface  string   `json:"egressInterface,omitempty"`  // specific egress WAN / interface (can map to --local-ip)
+	NdmsIface        string   `json:"ndmsIface,omitempty"`
+	TunIface         string   `json:"tunIface,omitempty"`
+	PolicyIP         string   `json:"policyIp,omitempty"`         // resolved egress IPv4 from policy or manual setting
 }
 
 // DefaultConfig returns recommended default settings for an OpenFlux server.
 func DefaultConfig() Config {
 	sec, _ := GenerateSecret()
 	return Config{
-		Enabled:       false,
-		Mode:          "l4",
-		TransportMode: "session",
-		Transports:    []string{"direct", "mailru", "yandex"},
-		DirectListen:  fmt.Sprintf("0.0.0.0:%d", DefaultDirectPort),
-		Secret:        sec,
-		Codec:         "batched",
-		OpenFirewall:  true,
-		Debug:         0,
-		Name:          "Keenetic",
+		Enabled:          false,
+		Mode:             "l4",
+		TransportMode:    "session",
+		Transports:       []string{"direct", "mailru", "yandex"},
+		DirectListen:     fmt.Sprintf("0.0.0.0:%d", DefaultDirectPort),
+		Secret:           sec,
+		Codec:            "batched",
+		OpenFirewall:     true,
+		Debug:            0,
+		Name:             "Keenetic",
+		NatMode:          "full",
+		ExposeToPolicies: false,
 	}
+}
+
+// StaticNATList returns list of WANs configured for static NAT.
+func (c Config) StaticNATList() []string {
+	if len(c.NatStaticWANs) > 0 {
+		return c.NatStaticWANs
+	}
+	if w := strings.TrimSpace(c.NatStaticWAN); w != "" {
+		return []string{w}
+	}
+	return nil
 }
 
 // GenerateSecret generates a secure random 24-character hexadecimal secret.
@@ -128,6 +154,16 @@ func (c *Config) Validate() error {
 		_ = host
 	}
 
+	switch strings.ToLower(strings.TrimSpace(c.NatMode)) {
+	case "full", "none", "":
+	case "internet-only":
+		if len(c.StaticNATList()) == 0 {
+			return fmt.Errorf("natMode internet-only: не выбран WAN (natStaticWANs)")
+		}
+	default:
+		return fmt.Errorf("natMode %q: ожидали full|internet-only|none", c.NatMode)
+	}
+
 	return nil
 }
 
@@ -144,6 +180,36 @@ func (c *Config) DirectPort() int {
 	return port
 }
 
+// ResolveInterfaceIPv4 returns the first non-loopback IPv4 address for an interface name or IP string.
+func ResolveInterfaceIPv4(target string) string {
+	s := strings.TrimSpace(target)
+	if s == "" {
+		return ""
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		if ip4 := ip.To4(); ip4 != nil {
+			return ip4.String()
+		}
+		return ""
+	}
+	ifi, err := net.InterfaceByName(s)
+	if err != nil {
+		return ""
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return ""
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok {
+			if ip4 := ipnet.IP.To4(); ip4 != nil && !ip4.IsLoopback() {
+				return ip4.String()
+			}
+		}
+	}
+	return ""
+}
+
 // BuildArgs converts Config to OpenFlux CLI invocation arguments.
 func (c *Config) BuildArgs(keyFilePath string) []string {
 	args := []string{
@@ -155,6 +221,18 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 		mode = "l4"
 	}
 	args = append(args, "--mode="+mode)
+
+	egressTarget := strings.TrimSpace(c.EgressInterface)
+	if egressTarget == "" && c.NatMode == "internet-only" && len(c.StaticNATList()) > 0 {
+		egressTarget = strings.TrimSpace(c.StaticNATList()[0])
+	}
+	if egressTarget != "" {
+		if ip := ResolveInterfaceIPv4(egressTarget); ip != "" {
+			args = append(args, "--local-ip="+ip)
+		}
+	} else if strings.TrimSpace(c.PolicyIP) != "" {
+		args = append(args, "--local-ip="+strings.TrimSpace(c.PolicyIP))
+	}
 
 	codec := strings.ToLower(strings.TrimSpace(c.Codec))
 	if codec == "" {
@@ -260,37 +338,53 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 	return args
 }
 
-// ClientConfig represents OpenFlux client configuration (SOCKS5 / HTTP proxy outbound on router).
+// ClientConfig represents OpenFlux client configuration (OpkgTun L3 interface or SOCKS5 / HTTP proxy outbound on router).
 type ClientConfig struct {
-	Enabled         bool     `json:"enabled"`
-	Name            string   `json:"name,omitempty"`
-	TransportMode   string   `json:"transportMode"`           // "session" (default, --negotiate) | "single" | "stream"
-	Transports      []string `json:"transports"`              // list of enabled transports: "direct", "mailru", "yandex", "cupsonline", "telemost"
-	DirectDial      string   `json:"directDial,omitempty"`    // remote exit host:port for direct transport
-	MailruURL       string   `json:"mailruUrl,omitempty"`     // document URL for mailru
-	YandexURL       string   `json:"yandexUrl,omitempty"`     // document URL for yandex / vyandex
-	CupsonlineURL   string   `json:"cupsonlineUrl,omitempty"` // room URL for cupsonline
-	TelemostURL     string   `json:"telemostUrl,omitempty"`   // conference URL for telemost
-	Secret          string   `json:"secret,omitempty"`        // AES-256-GCM shared secret
-	Context         string   `json:"context,omitempty"`       // KDF context (--session-context)
-	Codec           string   `json:"codec,omitempty"`         // "batched" (default) | "legacy"
-	Socks5Listen    string   `json:"socks5Listen,omitempty"`  // default "127.0.0.1:1085"
-	HttpProxyListen string   `json:"httpProxyListen,omitempty"`
-	AutoReconnect   bool     `json:"autoReconnect"`
-	Debug           int      `json:"debug"`
+	Enabled          bool     `json:"enabled"`
+	Name             string   `json:"name,omitempty"`
+	InboundMode      string   `json:"inboundMode,omitempty"`      // "tun" (default, L3 OpkgTun interface) | "socks5" (L4 local proxy)
+	NdmsIface        string   `json:"ndmsIface,omitempty"`        // NDMS interface name, e.g. "OpkgTun0" (default "OpkgTun0")
+	TunIface         string   `json:"tunIface,omitempty"`         // Linux TUN interface name, e.g. "opkgtun0" (default "opkgtun0")
+	TunAddr          string   `json:"tunAddr,omitempty"`          // IPv4 CIDR, default "10.10.10.2/24"
+	TunMTU           int      `json:"tunMtu,omitempty"`           // MTU, default 1280
+	Policy           string   `json:"policy,omitempty"`           // Keenetic Access Policy name, e.g. "Policy0" or ""
+	ExposeToPolicies bool     `json:"exposeToPolicies"`           // "ip global auto" in NDMS (default true)
+	DefaultRoute     bool     `json:"defaultRoute"`               // Candidate for default route in NDMS (default false)
+	TransportMode    string   `json:"transportMode"`              // "session" (default, --negotiate) | "single" | "stream"
+	Transports       []string `json:"transports"`                 // list of enabled transports: "direct", "mailru", "yandex", "cupsonline", "telemost"
+	DirectDial       string   `json:"directDial,omitempty"`       // remote exit host:port for direct transport
+	MailruURL        string   `json:"mailruUrl,omitempty"`        // document URL for mailru
+	YandexURL        string   `json:"yandexUrl,omitempty"`        // document URL for yandex / vyandex
+	CupsonlineURL    string   `json:"cupsonlineUrl,omitempty"`    // room URL for cupsonline
+	TelemostURL      string   `json:"telemostUrl,omitempty"`      // conference URL for telemost
+	Secret           string   `json:"secret,omitempty"`           // AES-256-GCM shared secret
+	Context          string   `json:"context,omitempty"`          // KDF context (--session-context)
+	Codec            string   `json:"codec,omitempty"`            // "batched" (default) | "legacy"
+	Socks5Listen     string   `json:"socks5Listen,omitempty"`     // default "127.0.0.1:1085"
+	HttpProxyListen  string   `json:"httpProxyListen,omitempty"`
+	AutoReconnect    bool     `json:"autoReconnect"`
+	Debug            int      `json:"debug"`
 }
 
 // DefaultClientConfig returns recommended default settings for an OpenFlux client.
 func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
-		Enabled:       false,
-		Name:          "OpenFlux Выход",
-		TransportMode: "session",
-		Transports:    []string{"direct", "mailru", "yandex"},
-		Socks5Listen:  fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port),
-		Codec:         "batched",
-		AutoReconnect: true,
-		Debug:         0,
+		Enabled:          false,
+		Name:             "OpenFlux Выход",
+		InboundMode:      "socks5",
+		NdmsIface:        "",
+		TunIface:         "",
+		TunAddr:          "10.10.10.2/24",
+		TunMTU:           1280,
+		Policy:           "",
+		ExposeToPolicies: true,
+		DefaultRoute:     false,
+		TransportMode:    "session",
+		Transports:       []string{"direct", "mailru", "yandex"},
+		Socks5Listen:     fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port),
+		Codec:            "batched",
+		AutoReconnect:    true,
+		Debug:            0,
 	}
 }
 
@@ -319,6 +413,11 @@ func validateListenAddr(addr string, defaultPort int, fieldName string) (int, er
 
 // Validate checks structural validity of ClientConfig. If Enabled is true, it also checks readiness for start.
 func (c *ClientConfig) Validate() error {
+	inbound := strings.ToLower(strings.TrimSpace(c.InboundMode))
+	if inbound != "" && inbound != "tun" && inbound != "socks5" {
+		return fmt.Errorf("недопустимый режим входящего трафика %q: ожидается tun или socks5", c.InboundMode)
+	}
+
 	tm := strings.ToLower(strings.TrimSpace(c.TransportMode))
 	if tm != "" && tm != "session" && tm != "single" && tm != "stream" {
 		return fmt.Errorf("недопустимый режим транспорта %q: ожидается session, single или stream", c.TransportMode)
@@ -327,6 +426,19 @@ func (c *ClientConfig) Validate() error {
 	codec := strings.ToLower(strings.TrimSpace(c.Codec))
 	if codec != "" && codec != "batched" && codec != "legacy" {
 		return fmt.Errorf("недопустимый кодек %q: ожидается batched или legacy", c.Codec)
+	}
+
+	if inbound == "tun" || inbound == "" {
+		if c.TunMTU < 0 || (c.TunMTU > 0 && (c.TunMTU < 576 || c.TunMTU > 1500)) {
+			return fmt.Errorf("некорректный MTU %d (ожидается от 576 до 1500)", c.TunMTU)
+		}
+		if addr := strings.TrimSpace(c.TunAddr); addr != "" {
+			if _, _, err := net.ParseCIDR(addr); err != nil {
+				if ip := net.ParseIP(addr); ip == nil {
+					return fmt.Errorf("некорректный IP адрес туннеля %q (ожидается CIDR, например 10.10.10.2/24)", addr)
+				}
+			}
+		}
 	}
 
 	socksPort, err := validateListenAddr(c.Socks5Listen, DefaultClientSocks5Port, "socks5Listen")
@@ -471,19 +583,28 @@ func (c *ClientConfig) HttpURI() string {
 
 // BuildArgs converts ClientConfig to OpenFlux CLI arguments for --role=client.
 func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
+	inbound := strings.ToLower(strings.TrimSpace(c.InboundMode))
+	if inbound == "" || (runtime.GOOS == "linux" && inbound == "tun") {
+		inbound = "socks5"
+	}
+
 	args := []string{
 		"--role=client",
-		"--inbound=socks5",
 	}
 
-	socks := strings.TrimSpace(c.Socks5Listen)
-	if socks == "" {
-		socks = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
-	}
-	args = append(args, "--socks5="+socks)
+	if inbound == "tun" {
+		args = append(args, "--inbound=tun")
+	} else {
+		args = append(args, "--inbound=socks5")
+		socks := strings.TrimSpace(c.Socks5Listen)
+		if socks == "" {
+			socks = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
+		}
+		args = append(args, "--socks5="+socks)
 
-	if hp := strings.TrimSpace(c.HttpProxyListen); hp != "" {
-		args = append(args, "--http-proxy="+hp)
+		if hp := strings.TrimSpace(c.HttpProxyListen); hp != "" {
+			args = append(args, "--http-proxy="+hp)
+		}
 	}
 
 	codec := strings.ToLower(strings.TrimSpace(c.Codec))

@@ -59,6 +59,7 @@
 		onreload: () => Promise<void>;
 		onexitdone: (protocol: ProxyProtocol, id: string) => void;
 		onsharedone: (protocol: ExitProtocol, id: string) => void;
+		ondelete?: (row: ProxyInstanceRow) => void;
 	}
 
 	let {
@@ -86,6 +87,7 @@
 		onreload,
 		onexitdone,
 		onsharedone,
+		ondelete,
 	}: Props = $props();
 
 	let savingExit = $state(false);
@@ -262,9 +264,11 @@
 			status={openfluxClientStatus ?? openfluxStatus?.client ?? null}
 			config={openfluxClientConfig ?? openfluxClientStatus?.config ?? openfluxStatus?.client?.config ?? null}
 			routerClock={wdttStatus?.routerClock ?? ftStatus?.routerClock}
+			{policies}
 			busy={busyKeys.includes(exitRow.key)}
 			onstart={() => exitRow && ontoggle(exitRow, true)}
 			onstop={() => exitRow && ontoggle(exitRow, false)}
+			ondelete={() => exitRow && ondelete?.(exitRow)}
 			onsave={async (cfg) => {
 				const res = await api.openfluxSaveClientConfig(cfg);
 				await onstatuses();
@@ -304,6 +308,8 @@
 			status={openfluxStatus}
 			config={openfluxConfig ?? openfluxStatus?.config ?? null}
 			routerClock={wdttStatus?.routerClock ?? ftStatus?.routerClock}
+			{policies}
+			{tunnels}
 			busy={busyKeys.includes(shareRow.key)}
 			onstart={() => shareRow && ontoggle(shareRow, true)}
 			onstop={() => shareRow && ontoggle(shareRow, false)}

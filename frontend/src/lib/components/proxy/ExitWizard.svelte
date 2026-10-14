@@ -218,8 +218,33 @@
 		busy = true;
 		try {
 			await api.openfluxSaveClientConfig({ ...openfluxPayload, enabled: true });
-			await api.openfluxClientStart();
-			notifications.success('Клиент OpenFlux настроен и запущен');
+			try {
+				await api.openfluxClientStart();
+				notifications.success('Клиент OpenFlux настроен и запущен');
+			} catch (startErr) {
+				notifications.warning(`Настройки OpenFlux сохранены. Для запуска установите бинарный файл OpenFlux.`);
+			}
+			await ondone('openflux', 'default');
+		} catch (e) {
+			notifications.error(errText(e));
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function createOpenfluxManual() {
+		busy = true;
+		try {
+			await api.openfluxSaveClientConfig({
+				name: 'OpenFlux Выход',
+				inboundMode: 'socks5',
+				enabled: false,
+				transportMode: 'session',
+				transports: ['direct'],
+				autoReconnect: true,
+				debug: 0,
+			});
+			notifications.success('Клиент OpenFlux создан');
 			await ondone('openflux', 'default');
 		} catch (e) {
 			notifications.error(errText(e));
@@ -355,6 +380,7 @@
 				openfluxTransports={openfluxPayload?.transports ?? []}
 				openfluxBusy={busy}
 				onapplyopenflux={applyOpenfluxLink}
+				oncreateopenflux={createOpenfluxManual}
 				oninput={onLinkInput}
 				oncommit={() => {
 					clearTimeout(debounce);

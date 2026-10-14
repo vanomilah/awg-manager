@@ -6,11 +6,18 @@
 // идентификаторы sing-box, на страницу они не попадают (правило имён ia §1.0 —
 // человеку показываются NDMS-имена).
 
-import type { WdttProcessStatus, WdttServerConfig } from '$lib/types';
+import type { OpenFluxConfig, OpenFluxStatus, WdttProcessStatus, WdttServerConfig } from '$lib/types';
 
 /** Легаси-умолчания бэкенда: пустые имена = сервер вне NDMS (`internal/wdtt/types.go`). */
 const LEGACY_WG_IFACE = 'wdtt0';
 const LEGACY_RAW_IFACE = 'wdttraw0';
+
+/** Ingress-ссылка интерфейса OpenFlux-сервера. */
+export function openfluxIngressRefs(cfg?: OpenFluxConfig, status?: OpenFluxStatus): string[] {
+	const iface = cfg?.tunIface?.trim() || cfg?.ndmsIface?.trim() || status?.client?.tunIface?.trim() || '';
+	if (!iface || iface === 'openflux') return [];
+	return [`iface:${iface}`];
+}
 
 /**
  * Обе половины сервера: WireGuard-интерфейс и raw-интерфейс.

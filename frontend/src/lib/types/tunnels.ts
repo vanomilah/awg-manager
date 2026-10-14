@@ -183,6 +183,7 @@ export interface AWGTunnel {
 	backend?: 'nativewg' | 'kernel' | 'wdtt-raw';
 	freeTurnClientId?: string;
 	wdttClientId?: string;
+	openfluxClientId?: string;
 	/** Страна подписки Amnezia Premium, из которой получена конфигурация; пусто — не из мастера. */
 	amneziaCountry?: string;
 	obfuscator?: TunnelObfuscator;
@@ -216,6 +217,8 @@ export interface TunnelListItem {
 	wdttClientId?: string;
 	/** То же для FreeTurn-клиента: пара к wdttClientId. */
 	freeTurnClientId?: string;
+	/** То же для OpenFlux-клиента. */
+	openfluxClientId?: string;
 	/**
 	 * Страна подписки Amnezia Premium, из которой получена конфигурация.
 	 * Мастер читает именно список, поэтому метку страны он берёт отсюда.

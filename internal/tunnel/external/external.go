@@ -115,9 +115,20 @@ func (s *Service) List(ctx context.Context) ([]TunnelInfo, error) {
 
 	managed := make(map[int]bool)
 	for _, t := range managedTunnels {
-		numStr := tunnel.NewNames(t.ID).TunnelNum
-		if num, err := strconv.Atoi(numStr); err == nil {
-			managed[num] = true
+		if idx, ok := t.OpkgTunIndex(); ok {
+			managed[idx] = true
+		}
+		if idx, ok := opkgtun.IndexOf(t.RawKernelIface); ok {
+			managed[idx] = true
+		}
+		if idx, ok := opkgtun.IndexOf(t.RawNdmsIface); ok {
+			managed[idx] = true
+		}
+		if t.Backend != "nativewg" && !strings.HasPrefix(t.ID, "wdttraw-") {
+			numStr := tunnel.NewNames(t.ID).TunnelNum
+			if num, err := strconv.Atoi(numStr); err == nil {
+				managed[num] = true
+			}
 		}
 	}
 

@@ -31,6 +31,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/downloader"
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/hydraroute"
+	"github.com/hoaxisr/awg-manager/internal/openflux"
 	"github.com/hoaxisr/awg-manager/internal/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/presets"
 	"github.com/hoaxisr/awg-manager/internal/routing"
@@ -118,6 +119,7 @@ type Server struct {
 	adaptiveRoutingHandler     *api.AdaptiveRoutingHandler
 	telemtHandler              *api.TelemtHandler
 	openfluxHandler            *api.OpenFluxHandler
+	openfluxService            *openflux.Service
 	xrayHandler                *api.XrayHandler
 	aiAssistantHandler         *api.AIAssistantHandler
 	aiSentinel                 *aiassistant.Sentinel
@@ -254,6 +256,7 @@ type Deps struct {
 	TgWebProxyService        *tgwebproxy.Service
 	TelemtHandler            *api.TelemtHandler
 	OpenFluxHandler          *api.OpenFluxHandler
+	OpenFluxService          *openflux.Service
 	CDNDispatcher            *cdndispatcher.Dispatcher
 	ServerIngressCoordinator *serveringress.Coordinator
 
@@ -332,6 +335,7 @@ func New(cfg Config, deps Deps) *Server {
 		adaptiveRoutingHandler: deps.AdaptiveRoutingHandler,
 		telemtHandler:          deps.TelemtHandler,
 		openfluxHandler:        deps.OpenFluxHandler,
+		openfluxService:        deps.OpenFluxService,
 		xrayHandler:            deps.XrayHandler,
 		aiAssistantHandler:     deps.AIAssistantHandler,
 		mihomoOrch:             deps.MihomoOrch,

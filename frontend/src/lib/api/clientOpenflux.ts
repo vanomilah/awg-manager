@@ -96,6 +96,10 @@ export class OpenFluxClient extends TelemtClient {
 		return this.request<{ logs: string }>(`/openflux/client/logs?lines=${lines}`);
 	}
 
+	async openfluxClientDelete(): Promise<OpenFluxStatus> {
+		return this.request<OpenFluxStatus>('/openflux/client/delete', { method: 'POST' });
+	}
+
 	// #endregion
 }
 

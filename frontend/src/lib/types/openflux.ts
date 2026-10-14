@@ -12,11 +12,30 @@ export interface OpenFluxConfig {
 	openFirewall: boolean;
 	debug: number;
 	name?: string;
+
+	// Routing, NAT and Egress matching WDTT server
+	natMode?: 'full' | 'internet-only' | 'none';
+	natStaticWan?: string;
+	natStaticWans?: string[];
+	policy?: string;
+	lanSegments?: string[];
+	exposeToPolicies?: boolean;
+	egressInterface?: string;
+	ndmsIface?: string;
+	tunIface?: string;
 }
 
 export interface OpenFluxClientConfig {
 	enabled: boolean;
 	name?: string;
+	inboundMode?: 'tun' | 'socks5';
+	ndmsIface?: string;
+	tunIface?: string;
+	tunAddr?: string;
+	tunMtu?: number;
+	policy?: string;
+	exposeToPolicies?: boolean;
+	defaultRoute?: boolean;
 	transportMode: 'session' | 'single' | 'stream';
 	transports: string[];
 	directDial?: string;
@@ -56,6 +75,11 @@ export interface OpenFluxClientStatus {
 	running: boolean;
 	pid?: number;
 	uptimeS?: number;
+	inboundMode?: 'tun' | 'socks5';
+	ndmsIface?: string;
+	tunIface?: string;
+	tunAddr?: string;
+	policy?: string;
 	socks5Port?: number;
 	socks5Uri?: string;
 	httpUri?: string;

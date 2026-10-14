@@ -5,6 +5,7 @@ import (
 
 	"github.com/hoaxisr/awg-manager/internal/events"
 	"github.com/hoaxisr/awg-manager/internal/logging"
+	"github.com/hoaxisr/awg-manager/internal/openflux"
 	"github.com/hoaxisr/awg-manager/internal/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/routing"
 	"github.com/hoaxisr/awg-manager/internal/storage"
@@ -86,12 +87,20 @@ type TunnelsHandler struct {
 	// (амендмент F2).
 	proxyRecords ProxyRecordLister
 
+	openfluxProvider OpenFluxClientStatusProvider
+
 	// buildTunnelsSnapshot (optional) assembles the composite
 	// {tunnels, external, system} payload used by GetAll and by
 	// mutation handlers that return fresh state. Injected by server.go
 	// so TunnelsHandler doesn't need direct references to External /
 	// System tunnel handlers. Falls back to managed-only when nil.
 	buildTunnelsSnapshot func(ctx context.Context) map[string]interface{}
+}
+
+// OpenFluxClientStatusProvider queries the live OpenFlux client status and handles deletion.
+type OpenFluxClientStatusProvider interface {
+	GetClientStatus() openflux.ClientStatus
+	DeleteClient(ctx context.Context) error
 }
 
 // NewTunnelsHandler creates a new tunnels handler.
@@ -147,6 +156,11 @@ func (h *TunnelsHandler) SetOrchestrator(orch *orchestrator.Orchestrator) {
 // wdtt-raw сверяется с ним на владельца (амендмент F2).
 func (h *TunnelsHandler) SetProxyRecords(records ProxyRecordLister) {
 	h.proxyRecords = records
+}
+
+// SetOpenFluxProvider wires the live OpenFlux client status provider.
+func (h *TunnelsHandler) SetOpenFluxProvider(p OpenFluxClientStatusProvider) {
+	h.openfluxProvider = p
 }
 
 // SetPingCheckSnapshot sets the function that publishes a pingcheck snapshot.

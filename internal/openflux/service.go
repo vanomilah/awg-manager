@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,18 +31,33 @@ var (
 	ErrAlreadyInstalling = errors.New("openflux installation is already in progress")
 )
 
+// RouterCommands defines router network operations needed for OpenFlux client TUN mode.
+type RouterCommands interface {
+	AllocateTunInterface(ctx context.Context, preferred string) (ndmsName, tunName string, err error)
+	CreateInterface(ctx context.Context, ndmsName, desc string, mtu int, ipWithMask string, global bool, defaultRoute bool) error
+	DownInterface(ctx context.Context, ndmsName string) error
+	DeleteInterface(ctx context.Context, ndmsName string) error
+	PermitPolicy(ctx context.Context, policy, iface string) error
+	DenyPolicy(ctx context.Context, policy, iface string) error
+}
+
 // ClientStatus represents the operational state of the OpenFlux client.
 type ClientStatus struct {
-	Installed  bool          `json:"installed"`
-	Running    bool          `json:"running"`
-	PID        int           `json:"pid,omitempty"`
-	UptimeS    int64         `json:"uptimeS,omitempty"`
-	Socks5Port int           `json:"socks5Port,omitempty"`
-	Socks5URI  string        `json:"socks5Uri,omitempty"`
-	HttpURI    string        `json:"httpUri,omitempty"`
-	Error      string        `json:"error,omitempty"`
-	Config     *ClientConfig `json:"config,omitempty"`
-	LogTail    string        `json:"logTail,omitempty"`
+	Installed   bool          `json:"installed"`
+	Running     bool          `json:"running"`
+	PID         int           `json:"pid,omitempty"`
+	UptimeS     int64         `json:"uptimeS,omitempty"`
+	InboundMode string        `json:"inboundMode,omitempty"`
+	NdmsIface   string        `json:"ndmsIface,omitempty"`
+	TunIface    string        `json:"tunIface,omitempty"`
+	TunAddr     string        `json:"tunAddr,omitempty"`
+	Policy      string        `json:"policy,omitempty"`
+	Socks5Port  int           `json:"socks5Port,omitempty"`
+	Socks5URI   string        `json:"socks5Uri,omitempty"`
+	HttpURI     string        `json:"httpUri,omitempty"`
+	Error       string        `json:"error,omitempty"`
+	Config      *ClientConfig `json:"config,omitempty"`
+	LogTail     string        `json:"logTail,omitempty"`
 }
 
 // Status represents the operational and installation state of OpenFlux.
@@ -89,6 +105,25 @@ type Service struct {
 	clientLastErr   string
 	clientStopCh    chan struct{}
 	getPublicHost   func(context.Context) string
+	routerCmds      RouterCommands
+	policyResolver  PolicyResolver
+}
+
+// PolicyResolver resolves a Keenetic Access Policy name (e.g. "Policy0", "Policy1") to an egress IPv4 address.
+type PolicyResolver func(ctx context.Context, policyName string) (string, error)
+
+// SetRouterCommands attaches router network and policy commands to the service.
+func (s *Service) SetRouterCommands(cmds RouterCommands) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routerCmds = cmds
+}
+
+// SetPolicyResolver attaches a policy egress IP resolver for OpenFlux exit node mode.
+func (s *Service) SetPolicyResolver(pr PolicyResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.policyResolver = pr
 }
 
 // New creates a new OpenFlux service.
@@ -124,7 +159,7 @@ func New(dataDir string, arch string, getPublicHost func(context.Context) string
 		httpClient:    &http.Client{Timeout: 3 * time.Minute},
 		freeDisk:      routerinfo.FreeBytes,
 		config:        DefaultConfig(),
-		clientConfig:  DefaultClientConfig(),
+		clientConfig:  ClientConfig{},
 		getPublicHost: getPublicHost,
 	}
 
@@ -157,6 +192,25 @@ func (s *Service) saveConfigLocked() error {
 	return os.WriteFile(s.cfgPath, data, 0644)
 }
 
+func opkgTunNum(name string) (int, bool) {
+	for _, prefix := range []string{"OpkgTun", "opkgtun"} {
+		if strings.HasPrefix(name, prefix) {
+			if n, err := strconv.Atoi(strings.TrimPrefix(name, prefix)); err == nil {
+				return n, true
+			}
+		}
+	}
+	return -1, false
+}
+
+func (s *Service) hasClientConfigLocked() bool {
+	return strings.TrimSpace(s.clientConfig.Name) != "" ||
+		strings.TrimSpace(s.clientConfig.DirectDial) != "" ||
+		strings.TrimSpace(s.clientConfig.Secret) != "" ||
+		len(s.clientConfig.Transports) > 0 ||
+		s.clientConfig.Enabled
+}
+
 func (s *Service) loadClientConfig() {
 	data, err := os.ReadFile(s.clientCfgPath)
 	if err == nil {
@@ -168,11 +222,16 @@ func (s *Service) loadClientConfig() {
 			if strings.TrimSpace(cfg.Name) == "" {
 				cfg.Name = "OpenFlux Выход"
 			}
+			// Sanitize any invalid legacy OpkgTun0/OpkgTun1 pins
+			if idx, ok := opkgTunNum(cfg.NdmsIface); ok && idx < 2 {
+				cfg.NdmsIface = ""
+				cfg.TunIface = ""
+			}
 			s.clientConfig = cfg
+			return
 		}
-	} else {
-		_ = s.saveClientConfigLocked()
 	}
+	s.clientConfig = ClientConfig{}
 }
 
 func (s *Service) saveClientConfigLocked() error {
@@ -232,8 +291,94 @@ func (s *Service) checkRunningState(pidPath string) (bool, int) {
 	return true, pid
 }
 
+// AutoDiscoverFreeTun finds the first free OpkgTunN and opkgtunN by scanning system interfaces.
+// It follows opkgtun pool allocation rules: non-router proxy interfaces start at kernelWindowStart (10)
+// and have a floor of minIndex (2). Indices 0 and 1 are reserved exclusively for router mode (FakeIP / PolicyTun).
+func AutoDiscoverFreeTun(preferred string) (string, string) {
+	existing := make(map[int]bool)
+	if ifaces, err := net.Interfaces(); err == nil {
+		for _, iface := range ifaces {
+			for _, prefix := range []string{"OpkgTun", "opkgtun"} {
+				if strings.HasPrefix(iface.Name, prefix) {
+					numStr := strings.TrimPrefix(iface.Name, prefix)
+					if n, err := strconv.Atoi(numStr); err == nil && n >= 0 {
+						existing[n] = true
+					}
+				}
+			}
+		}
+	}
+	if preferred != "" {
+		for _, prefix := range []string{"OpkgTun", "opkgtun"} {
+			if strings.HasPrefix(preferred, prefix) {
+				numStr := strings.TrimPrefix(preferred, prefix)
+				if n, err := strconv.Atoi(numStr); err == nil && n >= 2 {
+					if !existing[n] {
+						return fmt.Sprintf("OpkgTun%d", n), fmt.Sprintf("opkgtun%d", n)
+					}
+				}
+			}
+		}
+	}
+	// Non-router allocation order: 10..64, then 9..2 (indices 0 and 1 reserved for router mode)
+	for i := 10; i <= 64; i++ {
+		if !existing[i] {
+			return fmt.Sprintf("OpkgTun%d", i), fmt.Sprintf("opkgtun%d", i)
+		}
+	}
+	for i := 9; i >= 2; i-- {
+		if !existing[i] {
+			return fmt.Sprintf("OpkgTun%d", i), fmt.Sprintf("opkgtun%d", i)
+		}
+	}
+	return "OpkgTun10", "opkgtun10"
+}
+
+func (s *Service) allocateTunLocked(ctx context.Context, preferred string) (string, string) {
+	if s.routerCmds != nil {
+		ndms, tun, err := s.routerCmds.AllocateTunInterface(ctx, preferred)
+		if err == nil && ndms != "" && tun != "" {
+			return ndms, tun
+		}
+	}
+	return AutoDiscoverFreeTun(preferred)
+}
+
+func (s *Service) ensureClientTunAllocatedLocked(ctx context.Context) {
+	inbound := strings.ToLower(strings.TrimSpace(s.clientConfig.InboundMode))
+	if inbound != "" && inbound != "tun" {
+		return
+	}
+	preferred := strings.TrimSpace(s.clientConfig.NdmsIface)
+	if idx, ok := opkgTunNum(preferred); ok && idx < 2 {
+		preferred = ""
+	}
+	ndms, tun := s.allocateTunLocked(ctx, preferred)
+	if ndms != "" && tun != "" {
+		s.clientConfig.NdmsIface = ndms
+		s.clientConfig.TunIface = tun
+	}
+}
+
 func (s *Service) getClientStatusLocked() ClientStatus {
 	installed := s.IsInstalled()
+	if !s.hasClientConfigLocked() {
+		return ClientStatus{
+			Installed:   installed,
+			Running:     false,
+			InboundMode: "",
+			NdmsIface:   "",
+			TunIface:    "",
+			TunAddr:     "",
+			Policy:      "",
+			Socks5Port:  DefaultClientSocks5Port,
+			Socks5URI:   "",
+			HttpURI:     "",
+			Error:       "",
+			Config:      nil,
+			LogTail:     "",
+		}
+	}
 	running, pid := s.GetClientRunningState()
 	var uptimeS int64
 	if running {
@@ -251,24 +396,64 @@ func (s *Service) getClientStatusLocked() ClientStatus {
 		}
 	}
 
-	cfgCopy := s.clientConfig
+	inboundMode := strings.ToLower(strings.TrimSpace(s.clientConfig.InboundMode))
+	if inboundMode == "" {
+		inboundMode = "tun"
+	}
+	ndmsIface := strings.TrimSpace(s.clientConfig.NdmsIface)
+	tunIface := strings.TrimSpace(s.clientConfig.TunIface)
+	if idx, ok := opkgTunNum(ndmsIface); ok && idx < 2 {
+		ndmsIface = ""
+		tunIface = ""
+	}
+	if (inboundMode == "tun" || inboundMode == "") && (ndmsIface == "" || tunIface == "") {
+		nd, tu := AutoDiscoverFreeTun("")
+		if ndmsIface == "" {
+			ndmsIface = nd
+		}
+		if tunIface == "" {
+			tunIface = tu
+		}
+	}
+	tunAddr := strings.TrimSpace(s.clientConfig.TunAddr)
+	if tunAddr == "" {
+		tunAddr = "10.10.10.2/24"
+	}
+	policy := strings.TrimSpace(s.clientConfig.Policy)
+
+	var clientCfg *ClientConfig
+	if s.hasClientConfigLocked() {
+		cfgCopy := s.clientConfig
+		clientCfg = &cfgCopy
+	}
 	logTail := s.getFileLogTailLocked(s.clientLogPath, 100)
 	errStr := s.clientLastErr
-	if running && strings.Contains(logTail, "[SOCKS5] Listening on") {
-		errStr = ""
+	if running {
+		if inboundMode == "tun" {
+			if strings.Contains(logTail, "Tunnel active") || strings.Contains(logTail, "utun interface:") {
+				errStr = ""
+			}
+		} else if strings.Contains(logTail, "[SOCKS5] Listening on") {
+			errStr = ""
+		}
 	}
 
 	return ClientStatus{
-		Installed:  installed,
-		Running:    running,
-		PID:        pid,
-		UptimeS:    uptimeS,
-		Socks5Port: s.clientConfig.Socks5Port(),
-		Socks5URI:  s.clientConfig.Socks5URI(),
-		HttpURI:    s.clientConfig.HttpURI(),
-		Error:      errStr,
-		Config:     &cfgCopy,
-		LogTail:    logTail,
+		Installed:   installed,
+		Running:     running,
+		PID:         pid,
+		UptimeS:     uptimeS,
+		InboundMode: inboundMode,
+		NdmsIface:   ndmsIface,
+		TunIface:    tunIface,
+		TunAddr:     tunAddr,
+		Policy:      policy,
+		Socks5Port:  s.clientConfig.Socks5Port(),
+		Socks5URI:   s.clientConfig.Socks5URI(),
+		HttpURI:     s.clientConfig.HttpURI(),
+		Error:       errStr,
+		Config:      clientCfg,
+		LogTail:     logTail,
 	}
 }
 
@@ -398,6 +583,8 @@ func (s *Service) SaveClientConfig(ctx context.Context, cfg ClientConfig) error 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	oldConfig := s.clientConfig
+
 	if strings.TrimSpace(cfg.Socks5Listen) == "" {
 		cfg.Socks5Listen = fmt.Sprintf("127.0.0.1:%d", DefaultClientSocks5Port)
 	}
@@ -405,8 +592,45 @@ func (s *Service) SaveClientConfig(ctx context.Context, cfg ClientConfig) error 
 		cfg.Name = "OpenFlux Выход"
 	}
 
+	inbound := strings.ToLower(strings.TrimSpace(cfg.InboundMode))
+	if inbound == "" || inbound == "tun" {
+		preferred := strings.TrimSpace(cfg.NdmsIface)
+		if idx, ok := opkgTunNum(preferred); ok && idx < 2 {
+			preferred = ""
+		}
+		ndms, tun := s.allocateTunLocked(ctx, preferred)
+		if ndms != "" && tun != "" {
+			cfg.NdmsIface = ndms
+			cfg.TunIface = tun
+		}
+		if strings.TrimSpace(cfg.TunAddr) == "" {
+			cfg.TunAddr = "10.10.10.2/24"
+		}
+		if cfg.TunMTU <= 0 {
+			cfg.TunMTU = 1280
+		}
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+
+	// Clean up old policy or interface if policy or inbound mode changed
+	if s.routerCmds != nil {
+		oldPolicy := strings.TrimSpace(oldConfig.Policy)
+		newPolicy := strings.TrimSpace(cfg.Policy)
+		oldIface := strings.TrimSpace(oldConfig.NdmsIface)
+		newIface := strings.TrimSpace(cfg.NdmsIface)
+
+		if oldIface != "" && oldPolicy != "" && oldPolicy != "none" {
+			if oldPolicy != newPolicy || oldIface != newIface || inbound == "socks5" {
+				_ = s.routerCmds.DenyPolicy(ctx, oldPolicy, oldIface)
+			}
+		}
+		if inbound == "socks5" && oldConfig.InboundMode != "socks5" && oldIface != "" {
+			_ = s.routerCmds.DownInterface(ctx, oldIface)
+			_ = s.routerCmds.DeleteInterface(ctx, oldIface)
+		}
 	}
 
 	s.clientConfig = cfg
@@ -440,7 +664,9 @@ func (s *Service) StartClient(ctx context.Context) error {
 		return err
 	}
 	s.clientConfig.Enabled = true
-	_ = s.saveClientConfigLocked()
+	if err := s.saveClientConfigLocked(); err != nil {
+		return fmt.Errorf("не удалось сохранить конфигурацию клиента: %w", err)
+	}
 	return nil
 }
 
@@ -454,7 +680,37 @@ func (s *Service) StopClient(ctx context.Context) error {
 	}
 	s.clientConfig.Enabled = false
 	s.clientLastErr = ""
-	_ = s.saveClientConfigLocked()
+	if err := s.saveClientConfigLocked(); err != nil {
+		return fmt.Errorf("не удалось сохранить конфигурацию клиента: %w", err)
+	}
+	return nil
+}
+
+// DeleteClient completely stops the client, cleans up OpkgTun/NDMS interface, and resets client config.
+func (s *Service) DeleteClient(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_ = s.stopClientProcess(ctx)
+
+	if s.routerCmds != nil {
+		ndmsIface := strings.TrimSpace(s.clientConfig.NdmsIface)
+		if ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+			_ = s.routerCmds.DownInterface(ctx, ndmsIface)
+			_ = s.routerCmds.DeleteInterface(ctx, ndmsIface)
+		}
+		if s.clientConfig.Policy != "" && ndmsIface != "" {
+			_ = s.routerCmds.DenyPolicy(ctx, s.clientConfig.Policy, ndmsIface)
+		}
+	}
+
+	_ = os.Remove(s.clientCfgPath)
+	secureZeroAndRemoveFile(s.clientKeyPath)
+	_ = os.Remove(s.clientPidPath)
+	s.clientConfig = ClientConfig{}
+	s.clientStartedAt = time.Time{}
+	s.clientLastErr = ""
+
 	return nil
 }
 
@@ -535,10 +791,21 @@ func (s *Service) startProcess(ctx context.Context) error {
 	// Clean old PID file
 	_ = os.Remove(s.pidPath)
 
+	if s.policyResolver != nil && s.config.Policy != "" && s.config.Policy != "none" {
+		if ip, err := s.policyResolver(ctx, s.config.Policy); err == nil && ip != "" {
+			s.config.PolicyIP = ip
+		} else {
+			s.config.PolicyIP = ""
+		}
+	} else {
+		s.config.PolicyIP = ""
+	}
+
 	args := s.config.BuildArgs(s.keyPath)
 
 	logFile, err := os.OpenFile(s.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
+		secureZeroAndRemoveFile(s.keyPath)
 		return fmt.Errorf("не удалось открыть файл журнала: %w", err)
 	}
 
@@ -549,6 +816,7 @@ func (s *Service) startProcess(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
+		secureZeroAndRemoveFile(s.keyPath)
 		return fmt.Errorf("не удалось запустить openflux: %w", err)
 	}
 
@@ -567,6 +835,7 @@ func (s *Service) startProcess(ctx context.Context) error {
 }
 
 func (s *Service) stopProcess(ctx context.Context) error {
+	secureZeroAndRemoveFile(s.keyPath)
 	running, pid := s.GetRunningState()
 	if !running {
 		_ = os.Remove(s.pidPath)
@@ -585,23 +854,83 @@ func (s *Service) restartProcess(ctx context.Context) error {
 	return s.startProcess(ctx)
 }
 
+func isHelpOrBannerLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "written by ") || strings.HasPrefix(trimmed, "OpenFlux — ") {
+		return true
+	}
+	switch trimmed {
+	case "USAGE", "ROLE", "TRANSPORT", "TRANSPORTS", "INBOUND", "MODE", "TRANSPORT MODIFIERS", "BENCHMARK", "LOGGING", "DEPRECATED":
+		return true
+	}
+	if strings.HasPrefix(trimmed, "openflux --") || strings.Contains(trimmed, "[OPTIONS]") {
+		return true
+	}
+	return false
+}
+
 func extractLastErrorFromLog(logTail string) string {
 	lines := strings.Split(strings.TrimSpace(logTail), "\n")
-	lastNonEmpty := ""
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
-		if line == "" {
+		if isHelpOrBannerLine(line) {
 			continue
 		}
-		if lastNonEmpty == "" {
-			lastNonEmpty = line
-		}
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "failed") || strings.Contains(lower, "error") || strings.Contains(lower, "handshake not complete") || strings.Contains(lower, "fatal") || strings.Contains(lower, "bind:") || strings.Contains(lower, "panic") {
+		if strings.HasPrefix(lower, "flag provided but not defined:") ||
+			strings.HasPrefix(lower, "flag:") ||
+			strings.Contains(lower, "is only supported on") ||
+			strings.Contains(lower, "bind: address already in use") ||
+			strings.Contains(lower, "address already in use") ||
+			strings.Contains(lower, "panic:") ||
+			strings.Contains(lower, "fatal:") ||
+			strings.Contains(lower, "[error]") ||
+			strings.Contains(lower, "failed to") ||
+			strings.Contains(lower, "error:") ||
+			strings.Contains(lower, "handshake failed") ||
+			strings.Contains(lower, "no such host") ||
+			strings.Contains(lower, "i/o timeout") ||
+			strings.Contains(lower, "server misbehaving") ||
+			strings.Contains(lower, "tls:") ||
+			strings.Contains(lower, "connection refused") ||
+			strings.Contains(lower, "network is unreachable") ||
+			strings.Contains(lower, "context deadline exceeded") {
 			return line
 		}
 	}
-	return lastNonEmpty
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if isHelpOrBannerLine(line) {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") {
+			return line
+		}
+	}
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !isHelpOrBannerLine(line) {
+			return line
+		}
+	}
+
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "flag provided but not defined:") {
+			return trimmed
+		}
+	}
+
+	return ""
 }
 
 func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) error {
@@ -643,6 +972,56 @@ func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) erro
 
 	_ = os.Remove(s.clientPidPath)
 
+	inboundMode := strings.ToLower(strings.TrimSpace(s.clientConfig.InboundMode))
+	if inboundMode == "" {
+		inboundMode = "socks5"
+	}
+	if inboundMode == "tun" {
+		s.ensureClientTunAllocatedLocked(ctx)
+		if err := s.saveClientConfigLocked(); err != nil {
+			secureZeroAndRemoveFile(s.clientKeyPath)
+			return fmt.Errorf("не удалось сохранить конфигурацию клиента: %w", err)
+		}
+	}
+	ndmsIface := strings.TrimSpace(s.clientConfig.NdmsIface)
+	if inboundMode == "tun" && (ndmsIface == "" || ndmsIface == "OpkgTun0" || ndmsIface == "OpkgTun1") {
+		secureZeroAndRemoveFile(s.clientKeyPath)
+		return fmt.Errorf("недопустимый или невыделенный интерфейс OpkgTun: %q", ndmsIface)
+	}
+	tunAddr := strings.TrimSpace(s.clientConfig.TunAddr)
+	if tunAddr == "" {
+		tunAddr = "10.10.10.2/24"
+	}
+	policy := strings.TrimSpace(s.clientConfig.Policy)
+
+	if inboundMode == "tun" && s.routerCmds != nil {
+		desc := "OpenFlux"
+		if name := strings.TrimSpace(s.clientConfig.Name); name != "" {
+			if strings.HasPrefix(name, "OpenFlux") {
+				desc = name
+			} else {
+				desc = "OpenFlux " + name
+			}
+		}
+		mtu := s.clientConfig.TunMTU
+		if mtu <= 0 {
+			mtu = 1280
+		}
+		if err := s.routerCmds.CreateInterface(ctx, ndmsIface, desc, mtu, tunAddr, s.clientConfig.ExposeToPolicies, s.clientConfig.DefaultRoute); err != nil {
+			secureZeroAndRemoveFile(s.clientKeyPath)
+			return fmt.Errorf("не удалось создать интерфейс %s в NDMS: %w", ndmsIface, err)
+		}
+		if policy != "" && policy != "none" {
+			if err := s.routerCmds.PermitPolicy(ctx, policy, ndmsIface); err != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = s.routerCmds.DownInterface(cleanupCtx, ndmsIface)
+				cancel()
+				secureZeroAndRemoveFile(s.clientKeyPath)
+				return fmt.Errorf("не удалось привязать интерфейс %s к политике %s: %w", ndmsIface, policy, err)
+			}
+		}
+	}
+
 	args := s.clientConfig.BuildArgs(s.clientKeyPath)
 
 	// Truncate log if manual start or if file exceeds 128 KB
@@ -655,6 +1034,7 @@ func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) erro
 
 	logFile, err := os.OpenFile(s.clientLogPath, openFlags, 0644)
 	if err != nil {
+		secureZeroAndRemoveFile(s.clientKeyPath)
 		return fmt.Errorf("не удалось открыть файл журнала клиента: %w", err)
 	}
 
@@ -665,6 +1045,12 @@ func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) erro
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
+		secureZeroAndRemoveFile(s.clientKeyPath)
+		if inboundMode == "tun" && s.routerCmds != nil && ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = s.routerCmds.DownInterface(cleanupCtx, ndmsIface)
+			cancel()
+		}
 		return fmt.Errorf("не удалось запустить клиент openflux: %w", err)
 	}
 
@@ -719,7 +1105,17 @@ func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) erro
 	if resetStopCh {
 		select {
 		case waitErr := <-waitDone:
+			if s.clientStopCh != nil {
+				close(s.clientStopCh)
+				s.clientStopCh = nil
+			}
+			secureZeroAndRemoveFile(s.clientKeyPath)
 			_ = os.Remove(s.clientPidPath)
+			if inboundMode == "tun" && s.routerCmds != nil && ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = s.routerCmds.DownInterface(cleanupCtx, ndmsIface)
+				cancel()
+			}
 			msg := extractLastErrorFromLog(s.getFileLogTailLocked(s.clientLogPath, 30))
 			if msg == "" && waitErr != nil {
 				msg = fmt.Sprintf("процесс завершился сразу после запуска: %v", waitErr)
@@ -740,20 +1136,28 @@ func (s *Service) stopClientProcess(ctx context.Context) error {
 		close(s.clientStopCh)
 		s.clientStopCh = nil
 	}
+	secureZeroAndRemoveFile(s.clientKeyPath)
 
 	running, pid := s.GetClientRunningState()
-	if !running {
+	if running {
+		terminatePID(pid, s.clientPidPath)
+	} else {
 		_ = os.Remove(s.clientPidPath)
-		return nil
 	}
 
-	terminatePID(pid, s.clientPidPath)
+	if s.routerCmds != nil {
+		ndmsIface := strings.TrimSpace(s.clientConfig.NdmsIface)
+		if ndmsIface != "" && ndmsIface != "OpkgTun0" && ndmsIface != "OpkgTun1" {
+			_ = s.routerCmds.DownInterface(ctx, ndmsIface)
+		}
+	}
+
 	return nil
 }
 
 func (s *Service) restartClientProcess(ctx context.Context) error {
 	_ = s.stopClientProcess(ctx)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	return s.startClientProcess(ctx, true)
 }
 
@@ -782,42 +1186,147 @@ func terminatePID(pid int, pidPath string) {
 	_ = os.Remove(pidPath)
 }
 
+func secureZeroAndRemoveFile(path string) {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().IsRegular() {
+		size := fi.Size()
+		if size > 0 {
+			zeroes := make([]byte, size)
+			_ = os.WriteFile(path, zeroes, 0600)
+		}
+	}
+	_ = os.Remove(path)
+}
+
+// ParseStaleNatDeleteArgs parses the output of `iptables -t nat -S POSTROUTING` and returns
+// command argument slices for deleting rules tagged with "AWGM_OPENFLUX" whose outgoing interface
+// is not in the keepWANs list. It strips enclosing quotes from tokens such as `--comment "AWGM_OPENFLUX"`.
+func ParseStaleNatDeleteArgs(iptablesOutput string, keepWANs []string) [][]string {
+	keepMap := make(map[string]bool)
+	for _, w := range keepWANs {
+		if trimmed := strings.TrimSpace(w); trimmed != "" {
+			keepMap[trimmed] = true
+		}
+	}
+
+	var results [][]string
+	lines := strings.Split(iptablesOutput, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "AWGM_OPENFLUX") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) <= 2 || fields[0] != "-A" || fields[1] != "POSTROUTING" {
+			continue
+		}
+		wan := ""
+		for i, f := range fields {
+			if (f == "-o" || f == "--out-interface") && i+1 < len(fields) {
+				wan = strings.Trim(fields[i+1], "\"")
+				break
+			}
+		}
+		if wan != "" && keepMap[wan] {
+			continue
+		}
+		var delRuleArgs []string
+		for _, token := range fields[2:] {
+			delRuleArgs = append(delRuleArgs, strings.Trim(token, "\""))
+		}
+		results = append(results, append([]string{"-t", "nat", "-D", "POSTROUTING"}, delRuleArgs...))
+	}
+	return results
+}
+
+func cleanStaleNatRules(ctx context.Context, keepWANs []string) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	cmd := exec.CommandContext(ctx, "iptables", "-t", "nat", "-S", "POSTROUTING")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	delCmds := ParseStaleNatDeleteArgs(string(out), keepWANs)
+	for _, args := range delCmds {
+		_ = exec.CommandContext(ctx, "iptables", args...).Run()
+	}
+}
+
 func (s *Service) applyFirewall(ctx context.Context) {
 	if runtime.GOOS != "linux" {
 		return
 	}
-	if !s.config.OpenFirewall {
-		s.removeFirewall(ctx)
-		return
+	// Manage INPUT port firewall rule
+	if s.openedPort > 0 && (!s.config.OpenFirewall || s.openedPort != s.config.DirectPort()) {
+		portStr := strconv.Itoa(s.openedPort)
+		for {
+			delCmd := exec.CommandContext(ctx, "iptables", "-D", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
+			if err := delCmd.Run(); err != nil {
+				break
+			}
+		}
+		s.openedPort = 0
 	}
-	port := s.config.DirectPort()
-	if port <= 0 {
-		return
+	if s.config.OpenFirewall {
+		port := s.config.DirectPort()
+		if port > 0 {
+			portStr := strconv.Itoa(port)
+			checkCmd := exec.CommandContext(ctx, "iptables", "-C", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
+			if err := checkCmd.Run(); err != nil {
+				addCmd := exec.CommandContext(ctx, "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
+				_ = addCmd.Run()
+			}
+			s.openedPort = port
+		}
 	}
-	portStr := strconv.Itoa(port)
 
-	// Check if rule already exists
-	checkCmd := exec.CommandContext(ctx, "iptables", "-C", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
-	if err := checkCmd.Run(); err != nil {
-		// Rule does not exist, insert it
-		addCmd := exec.CommandContext(ctx, "iptables", "-I", "INPUT", "1", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
-		_ = addCmd.Run()
+	// Apply NAT rules for internet-only mode matching WDTT server
+	if s.config.NatMode == "internet-only" {
+		wans := s.config.StaticNATList()
+		cleanStaleNatRules(ctx, wans)
+		for _, wan := range wans {
+			wan = strings.TrimSpace(wan)
+			if wan == "" {
+				continue
+			}
+			checkCmd := exec.CommandContext(ctx, "iptables", "-t", "nat", "-C", "POSTROUTING", "-o", wan, "-m", "comment", "--comment", "AWGM_OPENFLUX", "-j", "MASQUERADE")
+			if err := checkCmd.Run(); err != nil {
+				addCmd := exec.CommandContext(ctx, "iptables", "-t", "nat", "-I", "POSTROUTING", "1", "-o", wan, "-m", "comment", "--comment", "AWGM_OPENFLUX", "-j", "MASQUERADE")
+				_ = addCmd.Run()
+			}
+		}
+	} else {
+		// Clean up all AWGM_OPENFLUX NAT rules if not in internet-only mode
+		cleanStaleNatRules(ctx, nil)
 	}
-	s.openedPort = port
+
+	if s.routerCmds != nil && s.config.Policy != "" && s.config.Policy != "none" && s.config.NdmsIface != "" {
+		_ = s.routerCmds.PermitPolicy(ctx, s.config.Policy, s.config.NdmsIface)
+	}
 }
 
 func (s *Service) removeFirewall(ctx context.Context) {
-	if runtime.GOOS != "linux" || s.openedPort <= 0 {
+	if runtime.GOOS != "linux" {
 		return
 	}
-	portStr := strconv.Itoa(s.openedPort)
-	for {
-		delCmd := exec.CommandContext(ctx, "iptables", "-D", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
-		if err := delCmd.Run(); err != nil {
-			break
+	if s.openedPort > 0 {
+		portStr := strconv.Itoa(s.openedPort)
+		for {
+			delCmd := exec.CommandContext(ctx, "iptables", "-D", "INPUT", "-p", "tcp", "--dport", portStr, "-j", "ACCEPT")
+			if err := delCmd.Run(); err != nil {
+				break
+			}
 		}
+		s.openedPort = 0
 	}
-	s.openedPort = 0
+
+	// Remove all AWGM_OPENFLUX NAT rules
+	cleanStaleNatRules(ctx, nil)
+
+	if s.routerCmds != nil && s.config.Policy != "" && s.config.NdmsIface != "" {
+		_ = s.routerCmds.DenyPolicy(ctx, s.config.Policy, s.config.NdmsIface)
+	}
 }
 
 // Install downloads and installs the pinned OpenFlux binary.

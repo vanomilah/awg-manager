@@ -833,11 +833,23 @@ func (s *ServiceImpl) resolveIngressInterfaces(ctx context.Context, refs []strin
 	for _, ref := range refs {
 		var name string
 		switch {
-		case strings.HasPrefix(ref, "iface:"):
-			name = strings.TrimPrefix(ref, "iface:")
 		case strings.HasPrefix(ref, "managed:"):
 			if s.deps.IngressResolver != nil {
 				name = s.deps.IngressResolver.Resolve(ctx, ref)
+			}
+		case strings.HasPrefix(ref, "iface:"):
+			raw := strings.TrimPrefix(ref, "iface:")
+			if linksErr == nil && links[raw] {
+				name = raw
+			} else if s.deps.IngressResolver != nil {
+				resolved := s.deps.IngressResolver.Resolve(ctx, ref)
+				if resolved != "" {
+					name = resolved
+				} else {
+					name = raw
+				}
+			} else {
+				name = raw
 			}
 		}
 		if name == "" {

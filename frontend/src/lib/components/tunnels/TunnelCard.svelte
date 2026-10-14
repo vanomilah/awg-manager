@@ -316,7 +316,7 @@
 						<VersionBadge kind="awg" value={tunnel.awgVersion} />
 					{/if}
 					{#if tunnel.backend}
-						<VersionBadge kind="backend" value={tunnel.backend} />
+						<VersionBadge kind="backend" value={tunnel.backend} labelOverride={tunnel.openfluxClientId ? 'OpkgTun' : undefined} />
 					{/if}
 					<ProxyOwnedBadge {tunnel} />
 					{#if tunnel.obfuscator}
@@ -387,7 +387,7 @@
 					<div class="meta-line">
 						<span class="iface-name">{tunnel.interfaceName || tunnel.id}</span>
 						{#if tunnel.backend}
-							<VersionBadge kind="backend" value={tunnel.backend} />
+							<VersionBadge kind="backend" value={tunnel.backend} labelOverride={tunnel.openfluxClientId ? 'OpkgTun' : undefined} />
 						{/if}
 						{#if tunnel.awgVersion}
 							<VersionBadge kind="awg" value={tunnel.awgVersion} />

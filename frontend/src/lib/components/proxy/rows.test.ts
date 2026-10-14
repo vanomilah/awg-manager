@@ -167,6 +167,32 @@ describe('exitRows: поддержка OpenFlux-клиента', () => {
 			{ label: 'Интернет', detail: 'через выход' },
 		]);
 	});
+
+	it('не добавляет openflux:client строку если клиент удален (config=null и running=false)', () => {
+		const src = {
+			wdttStatus: null,
+			wdttConfig: null,
+			ftStatus: null,
+			ftConfig: null,
+			openfluxStatus: {
+				installed: true,
+				running: false,
+				archSupported: true,
+				binary: '/opt/bin/openflux',
+				arch: 'aarch64',
+				client: {
+					installed: true,
+					running: false,
+					pid: 0,
+					socks5Port: 1085,
+					config: null,
+				},
+			},
+			openfluxClientConfig: null,
+		};
+		const rows = exitRows(src);
+		expect(rows).toHaveLength(0);
+	});
 });
 
 describe('shareRows: поддержка OpenFlux', () => {
@@ -210,8 +236,36 @@ describe('shareRows: поддержка OpenFlux', () => {
 		});
 		expect(rows[0].flow).toEqual([
 			{ label: 'Клиенты', detail: 'qThrone / Direct / Mail.ru' },
-			{ label: 'OpenFlux', detail: ':8445' },
-			{ label: 'Интернет', detail: 'L4' },
+			{ label: 'Этот роутер', detail: 'L4 · :8445' },
+			{ label: 'Интернет', detail: 'NAT: полный' },
+		]);
+	});
+
+	it('openfluxServerFlow отражает egress-маршрутизацию, WAN для internet-only и политику', () => {
+		const src = {
+			wdttStatus: null,
+			wdttConfig: null,
+			ftStatus: null,
+			ftConfig: null,
+			openfluxConfig: {
+				enabled: true,
+				mode: 'l3' as const,
+				transportMode: 'session' as const,
+				transports: ['direct'],
+				directListen: '0.0.0.0:8445',
+				openFirewall: true,
+				debug: 0,
+				natMode: 'internet-only' as const,
+				natStaticWan: 'ISP',
+				egressInterface: 'ISP',
+				policy: 'Policy1',
+			},
+		};
+		const rows = shareRows(src as any);
+		expect(rows[0].flow).toEqual([
+			{ label: 'Клиенты', detail: 'qThrone / Direct' },
+			{ label: 'Этот роутер', detail: 'L3 · :8445 → ISP' },
+			{ label: 'Интернет', detail: 'NAT: ISP · Policy1' },
 		]);
 	});
 });

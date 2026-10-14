@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/mihomo"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
+	ndmscommand "github.com/hoaxisr/awg-manager/internal/ndms/command"
 	"github.com/hoaxisr/awg-manager/internal/server"
 	"github.com/hoaxisr/awg-manager/internal/serveringress"
 	"github.com/hoaxisr/awg-manager/internal/singbox/awgoutbounds"
@@ -36,6 +38,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
 	"github.com/hoaxisr/awg-manager/internal/openflux"
 	"github.com/hoaxisr/awg-manager/internal/telemt"
 	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
@@ -110,6 +113,50 @@ func (a *app) setupServer() {
 	a.openfluxService = openflux.New(a.dataDir, openfluxArch, func(ctx context.Context) string {
 		host, _ := a.proxyExternalIP(ctx)
 		return host
+	})
+	if a.ndmsCommands != nil {
+		a.openfluxService.SetRouterCommands(&openfluxRouterAdapter{cmds: a.ndmsCommands, pool: a.opkgPool})
+	}
+	a.openfluxService.SetPolicyResolver(func(ctx context.Context, policyName string) (string, error) {
+		if a.ndmsQueries == nil || a.ndmsQueries.Policies == nil {
+			return "", nil
+		}
+		policies, err := a.ndmsQueries.Policies.List(ctx)
+		if err != nil {
+			return "", err
+		}
+		var targetIface string
+		for _, p := range policies {
+			if strings.EqualFold(p.Name, policyName) {
+				for _, iface := range p.Interfaces {
+					if !iface.Denied && strings.TrimSpace(iface.Name) != "" {
+						targetIface = iface.Name
+						break
+					}
+				}
+				break
+			}
+		}
+		if targetIface == "" {
+			return "", nil
+		}
+		if a.ndmsQueries.Interfaces != nil {
+			if ifaces, err := a.ndmsQueries.Interfaces.List(ctx); err == nil {
+				for _, ifi := range ifaces {
+					if strings.EqualFold(ifi.ID, targetIface) || strings.EqualFold(ifi.SystemName, targetIface) {
+						if ifi.Address != "" {
+							return ifi.Address, nil
+						}
+						if ifi.SystemName != "" {
+							if ip := openflux.ResolveInterfaceIPv4(ifi.SystemName); ip != "" {
+								return ip, nil
+							}
+						}
+					}
+				}
+			}
+		}
+		return openflux.ResolveInterfaceIPv4(targetIface), nil
 	})
 	a.deferOnExit(func() {
 		a.openfluxService.Shutdown(context.Background())
@@ -247,6 +294,7 @@ func (a *app) setupServer() {
 			TgWebProxyService:        a.tgWebProxyService,
 			TelemtHandler:            a.telemtHandler,
 			OpenFluxHandler:          a.openfluxHandler,
+			OpenFluxService:          a.openfluxService,
 			CDNDispatcher:            a.cdnDispatcher,
 			ServerIngressCoordinator: a.ingressCoordinator,
 			OrphanIfaces:          orphanIfaces(a.opkgPool, a.ndmsQueries.Interfaces),
@@ -1003,3 +1051,140 @@ func shutdownIngressRuntime(ctx context.Context, xray *xrayserver.Service, tg *t
 	}
 	return errors.Join(errs...)
 }
+
+type openfluxRouterAdapter struct {
+	mu    sync.Mutex
+	cmds  *ndmscommand.Commands
+	pool  *opkgtun.Pool
+	lease *opkgtun.Reservation
+}
+
+func (r *openfluxRouterAdapter) releaseLeaseLocked() {
+	if r.lease != nil {
+		r.lease.Close()
+		r.lease = nil
+	}
+}
+
+func (r *openfluxRouterAdapter) AllocateTunInterface(ctx context.Context, preferred string) (string, string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.pool != nil {
+		r.releaseLeaseLocked()
+		self := opkgtun.ProxyHolder("openflux-client", "tun", "OpenFlux Client")
+		req := opkgtun.Want(self)
+		if idx, ok := opkgtun.NDMSIndexOf(preferred); ok && idx >= 2 {
+			req = opkgtun.WantPinned(self, idx)
+		}
+		res, err := r.pool.Reserve(ctx, req)
+		if err == nil {
+			r.lease = res
+			num := res.Numbers()[0]
+			return fmt.Sprintf("OpkgTun%d", num), fmt.Sprintf("opkgtun%d", num), nil
+		}
+	}
+	ndms, tun := openflux.AutoDiscoverFreeTun(preferred)
+	return ndms, tun, nil
+}
+
+func (r *openfluxRouterAdapter) CreateInterface(ctx context.Context, ndmsName, desc string, mtu int, ipWithMask string, global bool, defaultRoute bool) error {
+	if r.cmds == nil || ndmsName == "" {
+		return nil
+	}
+	ip, mask := parseIPAndMask(ipWithMask)
+	if err := r.cmds.Interfaces.CreateOpkgTunWithSecurityLevel(ctx, ndmsName, desc, "public"); err != nil {
+		r.mu.Lock()
+		r.releaseLeaseLocked()
+		r.mu.Unlock()
+		return fmt.Errorf("create %s: %w", ndmsName, err)
+	}
+
+	rollback := func(cause error) error {
+		r.mu.Lock()
+		r.releaseLeaseLocked()
+		r.mu.Unlock()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = r.cmds.Interfaces.DeleteOpkgTun(cleanupCtx, ndmsName)
+		return cause
+	}
+
+	if ip != "" && mask != "" {
+		if err := r.cmds.Interfaces.SetAddress(ctx, ndmsName, ip, mask); err != nil {
+			return rollback(fmt.Errorf("set address %s on %s: %w", ipWithMask, ndmsName, err))
+		}
+	}
+	if mtu > 0 {
+		if err := r.cmds.Interfaces.SetMTU(ctx, ndmsName, mtu); err != nil {
+			return rollback(fmt.Errorf("set mtu %d on %s: %w", mtu, ndmsName, err))
+		}
+	}
+	if global {
+		if err := r.cmds.Interfaces.SetIPGlobal(ctx, ndmsName); err != nil {
+			return rollback(fmt.Errorf("set ip global on %s: %w", ndmsName, err))
+		}
+	}
+	if err := r.cmds.Interfaces.SetPermitAllACL(ctx, ndmsName); err != nil {
+		return rollback(fmt.Errorf("set permit all acl on %s: %w", ndmsName, err))
+	}
+	if err := r.cmds.Interfaces.InterfaceUp(ctx, ndmsName); err != nil {
+		return rollback(fmt.Errorf("interface up %s: %w", ndmsName, err))
+	}
+	if defaultRoute {
+		if err := r.cmds.Routes.SetDefaultRoute(ctx, ndmsName); err != nil {
+			return rollback(fmt.Errorf("set default route on %s: %w", ndmsName, err))
+		}
+	}
+	return nil
+}
+
+func (r *openfluxRouterAdapter) DownInterface(ctx context.Context, ndmsName string) error {
+	r.mu.Lock()
+	r.releaseLeaseLocked()
+	r.mu.Unlock()
+	if r.cmds == nil || ndmsName == "" {
+		return nil
+	}
+	return r.cmds.Interfaces.InterfaceDown(ctx, ndmsName)
+}
+
+func (r *openfluxRouterAdapter) DeleteInterface(ctx context.Context, ndmsName string) error {
+	r.mu.Lock()
+	r.releaseLeaseLocked()
+	r.mu.Unlock()
+	if r.cmds == nil || ndmsName == "" {
+		return nil
+	}
+	return r.cmds.Interfaces.DeleteOpkgTun(ctx, ndmsName)
+}
+
+func (r *openfluxRouterAdapter) PermitPolicy(ctx context.Context, policy, iface string) error {
+	if r.cmds == nil || policy == "" || policy == "none" {
+		return nil
+	}
+	return r.cmds.Policies.PermitInterface(ctx, policy, iface, 0)
+}
+
+func (r *openfluxRouterAdapter) DenyPolicy(ctx context.Context, policy, iface string) error {
+	if r.cmds == nil || policy == "" || policy == "none" {
+		return nil
+	}
+	return r.cmds.Policies.DenyInterface(ctx, policy, iface)
+}
+
+func parseIPAndMask(cidr string) (string, string) {
+	s := strings.TrimSpace(cidr)
+	if s == "" {
+		return "10.10.10.2", "255.255.255.0"
+	}
+	ip, ipNet, err := net.ParseCIDR(s)
+	if err == nil {
+		mask := net.IP(ipNet.Mask).String()
+		return ip.String(), mask
+	}
+	if plain := net.ParseIP(s); plain != nil {
+		return plain.String(), "255.255.255.0"
+	}
+	return "10.10.10.2", "255.255.255.0"
+}
+

@@ -173,8 +173,8 @@ function clientFlow(listen?: string, peer?: string): ProxyFlowStep[] {
 	];
 }
 
-/** Поток OpenFlux-клиента: роутер (SOCKS5) → сервер OpenFlux → интернет. */
-function openfluxClientFlow(c?: OpenFluxClientConfig): ProxyFlowStep[] {
+/** Поток OpenFlux-клиента: роутер (OpkgTun / SOCKS5) → сервер OpenFlux → интернет. */
+function openfluxClientFlow(c?: OpenFluxClientConfig, st?: OpenFluxClientStatus): ProxyFlowStep[] {
 	const transports = c?.transports ?? ['direct'];
 	const transportLabels = transports.map((t) => {
 		if (t === 'mailru') return 'Mail.ru';
@@ -184,14 +184,19 @@ function openfluxClientFlow(c?: OpenFluxClientConfig): ProxyFlowStep[] {
 		if (t === 'telemost') return 'Telemost';
 		return t;
 	});
-	const socksPort = portOf(c?.socks5Listen || ':1085') || ':1085';
+	const isTun = (c?.inboundMode ?? st?.inboundMode ?? 'socks5') === 'tun';
+	const rawName = st?.ndmsIface || c?.ndmsIface || '';
+	const ifaceName = (rawName && rawName !== 'OpkgTun0' && rawName !== 'OpkgTun1') ? rawName : 'OpkgTun (авто)';
+	const routerDetail = isTun
+		? ifaceName
+		: `SOCKS5 ${portOf(c?.socks5Listen || ':1085') || ':1085'}`;
 	const peerLabel = c?.directDial ? hostOf(c.directDial) : 'OpenFlux';
 	const peerDetail =
 		transportLabels.length > 0
 			? transportLabels.join(' / ')
 			: portOf(c?.directDial) || 'мульти-транспорт';
 	return [
-		{ label: 'Этот роутер', detail: `SOCKS5 ${socksPort}` },
+		{ label: 'Этот роутер', detail: routerDetail },
 		{ label: peerLabel, detail: peerDetail },
 		{ label: 'Интернет', detail: 'через выход' },
 	];
@@ -219,8 +224,8 @@ function ftServerFlow(c?: FreeTurnServerConfig): ProxyFlowStep[] {
 	];
 }
 
-/** Поток OpenFlux-сервера: клиенты → OpenFlux → интернет. */
-function openfluxServerFlow(c?: OpenFluxConfig): ProxyFlowStep[] {
+/** Поток OpenFlux-сервера: клиенты → этот роутер → интернет. */
+function openfluxServerFlow(c?: OpenFluxConfig, st?: OpenFluxStatus): ProxyFlowStep[] {
 	const transports = c?.transports ?? ['direct'];
 	const transportLabels = transports.map((t) => {
 		if (t === 'mailru') return 'Mail.ru';
@@ -230,10 +235,20 @@ function openfluxServerFlow(c?: OpenFluxConfig): ProxyFlowStep[] {
 	});
 	const clientDetail = transportLabels.length > 0 ? `qThrone / ${transportLabels.join(' / ')}` : 'qThrone';
 	const port = portOf(c?.directListen || ':8445') || ':8445';
+	const modeStr = (c?.mode ?? 'l4').toUpperCase();
+	const egress = c?.egressInterface?.trim() ? ` → ${c.egressInterface.trim()}` : '';
+	const routerDetail = `${modeStr} · ${port}${egress}`;
+
+	const wan = c?.natStaticWan?.trim() || (c?.natStaticWans && c.natStaticWans.length > 0 ? c.natStaticWans.join(', ') : '');
+	let nat = c?.natMode === 'none' ? 'без NAT' : c?.natMode === 'internet-only' ? (wan ? `NAT: ${wan}` : 'NAT: интернет') : 'NAT: полный';
+	if (c?.policy && c.policy !== 'none') {
+		nat += ` · ${c.policy}`;
+	}
+
 	return [
 		{ label: 'Клиенты', detail: clientDetail },
-		{ label: 'OpenFlux', detail: port },
-		{ label: 'Интернет', detail: (c?.mode ?? 'l4').toUpperCase() },
+		{ label: 'Этот роутер', detail: routerDetail },
+		{ label: 'Интернет', detail: nat },
 	];
 }
 
@@ -279,8 +294,23 @@ export function exitRows(src: ProxySources): ProxyInstanceRow[] {
   ];
 
   const ofClientSt = src.openfluxClientStatus ?? src.openfluxStatus?.client ?? null;
-  const ofClientCfg = src.openfluxClientConfig ?? ofClientSt?.config;
-  if (ofClientCfg || ofClientSt) {
+  const ofClientCfg = ofClientSt?.config ?? src.openfluxClientConfig ?? null;
+  const isOfConfigured =
+    ofClientSt?.running === true ||
+    Boolean(
+      ofClientSt?.config &&
+        (ofClientSt.config.name?.trim() ||
+          ofClientSt.config.directDial?.trim() ||
+          (ofClientSt.config.transports && ofClientSt.config.transports.length > 0)),
+    ) ||
+    Boolean(
+      !ofClientSt &&
+        ofClientCfg &&
+        (ofClientCfg.name?.trim() ||
+          ofClientCfg.directDial?.trim() ||
+          (ofClientCfg.transports && ofClientCfg.transports.length > 0)),
+    );
+  if (isOfConfigured) {
     const autostart = ofClientCfg?.enabled === true;
     const isRunning = ofClientSt?.running === true;
     const state: ProxyRunState = isRunning ? "running" : autostart ? "error" : "stopped";
@@ -301,8 +331,8 @@ export function exitRows(src: ProxySources): ProxyInstanceRow[] {
       startedAt,
       orphanedPid: false,
       binaryPresent: (ofClientSt?.installed ?? src.openfluxStatus?.installed) === true,
-      mode: undefined,
-      flow: openfluxClientFlow(ofClientCfg),
+      mode: (ofClientCfg?.inboundMode ?? 'socks5') === 'tun' ? 'raw' : undefined,
+      flow: openfluxClientFlow(ofClientCfg, ofClientSt ?? undefined),
     });
   }
 
@@ -364,7 +394,7 @@ export function shareRows(src: ProxySources): ProxyInstanceRow[] {
       orphanedPid: false,
       binaryPresent: ofSt?.installed === true,
       mode: undefined,
-      flow: openfluxServerFlow(ofCfg),
+      flow: openfluxServerFlow(ofCfg, ofSt ?? undefined),
     });
   }
 

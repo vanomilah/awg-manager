@@ -149,7 +149,7 @@ describe('ProxyDetailPane: мастер открывается только яв
 		});
 	});
 
-	it('при выборе строки openflux на вкладке раздачи монтируется OpenFluxDetail', async () => {
+	it('при выборе строки openflux на вкладке раздачи монтируется OpenFluxDetail с секцией «Куда идёт трафик» и настройками', async () => {
 		const ofRow: ProxyInstanceRow = {
 			key: 'openflux:server:default',
 			id: 'default',
@@ -161,7 +161,7 @@ describe('ProxyDetailPane: мастер открывается только яв
 			orphanedPid: false,
 			binaryPresent: true,
 		};
-		const { findByRole } = render(ProxyDetailPane, {
+		const { findByRole, findByText, getByText } = render(ProxyDetailPane, {
 			props: {
 				activeTab: 'share' as const,
 				exitRow: null,
@@ -178,6 +178,7 @@ describe('ProxyDetailPane: мастер открывается только яв
 					openFirewall: true,
 					debug: 0,
 					name: 'OpenFlux',
+					natMode: 'full',
 				},
 				openfluxStatus: {
 					installed: true,
@@ -188,7 +189,7 @@ describe('ProxyDetailPane: мастер открывается только яв
 				},
 				wdttStatus: null,
 				ftStatus: null,
-				policies: [],
+				policies: [{ id: 'Policy0', name: 'Основная' }],
 				tunnels: [],
 				busyKeys: [],
 				exitWizard: null,
@@ -202,6 +203,14 @@ describe('ProxyDetailPane: мастер открывается только яв
 			},
 		});
 		expect(await findByRole('heading', { name: 'OpenFlux', level: 2 })).toBeTruthy();
+		expect(await findByText('Куда идёт трафик')).toBeTruthy();
+		expect(await findByText('Полный')).toBeTruthy();
+
+		// Нажатие кнопки Настройки открывает SideDrawer с секцией Сеть
+		const settingsBtn = getByText('Настройки');
+		settingsBtn.click();
+		expect(await findByText('Настройки раздачи')).toBeTruthy();
+		expect(await findByText('Режим NAT')).toBeTruthy();
 	});
 
 	it('при выборе строки openflux на вкладке выхода монтируется OpenFluxClientDetail', async () => {
@@ -374,10 +383,12 @@ describe('ProxyDetailPane: мастер открывается только яв
 			},
 		});
 
-		expect(await findByText('Подключен в Mihomo: OpenFlux-Node')).toBeTruthy();
+		expect(await findByText('Подключен в маршрутизаторе: OpenFlux-Node')).toBeTruthy();
 		expect(await findByText('Мост: Proxy0')).toBeTruthy();
 
-		const saveBtn = getByText('Сохранить настройки');
+		const settingsBtn = getByText('Настройки');
+		settingsBtn.click();
+		const saveBtn = await findByText('Сохранить настройки');
 		saveBtn.click();
 		await waitFor(() => {
 			expect(apiMock.openfluxSaveClientConfig).toHaveBeenCalledTimes(1);

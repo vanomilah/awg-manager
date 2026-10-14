@@ -8,11 +8,13 @@
   interface Props {
     kind: VersionBadgeKind;
     value: BackendValue | AwgValue;
+    labelOverride?: string;
   }
 
-  let { kind, value }: Props = $props();
+  let { kind, value, labelOverride }: Props = $props();
 
   const label = $derived.by(() => {
+    if (labelOverride) return labelOverride;
     if (kind === 'backend') {
       if (value === 'nativewg') return 'NativeWG';
       if (value === 'wdtt-raw') return 'WDTT Raw';

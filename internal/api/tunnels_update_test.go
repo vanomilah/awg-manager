@@ -855,6 +855,7 @@ func TestTunnelUpdate_FieldInventoryComplete(t *testing.T) {
 		"ResolvedEndpointIP": true,
 		"WdttClientID":       true,
 		"FreeTurnClientID":   true,
+		"OpenFluxClientID":   true,
 		// AmneziaCountry владеют импорт и замена конфигурации: метка обязана
 		// жить ровно столько, сколько конфигурация, которую она описывает.
 		// Правка карточкой развязала бы её с конфигом.

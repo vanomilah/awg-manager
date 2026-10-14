@@ -106,3 +106,4 @@ __pycache__/
 *.log
 prebuilt/mihomo/
 prebuilt/telemt/
+prebuilt/openflux/

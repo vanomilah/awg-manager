@@ -32,6 +32,8 @@ func (h *OpenFluxHandler) RegisterRoutes(mux *http.ServeMux, guarded func(http.H
 	mux.HandleFunc("POST /api/openflux/client/start", guarded(h.handleClientStart))
 	mux.HandleFunc("POST /api/openflux/client/stop", guarded(h.handleClientStop))
 	mux.HandleFunc("POST /api/openflux/client/restart", guarded(h.handleClientRestart))
+	mux.HandleFunc("POST /api/openflux/client/delete", guarded(h.handleClientDelete))
+	mux.HandleFunc("DELETE /api/openflux/client", guarded(h.handleClientDelete))
 	mux.HandleFunc("POST /api/openflux/client/parse-link", guarded(h.handleParseLink))
 	mux.HandleFunc("GET /api/openflux/client/logs", guarded(h.handleGetClientLogs))
 }
@@ -203,6 +205,19 @@ func (h *OpenFluxHandler) handleClientRestart(w http.ResponseWriter, r *http.Req
 	}
 	if err := h.service.RestartClient(r.Context()); err != nil {
 		response.ErrorWithStatus(w, http.StatusBadRequest, err.Error(), "CLIENT_RESTART_FAILED")
+		return
+	}
+	status := h.service.GetStatus(r.Context())
+	response.Success(w, status)
+}
+
+func (h *OpenFluxHandler) handleClientDelete(w http.ResponseWriter, r *http.Request) {
+	if h.service == nil {
+		response.ErrorWithStatus(w, http.StatusServiceUnavailable, "openflux service not initialized", "UNAVAILABLE")
+		return
+	}
+	if err := h.service.DeleteClient(r.Context()); err != nil {
+		response.ErrorWithStatus(w, http.StatusInternalServerError, err.Error(), "CLIENT_DELETE_FAILED")
 		return
 	}
 	status := h.service.GetStatus(r.Context())

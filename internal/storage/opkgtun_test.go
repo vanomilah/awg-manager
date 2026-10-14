@@ -13,7 +13,9 @@ func TestAWGTunnelOpkgTunIndex(t *testing.T) {
 		{"пустой backend — legacy kernel", AWGTunnel{ID: "awg13"}, 13, true},
 		{"nativewg в своём диапазоне", AWGTunnel{ID: "awg25", Backend: "nativewg"}, 0, false},
 		{"legacy nativewg в kernel-диапазоне", AWGTunnel{ID: "awg12", Backend: "nativewg"}, 0, false},
-		{"raw-клиент wdtt", AWGTunnel{ID: "wdttraw-home", Backend: "wdtt-raw"}, 0, false},
+		{"raw-клиент wdtt без интерфейсов", AWGTunnel{ID: "wdttraw-home", Backend: "wdtt-raw"}, 0, false},
+		{"raw-клиент wdtt с RawNdmsIface", AWGTunnel{ID: "wdttraw-home", Backend: "wdtt-raw", RawNdmsIface: "OpkgTun17"}, 17, true},
+		{"raw-клиент wdtt с RawKernelIface", AWGTunnel{ID: "openflux-client", Backend: "wdtt-raw", RawKernelIface: "opkgtun18"}, 18, true},
 		{"OS4-запись", AWGTunnel{ID: "awgm5", Backend: "kernel"}, 0, false},
 		{"клиентский ID", AWGTunnel{ID: "home4", Backend: "kernel"}, 4, true},
 	}

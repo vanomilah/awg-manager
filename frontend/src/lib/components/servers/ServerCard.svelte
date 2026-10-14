@@ -456,6 +456,10 @@
 				{#snippet extra()}
 					{#if !policyKnown}
 						<span class="setting-description setting-description-warning">Не удалось прочитать политику доступа с роутера — обновите страницу.</span>
+					{:else if ingressEnabled && server.policy && server.policy !== 'none'}
+						<span class="setting-description setting-description-warning">
+							Для сервера выбрана политика доступа «{server.policy}». Трафик клиентов направляется через шлюз этой политики (не через {engineLabel}). Чтобы направить весь трафик через {engineLabel}, выберите «Политика по умолчанию».
+						</span>
 					{/if}
 				{/snippet}
 			</ServerAccessPolicyDropdown>

@@ -23,6 +23,7 @@
 		openfluxTransports?: string[];
 		openfluxBusy?: boolean;
 		onapplyopenflux?: () => void;
+		oncreateopenflux?: () => void;
 		oninput: (v: string) => void;
 		/** Ввод завершён (blur/Enter): мастер показывает отложенную ошибку разбора. */
 		oncommit: () => void;
@@ -47,6 +48,7 @@
 		openfluxTransports = [],
 		openfluxBusy = false,
 		onapplyopenflux,
+		oncreateopenflux,
 		oninput,
 		oncommit,
 		onfile,
@@ -115,6 +117,7 @@
 				options={[
 					{ value: 'wdtt', label: 'WDTT' },
 					{ value: 'freeturn', label: 'FreeTurn' },
+					{ value: 'openflux', label: 'OpenFlux' },
 				]}
 				onchange={(v) => onprotocol(v as ExitProtocol)}
 				fullWidth
@@ -132,6 +135,18 @@
 				/>
 			{/if}
 		</div>
+		{#if protocol === 'openflux'}
+			<p class="detect-note" style="margin-top: 0.75rem;">
+				Клиент OpenFlux настраивается через панель конфигурации (транспорты, ключи, режим OpkgTun / SOCKS5).
+			</p>
+			{#if oncreateopenflux}
+				<div style="margin-top: 0.75rem;">
+					<Button variant="primary" size="sm" loading={openfluxBusy} onclick={oncreateopenflux}>
+						Создать и перейти к настройке
+					</Button>
+				</div>
+			{/if}
+		{/if}
 	</div>
 {:else if detected === 'unknown'}
 	<div class="detect-box bad">
@@ -190,7 +205,7 @@
 			{/if}
 		</div>
 		<p class="detect-note">
-			Ссылка OpenFlux V1 содержит ключ шифрования и параметры транспортов. Нажмите кнопку ниже, чтобы применить ссылку и запустить клиент OpenFlux (SOCKS5 :1085).
+			Ссылка OpenFlux V1 содержит ключ шифрования и параметры транспортов. Нажмите кнопку ниже, чтобы применить ссылку и настроить клиент OpenFlux.
 		</p>
 		{#if onapplyopenflux}
 			<Button variant="primary" size="sm" loading={openfluxBusy} onclick={onapplyopenflux}>

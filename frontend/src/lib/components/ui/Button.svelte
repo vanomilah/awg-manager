@@ -72,7 +72,7 @@
     {:else if iconBefore}
       <span class="icon icon-before" aria-hidden="true">{@render iconBefore()}</span>
     {/if}
-    <span class="label">{@render children()}</span>
+    <span class="label">{@render children?.()}</span>
     {#if iconAfter && !loading}
       <span class="icon icon-after" aria-hidden="true">{@render iconAfter()}</span>
     {/if}
@@ -103,7 +103,7 @@
     {:else if iconBefore}
       <span class="icon icon-before" aria-hidden="true">{@render iconBefore()}</span>
     {/if}
-    <span class="label">{@render children()}</span>
+    <span class="label">{@render children?.()}</span>
     {#if iconAfter && !loading}
       <span class="icon icon-after" aria-hidden="true">{@render iconAfter()}</span>
     {/if}

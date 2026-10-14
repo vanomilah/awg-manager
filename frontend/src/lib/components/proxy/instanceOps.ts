@@ -7,7 +7,13 @@ import type { ProxyInstanceRow } from './rows';
 
 /** Старт/стоп инстанса. */
 export async function toggleProxyInstance(row: ProxyInstanceRow, on: boolean): Promise<void> {
-	if (row.protocol === 'wdtt' && row.role === 'client') {
+	if (row.protocol === 'openflux' && row.role === 'client') {
+		if (on) await api.openfluxClientStart();
+		else await api.openfluxClientStop();
+	} else if (row.protocol === 'openflux') {
+		if (on) await api.openfluxStart();
+		else await api.openfluxStop();
+	} else if (row.protocol === 'wdtt' && row.role === 'client') {
 		if (on) await api.startWdttClientInstance(row.id);
 		else await api.stopWdttClientInstance(row.id);
 	} else if (row.protocol === 'wdtt') {
@@ -23,7 +29,17 @@ export async function toggleProxyInstance(row: ProxyInstanceRow, on: boolean): P
 }
 
 export async function renameProxyInstance(row: ProxyInstanceRow, name: string): Promise<void> {
-	if (row.protocol === 'wdtt' && row.role === 'client') await api.renameWdttClient(row.id, name);
+	if (row.protocol === 'openflux' && row.role === 'client') {
+		const st = await api.openfluxClientStatus();
+		const cfg = st.config ?? { name };
+		cfg.name = name;
+		await api.openfluxSaveClientConfig(cfg);
+	} else if (row.protocol === 'openflux') {
+		const st = await api.openfluxStatus();
+		const cfg = st.config ?? { name };
+		cfg.name = name;
+		await api.openfluxSaveConfig(cfg);
+	} else if (row.protocol === 'wdtt' && row.role === 'client') await api.renameWdttClient(row.id, name);
 	else if (row.protocol === 'wdtt') await api.renameWdttServer(row.id, name);
 	else if (row.role === 'client') await api.renameFreeTurnClient(row.id, name);
 	else await api.renameFreeTurnServer(row.id, name);
@@ -33,6 +49,14 @@ export async function renameProxyInstance(row: ProxyInstanceRow, name: string): 
 export async function deleteProxyInstance(
 	row: ProxyInstanceRow,
 ): Promise<{ deletedTunnels?: string[]; tunnelErrors?: string[] }> {
+	if (row.protocol === 'openflux' && row.role === 'client') {
+		await api.openfluxClientDelete();
+		return {};
+	}
+	if (row.protocol === 'openflux') {
+		await api.openfluxStop();
+		return {};
+	}
 	if (row.protocol === 'wdtt' && row.role === 'client') return api.deleteWdttClient(row.id);
 	if (row.protocol === 'wdtt') {
 		await api.deleteWdttServer(row.id);

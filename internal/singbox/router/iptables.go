@@ -705,6 +705,9 @@ func buildMangleRestoreInput(spec RestoreInputSpec) string {
 		fmt.Fprintf(&b, "-A %s -d %s -p udp --dport 53 -j RETURN\n", ChainName, cidr)
 	}
 	for _, ip := range spec.WANIPs {
+		if ip == "" {
+			continue
+		}
 		fmt.Fprintf(&b, "-A %s -d %s -p udp --dport 53 -j RETURN\n", ChainName, ip)
 	}
 
@@ -740,13 +743,15 @@ func buildMangleRestoreInput(spec RestoreInputSpec) string {
 	// Ingress-scope: пометить выбранные интерфейсы policy-меткой ДО jump'а,
 	// чтобы connmark-jump (ниже в mangle и в nat) принял их за членов
 	// политики. Эмитится перед jump'ом → в PREROUTING MARK/save сработают
-	// раньше. Skip в MatchAll / при пустой метке (там и так всё проксируется).
+	// раньше. Пропускаем пакеты, у которых уже есть метка другой политики
+	// (напр. отдельная NDMS-политика на сервере), чтобы не сбивать её маршрутизацию.
+	// Skip в MatchAll / при пустой метке (там и так всё проксируется).
 	if !spec.MatchAll && spec.PolicyMark != "" {
 		for _, iface := range spec.IngressInterfaces {
-			fmt.Fprintf(&b, "-A PREROUTING -i %s -m comment --comment %s -j MARK --set-xmark %s/0xffffffff\n",
+			fmt.Fprintf(&b, "-A PREROUTING -i %s -m comment --comment %s -m mark --mark 0x0 -j MARK --set-xmark %s/0xffffffff\n",
 				iface, IngressTag, spec.PolicyMark)
-			fmt.Fprintf(&b, "-A PREROUTING -i %s -m comment --comment %s -j CONNMARK --save-mark --nfmask 0xffffffff --ctmask 0xffffffff\n",
-				iface, IngressTag)
+			fmt.Fprintf(&b, "-A PREROUTING -i %s -m comment --comment %s -m mark --mark %s -j CONNMARK --save-mark --nfmask 0xffffffff --ctmask 0xffffffff\n",
+				iface, IngressTag, spec.PolicyMark)
 		}
 	}
 

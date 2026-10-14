@@ -234,6 +234,7 @@ type tunnelItem struct {
 	// список помечает туннели, принадлежащие прокси-выходу, и без второго
 	// поля метки не было бы ровно у половины из них.
 	FreeTurnClientID string `json:"freeTurnClientId,omitempty"`
+	OpenFluxClientID string `json:"openfluxClientId,omitempty"`
 	// AmneziaCountry — страна подписки Amnezia Premium, из которой получена
 	// конфигурация туннеля; пусто у прочих. Мастер читает ИМЕННО список
 	// (главная страница), поэтому поле обязано быть и здесь, а не только в
@@ -293,7 +294,7 @@ func (h *TunnelsHandler) listItems(ctx context.Context) ([]tunnelItem, error) {
 		stored, _ := h.store.Get(t.ID)
 
 		awgVersion := "wg"
-		var endpoint, address, wdttClientID, freeTurnClientID, amneziaCountry string
+		var endpoint, address, wdttClientID, freeTurnClientID, openfluxClientID, amneziaCountry string
 		var ispInterface, ispInterfaceLabel string
 		var resolvedISPInterface, resolvedISPInterfaceLabel string
 		var mtu int
@@ -317,6 +318,7 @@ func (h *TunnelsHandler) listItems(ctx context.Context) ([]tunnelItem, error) {
 			ispInterfaceLabel = stored.ISPInterfaceLabel
 			wdttClientID = strings.TrimSpace(stored.WdttClientID)
 			freeTurnClientID = strings.TrimSpace(stored.FreeTurnClientID)
+			openfluxClientID = strings.TrimSpace(stored.OpenFluxClientID)
 			amneziaCountry = stored.AmneziaCountry
 
 			// NativeWG stores NDMS IDs (e.g. "ISP"), but frontend uses kernel names (e.g. "eth3").
@@ -419,6 +421,7 @@ func (h *TunnelsHandler) listItems(ctx context.Context) ([]tunnelItem, error) {
 			PingCheck:                 pcInfo,
 			WdttClientID:              wdttClientID,
 			FreeTurnClientID:          freeTurnClientID,
+			OpenFluxClientID:          openfluxClientID,
 			AmneziaCountry:            amneziaCountry,
 			Obfuscator:                obfItem(stored, t.StateInfo.RelayBackend),
 		}

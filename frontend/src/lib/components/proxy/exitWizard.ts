@@ -14,7 +14,7 @@ import type {
 	WdttImportPayload,
 } from '$lib/types';
 
-export type ExitProtocol = 'wdtt' | 'freeturn';
+export type ExitProtocol = 'wdtt' | 'freeturn' | 'openflux';
 export type ExitMode = 'wg' | 'raw';
 
 /** Что шаг 1 показывает под полем ссылки. */
@@ -257,6 +257,11 @@ export function applyFtFields(cfg: FreeTurnClientConfig, f: ExitWizardFields): F
 
 /** Имя AWG-туннеля клиента (W-30, F-15): «<профиль> wdtt» / «<инстанс> FT». */
 export function proxyTunnelName(protocol: ExitProtocol, name: string): string {
+	if (protocol === 'openflux') {
+		const base = name.trim() || 'OpenFlux Client';
+		if (base.toLowerCase().endsWith(' tun')) return base.slice(0, 60);
+		return `${base} TUN`.slice(0, 60);
+	}
 	const suffix = protocol === 'wdtt' ? 'wdtt' : 'FT';
 	const base = name.trim() || (protocol === 'wdtt' ? 'WDTT' : 'FreeTurn');
 	if (base.toLowerCase().endsWith(` ${suffix.toLowerCase()}`)) return base.slice(0, 60);

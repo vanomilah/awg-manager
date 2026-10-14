@@ -151,12 +151,15 @@
 		openfluxStatus = ofs;
 		if (ofs?.config) {
 			openfluxConfig = ofs.config;
+		} else {
+			openfluxConfig = null;
 		}
-		if (ofs?.client) {
+		if (ofs?.client && (ofs.client.running || ofs.client.config)) {
 			openfluxClientStatus = ofs.client;
-			if (ofs.client.config) {
-				openfluxClientConfig = ofs.client.config;
-			}
+			openfluxClientConfig = ofs.client.config ?? null;
+		} else {
+			openfluxClientStatus = null;
+			openfluxClientConfig = null;
 		}
 	}
 
@@ -170,9 +173,13 @@
 		ftConfig = f;
 		if (openfluxStatus?.config) {
 			openfluxConfig = openfluxStatus.config;
+		} else {
+			openfluxConfig = null;
 		}
 		if (openfluxStatus?.client?.config) {
 			openfluxClientConfig = openfluxStatus.client.config;
+		} else {
+			openfluxClientConfig = null;
 		}
 	}
 
@@ -189,7 +196,8 @@
 	}
 
 	async function reloadAll() {
-		await Promise.all([loadConfigs(), loadStatuses(), loadCatalog()]);
+		await loadStatuses();
+		await Promise.all([loadConfigs(), loadCatalog()]);
 	}
 
 	const statusPoll = createSelfReschedulingPoll(async () => {
@@ -202,7 +210,8 @@
 
 	onMount(async () => {
 		try {
-			await Promise.all([loadConfigs(), loadStatuses(), loadCatalog()]);
+			await loadStatuses();
+			await Promise.all([loadConfigs(), loadCatalog()]);
 		} catch (e) {
 			loadError = errText(e);
 		} finally {
@@ -317,15 +326,20 @@
 		try {
 			if (row.protocol === 'openflux') {
 				if (row.role === 'client') {
-					await api.openfluxClientStop();
-					const cfg = openfluxClientConfig ?? openfluxStatus?.client?.config;
-					if (cfg) {
-						cfg.enabled = false;
-						await api.openfluxSaveClientConfig(cfg);
+					await api.openfluxClientDelete();
+					openfluxClientConfig = null;
+					openfluxClientStatus = null;
+					if (openfluxStatus) {
+						openfluxStatus = {
+							...openfluxStatus,
+							client: undefined,
+						};
 					}
+					if (selectedExitKey === row.key) selectedExitKey = null;
+					addingExit = false;
 					deleteTarget = null;
-					await loadStatuses();
-					notifications.success('OpenFlux-клиент остановлен и отключен');
+					await reloadAll();
+					notifications.success('OpenFlux-клиент удален');
 				} else {
 					await api.openfluxStop();
 					if (openfluxConfig) {
@@ -440,6 +454,7 @@
 					onreload={reloadAll}
 					onexitdone={exitWizardDone}
 					onsharedone={shareWizardDone}
+					ondelete={(r) => (deleteTarget = r)}
 				/>
 			</main>
 		</div>

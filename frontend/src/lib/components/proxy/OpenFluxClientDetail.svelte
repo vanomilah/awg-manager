@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { untrack, onMount } from 'svelte';
-	import { Badge, Button, Card, Input, Stat, StatStrip, Toggle } from '$lib/components/ui';
+	import { Badge, Button, Card, FieldHint, IconButton, Input, SideDrawer, Stat, StatStrip, Toggle } from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { errText } from '$lib/utils/errorMessage';
 	import { formatUptime } from '$lib/components/freeturn/uptime';
+	import { findPolicyForInterface } from '$lib/utils/accessPolicy';
 	import type {
+		AccessPolicy,
 		MihomoNativeProxy,
 		OpenFluxClientConfig,
 		OpenFluxClientStatus,
@@ -15,17 +17,20 @@
 	import LastErrorBox from './LastErrorBox.svelte';
 	import LinkBox from './LinkBox.svelte';
 	import LogSection from './LogSection.svelte';
-	import { ExternalLink, Import, Layers, Network, Play } from 'lucide-svelte';
+	import SensitiveInput from '../proxy-panel/SensitiveInput.svelte';
+	import { ExternalLink, Import, Layers, Play, Trash2 } from 'lucide-svelte';
 
 	interface Props {
 		row: ProxyInstanceRow;
 		status: OpenFluxClientStatus | null;
 		config: OpenFluxClientConfig | null;
+		policies?: AccessPolicy[];
 		routerClock?: string;
 		saving?: boolean;
 		busy?: boolean;
 		onstart: () => void;
 		onstop: () => void;
+		ondelete?: () => void;
 		onsave: (config: OpenFluxClientConfig) => Promise<OpenFluxClientConfig | null | void>;
 		onreload: () => Promise<void> | void;
 	}
@@ -34,11 +39,13 @@
 		row,
 		status,
 		config,
+		policies = [],
 		routerClock = '',
 		saving = false,
 		busy = false,
 		onstart,
 		onstop,
+		ondelete,
 		onsave,
 		onreload,
 	}: Props = $props();
@@ -48,6 +55,18 @@
 		const c = JSON.parse(JSON.stringify(cfg));
 		c.enabled = !!c.enabled;
 		c.name = c.name ?? 'OpenFlux Выход';
+		c.inboundMode = c.inboundMode ?? 'socks5';
+		c.ndmsIface = c.ndmsIface ?? '';
+		c.tunIface = c.tunIface ?? '';
+		if (c.ndmsIface === 'OpkgTun0' || c.ndmsIface === 'OpkgTun1') {
+			c.ndmsIface = '';
+			c.tunIface = '';
+		}
+		c.tunAddr = c.tunAddr ?? '10.10.10.2/24';
+		c.tunMtu = c.tunMtu ?? 1280;
+		c.policy = c.policy ?? '';
+		c.exposeToPolicies = c.exposeToPolicies ?? true;
+		c.defaultRoute = c.defaultRoute ?? false;
 		c.secret = c.secret ?? '';
 		c.context = c.context ?? '';
 		c.socks5Listen = c.socks5Listen ?? '127.0.0.1:1085';
@@ -76,6 +95,7 @@
 	let stopping = $state(false);
 	let restarting = $state(false);
 	let localSaving = $state(false);
+	let settingsOpen = $state(false);
 
 	let importLink = $state('');
 	let parsingLink = $state(false);
@@ -195,9 +215,9 @@
 		try {
 			const res = await api.mihomoNativeCreateProxy(socks5Uri, 'mihomo');
 			mihomoProxies = res.items ?? [];
-			notifications.success('Узел OpenFlux добавлен в Mihomo');
+			notifications.success('Узел OpenFlux добавлен в маршрутизатор');
 		} catch (e) {
-			notifications.error('Ошибка добавления в Mihomo: ' + errText(e));
+			notifications.error('Ошибка добавления в маршрутизатор: ' + errText(e));
 		} finally {
 			addingToMihomo = false;
 		}
@@ -217,6 +237,14 @@
 			const nextCfg = normalizeDraft({
 				...res.config,
 				enabled: applyAndStart ? true : (draft?.enabled ?? res.config.enabled),
+				inboundMode: draft?.inboundMode ?? 'socks5',
+				ndmsIface: draft?.ndmsIface || '',
+				tunIface: draft?.tunIface || '',
+				tunAddr: draft?.tunAddr || '10.10.10.2/24',
+				tunMtu: draft?.tunMtu || 1280,
+				policy: draft?.policy || '',
+				exposeToPolicies: draft?.exposeToPolicies ?? true,
+				defaultRoute: draft?.defaultRoute ?? false,
 				socks5Listen: draft?.socks5Listen || res.config.socks5Listen || '127.0.0.1:1085',
 				httpProxyListen: draft?.httpProxyListen ?? res.config.httpProxyListen ?? '',
 				autoReconnect: draft?.autoReconnect ?? true,
@@ -234,6 +262,7 @@
 					lastSyncedConfigJson = JSON.stringify(draft);
 				}
 				importLink = '';
+				settingsOpen = false;
 				notifications.success('Ссылка импортирована, клиент OpenFlux запущен');
 				await onreload();
 				await fetchLogs();
@@ -331,6 +360,7 @@
 				lastSyncedConfigJson = JSON.stringify(draft);
 			}
 			notifications.success('Настройки клиента OpenFlux сохранены');
+			settingsOpen = false;
 			await onreload();
 			await fetchLogs();
 		} catch (e) {
@@ -342,6 +372,7 @@
 
 	function revert() {
 		if (config) draft = normalizeDraft(config);
+		settingsOpen = false;
 	}
 
 	async function toggleAutostart(enabled: boolean) {
@@ -366,22 +397,9 @@
 		<h2>{row.name}</h2>
 		<Badge size="sm" variant="info">OpenFlux-клиент</Badge>
 		<Badge size="sm" variant="default">SOCKS5 :{getSocks5Port()}</Badge>
+		<Badge size="sm" variant={running ? 'success' : 'muted'}>{running ? 'Запущен' : 'Остановлен'}</Badge>
 		<div class="head-actions">
-			<Toggle
-				label="Автозапуск"
-				checked={draft?.enabled ?? false}
-				onchange={toggleAutostart}
-			/>
 			{#if running}
-				<Button
-					variant="secondary"
-					size="sm"
-					loading={stopping}
-					disabled={busy || stopping || restarting}
-					onclick={handleStop}
-				>
-					Остановить
-				</Button>
 				<Button
 					variant="secondary"
 					size="sm"
@@ -390,6 +408,15 @@
 					onclick={handleRestart}
 				>
 					Перезапустить
+				</Button>
+				<Button
+					variant="secondary"
+					size="sm"
+					loading={stopping}
+					disabled={busy || stopping || restarting}
+					onclick={handleStop}
+				>
+					Остановить
 				</Button>
 			{:else}
 				<Button
@@ -401,6 +428,12 @@
 				>
 					Запустить
 				</Button>
+			{/if}
+			<Button variant="ghost" size="sm" onclick={() => (settingsOpen = true)}>Настройки</Button>
+			{#if ondelete}
+				<IconButton ariaLabel="Удалить клиент" onclick={ondelete}>
+					<Trash2 size={14} />
+				</IconButton>
 			{/if}
 		</div>
 	</div>
@@ -426,15 +459,75 @@
 
 	<LastErrorBox text={running ? '' : (status?.error ?? '')} />
 
-	<!-- Импорт ссылки openflux://v1/... -->
+	{#if !draft?.secret && (!draft?.transports || draft.transports.length === 0)}
+		<div class="no-config-banner">
+			<div class="no-config-info">
+				<span class="no-config-title">Клиент ещё не настроен</span>
+				<span class="no-config-desc">
+					Импортируйте ссылку подключения openflux://v1/... или укажите параметры в окне настроек.
+				</span>
+			</div>
+			<Button variant="primary" size="sm" onclick={() => (settingsOpen = true)}>
+				Настроить клиент
+			</Button>
+		</div>
+	{/if}
+
+	<DetailSection title="Куда идёт трафик">
+		<div class="line-row">
+			<span class="line-label">Локальный SOCKS5:</span>
+			<code>127.0.0.1:{getSocks5Port()}</code>
+			{#if draft?.httpProxyListen}
+				<span class="line-sub">(HTTP: {draft.httpProxyListen})</span>
+			{/if}
+			<FieldHint
+				text="Режим SOCKS5: локальный прокси-порт для маршрутизатора или локальных приложений."
+				ariaLabel="Подсказка: SOCKS5"
+			/>
+		</div>
+
+		<LinkBox link={socks5Uri} title="Локальный SOCKS5 URI для маршрутизатора" />
+
+		<div class="mihomo-bar">
+			{#if matchedMihomoProxy}
+				<div class="mihomo-connected">
+					<Badge size="sm" variant="success">Подключен в маршрутизаторе: {matchedMihomoProxy.name}</Badge>
+					{#if matchedMihomoProxy.bridge?.proxyInterface}
+						<Badge size="sm" variant="default">Мост: {matchedMihomoProxy.bridge.proxyInterface}</Badge>
+					{/if}
+				</div>
+			{:else}
+				<Button
+					variant="secondary"
+					size="sm"
+					loading={addingToMihomo}
+					disabled={addingToMihomo}
+					onclick={handleAddToMihomo}
+				>
+					{#snippet iconBefore()}<Layers size={14} />{/snippet}
+					Добавить прокси-узел в маршрутизатор
+				</Button>
+			{/if}
+			<Button variant="ghost" size="sm" href="/routing">
+				Маршрутизация
+				{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
+			</Button>
+		</div>
+	</DetailSection>
+
+	<LogSection log={logs || status?.logTail} {routerClock} hint="Журнал работы клиента OpenFlux" />
+</Card>
+
+<SideDrawer open={settingsOpen} onClose={() => (settingsOpen = false)} title="Параметры выхода" width={520}>
+	<!-- Быстрый импорт ссылки openflux://v1/... -->
 	<div class="info-card-box">
 		<div class="card-section-title">
 			<Import size={18} />
 			<span>Быстрый импорт ссылки подключения (openflux://v1/...)</span>
 		</div>
 		<p class="section-desc">
-			Вставьте ссылку <code>openflux://v1/...</code> с вашего зарубежного сервера или другого роутера Keenetic,
-			чтобы автоматически заполнить ключ шифрования и все транспорты (Direct TCP, Mail.ru Docs, Яндекс Документы).
+			Вставьте ссылку <code>openflux://v1/...</code> с вашего сервера или другого роутера Keenetic,
+			чтобы автоматически заполнить ключ шифрования и все транспорты.
 		</p>
 		<div class="import-row">
 			<div class="import-input">
@@ -469,55 +562,29 @@
 		</div>
 	</div>
 
-	<!-- Подключение к маршрутизации роутера (Mihomo / SOCKS5) -->
-	<div class="info-card-box">
-		<div class="card-section-title">
-			<Network size={18} />
-			<span>Использование в маршрутизации роутера (Mihomo / SOCKS5)</span>
-		</div>
-		<p class="section-desc">
-			Клиент OpenFlux поднимает локальный <strong>SOCKS5 прокси</strong> на
-			<code>{draft?.socks5Listen || '127.0.0.1:1085'}</code>
-			{#if draft?.httpProxyListen}
-				и <strong>HTTP прокси</strong> на <code>{draft.httpProxyListen}</code>
-			{/if}.
-			Вы можете одним нажатием зарегистрировать его как прокси-узел в <strong>Mihomo</strong> для маршрутизации по доменам, спискам и политикам Keenetic.
-		</p>
-		<LinkBox link={socks5Uri} title="Локальный SOCKS5 URI для Mihomo" />
-		<div class="mihomo-bar">
-			{#if matchedMihomoProxy}
-				<div class="mihomo-connected">
-					<Badge size="sm" variant="success">Подключен в Mihomo: {matchedMihomoProxy.name}</Badge>
-					{#if matchedMihomoProxy.bridge?.proxyInterface}
-						<Badge size="sm" variant="default">Мост: {matchedMihomoProxy.bridge.proxyInterface}</Badge>
-					{/if}
-				</div>
-			{:else}
-				<Button
-					variant="secondary"
-					size="sm"
-					loading={addingToMihomo}
-					disabled={addingToMihomo}
-					onclick={handleAddToMihomo}
-				>
-					{#snippet iconBefore()}<Layers size={14} />{/snippet}
-					Добавить прокси-узел в Mihomo
-				</Button>
-			{/if}
-			<Button variant="ghost" size="sm" href="/routing">
-				Маршрутизация
-				{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
-			</Button>
-		</div>
-	</div>
-
 	{#if draft}
 		<DetailSection title="Параметры и транспорты клиента" hint="Настройки исходящего подключения OpenFlux">
 			<div class="config-grid">
 				<div class="config-row">
 					<div class="config-label">
+						<strong>Автозапуск</strong>
+						<span class="subtext">Автоматически запускать клиент OpenFlux при старте роутера</span>
+					</div>
+					<div class="config-ctrl">
+						<Toggle
+							label="Включен"
+							checked={draft.enabled ?? false}
+							onchange={(v) => {
+								if (draft) draft.enabled = v;
+							}}
+						/>
+					</div>
+				</div>
+
+				<div class="config-row">
+					<div class="config-label">
 						<strong>Имя клиента</strong>
-						<span class="subtext">Отображается в списке инстансов выхода и в Mihomo</span>
+						<span class="subtext">Отображается в списке инстансов выхода и в маршрутизаторе</span>
 					</div>
 					<div class="config-ctrl">
 						<Input bind:value={draft.name} placeholder="OpenFlux Client" fullWidth />
@@ -527,7 +594,7 @@
 				<div class="config-row">
 					<div class="config-label">
 						<strong>Локальный SOCKS5 прокси (--socks5)</strong>
-						<span class="subtext">Адрес и порт, на котором клиент принимает трафик от Mihomo или локальных приложений</span>
+						<span class="subtext">Адрес и порт, на котором клиент принимает трафик от маршрутизатора или локальных приложений</span>
 					</div>
 					<div class="config-ctrl">
 						<Input bind:value={draft.socks5Listen} placeholder="127.0.0.1:1085" fullWidth />
@@ -746,7 +813,7 @@
 						</span>
 					</div>
 					<div class="config-ctrl secret-ctrl">
-						<Input bind:value={draft.secret} placeholder="Секретный ключ сервера..." fullWidth />
+						<SensitiveInput bind:value={draft.secret} placeholder="Секретный ключ сервера..." />
 					</div>
 				</div>
 
@@ -806,11 +873,29 @@
 					Сохранить настройки
 				</Button>
 			</div>
+
+			{#if ondelete}
+				<div class="danger-zone">
+					<div class="danger-info">
+						<strong>Удалить клиента OpenFlux</strong>
+						<span class="subtext">Останавливает процесс и удаляет конфигурацию клиента OpenFlux.</span>
+					</div>
+					<Button
+						variant="danger"
+						size="sm"
+						onclick={() => {
+							settingsOpen = false;
+							ondelete?.();
+						}}
+					>
+						{#snippet iconBefore()}<Trash2 size={14} />{/snippet}
+						Удалить клиента
+					</Button>
+				</div>
+			{/if}
 		</DetailSection>
 	{/if}
-
-	<LogSection log={logs || status?.logTail} {routerClock} hint="Журнал работы клиента OpenFlux" />
-</Card>
+</SideDrawer>
 
 <style>
 	.head {
@@ -834,6 +919,34 @@
 		gap: 0.75rem;
 		margin-left: auto;
 		flex-wrap: wrap;
+	}
+
+	.line-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.375rem;
+		font-size: 0.8125rem;
+		color: var(--color-text-secondary);
+	}
+
+	.line-label {
+		color: var(--color-text-muted);
+	}
+
+	.line-sub {
+		color: var(--color-text-muted);
+		font-size: 0.75rem;
+	}
+
+	code {
+		font-family: var(--font-mono, monospace);
+		font-size: 0.8em;
+		background: var(--color-bg-tertiary);
+		padding: 0.1rem 0.35rem;
+		border-radius: 4px;
+		word-break: break-all;
 	}
 
 	.info-card-box {
@@ -1016,6 +1129,60 @@
 		justify-content: flex-end;
 		gap: 0.5rem;
 		margin-top: 1rem;
+	}
+
+	.danger-zone {
+		margin-top: 1.5rem;
+		padding: 1rem;
+		border: 1px dashed var(--color-danger, #ef4444);
+		border-radius: var(--radius);
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		flex-wrap: wrap;
+		background: rgba(239, 68, 68, 0.04);
+	}
+
+	.danger-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.danger-info strong {
+		color: var(--color-danger, #ef4444);
+		font-size: 0.875rem;
+	}
+
+	.no-config-banner {
+		padding: 0.875rem 1rem;
+		background: var(--color-bg-secondary);
+		border: 1px dashed var(--color-border);
+		border-radius: var(--radius);
+		margin-bottom: 1rem;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		flex-wrap: wrap;
+	}
+
+	.no-config-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.no-config-title {
+		font-size: 0.875rem;
+		font-weight: 600;
+		color: var(--color-text-primary);
+	}
+
+	.no-config-desc {
+		font-size: 0.8125rem;
+		color: var(--color-text-secondary);
 	}
 
 	@media (max-width: 768px) {

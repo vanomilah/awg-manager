@@ -15,6 +15,8 @@
 		if (wd) return `wdtt-client:${wd}`;
 		const ft = t.freeTurnClientId?.trim();
 		if (ft) return `freeturn-client:${ft}`;
+		const of = t.openfluxClientId?.trim();
+		if (of) return `openflux-client:${of}`;
 		return '';
 	}
 </script>

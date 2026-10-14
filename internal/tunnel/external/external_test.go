@@ -285,3 +285,28 @@ func TestAdopt_SyncsDescriptionBeforeStart(t *testing.T) {
 		t.Fatalf("вызовы: %v", svc.calls)
 	}
 }
+
+func TestList_ManagedRawTunnelNotExternal(t *testing.T) {
+	stubScan(t, []int{18}, nil)
+	s := newTestService(t)
+	_ = s.store.Create(&storage.AWGTunnel{
+		ID:             "openflux-client",
+		Name:           "OpenFlux Client",
+		Backend:        "wdtt-raw",
+		RawNdmsIface:   "OpkgTun18",
+		RawKernelIface: "opkgtun18",
+	})
+	s.SetOrphanSource(
+		func(context.Context) ([]OrphanIface, error) {
+			return nil, nil
+		},
+		nil,
+	)
+	got, err := s.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 external tunnels, got %+v", got)
+	}
+}

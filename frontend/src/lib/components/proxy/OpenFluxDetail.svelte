@@ -1,23 +1,50 @@
 <script lang="ts">
 	import { untrack, onMount } from 'svelte';
-	import { Badge, Button, Card, Input, Stat, StatStrip, Toggle } from '$lib/components/ui';
+	import {
+		Badge,
+		Button,
+		Card,
+		ChipMultiSelect,
+		Dropdown,
+		FieldHint,
+		FormRow,
+		Input,
+		SegmentedControl,
+		SideDrawer,
+		Stat,
+		StatStrip,
+		Toggle,
+	} from '$lib/components/ui';
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { errText } from '$lib/utils/errorMessage';
 	import { formatUptime } from '$lib/components/freeturn/uptime';
-	import type { OpenFluxConfig, OpenFluxStatus } from '$lib/types';
+	import { ServerAccessPolicyDropdown } from '$lib/components/servers';
+	import type {
+		AccessPolicy,
+		OpenFluxConfig,
+		OpenFluxStatus,
+		SingboxRouterSettings,
+		TunnelListItem,
+	} from '$lib/types';
 	import type { ProxyInstanceRow } from './rows';
 	import DetailSection from './DetailSection.svelte';
+	import InstanceBadges from './InstanceBadges.svelte';
 	import LastErrorBox from './LastErrorBox.svelte';
 	import LinkBox from './LinkBox.svelte';
 	import LogSection from './LogSection.svelte';
-	import { Key, Layers } from 'lucide-svelte';
+	import { natModeOptions, natModeLabel } from './shareConfig';
+	import { ingressOn, nextIngressInterfaces, openfluxIngressRefs } from './shareIngress';
+	import { effectiveStaticWan } from '$lib/api/proxyInstances';
+	import { ExternalLink, Key, Layers } from 'lucide-svelte';
 
 	interface Props {
 		row: ProxyInstanceRow;
 		status: OpenFluxStatus | null;
 		config: OpenFluxConfig | null;
 		routerClock?: string;
+		policies?: AccessPolicy[];
+		tunnels?: TunnelListItem[];
 		saving?: boolean;
 		busy?: boolean;
 		onstart: () => void;
@@ -31,6 +58,7 @@
 		status,
 		config,
 		routerClock = '',
+		policies = [],
 		saving = false,
 		busy = false,
 		onstart,
@@ -42,18 +70,25 @@
 	function normalizeDraft(cfg: OpenFluxConfig | null): OpenFluxConfig | null {
 		if (!cfg) return null;
 		const c = JSON.parse(JSON.stringify(cfg));
-		c.name = c.name ?? '';
+		c.name = c.name ?? 'Keenetic';
 		c.secret = c.secret ?? '';
 		c.directHost = c.directHost ?? '';
 		c.mailruUrl = c.mailruUrl ?? '';
 		c.yandexUrl = c.yandexUrl ?? '';
 		c.directListen = c.directListen ?? '0.0.0.0:8445';
-		c.transports = c.transports ?? [];
+		c.transports = c.transports ?? ['direct', 'mailru', 'yandex'];
 		c.mode = c.mode ?? 'l4';
 		c.transportMode = c.transportMode ?? 'session';
 		c.codec = c.codec ?? 'batched';
 		c.debug = c.debug ?? 0;
-		c.openFirewall = c.openFirewall ?? false;
+		c.openFirewall = c.openFirewall ?? true;
+		c.natMode = c.natMode ?? 'full';
+		c.natStaticWan = c.natStaticWan ?? '';
+		c.natStaticWans = c.natStaticWans ?? [];
+		c.policy = c.policy ?? '';
+		c.lanSegments = c.lanSegments ?? [];
+		c.exposeToPolicies = c.exposeToPolicies ?? false;
+		c.egressInterface = c.egressInterface ?? '';
 		return c;
 	}
 
@@ -69,6 +104,17 @@
 	let restarting = $state(false);
 	let localSaving = $state(false);
 
+	let settingsOpen = $state(false);
+	let lanOptions = $state<{ value: string; label: string }[]>([]);
+	let wanOptions = $state<{ value: string; label: string }[]>([]);
+	let ingress = $state(false);
+	let activeEngine = $state<'sing-box' | 'mihomo'>('sing-box');
+	const isMihomo = $derived(activeEngine === 'mihomo');
+	const engineName = $derived(isMihomo ? 'Mihomo' : 'sing-box');
+	let engineRunning = $state(true);
+	let ingressForced = $state(false);
+	let mutating = $state(false);
+
 	const running = $derived(row.state === 'running');
 	const uptimeValue = $derived(running ? formatUptime(row.startedAt) || '—' : '—');
 	const normalizedConfig = $derived(normalizeDraft(config));
@@ -77,6 +123,33 @@
 			? JSON.stringify(draft) !== JSON.stringify(normalizedConfig)
 			: false,
 	);
+
+	const activeTransports = $derived(draft?.transports ?? []);
+	const activeTransportsLabel = $derived(
+		activeTransports.length === 0
+			? 'Нет'
+			: activeTransports
+					.map((t) => {
+						if (t === 'direct') return 'Direct';
+						if (t === 'mailru') return 'Mail.ru';
+						if (t === 'yandex') return 'Яндекс';
+						return t;
+					})
+					.join(' / '),
+	);
+	const activeTransportsSub = $derived(
+		activeTransports.length === 0
+			? 'выключены'
+			: `${activeTransports.length} ${activeTransports.length === 1 ? 'активен' : 'активно'}`,
+	);
+
+	const policyName = $derived(
+		policies.find((p) => p.name === draft?.policy || p.id === draft?.policy)?.name || draft?.policy || '',
+	);
+
+	function allDevicesTProxy(s: SingboxRouterSettings): boolean {
+		return (s.routingMode ?? 'tproxy') === 'tproxy' && s.deviceMode === 'all';
+	}
 
 	$effect(() => {
 		const norm = normalizedConfig;
@@ -97,6 +170,36 @@
 	});
 
 	onMount(async () => {
+		try {
+			const segs = await api.listManagedLANSegments();
+			lanOptions = segs.map((s) => ({ value: s.name, label: s.label || s.name }));
+		} catch {
+			/* сегменты вторичны */
+		}
+		try {
+			const wans = await api.getWANInterfaces();
+			wanOptions = wans.map((w) => ({ value: w.name, label: w.label || w.name }));
+		} catch {
+			/* список WAN вторичен */
+		}
+		try {
+			const settings = await api.singboxRouterGetSettings();
+			activeEngine = settings.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
+			ingress = ingressOn(settings.ingressInterfaces, openfluxIngressRefs(draft ?? undefined, status ?? undefined));
+			ingressForced = allDevicesTProxy(settings);
+		} catch {
+			/* роутерные настройки вторичны */
+		}
+		try {
+			if (activeEngine === 'mihomo') {
+				engineRunning = (await api.mihomoStatus()).running;
+			} else {
+				engineRunning = (await api.singboxGetStatus()).running;
+			}
+		} catch {
+			/* статус движка вторичен */
+		}
+
 		await fetchLogs();
 	});
 
@@ -123,7 +226,8 @@
 
 	function setDirectPort(port: number) {
 		if (!draft) return;
-		draft.directListen = `0.0.0.0:${port}`;
+		const safePort = Math.max(1, Math.min(65535, port || 8445));
+		draft.directListen = `0.0.0.0:${safePort}`;
 	}
 
 	function generateSecret() {
@@ -133,7 +237,49 @@
 		draft.secret = Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
 	}
 
+	async function toggleIngress(on: boolean) {
+		if (!draft || mutating) return;
+		mutating = true;
+		try {
+			const settings = await api.singboxRouterGetSettings();
+			activeEngine = settings.routingEngine === 'mihomo' ? 'mihomo' : 'sing-box';
+			ingressForced = allDevicesTProxy(settings);
+			const refs = openfluxIngressRefs(draft, status ?? undefined);
+			await api.singboxRouterPutSettings({
+				...settings,
+				ingressInterfaces: nextIngressInterfaces(settings.ingressInterfaces, refs, on),
+			});
+			ingress = on;
+			notifications.success(
+				on
+					? `Маршрутизация трафика OpenFlux через ${engineName} включена`
+					: `Маршрутизация трафика OpenFlux через ${engineName} выключена`,
+			);
+		} catch (e) {
+			notifications.error('Ошибка изменения маршрутизации: ' + errText(e));
+		} finally {
+			mutating = false;
+		}
+	}
+
+	let natWanBlocked = $state(false);
+
+	function changeNat(val: string) {
+		const mode = val as 'full' | 'internet-only' | 'none';
+		if (mode === 'internet-only' && !effectiveStaticWan(draft ?? undefined).trim()) {
+			natWanBlocked = true;
+			if (draft) draft.natMode = 'internet-only';
+			return;
+		}
+		natWanBlocked = false;
+		if (draft) draft.natMode = mode;
+	}
+
 	async function handleStart() {
+		if (onstart) {
+			onstart();
+			return;
+		}
 		starting = true;
 		try {
 			const st = await api.openfluxStart();
@@ -154,6 +300,10 @@
 	}
 
 	async function handleStop() {
+		if (onstop) {
+			onstop();
+			return;
+		}
 		stopping = true;
 		try {
 			const st = await api.openfluxStop();
@@ -189,11 +339,17 @@
 
 	async function handleSave() {
 		if (!draft) return;
+		if (draft.natMode === 'internet-only' && !effectiveStaticWan(draft).trim()) {
+			notifications.error('Для режима NAT «Интернет» необходимо выбрать выход в интернет (WAN)');
+			natWanBlocked = true;
+			return;
+		}
 		localSaving = true;
 		try {
 			await onsave(draft);
 			lastSyncedConfigJson = JSON.stringify(draft);
 			notifications.success('Настройки сохранены');
+			settingsOpen = false;
 			await onreload();
 			await fetchLogs();
 		} catch (e) {
@@ -205,12 +361,7 @@
 
 	function revert() {
 		if (config) draft = normalizeDraft(config);
-	}
-
-	async function toggleAutostart(enabled: boolean) {
-		if (!draft) return;
-		draft.enabled = enabled;
-		await handleSave();
+		settingsOpen = false;
 	}
 
 	async function fetchLogs() {
@@ -228,12 +379,8 @@
 		<h2>{row.name}</h2>
 		<Badge size="sm" variant="info">OpenFlux-сервер</Badge>
 		<Badge size="sm" variant="default">{(draft?.mode ?? 'l4').toUpperCase()}</Badge>
+		<InstanceBadges {row} />
 		<div class="head-actions">
-			<Toggle
-				label="Автозапуск"
-				checked={draft?.enabled ?? false}
-				onchange={toggleAutostart}
-			/>
 			{#if running}
 				<Button
 					variant="secondary"
@@ -264,29 +411,85 @@
 					Запустить
 				</Button>
 			{/if}
+			<Button variant="ghost" size="sm" onclick={() => (settingsOpen = true)}>Настройки</Button>
 		</div>
 	</div>
 
 	<StatStrip>
 		<Stat value={running ? 'Запущен' : 'Остановлен'} label="Состояние" sub={uptimeValue} />
 		<Stat
-			value={status?.pid ? `PID ${status.pid}` : '—'}
-			label="Процесс"
-			sub={running ? 'активен' : 'не запущен'}
-		/>
-		<Stat
-			value={(draft?.mode ?? 'l4').toUpperCase()}
+			value={draft?.transportMode === 'session' ? 'Мульти-сессия' : 'Одиночный'}
 			label="Режим"
-			sub={draft?.transportMode === 'session' ? 'Мульти-сессия' : 'Одиночный'}
+			sub={draft?.codec === 'batched' ? 'batched кодек' : 'legacy'}
 		/>
 		<Stat
 			value={`:${getDirectPort()}`}
-			label="TCP порт"
-			sub={isTransportEnabled('direct') ? 'прямой TCP' : 'выключен'}
+			label="Direct TCP"
+			sub={isTransportEnabled('direct') ? 'прямой порт' : 'выключен'}
+		/>
+		<Stat
+			value={activeTransportsLabel}
+			label="Транспорты"
+			sub={activeTransportsSub}
 		/>
 	</StatStrip>
 
 	<LastErrorBox text={running ? '' : (status?.error ?? '')} />
+
+	<!-- Секция: Куда идёт трафик -->
+	<DetailSection title="Куда идёт трафик">
+		<div class="line-row">
+			<span class="line-label">Вход (абоненты):</span>
+			<code>0.0.0.0:{getDirectPort()}</code>
+			{#if isTransportEnabled('mailru')}
+				<Badge size="sm" variant="default">Mail.ru Docs</Badge>
+			{/if}
+			{#if isTransportEnabled('yandex')}
+				<Badge size="sm" variant="default">Яндекс Docs</Badge>
+			{/if}
+			<FieldHint
+				text="Входящий трафик абонентов qThrone / OpenFlux через прямой TCP-порт или облачные документы."
+				ariaLabel="Подсказка: приём абонентов"
+			/>
+		</div>
+
+		<div class="line-row">
+			<span class="line-label">Этот роутер:</span>
+			<code>{(draft?.mode ?? 'l4').toUpperCase()}</code>
+			<span class="line-sub">
+				{draft?.mode === 'l3' ? 'L3 TUN / Packet forward' : 'L4 Stream proxy (gVisor)'}
+			</span>
+			<Badge size="sm" variant={draft?.mode !== 'l3' ? 'default' : (ingress ? 'success' : 'muted')}>
+				{draft?.mode !== 'l3' ? 'Маршрутизация: прямой выход (L4)' : (ingress ? `Маршрутизация: ${engineName}` : 'Маршрутизация: напрямую')}
+			</Badge>
+			{#if draft?.egressInterface}
+				<Badge size="sm" variant="default">Выход: {draft.egressInterface}</Badge>
+			{/if}
+			<FieldHint
+				text={`Трафик абонентов направляется по правилам ${engineName} (FakeIP/TProxy) или выходит в интернет напрямую.`}
+				ariaLabel="Подсказка: маршрутизация"
+			/>
+		</div>
+
+		<div class="line-row">
+			<span class="line-label">Выход в интернет:</span>
+			<Badge size="sm" variant="accent">
+				{natModeLabel(draft?.natMode)}
+			</Badge>
+			{#if draft?.natMode === 'internet-only' && effectiveStaticWan(draft ?? undefined)}
+				<Badge size="sm" variant="default">WAN: {effectiveStaticWan(draft ?? undefined)}</Badge>
+			{/if}
+			{#if policyName && policyName !== 'none'}
+				<Badge size="sm" variant="success">Политика: {policyName}</Badge>
+			{:else}
+				<Badge size="sm" variant="muted">Политика: по умолчанию</Badge>
+			{/if}
+			<Button variant="ghost" size="sm" href="/routing">
+				Маршрутизация
+				{#snippet iconAfter()}<ExternalLink size={12} />{/snippet}
+			</Button>
+		</div>
+	</DetailSection>
 
 	{#if status?.link}
 		<div class="link-card-box">
@@ -302,235 +505,295 @@
 		</div>
 	{/if}
 
+	<LogSection log={logs || status?.logTail} {routerClock} hint="Журнал работы процесса OpenFlux" />
+</Card>
+
+<!-- Выдвижная панель «Настройки раздачи» -->
+<SideDrawer open={settingsOpen} onClose={() => (settingsOpen = false)} title="Настройки раздачи">
+	<div class="drawer-toggle">
+		<div class="run-toggle">
+			<Toggle
+				label="Маршрутизация через системный маршрутизатор"
+				hint={draft?.mode !== 'l3'
+					? "OpenFlux работает в режиме L4 стрим-прокси (gVisor) без TUN-интерфейса. Трафик выходит напрямую через сетевой стек роутера."
+					: !engineRunning
+						? "Маршрутизатор не запущен — правило вступит в силу после его запуска"
+						: ingressForced
+							? "Режим устройств «все» — трафик абонентов перехватывается маршрутизатором"
+							: ''}
+				checked={draft?.mode !== 'l3' ? false : ingress}
+				disabled={mutating || draft?.mode !== 'l3'}
+				onchange={toggleIngress}
+				spinner="before"
+			/>
+			<FieldHint
+				text={draft?.mode !== 'l3'
+					? "В режиме L4 стрим-прокси OpenFlux терминирует TCP-сессии в userspace и выходит в сеть напрямую. Перехват через системный маршрутизатор (Mihomo) и назначение политик доступа Keenetic действуют на сетевые интерфейсы (L3)."
+					: ingressForced
+						? "В маршрутизаторе выбран режим устройств «все»: под правила попадает весь транзитный трафик роутера, включая трафик абонентов, при любом положении этого тумблера."
+						: "Трафик абонентов пойдёт по правилам системного маршрутизатора — тем же, что у устройств сети. Выключено — абоненты выходят напрямую, минуя правила."}
+				ariaLabel="Подсказка: системная маршрутизация"
+			/>
+		</div>
+	</div>
+
 	{#if draft}
-		<DetailSection title="Параметры и транспорты" hint="Настройки сервера OpenFlux">
-			<div class="config-grid">
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Имя профиля</strong>
-						<span class="subtext">Отображается в названии узла в клиенте</span>
+		<DetailSection title="Сеть">
+			<div class="form">
+				<FormRow
+					label="Порт раздачи"
+					for="of-direct-listen-port"
+					hint="Главный внешний порт прямого TCP транспорта. Смена перезапустит сервер"
+				>
+					<div class="w-port">
+						<Input
+							id="of-direct-listen-port"
+							type="number"
+							value={String(getDirectPort())}
+							onchange={(v) => setDirectPort(Number(v))}
+							fullWidth
+						/>
 					</div>
-					<div class="config-ctrl">
-						<Input bind:value={draft.name} placeholder="Keenetic" fullWidth />
-					</div>
-				</div>
+				</FormRow>
 
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Режим работы (Mode)</strong>
-						<span class="subtext">
-							L4 — встроенный пользовательский TCP/UDP стек (gVisor). L3 — сетевой уровень TUN.
+				<FormRow label="Режим NAT">
+					<SegmentedControl
+						value={draft.natMode ?? 'full'}
+						options={natModeOptions}
+						ariaLabel="Режим NAT"
+						disabled={busy}
+						onchange={changeNat}
+					/>
+					{#if natWanBlocked}
+						<span class="save-block">
+							Сначала выберите выход в интернет (WAN) — без него режим «Интернет» не работает.
 						</span>
-					</div>
-					<div class="config-ctrl select-ctrl">
-						<select bind:value={draft.mode} class="form-select">
-							<option value="l4">L4 (Пользовательский стрим-прокси, рекомендуется)</option>
-							<option value="l3">L3 (TUN сетевой уровень)</option>
-						</select>
-					</div>
-				</div>
+					{/if}
+				</FormRow>
 
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Сессионный режим (Transport Mode)</strong>
-						<span class="subtext">
-							Мульти-сессия (--negotiate) согласует и чередует транспорты между клиентом и сервером.
-						</span>
-					</div>
-					<div class="config-ctrl select-ctrl">
-						<select bind:value={draft.transportMode} class="form-select">
-							<option value="session">Мульти-транспортная сессия (--negotiate, рекомендуется)</option>
-							<option value="single">Одиночный транспорт (Single)</option>
-						</select>
-					</div>
-				</div>
+				{#if draft.natMode === 'internet-only'}
+					<FormRow label="Выход в интернет" hint="WAN-интерфейс для режима internet-only">
+						<Dropdown
+							value={effectiveStaticWan(draft)}
+							options={[{ value: '', label: 'Не выбран' }, ...wanOptions]}
+							placeholder={wanOptions.length ? 'Выберите WAN…' : 'WAN-интерфейсы не найдены'}
+							disabled={!wanOptions.length || busy}
+							onchange={(v) => {
+								if (draft) {
+									draft.natStaticWan = v;
+									draft.natStaticWans = v ? [v] : [];
+								}
+								natWanBlocked = false;
+							}}
+							fullWidth
+						/>
+					</FormRow>
+				{/if}
 
-				<div class="section-divider">
-					<span>Транспорты</span>
-				</div>
+				<FormRow label="Доступ в LAN">
+					<ChipMultiSelect
+						values={draft.lanSegments ?? []}
+						options={lanOptions}
+						disabled={busy}
+						onchange={(segs) => {
+							if (draft) draft.lanSegments = segs;
+						}}
+					/>
+				</FormRow>
 
-				<!-- Direct TCP -->
-				<div class="transport-block">
-					<div class="transport-header">
-						<div class="transport-title-row">
-							<input
-								type="checkbox"
-								id="of-transport-direct"
-								checked={isTransportEnabled('direct')}
-								onchange={() => toggleTransport('direct')}
-							/>
-							<label for="of-transport-direct"><strong>Прямой TCP транспорт (Direct TCP)</strong></label>
+				{#if draft.mode === 'l3'}
+					<FormRow label="Политика доступа">
+						<ServerAccessPolicyDropdown
+							policy={draft.policy ?? 'none'}
+							disabled={busy}
+							onchange={(pol) => {
+								if (draft) draft.policy = pol;
+							}}
+						/>
+					</FormRow>
+				{:else}
+					<div class="setting-row">
+						<div class="setting-copy">
+							<span class="setting-title">Политика доступа</span>
+							<span class="setting-description">
+								В режиме L4 стрим-прокси OpenFlux выходит в сеть напрямую через стек роутера. Привязка к политикам доступа Keenetic доступна для L3-туннелей (WireGuard, WDTT).
+							</span>
 						</div>
-						<span class="subtext">Прямое TCP соединение на открытый порт роутера</span>
 					</div>
+				{/if}
+			</div>
 
+			{#if draft.mode === 'l3'}
+				<div class="toggle-row">
+					<Toggle
+						label="Использовать в политиках доступа"
+						checked={draft.exposeToPolicies ?? false}
+						disabled={busy}
+						onchange={(v) => {
+							if (draft) draft.exposeToPolicies = v;
+						}}
+					/>
+					<FieldHint
+						text="Выключено — интерфейсы остаются внутренними. Включено — роутер предлагает их в политиках доступа."
+						ariaLabel="Подсказка: использовать в политиках доступа"
+					/>
+				</div>
+			{/if}
+
+			<div class="toggle-row">
+				<Toggle
+					label="Открыть порт в firewall Keenetic (WAN INPUT)"
+					checked={draft.openFirewall !== false}
+					disabled={busy}
+					onchange={(v) => {
+						if (draft) draft.openFirewall = v;
+					}}
+				/>
+			</div>
+		</DetailSection>
+
+		<DetailSection title="Параметры OpenFlux и транспорты">
+			<div class="form">
+				<FormRow label="Имя профиля" hint="Отображается в клиенте при подключении">
+					<Input bind:value={draft.name} placeholder="Keenetic" fullWidth />
+				</FormRow>
+
+				<FormRow label="Режим работы" hint="L4 — пользовательский стрим-прокси gVisor. L3 — TUN сетевой уровень">
+					<select bind:value={draft.mode} class="form-select">
+						<option value="l4">L4 (Стрим-прокси gVisor, рекомендуется)</option>
+						<option value="l3">L3 (Пакетный TUN-уровень)</option>
+					</select>
+				</FormRow>
+
+				<FormRow label="Транспортный режим" hint="Мульти-сессия согласовывает и чередует транспорты">
+					<select bind:value={draft.transportMode} class="form-select">
+						<option value="session">Мульти-сессия (--negotiate, рекомендуется)</option>
+						<option value="single">Одиночный транспорт</option>
+					</select>
+				</FormRow>
+
+				<FormRow label="Выходной интерфейс" hint="Интерфейс или локальный IP для исходящего трафика сервера (--local-ip)">
+					<Dropdown
+						value={draft.egressInterface ?? ''}
+						options={[{ value: '', label: 'По умолчанию (авто)' }, ...wanOptions]}
+						onchange={(v) => {
+							if (draft) draft.egressInterface = v;
+						}}
+						fullWidth
+					/>
+				</FormRow>
+			</div>
+
+			<div class="transports-container">
+				<!-- Direct TCP -->
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-direct"
+							checked={isTransportEnabled('direct')}
+							onchange={() => toggleTransport('direct')}
+						/>
+						<label for="drawer-of-direct"><strong>Прямой TCP (Direct)</strong></label>
+					</div>
 					{#if isTransportEnabled('direct')}
-						<div class="transport-fields">
-							<div class="field-item">
-								<label for="of-direct-port">Порт прослушивания:</label>
-								<input
-									id="of-direct-port"
-									type="number"
-									class="form-input"
-									value={getDirectPort()}
-									oninput={(e) => setDirectPort(parseInt((e.target as HTMLInputElement).value, 10))}
-								/>
-							</div>
-							<div class="field-item">
-								<label for="of-direct-host">Внешний хост / домен (необязательно):</label>
-								<input
-									id="of-direct-host"
-									type="text"
-									class="form-input"
-									placeholder="Автоопределение (KeenDNS / WAN IP)"
-									bind:value={draft.directHost}
-								/>
-							</div>
-							<div class="field-toggle-row">
-								<label class="toggle-label">
-									<input type="checkbox" bind:checked={draft.openFirewall} />
-									<span>Открыть порт в файрволе Keenetic (WAN INPUT)</span>
-								</label>
-							</div>
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.directHost}
+								placeholder="Внешний хост / KeenDNS (автоопределение)"
+								fullWidth
+							/>
 						</div>
 					{/if}
 				</div>
 
 				<!-- Mail.ru Docs -->
-				<div class="transport-block">
-					<div class="transport-header">
-						<div class="transport-title-row">
-							<input
-								type="checkbox"
-								id="of-transport-mailru"
-								checked={isTransportEnabled('mailru')}
-								onchange={() => toggleTransport('mailru')}
-							/>
-							<label for="of-transport-mailru"><strong>Mail.ru Документы (Mail.ru Docs)</strong></label>
-						</div>
-						<span class="subtext">Маскировка и передача туннелированного трафика через документ Mail.ru Docs</span>
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-mailru"
+							checked={isTransportEnabled('mailru')}
+							onchange={() => toggleTransport('mailru')}
+						/>
+						<label for="drawer-of-mailru"><strong>Mail.ru Документы</strong></label>
 					</div>
-
 					{#if isTransportEnabled('mailru')}
-						<div class="transport-fields">
-							<div class="field-item full-width">
-								<label for="of-mailru-url">URL документа Mail.ru:</label>
-								<input
-									id="of-mailru-url"
-									type="text"
-									class="form-input"
-									placeholder="https://docs.mail.ru/document/..."
-									bind:value={draft.mailruUrl}
-								/>
-							</div>
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.mailruUrl}
+								placeholder="https://docs.mail.ru/document/..."
+								fullWidth
+							/>
 						</div>
 					{/if}
 				</div>
 
 				<!-- Yandex Docs -->
-				<div class="transport-block">
-					<div class="transport-header">
-						<div class="transport-title-row">
-							<input
-								type="checkbox"
-								id="of-transport-yandex"
-								checked={isTransportEnabled('yandex')}
-								onchange={() => toggleTransport('yandex')}
-							/>
-							<label for="of-transport-yandex"><strong>Яндекс Документы (Yandex Docs)</strong></label>
-						</div>
-						<span class="subtext">Маскировка и передача трафика через облачный документ Яндекс Документов</span>
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-yandex"
+							checked={isTransportEnabled('yandex')}
+							onchange={() => toggleTransport('yandex')}
+						/>
+						<label for="drawer-of-yandex"><strong>Яндекс Документы</strong></label>
 					</div>
-
 					{#if isTransportEnabled('yandex')}
-						<div class="transport-fields">
-							<div class="field-item full-width">
-								<label for="of-yandex-url">URL документа Яндекс:</label>
-								<input
-									id="of-yandex-url"
-									type="text"
-									class="form-input"
-									placeholder="https://docs.yandex.ru/docs/view?url=..."
-									bind:value={draft.yandexUrl}
-								/>
-							</div>
+						<div class="transport-inputs">
+							<Input
+								bind:value={draft.yandexUrl}
+								placeholder="https://docs.yandex.ru/docs/view?url=..."
+								fullWidth
+							/>
 						</div>
 					{/if}
 				</div>
+			</div>
 
-				<div class="section-divider">
-					<span>Безопасность и кодек</span>
-				</div>
-
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Общий секретный ключ (Secret Key)</strong>
-						<span class="subtext">
-							Ключ шифрования AES-256-GCM. Минимум 16 символов. Должен совпадать у клиента и сервера.
-						</span>
-					</div>
-					<div class="config-ctrl secret-ctrl">
-						<Input bind:value={draft.secret} placeholder="Секретный ключ..." fullWidth />
-						<Button
-							variant="secondary"
-							onclick={generateSecret}
-							title="Сгенерировать случайный 32-значный ключ"
-						>
-							{#snippet iconBefore()}<Key size={15} />{/snippet}
+			<div class="form mt-3">
+				<FormRow label="Секретный ключ" hint="AES-256-GCM ключ шифрования (мин. 16 символов)">
+					<div class="secret-box">
+						<Input bind:value={draft.secret} placeholder="Ключ шифрования..." fullWidth />
+						<Button variant="secondary" size="sm" onclick={generateSecret} title="Сгенерировать случайный ключ">
+							{#snippet iconBefore()}<Key size={14} />{/snippet}
 							Ключ
 						</Button>
 					</div>
-				</div>
+				</FormRow>
 
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Кодек пакетов (Codec)</strong>
-						<span class="subtext">
-							batched — пакетирование и сжатие трафика. legacy — покадровый режим.
-						</span>
-					</div>
-					<div class="config-ctrl select-ctrl">
-						<select bind:value={draft.codec} class="form-select">
-							<option value="batched">batched (Пакетирование, рекомендуется)</option>
-							<option value="legacy">legacy (Покадровый)</option>
-						</select>
-					</div>
-				</div>
+				<FormRow label="Кодек пакетов" hint="batched — пакетирование и сжатие трафика">
+					<select bind:value={draft.codec} class="form-select">
+						<option value="batched">batched (Рекомендуется)</option>
+						<option value="legacy">legacy</option>
+					</select>
+				</FormRow>
 
-				<div class="config-row">
-					<div class="config-label">
-						<strong>Уровень отладки (Debug log)</strong>
-						<span class="subtext">Вывод подробной информации о сессиях в лог</span>
-					</div>
-					<div class="config-ctrl select-ctrl">
-						<select bind:value={draft.debug} class="form-select">
-							<option value={0}>0 — Выключено</option>
-							<option value={1}>1 — Базовая отладка (-d)</option>
-							<option value={2}>2 — Подробная отладка (-dd)</option>
-							<option value={3}>3 — Трассировка пакетов (-ddd)</option>
-						</select>
-					</div>
-				</div>
+				<FormRow label="Уровень отладки" hint="Детализация логов процесса">
+					<select bind:value={draft.debug} class="form-select">
+						<option value={0}>0 — Выключено</option>
+						<option value={1}>1 — Базовая отладка (-d)</option>
+						<option value={2}>2 — Подробная отладка (-dd)</option>
+						<option value={3}>3 — Трассировка (-ddd)</option>
+					</select>
+				</FormRow>
 			</div>
 
-			<div class="save-actions">
-				{#if isDirty}
-					<Button variant="ghost" onclick={revert}>Отменить</Button>
-				{/if}
+			<div class="btn-row">
 				<Button
 					variant="primary"
 					loading={localSaving || saving}
 					disabled={localSaving || saving}
 					onclick={handleSave}
 				>
-					Сохранить настройки
+					Сохранить
 				</Button>
+				<Button variant="ghost" onclick={revert}>Отменить</Button>
 			</div>
 		</DetailSection>
 	{/if}
-
-	<LogSection log={logs || status?.logTail} {routerClock} hint="Журнал работы процесса OpenFlux" />
-</Card>
+</SideDrawer>
 
 <style>
 	.head {
@@ -538,7 +801,7 @@
 		align-items: center;
 		gap: 0.5rem;
 		flex-wrap: wrap;
-		margin-bottom: 1rem;
+		margin-bottom: 0.75rem;
 	}
 
 	.head h2 {
@@ -551,9 +814,34 @@
 	.head-actions {
 		display: flex;
 		align-items: center;
-		gap: 0.75rem;
+		gap: 0.375rem;
 		margin-left: auto;
 		flex-wrap: wrap;
+	}
+
+	.line-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.45rem 0;
+		border-bottom: 1px solid var(--color-border);
+		flex-wrap: wrap;
+		font-size: 0.8125rem;
+	}
+
+	.line-row:last-child {
+		border-bottom: none;
+	}
+
+	.line-label {
+		font-weight: 600;
+		min-width: 140px;
+		color: var(--color-text-secondary);
+	}
+
+	.line-sub {
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
 	}
 
 	.link-card-box {
@@ -581,53 +869,83 @@
 		line-height: 1.4;
 	}
 
-	.config-grid {
-		display: flex;
-		flex-direction: column;
-		gap: 0.875rem;
+	.drawer-toggle {
+		margin-bottom: 1rem;
 	}
 
-	.config-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		padding: 0.5rem 0;
-		border-bottom: 1px solid var(--color-border);
-		gap: 1rem;
-	}
-
-	.config-label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		flex: 1;
-	}
-
-	.subtext {
-		font-size: 0.75rem;
-		color: var(--color-text-muted);
-		line-height: 1.35;
-	}
-
-	.config-ctrl {
+	.run-toggle {
 		display: flex;
 		align-items: center;
-		min-width: 220px;
+		gap: 0.375rem;
 	}
 
-	.select-ctrl {
-		min-width: 300px;
-	}
-
-	.secret-ctrl {
+	.form {
 		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		--form-label-w: 140px;
+		margin-bottom: 1rem;
+	}
+
+	.form :global(.form-row-control > *) {
+		max-width: 420px;
+	}
+
+	.form :global(.form-row-control > [role='group']) {
+		width: fit-content;
+	}
+
+	.w-port {
+		width: 110px;
+	}
+
+	.toggle-row {
+		display: flex;
+		align-items: center;
 		gap: 0.5rem;
-		min-width: 320px;
+		flex-wrap: wrap;
+		margin-top: 0.75rem;
 	}
 
-	.form-select,
-	.form-input {
+	.transports-container {
+		display: flex;
+		flex-direction: column;
+		gap: 0.625rem;
+		margin-top: 0.5rem;
+	}
+
+	.transport-card {
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius);
+		padding: 0.625rem 0.75rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.transport-title-row {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.8125rem;
+		color: var(--color-text-primary);
+	}
+
+	.transport-inputs {
+		margin-top: 0.25rem;
+	}
+
+	.secret-box {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
 		width: 100%;
+	}
+
+	.form-select {
+		width: 100%;
+		max-width: 420px;
 		padding: 0.45rem 0.65rem;
 		background: var(--color-bg-primary);
 		border: 1px solid var(--color-border);
@@ -636,100 +954,26 @@
 		font-size: 0.8125rem;
 	}
 
-	.form-select:focus,
-	.form-input:focus {
+	.form-select:focus {
 		border-color: var(--color-accent);
 		outline: none;
 	}
 
-	.section-divider {
-		padding: 0.625rem 0 0.25rem;
-		font-size: 0.75rem;
-		font-weight: 600;
-		color: var(--color-text-secondary);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		border-bottom: 1px solid var(--color-border);
-	}
-
-	.transport-block {
-		background: var(--color-bg-secondary);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius);
-		padding: 0.75rem 0.875rem;
-		display: flex;
-		flex-direction: column;
-		gap: 0.625rem;
-	}
-
-	.transport-header {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-	}
-
-	.transport-title-row {
+	.btn-row {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		font-size: 0.875rem;
-		color: var(--color-text-primary);
+		margin-top: 1.25rem;
 	}
 
-	.transport-fields {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-		gap: 0.625rem;
-		margin-top: 0.25rem;
-		padding-top: 0.625rem;
-		border-top: 1px dashed var(--color-border);
+	.mt-3 {
+		margin-top: 0.75rem;
 	}
 
-	.field-item {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
+	.save-block {
+		display: block;
+		margin-top: 0.35rem;
 		font-size: 0.75rem;
-		color: var(--color-text-secondary);
-	}
-
-	.field-item.full-width {
-		grid-column: 1 / -1;
-	}
-
-	.field-toggle-row {
-		grid-column: 1 / -1;
-		margin-top: 0.25rem;
-	}
-
-	.toggle-label {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.75rem;
-		cursor: pointer;
-		color: var(--color-text-secondary);
-	}
-
-	.save-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 0.5rem;
-		margin-top: 1rem;
-	}
-
-	@media (max-width: 768px) {
-		.config-row {
-			flex-direction: column;
-			align-items: flex-start;
-			gap: 0.5rem;
-		}
-
-		.config-ctrl,
-		.select-ctrl,
-		.secret-ctrl {
-			width: 100%;
-			min-width: 0;
-		}
+		color: var(--color-warning, #f59e0b);
 	}
 </style>

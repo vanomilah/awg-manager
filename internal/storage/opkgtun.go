@@ -1,6 +1,9 @@
 package storage
 
-import "github.com/hoaxisr/awg-manager/internal/tunnel"
+import (
+	"github.com/hoaxisr/awg-manager/internal/opkgtun"
+	"github.com/hoaxisr/awg-manager/internal/tunnel"
+)
 
 // OpkgTunIndex — номер OpkgTun, который занимает эта запись, и признак того,
 // занимает ли она его вообще.
@@ -22,7 +25,15 @@ import "github.com/hoaxisr/awg-manager/internal/tunnel"
 // рантайм-диспатч по бэкенду.
 func (t AWGTunnel) OpkgTunIndex() (int, bool) {
 	switch t.Backend {
-	case "nativewg", "wdtt-raw":
+	case "nativewg":
+		return 0, false
+	case "wdtt-raw":
+		if idx, ok := opkgtun.IndexOf(t.RawNdmsIface); ok {
+			return idx, true
+		}
+		if idx, ok := opkgtun.IndexOf(t.RawKernelIface); ok {
+			return idx, true
+		}
 		return 0, false
 	}
 	return tunnel.OpkgTunIndexOf(t.ID)

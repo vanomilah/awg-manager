@@ -52,14 +52,15 @@ func CheckEngineReadiness(ctx context.Context, engine proxyengine.Engine, engine
 	}
 
 	if tunMode || usesTunInbound(mode) || iface != "" {
-		target := iface
-		if target == "" {
-			target = "unspecified"
-		}
-		carrierUp := tunReadyProbe(target)
-		res.Details["tun_carrier"] = carrierUp
-		if !carrierUp {
-			res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("tun carrier=0 (%s)", target))
+		if iface == "" {
+			res.Details["tun_carrier"] = false
+			res.MissingCriteria = append(res.MissingCriteria, "tun interface not provisioned")
+		} else {
+			carrierUp := tunReadyProbe(iface)
+			res.Details["tun_carrier"] = carrierUp
+			if !carrierUp {
+				res.MissingCriteria = append(res.MissingCriteria, fmt.Sprintf("tun carrier=0 (%s)", iface))
+			}
 		}
 	} else {
 		// TPROXY / REDIRECT mode

@@ -638,6 +638,7 @@ type AWGTunnel struct {
 	Backend            string                   `json:"backend,omitempty"`            // "nativewg" | "kernel" | "wdtt-raw" | "" (legacy=kernel)
 	FreeTurnClientID   string                   `json:"freeTurnClientId,omitempty"`   // set when AWG tunnel is auto-created from freeturn:// import
 	WdttClientID       string                   `json:"wdttClientId,omitempty"`       // set when AWG tunnel is auto-created from wdtt/qwdtt import
+	OpenFluxClientID   string                   `json:"openfluxClientId,omitempty"`   // set when AWG tunnel is mirror of OpenFlux client OpkgTun interface
 	// AmneziaCountry — код страны подписки Amnezia Premium, из которой
 	// получена ТЕКУЩАЯ конфигурация туннеля (нормализован: нижний регистр,
 	// без пробелов по краям). Пусто — конфигурация не из мастера.

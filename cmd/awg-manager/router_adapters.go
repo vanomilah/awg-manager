@@ -173,11 +173,19 @@ type routerIngressResolverAdapter struct {
 }
 
 func (a *routerIngressResolverAdapter) Resolve(ctx context.Context, ref string) string {
-	const prefix = "managed:"
-	if !strings.HasPrefix(ref, prefix) {
+	if a.store == nil {
 		return ""
 	}
-	return a.store.ResolveSystemName(ctx, strings.TrimPrefix(ref, prefix))
+	var target string
+	switch {
+	case strings.HasPrefix(ref, "managed:"):
+		target = strings.TrimPrefix(ref, "managed:")
+	case strings.HasPrefix(ref, "iface:"):
+		target = strings.TrimPrefix(ref, "iface:")
+	default:
+		return ""
+	}
+	return a.store.ResolveSystemName(ctx, target)
 }
 
 // Compile-time satisfaction for the directly-wired fakeip provisioner:

@@ -731,7 +731,11 @@ func TestBuildRestoreInput_ExpandedBypassCIDRs(t *testing.T) {
 }
 
 func TestBuildRestoreInput_DNSInterceptUDP(t *testing.T) {
-	input := buildRestoreInput(RestoreInputSpec{PolicyMark: "0xffffaaa"})
+	spec := RestoreInputSpec{
+		PolicyMark: "0xffffaaa",
+		WANIPs:     []string{"203.0.113.207/32"},
+	}
+	input := buildRestoreInput(spec)
 
 	// DNS rule MUST exist in AWGM-TPROXY: -p udp --dport 53 -j TPROXY ...
 	wantDNS := "-A AWGM-TPROXY -p udp --dport 53 -j TPROXY --on-port 51271 --on-ip 127.0.0.1 --tproxy-mark 0x1"
@@ -739,15 +743,98 @@ func TestBuildRestoreInput_DNSInterceptUDP(t *testing.T) {
 		t.Errorf("missing DNS UDP TPROXY rule\nwant: %s\ngot:\n%s", wantDNS, input)
 	}
 
-	// CRITICAL ORDERING: DNS rule MUST precede the 192.168.0.0/16 bypass.
-	// Otherwise DNS-to-router-LAN-IP gets bypassed before the DNS rule fires.
 	dnsIdx := strings.Index(input, wantDNS)
+
+	// Router local & LAN DNS return rules MUST precede the DNS intercept rule
+	// so local DNS queries (ndnproxy, MWS repeaters) are not hijacked into TPROXY.
+	for _, cidr := range []string{"127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"} {
+		rule := fmt.Sprintf("-A %s -d %s -p udp --dport 53 -j RETURN", ChainName, cidr)
+		idx := strings.Index(input, rule)
+		if idx < 0 {
+			t.Fatalf("missing LAN DNS return rule: %s", rule)
+		}
+		if idx > dnsIdx {
+			t.Errorf("LAN DNS return rule %s at offset %d must precede DNS TPROXY rule at offset %d", rule, idx, dnsIdx)
+		}
+	}
+	wanDNSRule := fmt.Sprintf("-A %s -d 203.0.113.207/32 -p udp --dport 53 -j RETURN", ChainName)
+	wanDNSIdx := strings.Index(input, wanDNSRule)
+	if wanDNSIdx < 0 {
+		t.Fatalf("missing WAN IP DNS return rule: %s", wanDNSRule)
+	}
+	if wanDNSIdx > dnsIdx {
+		t.Errorf("WAN IP DNS return rule at offset %d must precede DNS TPROXY rule at offset %d", wanDNSIdx, dnsIdx)
+	}
+
+	// General bypass rules (from emitBypassReturns) MUST follow the DNS intercept rule.
 	bypassIdx := strings.Index(input, "-A AWGM-TPROXY -d 192.168.0.0/16 -j RETURN")
-	if dnsIdx < 0 || bypassIdx < 0 {
-		t.Fatalf("DNS or bypass rule not found")
+	if bypassIdx < 0 {
+		t.Fatalf("bypass rule not found")
 	}
 	if dnsIdx > bypassIdx {
 		t.Errorf("DNS rule at offset %d must precede 192.168/16 bypass at offset %d", dnsIdx, bypassIdx)
+	}
+}
+
+func TestBuildRestoreInput_LANDNSExcludedFromHijack(t *testing.T) {
+	spec := RestoreInputSpec{
+		PolicyMark: "0xffffaaa",
+		WANIPs:     []string{"192.168.90.1/32", "203.0.113.1/32"},
+	}
+	input := buildRestoreInput(spec)
+
+	tproxyRule := fmt.Sprintf("-A %s -p udp --dport 53 -j TPROXY", ChainName)
+	tproxyIdx := strings.Index(input, tproxyRule)
+	if tproxyIdx < 0 {
+		t.Fatalf("missing UDP 53 TPROXY rule in:\n%s", input)
+	}
+
+	// Keenetic router LAN (192.168.90.1 / 192.168.0.0/16), localhost (127.0.0.0/8),
+	// private networks (10.0.0.0/8, 172.16.0.0/12) and WAN IPs must all RETURN
+	// before the TPROXY rule so ndnproxy and MWS repeaters can answer.
+	for _, cidr := range []string{"127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"} {
+		rule := fmt.Sprintf("-A %s -d %s -p udp --dport 53 -j RETURN", ChainName, cidr)
+		idx := strings.Index(input, rule)
+		if idx < 0 {
+			t.Errorf("missing return rule for %s", cidr)
+		} else if idx > tproxyIdx {
+			t.Errorf("return rule for %s (%d) must appear before TPROXY (%d)", cidr, idx, tproxyIdx)
+		}
+	}
+
+	for _, ip := range spec.WANIPs {
+		rule := fmt.Sprintf("-A %s -d %s -p udp --dport 53 -j RETURN", ChainName, ip)
+		idx := strings.Index(input, rule)
+		if idx < 0 {
+			t.Errorf("missing return rule for WAN IP %s", ip)
+		} else if idx > tproxyIdx {
+			t.Errorf("return rule for WAN IP %s (%d) must appear before TPROXY (%d)", ip, idx, tproxyIdx)
+		}
+	}
+
+	// In nat (TCP), assert that LAN & WAN bypass return rules precede the catch-all REDIRECT.
+	tcpRedirectRule := fmt.Sprintf("-A %s -p tcp -j REDIRECT", RedirectChain)
+	tcpRedirectIdx := strings.Index(input, tcpRedirectRule)
+	if tcpRedirectIdx < 0 {
+		t.Fatalf("missing TCP REDIRECT rule in:\n%s", input)
+	}
+	for _, cidr := range []string{"127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8", "172.16.0.0/12"} {
+		rule := fmt.Sprintf("-A %s -d %s -j RETURN", RedirectChain, cidr)
+		idx := strings.Index(input, rule)
+		if idx < 0 {
+			t.Errorf("missing TCP return rule for %s", cidr)
+		} else if idx > tcpRedirectIdx {
+			t.Errorf("TCP return rule for %s (%d) must appear before REDIRECT (%d)", cidr, idx, tcpRedirectIdx)
+		}
+	}
+	for _, ip := range spec.WANIPs {
+		rule := fmt.Sprintf("-A %s -d %s -j RETURN", RedirectChain, ip)
+		idx := strings.Index(input, rule)
+		if idx < 0 {
+			t.Errorf("missing TCP return rule for WAN IP %s", ip)
+		} else if idx > tcpRedirectIdx {
+			t.Errorf("TCP return rule for WAN IP %s (%d) must appear before REDIRECT (%d)", ip, idx, tcpRedirectIdx)
+		}
 	}
 }
 
@@ -1211,8 +1298,8 @@ func TestBuildRestoreInput_IngressScope(t *testing.T) {
 	spec := RestoreInputSpec{PolicyMark: "0xffffaad", IngressInterfaces: []string{"nwg3"}}
 	got := buildRestoreInput(spec)
 
-	markRule := "-A PREROUTING -i nwg3 -m comment --comment AWGM-INGRESS -j MARK --set-xmark 0xffffaad/0xffffffff"
-	saveRule := "-A PREROUTING -i nwg3 -m comment --comment AWGM-INGRESS -j CONNMARK --save-mark --nfmask 0xffffffff --ctmask 0xffffffff"
+	markRule := "-A PREROUTING -i nwg3 -m comment --comment AWGM-INGRESS -m mark --mark 0x0 -j MARK --set-xmark 0xffffaad/0xffffffff"
+	saveRule := "-A PREROUTING -i nwg3 -m comment --comment AWGM-INGRESS -m mark --mark 0xffffaad -j CONNMARK --save-mark --nfmask 0xffffffff --ctmask 0xffffffff"
 	jump := "-A PREROUTING -m connmark --mark 0xffffaad -m conntrack ! --ctstate INVALID -j " + ChainName
 
 	if !strings.Contains(got, markRule) {
@@ -1223,6 +1310,9 @@ func TestBuildRestoreInput_IngressScope(t *testing.T) {
 	}
 	if !strings.Contains(got, jump) {
 		t.Fatalf("missing jump rule in:\n%s", got)
+	}
+	if strings.Index(got, markRule) > strings.Index(got, jump) {
+		t.Fatalf("MARK rule must precede the connmark jump")
 	}
 	lanDNSReturn := fmt.Sprintf("-A %s -d 10.0.0.0/8 -p udp --dport 53 -j RETURN", ChainName)
 	if !strings.Contains(got, lanDNSReturn) {
@@ -1250,6 +1340,21 @@ func TestBuildRestoreInput_IngressScope_EmptyMarkSkips(t *testing.T) {
 	spec := RestoreInputSpec{PolicyMark: "", IngressInterfaces: []string{"nwg3"}}
 	if strings.Contains(buildRestoreInput(spec), "AWGM-INGRESS") {
 		t.Fatalf("ingress rules must be skipped when PolicyMark empty")
+	}
+}
+
+func TestBuildRestoreInput_IngressScope_PreservesExistingPolicyMark(t *testing.T) {
+	spec := RestoreInputSpec{PolicyMark: "0xffffab0", IngressInterfaces: []string{"nwg2"}}
+	got := buildRestoreInput(spec)
+
+	// Must check -m mark --mark 0x0 before setting mark, so existing NDMS hotspot policy is preserved
+	wantMark := "-A PREROUTING -i nwg2 -m comment --comment AWGM-INGRESS -m mark --mark 0x0 -j MARK --set-xmark 0xffffab0/0xffffffff"
+	if !strings.Contains(got, wantMark) {
+		t.Fatalf("ingress MARK rule must require mark 0x0 to avoid clobbering existing policy mark, got:\n%s", got)
+	}
+	wantSave := "-A PREROUTING -i nwg2 -m comment --comment AWGM-INGRESS -m mark --mark 0xffffab0 -j CONNMARK --save-mark --nfmask 0xffffffff --ctmask 0xffffffff"
+	if !strings.Contains(got, wantSave) {
+		t.Fatalf("ingress CONNMARK rule must match mark 0xffffab0, got:\n%s", got)
 	}
 }
 

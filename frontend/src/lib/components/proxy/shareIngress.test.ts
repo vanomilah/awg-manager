@@ -82,3 +82,12 @@ describe('nextIngressInterfaces', () => {
 		).toEqual(['iface:nwg3']);
 	});
 });
+
+describe('openfluxIngressRefs', () => {
+	it('возвращает tunIface или ndmsIface, иначе пустой список', async () => {
+		const { openfluxIngressRefs } = await import('./shareIngress');
+		expect(openfluxIngressRefs({ tunIface: 'opkgtun25' } as any)).toEqual(['iface:opkgtun25']);
+		expect(openfluxIngressRefs({ ndmsIface: 'OpkgTun25' } as any)).toEqual(['iface:OpkgTun25']);
+		expect(openfluxIngressRefs({} as any)).toEqual([]);
+	});
+});
