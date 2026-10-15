@@ -660,7 +660,8 @@ func (s *Service) SaveClientConfig(ctx context.Context, cfg ClientConfig) error 
 				_ = s.routerCmds.DenyPolicy(ctx, oldPolicy, oldIface)
 			}
 		}
-		if inbound == "socks5" && oldConfig.InboundMode != "socks5" && oldIface != "" {
+		if (inbound == "socks5" && oldConfig.InboundMode != "socks5" && oldIface != "") ||
+			(oldIface != "" && oldIface != newIface && oldIface != "OpkgTun0" && oldIface != "OpkgTun1") {
 			_ = s.routerCmds.DownInterface(ctx, oldIface)
 			_ = s.routerCmds.DeleteInterface(ctx, oldIface)
 		}

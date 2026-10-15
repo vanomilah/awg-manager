@@ -454,6 +454,7 @@ type mockRouterCmds struct {
 	createdMtu    int
 	createdAddr   string
 	downNdms      string
+	delNdms       string
 	permittedPol  string
 	deniedPol     string
 	createErr     error
@@ -485,7 +486,7 @@ func (m *mockRouterCmds) DownInterface(ctx context.Context, ndmsName string) err
 }
 
 func (m *mockRouterCmds) DeleteInterface(ctx context.Context, ndmsName string) error {
-	m.downNdms = ndmsName
+	m.delNdms = ndmsName
 	return nil
 }
 
@@ -599,6 +600,39 @@ func TestAutoDiscoverFreeTunAndTunAllocation(t *testing.T) {
 	}
 	if mock.downNdms != "OpkgTun7" {
 		t.Fatalf("expected OpkgTun7 to be brought down on switch to socks5, got %q", mock.downNdms)
+	}
+
+	// 5. When interface changes from OpkgTun7 to OpkgTun14 in TUN mode, old OpkgTun7 must be cleaned up
+	mock.downNdms = ""
+	mock.delNdms = ""
+	mock.allocatedNdms = "OpkgTun7"
+	mock.allocatedTun = "opkgtun7"
+
+	// First restore to OpkgTun7 in TUN mode
+	cfg4 := cfg2
+	cfg4.InboundMode = "tun"
+	cfg4.NdmsIface = "OpkgTun7"
+	cfg4.TunIface = "opkgtun7"
+	if err := svc.SaveClientConfig(ctx, cfg4); err != nil {
+		t.Fatalf("SaveClientConfig restore failed: %v", err)
+	}
+
+	// Now reallocate to OpkgTun14
+	mock.downNdms = ""
+	mock.delNdms = ""
+	mock.allocatedNdms = "OpkgTun14"
+	mock.allocatedTun = "opkgtun14"
+	cfg5 := cfg4
+	cfg5.NdmsIface = ""
+	cfg5.TunIface = ""
+	if err := svc.SaveClientConfig(ctx, cfg5); err != nil {
+		t.Fatalf("SaveClientConfig with new iface failed: %v", err)
+	}
+	if mock.downNdms != "OpkgTun7" {
+		t.Fatalf("expected old OpkgTun7 to be brought down on iface change, got %q", mock.downNdms)
+	}
+	if mock.delNdms != "OpkgTun7" {
+		t.Fatalf("expected old OpkgTun7 to be deleted on iface change, got %q", mock.delNdms)
 	}
 }
 

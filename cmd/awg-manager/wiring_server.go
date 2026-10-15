@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1101,6 +1103,25 @@ func (r *openfluxRouterAdapter) AllocateTunInterface(ctx context.Context, prefer
 	return ndms, tun, nil
 }
 
+var openfluxConflictIfaceRe = regexp.MustCompile(`(?i)conflicts with interface ["']?(opkgtun\d+)["']?`)
+
+func extractOpenfluxConflictIface(errStr string) string {
+	m := openfluxConflictIfaceRe.FindStringSubmatch(errStr)
+	if len(m) > 1 {
+		match := m[1]
+		for _, prefix := range []string{"OpkgTun", "opkgtun"} {
+			if strings.HasPrefix(strings.ToLower(match), strings.ToLower(prefix)) {
+				numStr := match[len(prefix):]
+				if n, err := strconv.Atoi(numStr); err == nil {
+					return fmt.Sprintf("OpkgTun%d", n)
+				}
+			}
+		}
+		return match
+	}
+	return ""
+}
+
 func (r *openfluxRouterAdapter) CreateInterface(ctx context.Context, ndmsName, desc string, mtu int, ipWithMask string, global bool, defaultRoute bool) error {
 	if r.cmds == nil || ndmsName == "" {
 		return nil
@@ -1123,9 +1144,32 @@ func (r *openfluxRouterAdapter) CreateInterface(ctx context.Context, ndmsName, d
 		return cause
 	}
 
+	resolveConflict := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		conflictIface := extractOpenfluxConflictIface(err.Error())
+		if conflictIface != "" && conflictIface != "OpkgTun0" && conflictIface != "OpkgTun1" && conflictIface != ndmsName {
+			r.mu.Lock()
+			r.releaseLeaseLocked(conflictIface)
+			r.mu.Unlock()
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = r.cmds.Interfaces.InterfaceDown(cleanupCtx, conflictIface)
+			_ = r.cmds.Interfaces.DeleteOpkgTun(cleanupCtx, conflictIface)
+			return true
+		}
+		return false
+	}
+
 	if ip != "" && mask != "" {
 		if err := r.cmds.Interfaces.SetAddress(ctx, ndmsName, ip, mask); err != nil {
-			return rollback(fmt.Errorf("set address %s on %s: %w", ipWithMask, ndmsName, err))
+			if resolveConflict(err) {
+				err = r.cmds.Interfaces.SetAddress(ctx, ndmsName, ip, mask)
+			}
+			if err != nil {
+				return rollback(fmt.Errorf("set address %s on %s: %w", ipWithMask, ndmsName, err))
+			}
 		}
 	}
 	if mtu > 0 {
@@ -1142,7 +1186,12 @@ func (r *openfluxRouterAdapter) CreateInterface(ctx context.Context, ndmsName, d
 		return rollback(fmt.Errorf("set permit all acl on %s: %w", ndmsName, err))
 	}
 	if err := r.cmds.Interfaces.InterfaceUp(ctx, ndmsName); err != nil {
-		return rollback(fmt.Errorf("interface up %s: %w", ndmsName, err))
+		if resolveConflict(err) {
+			err = r.cmds.Interfaces.InterfaceUp(ctx, ndmsName)
+		}
+		if err != nil {
+			return rollback(fmt.Errorf("interface up %s: %w", ndmsName, err))
+		}
 	}
 	if defaultRoute {
 		if err := r.cmds.Routes.SetDefaultRoute(ctx, ndmsName); err != nil {
