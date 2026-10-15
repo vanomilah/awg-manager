@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	Timeout        = 7 * time.Second
-	ConnectTimeout = 3 * time.Second
-	MaxTime        = 5 * time.Second
+	Timeout        = 30 * time.Second
+	ConnectTimeout = 15 * time.Second
+	MaxTime        = 25 * time.Second
 )
 
 var Client httpclient.HTTPDoer = httpclient.DefaultClient

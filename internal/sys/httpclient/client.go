@@ -134,7 +134,7 @@ func New() *Client {
 			MaxIdleConns:          10,
 			IdleConnTimeout:       30 * time.Second,
 			DisableKeepAlives:     true, // Most calls are one-shot probes
-			TLSHandshakeTimeout:   5 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			// Match curl behaviour: HTTP/1.1 only. Not every target
 			// (especially inside VPNs) handles HTTP/2 well.
@@ -266,6 +266,9 @@ func (c *Client) buildTransport(cfg CallConfig, parsedProxy *url.URL) *http.Tran
 		connectTimeout = 5 * time.Second
 	}
 	t.DialContext = buildDialContext(cfg.Interface, cfg.DNSServers, connectTimeout)
+	if connectTimeout > t.TLSHandshakeTimeout {
+		t.TLSHandshakeTimeout = connectTimeout
+	}
 
 	// Set up proxy. Explicit URL wins; otherwise honour HTTP_PROXY/HTTPS_PROXY
 	// for direct (unbound) egress. Bind mode must not use env proxy — traffic

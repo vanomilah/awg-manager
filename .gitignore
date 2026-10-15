@@ -56,6 +56,9 @@ coverage.html
 CLAUDE.md
 screenshots/
 
+# Argon (all internal)
+.argon/
+
 # Worktrees
 .worktrees/
 

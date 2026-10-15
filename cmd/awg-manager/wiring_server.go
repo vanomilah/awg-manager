@@ -1084,7 +1084,7 @@ func (r *openfluxRouterAdapter) AllocateTunInterface(ctx context.Context, prefer
 		if preferred != "" {
 			r.releaseLeaseLocked(preferred)
 		}
-		self := opkgtun.ProxyHolder("openflux", "tun", "OpenFlux")
+		self := opkgtun.TunnelHolder("openflux-client", "OpenFlux")
 		req := opkgtun.Want(self)
 		if idx, ok := opkgtun.NDMSIndexOf(preferred); ok && idx >= 2 {
 			req = opkgtun.WantPinned(self, idx)

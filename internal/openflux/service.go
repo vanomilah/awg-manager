@@ -376,6 +376,10 @@ func (s *Service) ensureClientTunAllocatedLocked(ctx context.Context) {
 	}
 	ndms, tun := s.allocateTunLocked(ctx, preferred)
 	if ndms != "" && tun != "" {
+		if s.routerCmds != nil && preferred != "" && preferred != ndms && preferred != "OpkgTun0" && preferred != "OpkgTun1" {
+			_ = s.routerCmds.DownInterface(ctx, preferred)
+			_ = s.routerCmds.DeleteInterface(ctx, preferred)
+		}
 		s.clientConfig.NdmsIface = ndms
 		s.clientConfig.TunIface = tun
 	}
@@ -839,7 +843,11 @@ func (s *Service) RestartClient(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.restartClientProcess(ctx)
+	err := s.restartClientProcess(ctx)
+	if s.hasClientConfigLocked() {
+		s.syncClientMirrorLocked()
+	}
+	return err
 }
 
 // ParseClientLink decodes an openflux://v1/... link and builds a ClientConfig preserving local listen settings.
@@ -1158,6 +1166,7 @@ func (s *Service) startClientProcess(ctx context.Context, resetStopCh bool) erro
 			secureZeroAndRemoveFile(s.clientKeyPath)
 			return fmt.Errorf("не удалось сохранить конфигурацию клиента: %w", err)
 		}
+		s.syncClientMirrorLocked()
 	}
 	ndmsIface := strings.TrimSpace(s.clientConfig.NdmsIface)
 	if inboundMode == "tun" && (ndmsIface == "" || ndmsIface == "OpkgTun0" || ndmsIface == "OpkgTun1") {

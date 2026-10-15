@@ -18,9 +18,9 @@ var defaultIPCheckServices = []IPCheckService{
 }
 
 const (
-	directIPTimeout   = 10 * time.Second
-	vpnIPTimeout      = 20 * time.Second
-	perServiceTimeout = 4 * time.Second
+	directIPTimeout   = 15 * time.Second
+	vpnIPTimeout      = 45 * time.Second
+	perServiceTimeout = 25 * time.Second
 )
 
 // GetIPCheckServices returns the list of available IP check services.
@@ -82,9 +82,10 @@ func (s *Service) fetchIPAuto(ctx context.Context, serviceURL string, iface stri
 // fetchIP queries a single IP check service.
 func fetchIP(ctx context.Context, url string, iface string) (string, error) {
 	res, err := httpclient.DefaultClient.Do(ctx, httpclient.CallConfig{
-		URL:       url,
-		Interface: iface,
-		MaxTime:   perServiceTimeout,
+		URL:            url,
+		Interface:      iface,
+		ConnectTimeout: 15 * time.Second,
+		MaxTime:        perServiceTimeout,
 	})
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", url, err)
