@@ -36,6 +36,7 @@
 	import { natModeOptions, natModeLabel } from './shareConfig';
 	import { ingressOn, nextIngressInterfaces, openfluxIngressRefs } from './shareIngress';
 	import { effectiveStaticWan } from '$lib/api/proxyInstances';
+	import SensitiveInput from '../proxy-panel/SensitiveInput.svelte';
 	import { ExternalLink, Key, Layers } from 'lucide-svelte';
 
 	interface Props {
@@ -73,6 +74,9 @@
 		c.name = c.name ?? 'Keenetic';
 		c.secret = c.secret ?? '';
 		c.directHost = c.directHost ?? '';
+		c.webdavUrl = c.webdavUrl ?? '';
+		c.webdavUser = c.webdavUser ?? '';
+		c.webdavPassword = c.webdavPassword ?? '';
 		c.mailruUrl = c.mailruUrl ?? '';
 		c.yandexUrl = c.yandexUrl ?? '';
 		c.vyandexUrl = c.vyandexUrl ?? '';
@@ -133,6 +137,7 @@
 			? 'Нет'
 			: activeTransports
 					.map((t) => {
+						if (t === 'webdav') return 'WebDAV';
 						if (t === 'direct') return 'Direct';
 						if (t === 'mailru') return 'Mail.ru';
 						if (t === 'yandex') return 'Яндекс';
@@ -451,6 +456,9 @@
 			{:else}
 				<code>Облачный транспорт</code>
 			{/if}
+			{#if isTransportEnabled('webdav')}
+				<Badge size="sm" variant="default">WebDAV Cloud</Badge>
+			{/if}
 			{#if isTransportEnabled('mailru')}
 				<Badge size="sm" variant="default">Mail.ru Docs</Badge>
 			{/if}
@@ -704,6 +712,50 @@
 			</div>
 
 			<div class="transports-container">
+				<!-- WebDAV Cloud (Mail.ru / Yandex.Disk) -->
+				<div class="transport-card">
+					<div class="transport-title-row">
+						<input
+							type="checkbox"
+							id="drawer-of-webdav"
+							checked={isTransportEnabled('webdav')}
+							onchange={() => toggleTransport('webdav')}
+						/>
+						<label for="drawer-of-webdav"><strong>Облако Mail.ru / Яндекс.Диск (WebDAV — Высокая скорость)</strong></label>
+					</div>
+					{#if isTransportEnabled('webdav')}
+						<div class="transport-inputs">
+							<div class="transport-fields">
+								<div class="field-item full-width">
+									<label for="drawer-of-webdav-url">URL WebDAV:</label>
+									<Input
+										id="drawer-of-webdav-url"
+										bind:value={draft.webdavUrl}
+										placeholder="https://webdav.cloud.mail.ru/openflux"
+										fullWidth
+									/>
+								</div>
+								<div class="field-item">
+									<label for="drawer-of-webdav-user">Логин (email):</label>
+									<Input
+										id="drawer-of-webdav-user"
+										bind:value={draft.webdavUser}
+										placeholder="user@mail.ru"
+										fullWidth
+									/>
+								</div>
+								<div class="field-item">
+									<label for="drawer-of-webdav-pass">Пароль приложения:</label>
+									<SensitiveInput
+										bind:value={draft.webdavPassword}
+										placeholder="Пароль внешнего приложения..."
+									/>
+								</div>
+							</div>
+						</div>
+					{/if}
+				</div>
+
 				<!-- Mail.ru Docs -->
 				<div class="transport-card">
 					<div class="transport-title-row">
@@ -1019,6 +1071,27 @@
 
 	.transport-inputs {
 		margin-top: 0.25rem;
+	}
+
+	.transport-fields {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+		gap: 0.5rem;
+		margin-top: 0.25rem;
+		padding-top: 0.5rem;
+		border-top: 1px dashed var(--color-border);
+	}
+
+	.field-item {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		font-size: 0.75rem;
+		color: var(--color-text-secondary);
+	}
+
+	.field-item.full-width {
+		grid-column: 1 / -1;
 	}
 
 	.secret-box {

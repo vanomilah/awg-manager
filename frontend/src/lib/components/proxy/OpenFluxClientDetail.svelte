@@ -72,6 +72,9 @@
 		c.socks5Listen = c.socks5Listen ?? '127.0.0.1:1085';
 		c.httpProxyListen = c.httpProxyListen ?? '';
 		c.directDial = c.directDial ?? '';
+		c.webdavUrl = c.webdavUrl ?? '';
+		c.webdavUser = c.webdavUser ?? '';
+		c.webdavPassword = c.webdavPassword ?? '';
 		c.mailruUrl = c.mailruUrl ?? '';
 		c.yandexUrl = c.yandexUrl ?? '';
 		c.vyandexUrl = c.vyandexUrl ?? '';
@@ -192,6 +195,7 @@
 		if (tr.length === 0) return 'не выбраны';
 		return tr
 			.map((t) => {
+				if (t === 'webdav') return 'WebDAV';
 				if (t === 'mailru') return 'Mail.ru';
 				if (t === 'yandex') return 'Яндекс';
 				if (t === 'vyandex') return 'ВК/Яндекс';
@@ -259,7 +263,6 @@
 				defaultRoute: draft?.defaultRoute ?? false,
 				socks5Listen: draft?.socks5Listen || res.config.socks5Listen || '127.0.0.1:1085',
 				httpProxyListen: draft?.httpProxyListen ?? res.config.httpProxyListen ?? '',
-				vyandexUrl: draft?.vyandexUrl ?? res.config.vyandexUrl ?? '',
 				autoReconnect: draft?.autoReconnect ?? true,
 			});
 			draft = nextCfg;
@@ -793,6 +796,54 @@
 
 				<div class="section-divider">
 					<span>Транспорты подключения к серверу</span>
+				</div>
+
+				<!-- WebDAV Cloud (Mail.ru / Yandex.Disk) -->
+				<div class="transport-block">
+					<div class="transport-header">
+						<div class="transport-title-row">
+							<input
+								type="checkbox"
+								id="ofc-transport-webdav"
+								checked={isTransportEnabled('webdav')}
+								onchange={() => toggleTransport('webdav')}
+							/>
+							<label for="ofc-transport-webdav"><strong>Облако Mail.ru / Яндекс.Диск (WebDAV — Высокая скорость)</strong></label>
+						</div>
+						<span class="subtext">Высокоскоростной блочный транспорт через WebDAV Облака Mail.ru или Яндекс.Диска (10–30+ Мбит/с)</span>
+					</div>
+
+					{#if isTransportEnabled('webdav')}
+						<div class="transport-fields">
+							<div class="field-item full-width">
+								<label for="ofc-webdav-url">URL WebDAV:</label>
+								<input
+									id="ofc-webdav-url"
+									type="text"
+									class="form-input"
+									placeholder="https://webdav.cloud.mail.ru/openflux"
+									bind:value={draft.webdavUrl}
+								/>
+							</div>
+							<div class="field-item">
+								<label for="ofc-webdav-user">Логин (email):</label>
+								<input
+									id="ofc-webdav-user"
+									type="text"
+									class="form-input"
+									placeholder="user@mail.ru"
+									bind:value={draft.webdavUser}
+								/>
+							</div>
+							<div class="field-item">
+								<label for="ofc-webdav-pass">Пароль приложения:</label>
+								<SensitiveInput
+									bind:value={draft.webdavPassword}
+									placeholder="Пароль внешнего приложения..."
+								/>
+							</div>
+						</div>
+					{/if}
 				</div>
 
 				<!-- Mail.ru Docs -->

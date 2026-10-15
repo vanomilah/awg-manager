@@ -177,6 +177,7 @@ function clientFlow(listen?: string, peer?: string): ProxyFlowStep[] {
 function openfluxClientFlow(c?: OpenFluxClientConfig, st?: OpenFluxClientStatus): ProxyFlowStep[] {
 	const transports = c?.transports ?? ['direct'];
 	const transportLabels = transports.map((t) => {
+		if (t === 'webdav') return 'WebDAV';
 		if (t === 'mailru') return 'Mail.ru';
 		if (t === 'yandex') return 'Яндекс';
 		if (t === 'direct') return 'Direct';
@@ -228,6 +229,7 @@ function ftServerFlow(c?: FreeTurnServerConfig): ProxyFlowStep[] {
 function openfluxServerFlow(c?: OpenFluxConfig, st?: OpenFluxStatus): ProxyFlowStep[] {
 	const transports = c?.transports ?? ['direct'];
 	const transportLabels = transports.map((t) => {
+		if (t === 'webdav') return 'WebDAV';
 		if (t === 'mailru') return 'Mail.ru';
 		if (t === 'yandex') return 'Яндекс';
 		if (t === 'direct') return 'Direct';

@@ -26,6 +26,7 @@ const DefaultClientHttpPort = 1086
 
 // Default transport priorities for whitelist bypass (cloud first, direct fallback).
 const (
+	PriorityWebdav     = 110
 	PriorityMailru     = 100
 	PriorityVyandex    = 95
 	PriorityYandex     = 90
@@ -37,6 +38,8 @@ const (
 // DefaultTransportPriority returns the default priority for an OpenFlux transport.
 func DefaultTransportPriority(t string) int {
 	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "webdav":
+		return PriorityWebdav
 	case "mailru":
 		return PriorityMailru
 	case "vyandex":
@@ -59,7 +62,10 @@ type Config struct {
 	Enabled             bool           `json:"enabled"`
 	Mode                string         `json:"mode"`          // "l4" (default, gVisor stream proxy) | "l3" (packet forward)
 	TransportMode       string         `json:"transportMode"` // "session" (multi-transport, recommended) | "single"
-	Transports          []string       `json:"transports"`    // list of enabled transports: "mailru", "yandex", "vyandex", "direct", "cupsonline"
+	Transports          []string       `json:"transports"`    // list of enabled transports: "webdav", "mailru", "yandex", "vyandex", "direct", "cupsonline"
+	WebdavURL           string         `json:"webdavUrl,omitempty"`
+	WebdavUser          string         `json:"webdavUser,omitempty"`
+	WebdavPassword      string         `json:"webdavPassword,omitempty"`
 	MailruURL           string         `json:"mailruUrl,omitempty"`
 	YandexURL           string         `json:"yandexUrl,omitempty"`
 	VyandexURL          string         `json:"vyandexUrl,omitempty"`
@@ -245,6 +251,21 @@ func ResolveInterfaceIPv4(target string) string {
 	return ""
 }
 
+// sanitizeContextURL parses raw URL and strips user credentials (user:pass@)
+// so that sensitive passwords never leak into --session-context or share context.
+func sanitizeContextURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	parsed.User = nil
+	return parsed.String()
+}
+
 // BuildArgs converts Config to OpenFlux CLI invocation arguments.
 func (c *Config) BuildArgs(keyFilePath string) []string {
 	args := []string{
@@ -295,9 +316,11 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 		if keyFilePath != "" {
 			args = append(args, "--encryption-key-file="+keyFilePath)
 		}
-		// Context: if mailru or yandex URL is present use it, otherwise default
+		// Context: if webdav, mailru or yandex URL is present use it, otherwise default
 		contextURL := "http://#"
-		if strings.TrimSpace(c.MailruURL) != "" {
+		if strings.TrimSpace(c.WebdavURL) != "" {
+			contextURL = sanitizeContextURL(c.WebdavURL)
+		} else if strings.TrimSpace(c.MailruURL) != "" {
 			contextURL = strings.TrimSpace(c.MailruURL)
 		} else if strings.TrimSpace(c.YandexURL) != "" {
 			contextURL = strings.TrimSpace(c.YandexURL)
@@ -317,6 +340,7 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 		}
 		var transportItems []transportPrioItem
 		hasDirect := false
+		hasWebdav := false
 		hasMailru := false
 		hasYandex := false
 		hasVyandex := false
@@ -332,6 +356,11 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 				}
 			}
 			switch norm {
+			case "webdav":
+				if strings.TrimSpace(c.WebdavURL) != "" {
+					transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("webdav:%d", prio), prio: prio})
+					hasWebdav = true
+				}
 			case "direct":
 				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("direct:%d", prio), prio: prio})
 				hasDirect = true
@@ -372,6 +401,28 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 			}
 			args = append(args, "--direct-listen="+dl)
 		}
+		if hasWebdav && strings.TrimSpace(c.WebdavURL) != "" {
+			webdavURL := strings.TrimSpace(c.WebdavURL)
+			webdavUser := strings.TrimSpace(c.WebdavUser)
+			webdavPass := strings.TrimSpace(c.WebdavPassword)
+			if parsed, err := url.Parse(webdavURL); err == nil && parsed.User != nil {
+				if webdavUser == "" {
+					webdavUser = parsed.User.Username()
+				}
+				if webdavPass == "" {
+					webdavPass, _ = parsed.User.Password()
+				}
+				parsed.User = nil
+				webdavURL = parsed.String()
+			}
+			args = append(args, "--webdav-url="+webdavURL)
+			if webdavUser != "" {
+				args = append(args, "--webdav-user="+webdavUser)
+			}
+			if webdavPass != "" {
+				args = append(args, "--webdav-pass="+webdavPass)
+			}
+		}
 		if hasMailru && strings.TrimSpace(c.MailruURL) != "" {
 			args = append(args, "--mailru-url="+strings.TrimSpace(c.MailruURL))
 		}
@@ -406,6 +457,16 @@ func (c *Config) BuildArgs(keyFilePath string) []string {
 		}
 
 		switch singleType {
+		case "webdav":
+			if strings.TrimSpace(c.WebdavURL) != "" {
+				args = append(args, "--url="+strings.TrimSpace(c.WebdavURL))
+			}
+			if u := strings.TrimSpace(c.WebdavUser); u != "" {
+				args = append(args, "--webdav-user="+u)
+			}
+			if p := strings.TrimSpace(c.WebdavPassword); p != "" {
+				args = append(args, "--webdav-pass="+p)
+			}
 		case "direct":
 			dl := strings.TrimSpace(c.DirectListen)
 			if dl == "" {
@@ -464,8 +525,11 @@ type ClientConfig struct {
 	ExposeToPolicies bool     `json:"exposeToPolicies"`           // "ip global auto" in NDMS (default true)
 	DefaultRoute     bool     `json:"defaultRoute"`               // Candidate for default route in NDMS (default false)
 	TransportMode    string   `json:"transportMode"`              // "session" (default, --negotiate) | "single" | "stream"
-	Transports       []string `json:"transports"`                 // list of enabled transports: "direct", "mailru", "yandex", "cupsonline", "telemost"
+	Transports       []string `json:"transports"`                 // list of enabled transports: "direct", "webdav", "mailru", "yandex", "cupsonline", "telemost"
 	DirectDial       string   `json:"directDial,omitempty"`       // remote exit host:port for direct transport
+	WebdavURL        string   `json:"webdavUrl,omitempty"`        // WebDAV URL for webdav transport
+	WebdavUser       string   `json:"webdavUser,omitempty"`       // WebDAV username/login
+	WebdavPassword   string   `json:"webdavPassword,omitempty"`   // WebDAV app password
 	MailruURL        string   `json:"mailruUrl,omitempty"`        // document URL for mailru
 	YandexURL        string   `json:"yandexUrl,omitempty"`        // document URL for yandex
 	VyandexURL       string   `json:"vyandexUrl,omitempty"`       // document URL for vyandex
@@ -623,6 +687,10 @@ func (c *ClientConfig) ValidateForStart() error {
 			if strings.TrimSpace(c.DirectDial) != "" {
 				hasUsableTransport = true
 			}
+		case "webdav":
+			if strings.TrimSpace(c.WebdavURL) != "" {
+				hasUsableTransport = true
+			}
 		case "mailru":
 			if strings.TrimSpace(c.MailruURL) != "" {
 				hasUsableTransport = true
@@ -751,6 +819,7 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 	}
 	var transportItems []transportPrioItem
 	hasDirect := false
+	hasWebdav := false
 	hasMailru := false
 	hasYandex := false
 	hasVyandex := false
@@ -761,6 +830,11 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 		norm := strings.ToLower(strings.TrimSpace(t))
 		prio := DefaultTransportPriority(norm)
 		switch norm {
+		case "webdav":
+			if strings.TrimSpace(c.WebdavURL) != "" {
+				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("webdav:%d", prio), prio: prio})
+				hasWebdav = true
+			}
 		case "direct":
 			if strings.TrimSpace(c.DirectDial) != "" {
 				transportItems = append(transportItems, transportPrioItem{part: fmt.Sprintf("direct:%d", prio), prio: prio})
@@ -842,7 +916,9 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 
 		contextURL := strings.TrimSpace(c.Context)
 		if contextURL == "" {
-			if strings.TrimSpace(c.MailruURL) != "" {
+			if strings.TrimSpace(c.WebdavURL) != "" {
+				contextURL = sanitizeContextURL(c.WebdavURL)
+			} else if strings.TrimSpace(c.MailruURL) != "" {
 				contextURL = strings.TrimSpace(c.MailruURL)
 			} else if strings.TrimSpace(c.YandexURL) != "" {
 				contextURL = strings.TrimSpace(c.YandexURL)
@@ -855,6 +931,8 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 			} else {
 				contextURL = "http://#"
 			}
+		} else {
+			contextURL = sanitizeContextURL(contextURL)
 		}
 		args = append(args, "--session-context="+contextURL)
 
@@ -864,6 +942,28 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 
 		if hasDirect {
 			args = append(args, "--direct-dial="+strings.TrimSpace(c.DirectDial))
+		}
+		if hasWebdav {
+			webdavURL := strings.TrimSpace(c.WebdavURL)
+			webdavUser := strings.TrimSpace(c.WebdavUser)
+			webdavPass := strings.TrimSpace(c.WebdavPassword)
+			if parsed, err := url.Parse(webdavURL); err == nil && parsed.User != nil {
+				if webdavUser == "" {
+					webdavUser = parsed.User.Username()
+				}
+				if webdavPass == "" {
+					webdavPass, _ = parsed.User.Password()
+				}
+				parsed.User = nil
+				webdavURL = parsed.String()
+			}
+			args = append(args, "--webdav-url="+webdavURL)
+			if webdavUser != "" {
+				args = append(args, "--webdav-user="+webdavUser)
+			}
+			if webdavPass != "" {
+				args = append(args, "--webdav-pass="+webdavPass)
+			}
 		}
 		if hasMailru {
 			args = append(args, "--mailru-url="+strings.TrimSpace(c.MailruURL))
@@ -897,11 +997,34 @@ func (c *ClientConfig) BuildArgs(keyFilePath string) []string {
 		if keyFilePath != "" && strings.TrimSpace(c.Secret) != "" {
 			args = append(args, "--encryption-key-file="+keyFilePath)
 			if strings.TrimSpace(c.Context) != "" {
-				args = append(args, "--session-context="+strings.TrimSpace(c.Context))
+				args = append(args, "--session-context="+sanitizeContextURL(c.Context))
 			}
 		}
 
 		switch singleType {
+		case "webdav":
+			webdavURL := strings.TrimSpace(c.WebdavURL)
+			webdavUser := strings.TrimSpace(c.WebdavUser)
+			webdavPass := strings.TrimSpace(c.WebdavPassword)
+			if parsed, err := url.Parse(webdavURL); err == nil && parsed.User != nil {
+				if webdavUser == "" {
+					webdavUser = parsed.User.Username()
+				}
+				if webdavPass == "" {
+					webdavPass, _ = parsed.User.Password()
+				}
+				parsed.User = nil
+				webdavURL = parsed.String()
+			}
+			if webdavURL != "" {
+				args = append(args, "--url="+webdavURL)
+			}
+			if webdavUser != "" {
+				args = append(args, "--webdav-user="+webdavUser)
+			}
+			if webdavPass != "" {
+				args = append(args, "--webdav-pass="+webdavPass)
+			}
 		case "direct":
 			if strings.TrimSpace(c.DirectDial) != "" {
 				args = append(args, "--direct-dial="+strings.TrimSpace(c.DirectDial))

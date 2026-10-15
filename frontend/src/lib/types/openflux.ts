@@ -3,6 +3,9 @@ export interface OpenFluxConfig {
 	mode: 'l4' | 'l3';
 	transportMode: 'session' | 'single';
 	transports: string[];
+	webdavUrl?: string;
+	webdavUser?: string;
+	webdavPassword?: string;
 	mailruUrl?: string;
 	yandexUrl?: string;
 	vyandexUrl?: string;
@@ -42,6 +45,9 @@ export interface OpenFluxClientConfig {
 	transportMode: 'session' | 'single' | 'stream';
 	transports: string[];
 	directDial?: string;
+	webdavUrl?: string;
+	webdavUser?: string;
+	webdavPassword?: string;
 	mailruUrl?: string;
 	yandexUrl?: string;
 	vyandexUrl?: string;
@@ -62,6 +68,8 @@ export interface OpenFluxShareTransport {
 	url?: string;
 	priority?: number;
 	dial?: string;
+	user?: string;
+	password?: string;
 }
 
 export interface OpenFluxShareConfig {

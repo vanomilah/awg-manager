@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1128,5 +1129,194 @@ func TestDeterministicPrioritySorting(t *testing.T) {
 		t.Errorf("expected 3rd transport direct:50, got %s:%d", sc.Transports[2].Type, sc.Transports[2].Priority)
 	}
 }
+
+func TestWebDAVTransportIntegration(t *testing.T) {
+	// 1. Priority check: webdav must be 110 (top cloud transport)
+	if prio := DefaultTransportPriority("webdav"); prio != 110 {
+		t.Fatalf("expected DefaultTransportPriority('webdav') == 110, got %d", prio)
+	}
+	if prio := DefaultTransportPriority("mailru"); prio != 100 {
+		t.Fatalf("expected DefaultTransportPriority('mailru') == 100, got %d", prio)
+	}
+
+	// 2. Server Config.BuildArgs with WebDAV
+	srvCfg := DefaultConfig()
+	srvCfg.Secret = "1234567890123456"
+	srvCfg.Transports = []string{"direct", "mailru", "webdav", "yandex"}
+	srvCfg.WebdavURL = "https://webdav.cloud.mail.ru/openflux/"
+	srvCfg.WebdavUser = "testuser@mail.ru"
+	srvCfg.WebdavPassword = "secretWebdavPassword123"
+	srvCfg.MailruURL = "https://docs.mail.ru/doc123"
+	srvCfg.YandexURL = "https://docs.yandex.ru/doc456"
+	srvCfg.DirectHost = "203.0.113.10"
+
+	srvArgs := srvCfg.BuildArgs("/tmp/key")
+	srvArgsStr := strings.Join(srvArgs, " ")
+
+	expectedTransports := "--transports=webdav:110,mailru:100,yandex:90,direct:50"
+	if !strings.Contains(srvArgsStr, expectedTransports) {
+		t.Errorf("srvArgs missing %s: got %s", expectedTransports, srvArgsStr)
+	}
+	if !strings.Contains(srvArgsStr, "--webdav-url=https://webdav.cloud.mail.ru/openflux/") {
+		t.Errorf("srvArgs missing --webdav-url: got %s", srvArgsStr)
+	}
+	if !strings.Contains(srvArgsStr, "--webdav-user=testuser@mail.ru") {
+		t.Errorf("srvArgs missing --webdav-user: got %s", srvArgsStr)
+	}
+	if !strings.Contains(srvArgsStr, "--webdav-pass=secretWebdavPassword123") {
+		t.Errorf("srvArgs missing --webdav-pass: got %s", srvArgsStr)
+	}
+	if !strings.Contains(srvArgsStr, "--session-context=https://webdav.cloud.mail.ru/openflux/") {
+		t.Errorf("srvArgs missing webdav session context: got %s", srvArgsStr)
+	}
+
+	// 3. Client Config.BuildArgs with WebDAV
+	cliCfg := DefaultClientConfig()
+	cliCfg.Secret = "1234567890123456"
+	cliCfg.Transports = []string{"direct", "webdav"}
+	cliCfg.WebdavURL = "https://webdav.yandex.ru/openflux/"
+	cliCfg.WebdavUser = "yandex_user"
+	cliCfg.WebdavPassword = "yandex_password"
+	cliCfg.DirectDial = "203.0.113.10:8445"
+
+	cliArgs := cliCfg.BuildArgs("/tmp/cli_key")
+	cliArgsStr := strings.Join(cliArgs, " ")
+
+	expectedCliTransports := "--transports=webdav:110,direct:50"
+	if !strings.Contains(cliArgsStr, expectedCliTransports) {
+		t.Errorf("cliArgs missing %s: got %s", expectedCliTransports, cliArgsStr)
+	}
+	if !strings.Contains(cliArgsStr, "--webdav-url=https://webdav.yandex.ru/openflux/") {
+		t.Errorf("cliArgs missing --webdav-url: got %s", cliArgsStr)
+	}
+	if !strings.Contains(cliArgsStr, "--webdav-user=yandex_user") {
+		t.Errorf("cliArgs missing --webdav-user: got %s", cliArgsStr)
+	}
+	if !strings.Contains(cliArgsStr, "--webdav-pass=yandex_password") {
+		t.Errorf("cliArgs missing --webdav-pass: got %s", cliArgsStr)
+	}
+
+	// 4. Client single transport mode
+	cliSingle := DefaultClientConfig()
+	cliSingle.TransportMode = "single"
+	cliSingle.Transports = []string{"webdav"}
+	cliSingle.WebdavURL = "https://webdav.cloud.mail.ru/openflux/"
+	cliSingle.WebdavUser = "user@mail.ru"
+	cliSingle.WebdavPassword = "app_pass_987"
+	singleArgs := cliSingle.BuildArgs("")
+	singleArgsStr := strings.Join(singleArgs, " ")
+	if !strings.Contains(singleArgsStr, "--transport=webdav") {
+		t.Errorf("expected --transport=webdav in single mode: got %s", singleArgsStr)
+	}
+	if !strings.Contains(singleArgsStr, "--url=https://webdav.cloud.mail.ru/openflux/") {
+		t.Errorf("expected --url in single mode: got %s", singleArgsStr)
+	}
+	if !strings.Contains(singleArgsStr, "--webdav-user=user@mail.ru") {
+		t.Errorf("expected --webdav-user in single mode: got %s", singleArgsStr)
+	}
+	if !strings.Contains(singleArgsStr, "--webdav-pass=app_pass_987") {
+		t.Errorf("expected --webdav-pass in single mode: got %s", singleArgsStr)
+	}
+
+	// 5. GenerateLink and Decode with WebDAV
+	link, err := GenerateLink(srvCfg, "203.0.113.10:8445")
+	if err != nil {
+		t.Fatalf("GenerateLink failed: %v", err)
+	}
+	sc, err := Decode(link)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if len(sc.Transports) != 4 {
+		t.Fatalf("expected 4 transports in link, got %d", len(sc.Transports))
+	}
+	if sc.Transports[0].Type != "webdav" || sc.Transports[0].Priority != 110 {
+		t.Fatalf("expected 1st transport webdav:110, got %s:%d", sc.Transports[0].Type, sc.Transports[0].Priority)
+	}
+	if sc.Transports[0].URL != "https://webdav.cloud.mail.ru/openflux/" {
+		t.Errorf("expected WebDAV URL in share transport, got %q", sc.Transports[0].URL)
+	}
+	if sc.Transports[0].User != "testuser@mail.ru" {
+		t.Errorf("expected WebDAV User in share transport, got %q", sc.Transports[0].User)
+	}
+	if sc.Transports[0].Password != "secretWebdavPassword123" {
+		t.Errorf("expected WebDAV Password in share transport, got %q", sc.Transports[0].Password)
+	}
+
+	// 6. ClientConfigFromShare converts link correctly into ClientConfig
+	imported := ClientConfigFromShare(sc, DefaultClientConfig())
+	if imported.WebdavURL != "https://webdav.cloud.mail.ru/openflux/" {
+		t.Errorf("imported WebdavURL mismatch: %q", imported.WebdavURL)
+	}
+	if imported.WebdavUser != "testuser@mail.ru" {
+		t.Errorf("imported WebdavUser mismatch: %q", imported.WebdavUser)
+	}
+	if imported.WebdavPassword != "secretWebdavPassword123" {
+		t.Errorf("imported WebdavPassword mismatch: %q", imported.WebdavPassword)
+	}
+
+	// 7. ValidateForStart with only WebDAV configured
+	webdavOnly := DefaultClientConfig()
+	webdavOnly.Secret = "1234567890123456"
+	webdavOnly.Transports = []string{"webdav"}
+	webdavOnly.WebdavURL = "https://webdav.cloud.mail.ru/openflux/"
+	if err := webdavOnly.ValidateForStart(); err != nil {
+		t.Errorf("ValidateForStart failed with WebDAV configured: %v", err)
+	}
+
+	// 8. Sanitization of embedded credentials in WebdavURL
+	secPass := "superSecretAppPassword999"
+	secUser := "testowner@mail.ru"
+	embeddedURL := fmt.Sprintf("https://%s:%s@webdav.cloud.mail.ru/openflux/", secUser, secPass)
+
+	sanitizedCfg := DefaultConfig()
+	sanitizedCfg.Secret = "1234567890123456"
+	sanitizedCfg.Transports = []string{"webdav"}
+	sanitizedCfg.WebdavURL = embeddedURL
+
+	sanitizedArgs := sanitizedCfg.BuildArgs("")
+	sanitizedArgsStr := strings.Join(sanitizedArgs, " ")
+	for _, arg := range sanitizedArgs {
+		if strings.HasPrefix(arg, "--session-context=") {
+			if strings.Contains(arg, secPass) || strings.Contains(arg, "@") {
+				t.Errorf("BuildArgs leaked credentials in session-context: %s", arg)
+			}
+		}
+	}
+	if !strings.Contains(sanitizedArgsStr, "--session-context=https://webdav.cloud.mail.ru/openflux/") {
+		t.Errorf("expected clean session context without credentials: got %s", sanitizedArgsStr)
+	}
+	if !strings.Contains(sanitizedArgsStr, "--webdav-user="+secUser) {
+		t.Errorf("expected extracted webdav-user: got %s", sanitizedArgsStr)
+	}
+	if !strings.Contains(sanitizedArgsStr, "--webdav-pass="+secPass) {
+		t.Errorf("expected extracted webdav-pass: got %s", sanitizedArgsStr)
+	}
+
+	sanitizedLink, err := GenerateLink(sanitizedCfg, "")
+	if err != nil {
+		t.Fatalf("GenerateLink failed for embedded URL: %v", err)
+	}
+	decodedShare, err := Decode(sanitizedLink)
+	if err != nil {
+		t.Fatalf("Decode failed: %v", err)
+	}
+	if strings.Contains(decodedShare.Context, secPass) {
+		t.Errorf("ShareConfig.Context leaked password: %q", decodedShare.Context)
+	}
+	if decodedShare.Context != "https://webdav.cloud.mail.ru/openflux/" {
+		t.Errorf("expected clean ShareConfig.Context: got %q", decodedShare.Context)
+	}
+	if len(decodedShare.Transports) == 0 {
+		t.Fatalf("expected at least 1 transport in decoded share")
+	}
+	if strings.Contains(decodedShare.Transports[0].URL, secPass) {
+		t.Errorf("ShareTransport.URL leaked password: %q", decodedShare.Transports[0].URL)
+	}
+	if decodedShare.Transports[0].User != secUser || decodedShare.Transports[0].Password != secPass {
+		t.Errorf("expected extracted user/pass in ShareTransport: got user=%q pass=%q", decodedShare.Transports[0].User, decodedShare.Transports[0].Password)
+	}
+}
+
 
 

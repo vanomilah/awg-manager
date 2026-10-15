@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,8 @@ type ShareTransport struct {
 	URL      string `json:"url,omitempty"`
 	Priority int    `json:"priority,omitempty"`
 	Dial     string `json:"dial,omitempty"` // host:port for direct
+	User     string `json:"user,omitempty"`
+	Password string `json:"password,omitempty"`
 }
 
 // ShareConfig is the JSON payload of an openflux://v1/ link.
@@ -186,6 +189,9 @@ func ClientConfigFromShare(sc ShareConfig, base ClientConfig) ClientConfig {
 
 	out.Transports = nil
 	out.DirectDial = ""
+	out.WebdavURL = ""
+	out.WebdavUser = ""
+	out.WebdavPassword = ""
 	out.MailruURL = ""
 	out.YandexURL = ""
 	out.CupsonlineURL = ""
@@ -205,6 +211,20 @@ func ClientConfigFromShare(sc ShareConfig, base ClientConfig) ClientConfig {
 		case "direct":
 			if strings.TrimSpace(t.Dial) != "" {
 				out.DirectDial = strings.TrimSpace(t.Dial)
+			}
+		case "webdav":
+			if strings.TrimSpace(t.URL) != "" {
+				out.WebdavURL = strings.TrimSpace(t.URL)
+				out.WebdavUser = strings.TrimSpace(t.User)
+				out.WebdavPassword = strings.TrimSpace(t.Password)
+				if out.WebdavUser == "" && out.WebdavPassword == "" && strings.Contains(out.WebdavURL, "@") {
+					if parsed, err := url.Parse(out.WebdavURL); err == nil && parsed.User != nil {
+						out.WebdavUser = parsed.User.Username()
+						out.WebdavPassword, _ = parsed.User.Password()
+						parsed.User = nil
+						out.WebdavURL = parsed.String()
+					}
+				}
 			}
 		case "mailru":
 			if strings.TrimSpace(t.URL) != "" {
@@ -252,7 +272,9 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 	}
 
 	// Determine context URL
-	if strings.TrimSpace(cfg.MailruURL) != "" {
+	if strings.TrimSpace(cfg.WebdavURL) != "" {
+		sc.Context = sanitizeContextURL(cfg.WebdavURL)
+	} else if strings.TrimSpace(cfg.MailruURL) != "" {
 		sc.Context = strings.TrimSpace(cfg.MailruURL)
 	} else if strings.TrimSpace(cfg.VyandexURL) != "" {
 		sc.Context = strings.TrimSpace(cfg.VyandexURL)
@@ -287,6 +309,29 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 				}
 			}
 			switch norm {
+			case "webdav":
+				if strings.TrimSpace(cfg.WebdavURL) != "" {
+					webdavURL := strings.TrimSpace(cfg.WebdavURL)
+					webdavUser := strings.TrimSpace(cfg.WebdavUser)
+					webdavPass := strings.TrimSpace(cfg.WebdavPassword)
+					if parsed, err := url.Parse(webdavURL); err == nil && parsed.User != nil {
+						if webdavUser == "" {
+							webdavUser = parsed.User.Username()
+						}
+						if webdavPass == "" {
+							webdavPass, _ = parsed.User.Password()
+						}
+						parsed.User = nil
+						webdavURL = parsed.String()
+					}
+					sc.Transports = append(sc.Transports, ShareTransport{
+						Type:     "webdav",
+						Priority: prio,
+						URL:      webdavURL,
+						User:     webdavUser,
+						Password: webdavPass,
+					})
+				}
 			case "direct":
 				if dialHost != "" {
 					sc.Transports = append(sc.Transports, ShareTransport{
@@ -351,6 +396,28 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 			single = strings.ToLower(strings.TrimSpace(cfg.Transports[0]))
 		}
 		switch single {
+		case "webdav":
+			if strings.TrimSpace(cfg.WebdavURL) != "" {
+				webdavURL := strings.TrimSpace(cfg.WebdavURL)
+				webdavUser := strings.TrimSpace(cfg.WebdavUser)
+				webdavPass := strings.TrimSpace(cfg.WebdavPassword)
+				if parsed, err := url.Parse(webdavURL); err == nil && parsed.User != nil {
+					if webdavUser == "" {
+						webdavUser = parsed.User.Username()
+					}
+					if webdavPass == "" {
+						webdavPass, _ = parsed.User.Password()
+					}
+					parsed.User = nil
+					webdavURL = parsed.String()
+				}
+				sc.Transports = append(sc.Transports, ShareTransport{
+					Type:     "webdav",
+					URL:      webdavURL,
+					User:     webdavUser,
+					Password: webdavPass,
+				})
+			}
 		case "direct":
 			if dialHost != "" {
 				sc.Transports = append(sc.Transports, ShareTransport{
@@ -401,7 +468,7 @@ func GenerateLink(cfg Config, publicHost string) (string, error) {
 	}
 
 	if len(sc.Transports) == 0 {
-		return "", fmt.Errorf("нет доступных транспортов для ссылки (укажите URL документа для mailru/yandex или адрес сервера для direct)")
+		return "", fmt.Errorf("нет доступных транспортов для ссылки (укажите URL для webdav/mailru/yandex или адрес сервера для direct)")
 	}
 
 	return Encode(sc)

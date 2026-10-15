@@ -421,6 +421,57 @@
 						{/if}
 					</div>
 
+					<!-- WebDAV Cloud (Mail.ru / Yandex.Disk) -->
+					<div class="transport-block">
+						<div class="transport-header">
+							<div class="transport-title-row">
+								<input
+									type="checkbox"
+									id="transport-webdav"
+									checked={isTransportEnabled('webdav')}
+									onchange={() => toggleTransport('webdav')}
+								/>
+								<label for="transport-webdav"><strong>Облако Mail.ru / Яндекс.Диск (WebDAV — Высокая скорость)</strong></label>
+							</div>
+							<span class="subtext">Высокоскоростной блочный транспорт через WebDAV Облака Mail.ru или Яндекс.Диска (10–30+ Мбит/с)</span>
+						</div>
+
+						{#if isTransportEnabled('webdav')}
+							<div class="transport-fields">
+								<div class="field-item full-width">
+									<label for="webdav-url">URL WebDAV:</label>
+									<input
+										id="webdav-url"
+										type="text"
+										class="form-input"
+										placeholder="https://webdav.cloud.mail.ru/openflux"
+										bind:value={config.webdavUrl}
+									/>
+								</div>
+								<div class="field-item">
+									<label for="webdav-user">Логин (email):</label>
+									<input
+										id="webdav-user"
+										type="text"
+										class="form-input"
+										placeholder="user@mail.ru"
+										bind:value={config.webdavUser}
+									/>
+								</div>
+								<div class="field-item">
+									<label for="webdav-pass">Пароль приложения:</label>
+									<input
+										id="webdav-pass"
+										type="password"
+										class="form-input"
+										placeholder="Пароль внешнего приложения..."
+										bind:value={config.webdavPassword}
+									/>
+								</div>
+							</div>
+						{/if}
+					</div>
+
 					<!-- Mail.ru Docs -->
 					<div class="transport-block">
 						<div class="transport-header">
