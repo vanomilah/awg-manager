@@ -112,6 +112,9 @@ func TestXrayShareLinksByTransport(t *testing.T) {
 		if !strings.Contains(links.VlessURL, "type=xhttp") {
 			t.Errorf("VlessURL missing type=xhttp: %s", links.VlessURL)
 		}
+		if !strings.Contains(links.VlessURL, "extra=%7B%22uplinkHTTPMethod%22%3A%22GET%22%7D") {
+			t.Errorf("VlessURL missing XHTTP uplink method: %s", links.VlessURL)
+		}
 		if !strings.Contains(links.HappJSON, `"network": "xhttp"`) {
 			t.Errorf("HappJSON missing xhttp network: %s", links.HappJSON)
 		}

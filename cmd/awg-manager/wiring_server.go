@@ -203,16 +203,12 @@ func (a *app) setupServer() {
 		TgPublicHost:   tCfg.PublicHostname,
 	})
 
-	if a.xrayServerService != nil {
-		_ = a.xrayServerService.Stop()
-	}
-
 	started, autoStartErr := serveringress.StartIngressIfSafe(
 		context.Background(),
 		recoveryReq, recoveryReason,
 		xrayReq, xrayReason,
 		tgSt.RecoveryRequired, tgSt.LastStartupError,
-		false, a.xrayServerService,
+		xCfg.Enabled, a.xrayServerService,
 		tCfg.Enabled, a.tgWebProxyService,
 		a.cdnDispatcher,
 	)

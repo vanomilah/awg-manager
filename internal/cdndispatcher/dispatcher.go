@@ -164,7 +164,14 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 		snap.xrayProxy = &httputil.ReverseProxy{
 			FlushInterval: -1,
 			Rewrite: func(pr *httputil.ProxyRequest) {
-				pr.SetURL(xrayURL)
+				target := xrayURL
+				isTS := strings.HasSuffix(pr.In.URL.Path, ".ts") || strings.Contains(pr.In.URL.Path, ".ts?")
+				if isTS {
+					if tsURL, err := url.Parse("http://127.0.0.1:9007"); err == nil {
+						target = tsURL
+					}
+				}
+				pr.SetURL(target)
 				pr.Out.Host = pr.In.Host
 
 				// 1. Ensure trailing slash if request path is exactly prefix (/cdn-bridge -> /cdn-bridge/)
@@ -177,13 +184,17 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 				// (which Xray SplitHTTP uses to carry x_padding) is often stripped by edge servers
 				// or local reverse proxies. If neither Referer nor x_padding query parameter is present,
 				// inject a valid padding Referer header so Xray server's padding validation succeeds.
-				if pr.Out.Header.Get("Referer") == "" && pr.Out.URL.Query().Get("x_padding") == "" {
+				if pr.Out.Header.Get("Referer") == "" && pr.Out.URL.Query().Get("x_padding") == "" && pr.Out.URL.Query().Get("_dc") == "" {
 					dummyPadding := strings.Repeat("X", 300)
 					targetHost := normXray
 					if targetHost == "" {
 						targetHost = pr.Out.Host
 					}
-					pr.Out.Header.Set("Referer", "https://"+targetHost+normPrefix+"/?x_padding="+dummyPadding)
+					padKey := "x_padding"
+					if isTS {
+						padKey = "_dc"
+					}
+					pr.Out.Header.Set("Referer", "https://"+targetHost+normPrefix+"/?"+padKey+"="+dummyPadding)
 				}
 			},
 			ModifyResponse: func(resp *http.Response) error {
@@ -307,8 +318,19 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isXrayMatch := (xrayHost != "" && reqHost == xrayHost)
-	isTgMatch := (tgHost != "" && reqHost == tgHost)
+	isHostMatched := func(pattern, host string) bool {
+		if pattern == "" {
+			return false
+		}
+		for _, p := range strings.Split(pattern, ",") {
+			if normalizeHost(p) == host {
+				return true
+			}
+		}
+		return false
+	}
+	isXrayMatch := isHostMatched(xrayHost, reqHost)
+	isTgMatch := isHostMatched(tgHost, reqHost)
 
 	// Distinct host routing:
 	// 1. Host == XrayPublicHost && !isTgMatch (Xray-only host)

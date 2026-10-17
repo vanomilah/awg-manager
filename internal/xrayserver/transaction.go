@@ -202,7 +202,7 @@ func (s *Service) PrepareCandidate(txID string, candidate Config) (string, error
 
 	// 4. Test candidate syntax with real binary test mode
 	if fileExists(s.binPath) {
-		if err := s.TestConfig(candidate); err != nil {
+		if err := s.testConfigLocked(candidate); err != nil {
 			return abortTx(fmt.Errorf("candidate test failed: %w", err))
 		}
 	}

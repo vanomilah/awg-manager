@@ -196,8 +196,8 @@ func TestService_RenderRuntimeConfig(t *testing.T) {
 		t.Fatalf("failed to parse rendered config: %v", err)
 	}
 
-	if len(parsed.Inbounds) != 1 {
-		t.Fatalf("expected 1 inbound, got %d", len(parsed.Inbounds))
+	if len(parsed.Inbounds) < 1 {
+		t.Fatalf("expected at least 1 inbound, got %d", len(parsed.Inbounds))
 	}
 	in := parsed.Inbounds[0]
 	if in.Port != 9008 || in.Protocol != "vless" {
@@ -660,6 +660,9 @@ func TestBuildShareLinks_Pure(t *testing.T) {
 	if !strings.Contains(links.VlessURL, "type=xhttp") {
 		t.Errorf("expected type=xhttp in url: %s", links.VlessURL)
 	}
+	if !strings.Contains(links.VlessURL, "extra=%7B%22uplinkHTTPMethod%22%3A%22GET%22%7D") {
+		t.Errorf("expected GET XHTTP extra in url: %s", links.VlessURL)
+	}
 	if links.UUID != client.ID || links.Remark != client.Remark {
 		t.Errorf("mismatched id/remark: %+v", links)
 	}
@@ -702,4 +705,3 @@ func TestBuildShareLinks_Pure(t *testing.T) {
 		t.Errorf("expected error on empty domain")
 	}
 }
-

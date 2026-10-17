@@ -43,16 +43,16 @@ type Client struct {
 
 type Config struct {
 	Enabled            bool     `json:"enabled"`
-	ListenAddress      string   `json:"listen_address"`       // Default: "127.0.0.1"
-	ListenPort         int      `json:"listen_port"`          // Default: 9008
-	DispatcherPort     int      `json:"dispatcher_port"`      // Default: 9009
-	PublicDomain       string   `json:"public_domain"`        // Domain configured for public ingress
-	PublicPort         int      `json:"public_port"`          // Ingress public port (usually 443)
-	Path               string   `json:"path"`                 // Path (e.g. /cdn-bridge/)
-	Transport          string   `json:"transport,omitempty"`  // "xhttp" (default) or "ws"
-	Mode               string   `json:"mode"`                 // Transport mode (packet-up for xhttp)
-	UplinkMethod       string   `json:"uplink_method"`        // HTTP uplink method (GET for xhttp)
-	XmuxMaxConnections int      `json:"xmux_max_connections"` // Default: 2
+	ListenAddress      string   `json:"listen_address"`               // Default: "127.0.0.1"
+	ListenPort         int      `json:"listen_port"`                  // Default: 9008
+	DispatcherPort     int      `json:"dispatcher_port"`              // Default: 9009
+	PublicDomain       string   `json:"public_domain"`                // Domain configured for public ingress
+	PublicPort         int      `json:"public_port"`                  // Ingress public port (usually 443)
+	Path               string   `json:"path"`                         // Path (e.g. /cdn-bridge/)
+	Transport          string   `json:"transport,omitempty"`          // "xhttp" (default) or "ws"
+	Mode               string   `json:"mode"`                         // Transport mode (packet-up for xhttp)
+	UplinkMethod       string   `json:"uplink_method"`                // HTTP uplink method (GET for xhttp)
+	XmuxMaxConnections int      `json:"xmux_max_connections"`         // Default: 2
 	OutboundMode       string   `json:"outbound_mode,omitempty"`      // "direct", "socks", "interface"
 	OutboundInterface  string   `json:"outbound_interface,omitempty"` // network device name (e.g. "nwg1")
 	OutboundSocksPort  int      `json:"outbound_socks_port"`          // Forwarding port (e.g., 1099 for mihomo/singbox policy routing, 0 for direct)
@@ -425,10 +425,23 @@ func (s *Service) UpdateConfig(cfg Config) error {
 	return err
 }
 
+func (s *Service) ensureBinaryPathLocked() {
+	if fileExists(s.binPath) {
+		return
+	}
+	for _, p := range []string{"/opt/bin/xray", "/opt/sbin/xray"} {
+		if fileExists(p) {
+			s.binPath = p
+			return
+		}
+	}
+}
+
 func (s *Service) GetStatus() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.ensureBinaryPathLocked()
 	installed := fileExists(s.binPath)
 	running, pid := s.checkRunningLocked()
 	version := ""
@@ -804,8 +817,14 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
       Host: "%s"`, client.Remark, domain, port, client.ID, domain, path, domain)
 	} else {
 		// Standard VLESS URL format for XHTTP
+		// XHTTP's uplink method is not represented by a dedicated VLESS URL
+		// parameter.  Xray-compatible clients receive it through `extra`.
+		// Keep it in the share URI as well as in the JSON exports; otherwise
+		// clients silently fall back to their default (usually POST), which
+		// no longer matches a GET-configured server.
+		xhttpExtra, _ := json.Marshal(map[string]string{"uplinkHTTPMethod": method})
 		vlessURL = fmt.Sprintf(
-			"vless://%s@%s:%d?encryption=none&security=tls&sni=%s&type=xhttp&host=%s&path=%s&mode=%s#%s",
+			"vless://%s@%s:%d?encryption=none&security=tls&sni=%s&alpn=http/1.1&type=xhttp&host=%s&path=%s&mode=%s&extra=%s#%s",
 			client.ID,
 			domain,
 			port,
@@ -813,6 +832,7 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 			domain,
 			url.QueryEscape(path),
 			mode,
+			url.QueryEscape(string(xhttpExtra)),
 			url.QueryEscape(client.Remark),
 		)
 
@@ -823,6 +843,7 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 			"uuid":     client.ID,
 			"security": "tls",
 			"sni":      domain,
+			"alpn":     []string{"http/1.1"},
 			"network":  "xhttp",
 			"xhttp": map[string]interface{}{
 				"path":             path,
@@ -844,6 +865,7 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 			"tls": map[string]interface{}{
 				"enabled":     true,
 				"server_name": domain,
+				"alpn":        []string{"http/1.1"},
 			},
 			"transport": map[string]interface{}{
 				"type": "xhttp",
@@ -862,6 +884,8 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
   cipher: auto
   tls: true
   servername: %s
+  alpn:
+    - http/1.1
   network: xhttp
   xhttp-opts:
     mode: %s
@@ -1002,6 +1026,8 @@ func RenderRuntimeConfig(cfg Config) ([]byte, error) {
 	path := cfg.Path
 	if path == "" {
 		path = "/cdn-bridge/"
+	} else if cfg.Transport != "ws" && !strings.HasSuffix(path, "/") {
+		path = path + "/"
 	}
 	mode := cfg.Mode
 	if mode == "" {
@@ -1042,9 +1068,14 @@ func RenderRuntimeConfig(cfg Config) ([]byte, error) {
 		streamSettings = map[string]interface{}{
 			"network": "xhttp",
 			"xhttpSettings": map[string]interface{}{
-				"path":             path,
-				"mode":             mode,
-				"uplinkHTTPMethod": method,
+				"path":                 path,
+				"mode":                 mode,
+				"sessionIDPlacement":   "query",
+				"sessionIDKey":         "sid",
+				"seqPlacement":         "query",
+				"seqKey":               "page",
+				"scMaxBufferedPosts":   30,
+				"scStreamUpServerSecs": "20-80",
 				"xmux": map[string]interface{}{
 					"maxConcurrency":   0,
 					"maxConnections":   conns,
@@ -1058,24 +1089,65 @@ func RenderRuntimeConfig(cfg Config) ([]byte, error) {
 		}
 	}
 
+	inboundsList := []map[string]interface{}{
+		{
+			"listen":   listenAddr,
+			"port":     port,
+			"protocol": "vless",
+			"settings": map[string]interface{}{
+				"clients":    clientsList,
+				"decryption": "none",
+			},
+			"streamSettings": streamSettings,
+		},
+	}
+	if cfg.Transport != "ws" {
+		inboundsList = append(inboundsList, map[string]interface{}{
+			"tag":      "timeweb-in",
+			"listen":   listenAddr,
+			"port":     9007,
+			"protocol": "vless",
+			"settings": map[string]interface{}{
+				"clients":    clientsList,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]interface{}{
+				"network": "xhttp",
+				"xhttpSettings": map[string]interface{}{
+					"path":                 "/cdn-bridge/stream.ts",
+					"mode":                 "packet-up",
+					"xPaddingBytes":        "100-1000",
+					"xPaddingObfsMode":     true,
+					"xPaddingKey":          "_dc",
+					"xPaddingHeader":       "Referer",
+					"xPaddingPlacement":    "queryInHeader",
+					"xPaddingMethod":       "tokenish",
+					"sessionIDPlacement":   "query",
+					"sessionIDKey":         "sid",
+					"sessionIDTable":       "a.",
+					"sessionIDLength":      "48-48",
+					"seqPlacement":         "query",
+					"seqKey":               "page",
+					"uplinkHTTPMethod":     "GET",
+					"scMinPostsIntervalMs": "5-10",
+					"scMaxBufferedPosts":   30,
+					"scStreamUpServerSecs": "20-80",
+					"serverMaxHeaderBytes": 0,
+					"noSSEHeader":          false,
+					"noGRPCHeader":         false,
+					"enableXmux":           false,
+				},
+			},
+		})
+	}
+
 	xrayConfig := map[string]interface{}{
 		"log": map[string]interface{}{
 			"loglevel": "warning",
 			"access":   "/opt/var/log/xray-access.log",
 			"error":    "/opt/var/log/xray-error.log",
 		},
-		"inbounds": []map[string]interface{}{
-			{
-				"listen":   listenAddr,
-				"port":     port,
-				"protocol": "vless",
-				"settings": map[string]interface{}{
-					"clients":    clientsList,
-					"decryption": "none",
-				},
-				"streamSettings": streamSettings,
-			},
-		},
+		"inbounds":  inboundsList,
 		"outbounds": []map[string]interface{}{},
 	}
 
@@ -1129,6 +1201,14 @@ func RenderRuntimeConfig(cfg Config) ([]byte, error) {
 
 // TestConfig writes a temporary configuration and validates it with xray test options
 func (s *Service) TestConfig(cfg Config) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.testConfigLocked(cfg)
+}
+
+func (s *Service) testConfigLocked(cfg Config) error {
+	s.ensureBinaryPathLocked()
+
 	if !fileExists(s.binPath) {
 		return errors.New("xray binary not found at " + s.binPath)
 	}
@@ -1163,6 +1243,7 @@ func (s *Service) restartLocked() error {
 		return s.stopLocked()
 	}
 
+	s.ensureBinaryPathLocked()
 	if !fileExists(s.binPath) {
 		return errors.New("xray binary not found at " + s.binPath)
 	}
@@ -1173,7 +1254,7 @@ func (s *Service) restartLocked() error {
 	}
 
 	// Safe testing before deployment if binary is runnable
-	if err := s.TestConfig(s.config); err != nil {
+	if err := s.testConfigLocked(s.config); err != nil {
 		return fmt.Errorf("invalid xray configuration: %w", err)
 	}
 
