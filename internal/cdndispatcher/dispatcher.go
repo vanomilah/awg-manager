@@ -156,12 +156,28 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 		tgPublicHost:   normTg,
 	}
 
+	proxyTransport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   50,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		DisableCompression:    true,
+	}
+
 	if cfg.XrayTarget != "" {
 		xrayURL, err := url.Parse(cfg.XrayTarget)
 		if err != nil {
 			return nil, fmt.Errorf("invalid xray target: %w", err)
 		}
 		snap.xrayProxy = &httputil.ReverseProxy{
+			Transport:     proxyTransport,
 			FlushInterval: -1,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				target := xrayURL
@@ -218,6 +234,7 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 			return nil, fmt.Errorf("invalid tg target: %w", err)
 		}
 		snap.tgProxy = &httputil.ReverseProxy{
+			Transport:     proxyTransport,
 			FlushInterval: -1,
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(tgURL)
@@ -241,6 +258,10 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 			},
 			ModifyResponse: func(resp *http.Response) error {
 				resp.Header.Set("X-CDN-Route", "tgwebproxy")
+				resp.Header.Set("X-Accel-Buffering", "no")
+				resp.Header.Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0, s-maxage=0, no-transform")
+				resp.Header.Set("Pragma", "no-cache")
+				resp.Header.Set("Expires", "0")
 				return nil
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
