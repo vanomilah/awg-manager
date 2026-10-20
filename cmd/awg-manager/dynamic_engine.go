@@ -349,6 +349,9 @@ func (d *DynamicEngine) stopMihomoAfterWithdraw(reason string) error {
 }
 
 func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
+	if mode == mihomoRuntimeOff {
+		return d.stopMihomoAfterWithdraw("stop stale Mihomo engine")
+	}
 	if d.coordinator != nil && d.compileFn != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
@@ -395,9 +398,6 @@ func (d *DynamicEngine) runMihomo(mode mihomoRuntimeMode, start bool) error {
 			d.OnMihomoPostApply()
 		}
 		return nil
-	}
-	if mode == mihomoRuntimeOff {
-		return d.stopMihomoAfterWithdraw("stop stale Mihomo engine")
 	}
 	if d.OnMihomoPrepare != nil {
 		if err := d.OnMihomoPrepare(); err != nil {

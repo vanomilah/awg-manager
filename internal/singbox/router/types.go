@@ -268,6 +268,18 @@ type Outbound struct {
 	Server         string          `json:"server,omitempty"`
 	ServerPort     int             `json:"server_port,omitempty"`
 	DomainResolver *DomainResolver `json:"domain_resolver,omitempty"`
+
+	// Rich proxy fields (trusttunnel, vless, etc.) for native sing-box execution
+	Username string       `json:"username,omitempty"`
+	Password string       `json:"password,omitempty"`
+	UUID     string       `json:"uuid,omitempty"`
+	TLS      *OutboundTLS `json:"tls,omitempty"`
+}
+
+type OutboundTLS struct {
+	Enabled    bool   `json:"enabled"`
+	ServerName string `json:"server_name,omitempty"`
+	Insecure   bool   `json:"insecure,omitempty"`
 }
 
 // CompositeOutboundView is the API/list projection of a composite

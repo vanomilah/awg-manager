@@ -198,6 +198,13 @@ func (a *app) mihomoSidecarNeeded() bool {
 			return true
 		}
 	}
+	// Sing-box now natively handles all routing, mixed port :1099, DNS :1097,
+	// composite groups (fallback/loadbalance), native proxies (trusttunnel, vless)
+	// and loopback bridge listeners. Mihomo is decommissioned when sing-box is active.
+	settings, err := a.settingsStore.Load()
+	if err == nil && settings.SingboxRouter.Enabled && settings.SingboxRouter.RoutingEngine == "sing-box" {
+		return false
+	}
 	hasNativeResources := len(a.mihomoNativeStore.ConfigBridgeListeners()) > 0 ||
 		len(a.mihomoNativeStore.ListGroups()) > 0 ||
 		len(a.mihomoNativeStore.ListProxies()) > 0 ||
@@ -205,9 +212,6 @@ func (a *app) mihomoSidecarNeeded() bool {
 	if !hasNativeResources {
 		return false
 	}
-	// When sing-box is the primary engine, always run Mihomo as sidecar whenever
-	// there are native Mihomo resources (proxies/subscriptions/groups), so they remain
-	// alive, auto-switch via url-test, and are accessible.
 	return true
 }
 

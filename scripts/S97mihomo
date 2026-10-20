@@ -1,7 +1,7 @@
 #!/bin/sh
 # S97mihomo - Mihomo proxy engine service
 
-ENABLED=yes
+ENABLED=no
 PROCS=mihomo
 DESC="Mihomo Core"
 BIN="/opt/etc/awg-manager/mihomo/mihomo"

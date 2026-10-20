@@ -1459,16 +1459,51 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 
 	mihomoOutbounds := make([]Outbound, 0)
 	if s.deps.MihomoNativeProxies != nil {
-		// 2. Mihomo Bridge Listeners (Proxies & Subscriptions with dedicated bridge ports)
+		proxiesByName := make(map[string]map[string]interface{})
+		for _, raw := range s.deps.MihomoNativeProxies.ConfigProxies() {
+			if name, ok := raw["name"].(string); ok && name != "" {
+				proxiesByName[name] = raw
+			}
+		}
+
+		// 2. Mihomo Bridge Listeners (Proxies with dedicated bridge ports)
 		for _, bridge := range s.deps.MihomoNativeProxies.ConfigBridgeListeners() {
-			if bridge.Port > 0 && bridge.Proxy != "" && !existingTags[bridge.Proxy] {
+			tag := bridge.Proxy
+			if tag == "" {
+				tag = bridge.Name
+			}
+			if bridge.Port > 0 && tag != "" && !existingTags[tag] {
+				if raw, ok := proxiesByName[tag]; ok {
+					if nativeOb, ok := convertMihomoProxyToSingbox(raw); ok {
+						mihomoOutbounds = append(mihomoOutbounds, nativeOb)
+						existingTags[tag] = true
+
+						// Bridge listener inbound for Keenetic hev-socks5-tunnel
+						inboundTag := fmt.Sprintf("bridge-%d-in", bridge.Port)
+						materialized.Inbounds = append(materialized.Inbounds, Inbound{
+							Type:       "socks",
+							Tag:        inboundTag,
+							Listen:     "127.0.0.1",
+							ListenPort: bridge.Port,
+						})
+						// Prepend route rule so Keenetic bridge traffic routes straight to this outbound
+						bridgeRule := Rule{
+							Inbound:  []string{inboundTag},
+							Action:   "route",
+							Outbound: tag,
+						}
+						materialized.Route.Rules = append([]Rule{bridgeRule}, materialized.Route.Rules...)
+						continue
+					}
+				}
+
 				mihomoOutbounds = append(mihomoOutbounds, Outbound{
 					Type:       "socks",
-					Tag:        bridge.Proxy,
+					Tag:        tag,
 					Server:     "127.0.0.1",
 					ServerPort: bridge.Port,
 				})
-				existingTags[bridge.Proxy] = true
+				existingTags[tag] = true
 			}
 		}
 
@@ -1489,6 +1524,11 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 		// 4. Standalone Mihomo Proxies without dedicated bridge listeners
 		for _, rawProxy := range s.deps.MihomoNativeProxies.ConfigProxies() {
 			if name, ok := rawProxy["name"].(string); ok && name != "" && !existingTags[name] {
+				if nativeOb, ok := convertMihomoProxyToSingbox(rawProxy); ok {
+					mihomoOutbounds = append(mihomoOutbounds, nativeOb)
+					existingTags[name] = true
+					continue
+				}
 				mihomoOutbounds = append(mihomoOutbounds, Outbound{
 					Type:       "socks",
 					Tag:        name,
@@ -1588,4 +1628,66 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 	if materialized.Outbounds == nil {
 		materialized.Outbounds = []Outbound{}
 	}
+}
+
+func convertMihomoProxyToSingbox(raw map[string]interface{}) (Outbound, bool) {
+	name, _ := raw["name"].(string)
+	if name == "" {
+		return Outbound{}, false
+	}
+	proto, _ := raw["type"].(string)
+	server, _ := raw["server"].(string)
+	port := 443
+	if p, ok := raw["port"].(float64); ok && p > 0 {
+		port = int(p)
+	} else if p, ok := raw["port"].(int); ok && p > 0 {
+		port = p
+	}
+
+	switch strings.ToLower(proto) {
+	case "trusttunnel":
+		username, _ := raw["username"].(string)
+		if username == "" {
+			username, _ = raw["uuid"].(string)
+		}
+		password, _ := raw["password"].(string)
+		sni, _ := raw["sni"].(string)
+		if sni == "" {
+			sni = server
+		}
+		insecure, _ := raw["skip-cert-verify"].(bool)
+		return Outbound{
+			Type:       "trusttunnel",
+			Tag:        name,
+			Server:     server,
+			ServerPort: port,
+			Username:   username,
+			Password:   password,
+			TLS: &OutboundTLS{
+				Enabled:    true,
+				ServerName: sni,
+				Insecure:   insecure,
+			},
+		}, true
+	case "vless":
+		uuid, _ := raw["uuid"].(string)
+		sni, _ := raw["sni"].(string)
+		if sni == "" {
+			sni = server
+		}
+		insecure, _ := raw["skip-cert-verify"].(bool)
+		return Outbound{
+			Type:       "vless",
+			Tag:        name,
+			Server:     server,
+			ServerPort: port,
+			UUID:       uuid,
+			TLS: &OutboundTLS{
+				Enabled:    true,
+				ServerName: sni,
+				Insecure:   insecure,
+			},
+		}, true
+	}
+	return Outbound{}, false
 }
