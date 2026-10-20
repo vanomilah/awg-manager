@@ -15,11 +15,17 @@
 
   let name = $state(group?.name ?? '');
   let type = $state(group?.type ?? 'fallback');
+  let strategy = $state(group?.strategy ?? 'round-robin');
   let proxies = $state<string[]>([...(group?.proxies ?? [])]);
   let url = $state(group?.url ?? 'http://www.gstatic.com/generate_204');
   let interval = $state(group?.interval ?? 300);
 
   let memberPicker = $state('');
+
+  const strategyOptions: DropdownOption[] = [
+    { value: 'round-robin', label: 'Round-Robin (Поочерёдно)' },
+    { value: 'consistent-hashing', label: 'Consistent Hashing (По хешу цели)' },
+  ];
 
   const typeOptions: DropdownOption[] = [
     { value: 'fallback', label: 'Fallback (Резервирование)' },
@@ -51,6 +57,7 @@
       name: name.trim(),
       type,
       proxies,
+      strategy: type === 'load-balance' ? strategy : undefined,
       url: type !== 'select' ? url : undefined,
       interval: type !== 'select' ? interval : undefined,
     });
@@ -59,6 +66,7 @@
   const isDirty = $derived(
     name !== (group?.name ?? '') ||
     type !== (group?.type ?? 'fallback') ||
+    strategy !== (group?.strategy ?? 'round-robin') ||
     url !== (group?.url ?? 'http://www.gstatic.com/generate_204') ||
     interval !== (group?.interval ?? 300) ||
     JSON.stringify(proxies) !== JSON.stringify(group?.proxies ?? [])
@@ -92,6 +100,18 @@
 			/>
 		</div>
 	</div>
+
+	{#if type === 'load-balance'}
+		<div class="field" style="margin-top: 1rem;">
+			<label class="label" for="pg-strategy">Стратегия балансировки</label>
+			<div class="control">
+				<Dropdown
+					options={strategyOptions}
+					bind:value={strategy}
+				/>
+			</div>
+		</div>
+	{/if}
 
 	{#if type !== 'select'}
 		<div class="field-row" style="display: flex; gap: 1rem; margin-top: 1rem;">

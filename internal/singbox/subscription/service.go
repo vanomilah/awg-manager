@@ -1120,7 +1120,7 @@ func (s *Service) ListActiveMemberTags() []string {
 		if sub.ActiveMember != "" {
 			out = append(out, sub.ActiveMember)
 		}
-		if sub.SelectorTag != "" {
+		if sub.SelectorTag != "" && len(sub.MemberTags) > 0 {
 			out = append(out, sub.SelectorTag)
 		}
 		if sub.ActiveMember == "" && len(sub.MemberTags) > 0 {

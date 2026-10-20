@@ -21,6 +21,8 @@ import type {
 	TgWebProxyConfig,
 	TgWebProxyStatus,
 	TgWebProxyRevealData,
+	CDNDispatcherConfig,
+	XHTTPTuning,
 } from '$lib/types';
 import type {
 	XrayProfileSummaryDTO,
@@ -483,8 +485,9 @@ export class ServersClient extends SystemClient {
 		});
 	}
 
-	async getXrayClientLinks(id: string): Promise<XrayShareLinks> {
-		return this.request<XrayShareLinks>(`/servers/xray/clients/${encodeURIComponent(id)}/link`);
+	async getXrayClientLinks(id: string, domain?: string): Promise<XrayShareLinks> {
+		const query = domain ? `?domain=${encodeURIComponent(domain)}` : '';
+		return this.request<XrayShareLinks>(`/servers/xray/clients/${encodeURIComponent(id)}/link${query}`);
 	}
 
 	async getXrayMigrationStatus(): Promise<XrayMigrationStatus> {
@@ -523,6 +526,28 @@ export class ServersClient extends SystemClient {
 		return this.requestWithCSRF<TgWebProxyStatus>('/servers/tgwebproxy/action', {
 			method: 'POST',
 			body: JSON.stringify({ action }),
+		});
+	}
+
+	async getDispatcherConfig(): Promise<CDNDispatcherConfig> {
+		return this.request<CDNDispatcherConfig>('/servers/ingress/dispatcher');
+	}
+
+	async updateDispatcherConfig(cfg: CDNDispatcherConfig): Promise<CDNDispatcherConfig> {
+		return this.requestWithCSRF<CDNDispatcherConfig>('/servers/ingress/dispatcher', {
+			method: 'PUT',
+			body: JSON.stringify(cfg),
+		});
+	}
+
+	async getXrayTuning(): Promise<XHTTPTuning> {
+		return this.request<XHTTPTuning>('/servers/xray/tuning');
+	}
+
+	async updateXrayTuning(tuning: XHTTPTuning): Promise<XHTTPTuning> {
+		return this.requestWithCSRF<XHTTPTuning>('/servers/xray/tuning', {
+			method: 'PUT',
+			body: JSON.stringify(tuning),
 		});
 	}
 

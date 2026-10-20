@@ -95,9 +95,10 @@ type routeHandlers struct {
 	accessPolicyHandler  *api.AccessPolicyHandler
 	crHandler            *api.ClientRouteHandler
 	systemToolsHandler   *api.SystemToolsHandler
-	xrayServerHandler    *api.XrayServerHandler
-	tgWebProxyHandler    *api.TgWebProxyHandler
-	serverWizardHandler  *api.ServerWizardHandler
+	xrayServerHandler        *api.XrayServerHandler
+	tgWebProxyHandler        *api.TgWebProxyHandler
+	ingressDispatcherHandler *api.IngressDispatcherHandler
+	serverWizardHandler      *api.ServerWizardHandler
 
 	// guarded оборачивает handler в auth-middleware (RequireAuthFunc).
 	guarded func(http.HandlerFunc) http.HandlerFunc
@@ -339,6 +340,9 @@ func (s *Server) buildRouteHandlers() *routeHandlers {
 	}
 	if s.tgWebProxyService != nil {
 		h.tgWebProxyHandler = api.NewTgWebProxyHandler(s.tgWebProxyService, s.sessions)
+	}
+	if s.serverIngressCoordinator != nil || s.cdnDispatcher != nil {
+		h.ingressDispatcherHandler = api.NewIngressDispatcherHandler(s.serverIngressCoordinator, s.cdnDispatcher, s.xrayServerService)
 	}
 	if s.xrayServerService != nil || s.tgWebProxyService != nil {
 		egressAdp := egress.NewAdapter(s.catalog)
@@ -1229,6 +1233,28 @@ func (s *Server) registerServerRoutes(mux *http.ServeMux, h *routeHandlers) {
 		mux.HandleFunc("/api/servers/tgwebproxy/status", h.guarded(h.tgWebProxyHandler.GetStatus))
 		mux.HandleFunc("/api/servers/tgwebproxy/reveal", h.guarded(h.tgWebProxyHandler.RevealSecret))
 		mux.HandleFunc("/api/servers/tgwebproxy/action", h.guarded(h.tgWebProxyHandler.Action))
+	}
+
+	// Ingress Dispatcher and Xray Tuning
+	if h.ingressDispatcherHandler != nil {
+		mux.HandleFunc("/api/servers/ingress/dispatcher", h.guarded(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut || r.Method == http.MethodPost {
+				h.ingressDispatcherHandler.UpdateDispatcherConfig(w, r)
+			} else if r.Method == http.MethodGet {
+				h.ingressDispatcherHandler.GetDispatcherConfig(w, r)
+			} else {
+				response.MethodNotAllowed(w)
+			}
+		}))
+		mux.HandleFunc("/api/servers/xray/tuning", h.guarded(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut || r.Method == http.MethodPost {
+				h.ingressDispatcherHandler.UpdateXrayTuning(w, r)
+			} else if r.Method == http.MethodGet {
+				h.ingressDispatcherHandler.GetXrayTuning(w, r)
+			} else {
+				response.MethodNotAllowed(w)
+			}
+		}))
 	}
 
 	// Server First-Run Setup Wizards

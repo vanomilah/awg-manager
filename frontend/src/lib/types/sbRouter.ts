@@ -459,7 +459,7 @@ export interface SingboxRouterRuleSet {
 }
 
 export interface SingboxRouterOutbound {
-	type: 'direct' | 'urltest' | 'selector' | 'loadbalance';
+	type: 'direct' | 'urltest' | 'selector' | 'loadbalance' | 'fallback' | 'load-balance';
 	tag: string;
 	bind_interface?: string;
 	outbounds?: string[];
@@ -468,6 +468,7 @@ export interface SingboxRouterOutbound {
 	tolerance?: number;
 	default?: string;
 	strategy?: string;
+	interrupt_exist_connections?: boolean;
 	/**
 	 * Which orchestrator slot owns this outbound. "router" entries are
 	 * editable from the UI; "subscription" entries are managed by the
@@ -477,7 +478,7 @@ export interface SingboxRouterOutbound {
 }
 
 /**
- * Live state of one composite outbound (selector / urltest / loadbalance).
+ * Live state of one composite outbound (selector / urltest / loadbalance / fallback / load-balance).
  * Returned by GET /api/singbox/router/proxies/list.
  */
 export interface SingboxProxyMember {
@@ -489,7 +490,7 @@ export interface SingboxProxyMember {
 
 export interface SingboxProxyGroup {
 	tag: string;
-	type: 'selector' | 'urltest' | 'loadbalance';
+	type: 'selector' | 'urltest' | 'loadbalance' | 'fallback' | 'load-balance';
 	now: string;
 	members: SingboxProxyMember[];
 }

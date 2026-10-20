@@ -112,7 +112,7 @@
 					enginePreference: 'mihomo',
 					refreshHours,
 					headers: headersArr,
-					mode: mode === 'urltest' ? 'url-test' : 'select',
+					mode: mode === 'urltest' ? 'url-test' : mode === 'fallback' ? 'fallback' : mode === 'load-balance' ? 'load-balance' : 'select',
 					testUrl: utUrl,
 					testInterval: utIntervalSec,
 					testTolerance: utToleranceMs,
@@ -143,7 +143,7 @@
 				await api.mihomoNativeUpdateSubscription(subscription.id, {
 					name: label,
 					enabled,
-					mode: mode === 'urltest' ? 'url-test' : 'select',
+					mode: mode === 'urltest' ? 'url-test' : mode === 'fallback' ? 'fallback' : mode === 'load-balance' ? 'load-balance' : 'select',
 					testUrl: utUrl,
 					testInterval: utIntervalSec,
 					testTolerance: utToleranceMs,
@@ -163,7 +163,7 @@
 					enabled,
 					mode,
 					urlTest:
-						mode === 'urltest'
+						mode === 'urltest' || mode === 'fallback' || mode === 'load-balance'
 							? { url: utUrl, intervalSec: utIntervalSec, toleranceMs: utToleranceMs }
 							: undefined,
 					filterInclude: filterInclude.trim(),
@@ -292,8 +292,44 @@
 						</span>
 					{/if}
 				</button>
+				<button
+					type="button"
+					role="radio"
+					aria-checked={mode === 'fallback'}
+					class="mode-card"
+					class:selected={mode === 'fallback'}
+					onclick={() => (mode = 'fallback')}
+				>
+					<div class="mode-title">Fallback (приоритет)</div>
+					<div class="mode-desc">
+						Первый сервер в приоритете; при сбое переход на резервный.
+					</div>
+					{#if mode === 'fallback'}
+						<span class="mode-check" aria-hidden="true">
+							<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12" /></svg>
+						</span>
+					{/if}
+				</button>
+				<button
+					type="button"
+					role="radio"
+					aria-checked={mode === 'load-balance'}
+					class="mode-card"
+					class:selected={mode === 'load-balance'}
+					onclick={() => (mode = 'load-balance')}
+				>
+					<div class="mode-title">Load-Balance</div>
+					<div class="mode-desc">
+						Балансировка трафика между всеми доступными серверами.
+					</div>
+					{#if mode === 'load-balance'}
+						<span class="mode-check" aria-hidden="true">
+							<svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12" /></svg>
+						</span>
+					{/if}
+				</button>
 			</div>
-			{#if mode === 'urltest'}
+			{#if mode === 'urltest' || mode === 'fallback' || mode === 'load-balance'}
 				<div class="urltest-block">
 					<label class="row">
 						<span class="lbl">URL для проверки</span>
@@ -346,7 +382,9 @@
 					<span class="summary-label">источник</span>
 				</div>
 				<div class="summary-item">
-					<span class="summary-value">{mode === 'urltest' ? 'автовыбор' : 'ручной выбор'}</span>
+					<span class="summary-value">
+						{mode === 'urltest' ? 'автовыбор' : mode === 'fallback' ? 'fallback' : mode === 'load-balance' ? 'load-balance' : 'ручной выбор'}
+					</span>
 					<span class="summary-label">режим</span>
 				</div>
 				<div class="summary-item">
@@ -372,7 +410,7 @@
 					<span class="summary-label">заголовков</span>
 				</div>
 				<div class="summary-item">
-					<span class="summary-value">{mode === 'urltest' ? 'sing-box' : subscription.activeMember || 'не выбран'}</span>
+					<span class="summary-value">{mode !== 'selector' ? 'sing-box' : subscription.activeMember || 'не выбран'}</span>
 					<span class="summary-label">активный</span>
 				</div>
 				<div class="summary-item">

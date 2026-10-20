@@ -20,6 +20,7 @@
 		ServersPageSkeleton,
 		XrayServerCard,
 		TelegramWebProxyCard,
+		CDNDispatcherCard,
 		type RailItem,
 	} from '$lib/components/servers';
 	import type { XrayStatus, TgWebProxyStatus } from '$lib/types';
@@ -225,6 +226,16 @@
 			kind: 'tgwebproxy',
 		});
 
+		// Диспетчер (порт 9009)
+		items.push({
+			id: '__dispatcher__',
+			name: 'Диспетчер',
+			iface: 'Шлюз',
+			listenPort: 9009,
+			status: 'running',
+			kind: 'dispatcher',
+		});
+
 		return dedupBy(items, (i) => i.id, { warnTag: 'server rail' });
 	});
 
@@ -383,6 +394,8 @@
 					<XrayServerCard />
 				{:else if activeItem?.kind === 'tgwebproxy'}
 					<TelegramWebProxyCard />
+				{:else if activeItem?.kind === 'dispatcher'}
+					<CDNDispatcherCard />
 				{/if}
 			</main>
 		</div>

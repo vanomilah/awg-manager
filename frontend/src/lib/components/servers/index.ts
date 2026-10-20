@@ -26,5 +26,6 @@ export { default as XrayServerCard } from './XrayServerCard.svelte';
 export { default as XrayShareModal } from './XrayShareModal.svelte';
 export { default as XrayAutoTunnelModal } from './XrayAutoTunnelModal.svelte';
 export { default as TelegramWebProxyCard } from './TelegramWebProxyCard.svelte';
+export { default as CDNDispatcherCard } from './CDNDispatcherCard.svelte';
 export { default as PeerSignatureEditor } from './PeerSignatureEditor.svelte';
 export { default as PeerNetworksFields } from './PeerNetworksFields.svelte';

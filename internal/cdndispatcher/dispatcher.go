@@ -30,20 +30,36 @@ type Dispatcher struct {
 	running  bool
 }
 
+// CDNRouteRule defines a domain routing rule for CDN Ingress.
+type CDNRouteRule struct {
+	ID            string `json:"id"`
+	Domain        string `json:"domain"`          // FQDN (e.g. cdn.domain.ru)
+	Description   string `json:"description"`     // Human-readable label (e.g. "Primary CDN")
+	RouteXray     bool   `json:"route_xray"`      // Proxy /cdn-bridge/* to Xray
+	RouteTelegram bool   `json:"route_telegram"`  // Proxy /, /api/* to Telegram WebProxy
+	Enabled       bool   `json:"enabled"`
+}
+
 type Config struct {
-	ListenAddr     string `json:"listen_addr"`                // e.g. ":9009"
-	XrayTarget     string `json:"xray_target"`                // e.g. "http://127.0.0.1:9008"
-	TgTarget       string `json:"tg_target"`                  // e.g. "http://127.0.0.1:8085"
-	PublicHostname string `json:"public_hostname"`            // Shared Public domain for CDN ingress (default empty)
-	XrayPublicHost string `json:"xray_public_host,omitempty"` // Dedicated Xray CDN host if distinct
-	TgPublicHost   string `json:"tg_public_host,omitempty"`   // Dedicated Telegram CDN host if distinct
-	XrayPathPrefix string `json:"xray_path_prefix"`           // e.g. "/cdn-bridge"
+	Enabled        bool           `json:"enabled"`
+	ListenAddr     string         `json:"listen_addr"`                // e.g. ":9009"
+	XrayTarget     string         `json:"xray_target"`                // e.g. "http://127.0.0.1:9008"
+	TgTarget       string         `json:"tg_target"`                  // e.g. "http://127.0.0.1:8085"
+	Routes         []CDNRouteRule `json:"routes,omitempty"`           // Structured domain routing rules
+	DefaultAction  string         `json:"default_action,omitempty"`   // "404" | "reject"
+	PublicHostname string         `json:"public_hostname,omitempty"` // Shared Public domain for CDN ingress (default empty)
+	XrayPublicHost string         `json:"xray_public_host,omitempty"` // Dedicated Xray CDN host if distinct
+	TgPublicHost   string         `json:"tg_public_host,omitempty"`   // Dedicated Telegram CDN host if distinct
+	XrayPathPrefix string         `json:"xray_path_prefix"`           // e.g. "/cdn-bridge"
 }
 
 type routeSnapshot struct {
 	xrayProxy      http.Handler
 	tgProxy        http.Handler
 	xrayPathPrefix string
+	defaultAction  string
+	routeMap       map[string]CDNRouteRule
+	hasRules       bool
 	publicHostname string
 	xrayPublicHost string
 	tgPublicHost   string
@@ -154,6 +170,22 @@ func (d *Dispatcher) buildSnapshot(cfg Config) (*routeSnapshot, error) {
 		publicHostname: normPublic,
 		xrayPublicHost: normXray,
 		tgPublicHost:   normTg,
+		routeMap:       make(map[string]CDNRouteRule),
+		defaultAction:  "404",
+	}
+
+	if strings.EqualFold(strings.TrimSpace(cfg.DefaultAction), "reject") {
+		snap.defaultAction = "reject"
+	}
+
+	if len(cfg.Routes) > 0 {
+		for _, r := range cfg.Routes {
+			norm := normalizeHost(r.Domain)
+			if norm != "" {
+				snap.routeMap[norm] = r
+			}
+		}
+		snap.hasRules = len(snap.routeMap) > 0
 	}
 
 	proxyTransport := &http.Transport{
@@ -310,11 +342,19 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	xrayHost := snap.xrayPublicHost
 	tgHost := snap.tgPublicHost
 
+	reject := func() {
+		if snap.defaultAction == "reject" {
+			w.Header().Set("Connection", "close")
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		http.NotFound(w, r)
+	}
+
 	isLoopback := reqHost == "127.0.0.1" || reqHost == "localhost" || strings.HasPrefix(reqHost, "127.")
 
-	// If no hostnames are configured, or request arrives via local reverse proxy (e.g. Keenetic KeenDNS on 127.0.0.1),
-	// route based on path prefix:
-	if (xrayHost == "" && tgHost == "") || isLoopback {
+	// Local loopback requests (e.g. KeenDNS relay on 127.0.0.1) can route directly by path:
+	if isLoopback {
 		if matchesXray {
 			if snap.xrayProxy != nil {
 				w.Header().Set("X-CDN-Route", "xray")
@@ -335,7 +375,68 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Telegram target unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		http.NotFound(w, r)
+		reject()
+		return
+	}
+
+	// 1. Structured routing rules (Lock-Free hash table):
+	if snap.hasRules {
+		rule, found := snap.routeMap[reqHost]
+		if !found || !rule.Enabled {
+			reject()
+			return
+		}
+
+		if matchesXray && rule.RouteXray {
+			if snap.xrayProxy != nil {
+				w.Header().Set("X-CDN-Route", "xray")
+				snap.xrayProxy.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("X-CDN-Route", "xray")
+			http.Error(w, "Xray target unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		if isTelegram && rule.RouteTelegram {
+			if snap.tgProxy != nil {
+				w.Header().Set("X-CDN-Route", "tgwebproxy")
+				snap.tgProxy.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("X-CDN-Route", "tgwebproxy")
+			http.Error(w, "Telegram target unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Host matched but route for this path is disabled
+		reject()
+		return
+	}
+
+	// 2. Legacy fallback routing when no structured rules configured:
+	if xrayHost == "" && tgHost == "" {
+		if matchesXray {
+			if snap.xrayProxy != nil {
+				w.Header().Set("X-CDN-Route", "xray")
+				snap.xrayProxy.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("X-CDN-Route", "xray")
+			http.Error(w, "Xray target unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if isTelegram {
+			if snap.tgProxy != nil {
+				w.Header().Set("X-CDN-Route", "tgwebproxy")
+				snap.tgProxy.ServeHTTP(w, r)
+				return
+			}
+			w.Header().Set("X-CDN-Route", "tgwebproxy")
+			http.Error(w, "Telegram target unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		reject()
 		return
 	}
 
@@ -366,8 +467,7 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Xray target unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		// Xray-only host requested with non-Xray path (or Telegram endpoint): reject with 404
-		http.NotFound(w, r)
+		reject()
 		return
 	}
 
@@ -383,8 +483,7 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Telegram target unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		// Telegram-only host requested with non-Telegram path (or Xray path): reject with 404
-		http.NotFound(w, r)
+		reject()
 		return
 	}
 
@@ -410,12 +509,12 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Telegram target unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		http.NotFound(w, r)
+		reject()
 		return
 	}
 
 	// 4. Unknown host
-	http.NotFound(w, r)
+	reject()
 }
 
 func (d *Dispatcher) Start() error {
@@ -526,6 +625,13 @@ func (d *Dispatcher) applyConfigLocked(cfg Config, mode applyMode) error {
 		if cfg.XrayPathPrefix != "" {
 			newCfg.XrayPathPrefix = cfg.XrayPathPrefix
 		}
+		if cfg.Routes != nil {
+			newCfg.Routes = cfg.Routes
+		}
+		if cfg.DefaultAction != "" {
+			newCfg.DefaultAction = cfg.DefaultAction
+		}
+		newCfg.Enabled = cfg.Enabled
 	} else {
 		newCfg = cfg
 	}

@@ -85,6 +85,13 @@ func (m *mockXray) Restart() error {
 	return nil
 }
 
+func (m *mockXray) UpdatePublicDomain(domain string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg.PublicDomain = domain
+	return nil
+}
+
 type mockDispatcher struct {
 	mu            sync.Mutex
 	cfg           cdndispatcher.Config
@@ -1651,3 +1658,96 @@ func TestCoordinator_NoDeadlockOnIsRecoveryRequiredUnderLock(t *testing.T) {
 		t.Fatalf("deadlock detected: WithIngressLock hung when calling IsRecoveryRequired/CanAutoStart")
 	}
 }
+
+func TestCoordinator_DispatcherHydrationAndApply(t *testing.T) {
+	dataDir := t.TempDir()
+	mockX := &mockXray{
+		cfg: xrayserver.Config{
+			Enabled:      true,
+			PublicDomain: "cdn1.example.com, cdn2.example.com",
+		},
+	}
+	mockTG := &mockTgWebProxy{
+		cfg: tgwebproxy.Config{
+			Enabled:        true,
+			PublicHostname: "cdn2.example.com, cdn3.example.com",
+		},
+	}
+	mockDisp := &mockDispatcher{
+		cfg: cdndispatcher.Config{
+			ListenAddr: ":9009",
+		},
+	}
+
+	coord := New(dataDir, mockX, mockDisp, mockTG)
+
+	// 1. Test HydrateDispatcherRoutes
+	ctx := context.Background()
+	if err := coord.HydrateDispatcherRoutes(ctx); err != nil {
+		t.Fatalf("failed to hydrate routes: %v", err)
+	}
+
+	dispCfg := coord.GetDispatcherConfig()
+	if len(dispCfg.Routes) != 3 {
+		t.Fatalf("expected 3 deduplicated routes, got %d", len(dispCfg.Routes))
+	}
+
+	// Verify route rules: cdn1 has xray, cdn2 has both, cdn3 has tg
+	var r1, r2, r3 *cdndispatcher.CDNRouteRule
+	for i := range dispCfg.Routes {
+		r := &dispCfg.Routes[i]
+		switch r.Domain {
+		case "cdn1.example.com":
+			r1 = r
+		case "cdn2.example.com":
+			r2 = r
+		case "cdn3.example.com":
+			r3 = r
+		}
+	}
+
+	if r1 == nil || !r1.RouteXray || r1.RouteTelegram {
+		t.Errorf("unexpected r1 flags: %+v", r1)
+	}
+	if r2 == nil || !r2.RouteXray || !r2.RouteTelegram {
+		t.Errorf("unexpected r2 flags (should have both): %+v", r2)
+	}
+	if r3 == nil || r3.RouteXray || !r3.RouteTelegram {
+		t.Errorf("unexpected r3 flags: %+v", r3)
+	}
+
+	// 2. Test ApplyDispatcherConfig with new routes and verify 1-way projection
+	newRoutes := []cdndispatcher.CDNRouteRule{
+		{
+			ID:            "r-new",
+			Domain:        "custom.newcdn.org",
+			Description:   "New CDN",
+			RouteXray:     true,
+			RouteTelegram: true,
+			Enabled:       true,
+		},
+	}
+	newCfg := cdndispatcher.Config{
+		Enabled:       true,
+		ListenAddr:    ":9009",
+		DefaultAction: "reject",
+		Routes:        newRoutes,
+	}
+
+	if err := coord.ApplyDispatcherConfig(ctx, newCfg); err != nil {
+		t.Fatalf("failed to apply dispatcher config: %v", err)
+	}
+
+	// Verify projection into Xray
+	xCfg := mockX.GetConfig()
+	if xCfg.PublicDomain != "custom.newcdn.org" {
+		t.Errorf("expected projected public domain 'custom.newcdn.org', got %q", xCfg.PublicDomain)
+	}
+
+	// Verify projection into Telegram
+	tgCfg := mockTG.GetInternalConfig()
+	if tgCfg.PublicHostname != "custom.newcdn.org" {
+		t.Errorf("expected projected tg public hostname 'custom.newcdn.org', got %q", tgCfg.PublicHostname)
+	}
+}
+

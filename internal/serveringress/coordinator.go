@@ -1074,6 +1074,216 @@ func (c *Coordinator) RestartXray(ctx context.Context) error {
 	})
 }
 
+func (c *Coordinator) dispatcherConfigPath() string {
+	return filepath.Join(c.dataDir, "dispatcher", "config.json")
+}
+
+func (c *Coordinator) saveDispatcherConfigLocked(cfg cdndispatcher.Config) error {
+	path := c.dispatcherConfigPath()
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal dispatcher config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create dispatcher dir: %w", err)
+	}
+	return atomicWriteFile(path, data, 0600)
+}
+
+// GetDispatcherConfig returns the current dispatcher configuration.
+func (c *Coordinator) GetDispatcherConfig() cdndispatcher.Config {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dispatcher == nil {
+		return cdndispatcher.Config{ListenAddr: ":9009", DefaultAction: "404"}
+	}
+	return c.dispatcher.GetConfig()
+}
+
+// HydrateDispatcherRoutes checks if dispatcher routes are configured; if empty,
+// hydrates initial rules from Xray and Telegram domain settings (SSOT migration).
+func (c *Coordinator) HydrateDispatcherRoutes(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.dispatcher == nil {
+		return nil
+	}
+
+	dispCfg := c.dispatcher.GetConfig()
+	if len(dispCfg.Routes) > 0 {
+		return nil
+	}
+
+	// 1. Try reading existing saved config from disk
+	savedPath := c.dispatcherConfigPath()
+	if data, err := os.ReadFile(savedPath); err == nil {
+		var persisted cdndispatcher.Config
+		if json.Unmarshal(data, &persisted) == nil && len(persisted.Routes) > 0 {
+			_ = c.dispatcher.ApplyConfig(persisted)
+			return nil
+		}
+	}
+
+	// 2. Synthesize initial routes from existing Xray and Telegram domains
+	var xrayDomains []string
+	if c.xraySvc != nil {
+		xCfg := c.xraySvc.GetConfig()
+		if xCfg.PublicDomain != "" {
+			for _, d := range strings.Split(xCfg.PublicDomain, ",") {
+				d = strings.ToLower(strings.TrimSpace(d))
+				if d != "" {
+					xrayDomains = append(xrayDomains, d)
+				}
+			}
+		}
+	}
+
+	var tgDomains []string
+	if c.tgSvc != nil {
+		tCfg := c.tgSvc.GetConfig()
+		if tCfg.PublicHostname != "" {
+			for _, d := range strings.Split(tCfg.PublicHostname, ",") {
+				d = strings.ToLower(strings.TrimSpace(d))
+				if d != "" {
+					tgDomains = append(tgDomains, d)
+				}
+			}
+		}
+	}
+
+	if len(xrayDomains) == 0 && len(tgDomains) == 0 && dispCfg.PublicHostname != "" {
+		for _, d := range strings.Split(dispCfg.PublicHostname, ",") {
+			d = strings.ToLower(strings.TrimSpace(d))
+			if d != "" {
+				xrayDomains = append(xrayDomains, d)
+				tgDomains = append(tgDomains, d)
+			}
+		}
+	}
+
+	if len(xrayDomains) == 0 && len(tgDomains) == 0 {
+		return nil
+	}
+
+	ruleMap := make(map[string]*cdndispatcher.CDNRouteRule)
+	order := make([]string, 0)
+
+	for _, d := range xrayDomains {
+		if r, exists := ruleMap[d]; exists {
+			r.RouteXray = true
+		} else {
+			rule := &cdndispatcher.CDNRouteRule{
+				ID:            fmt.Sprintf("route-%s", d),
+				Domain:        d,
+				Description:   d,
+				RouteXray:     true,
+				RouteTelegram: false,
+				Enabled:       true,
+			}
+			ruleMap[d] = rule
+			order = append(order, d)
+		}
+	}
+
+	for _, d := range tgDomains {
+		if r, exists := ruleMap[d]; exists {
+			r.RouteTelegram = true
+		} else {
+			rule := &cdndispatcher.CDNRouteRule{
+				ID:            fmt.Sprintf("route-%s", d),
+				Domain:        d,
+				Description:   d,
+				RouteXray:     false,
+				RouteTelegram: true,
+				Enabled:       true,
+			}
+			ruleMap[d] = rule
+			order = append(order, d)
+		}
+	}
+
+	routes := make([]cdndispatcher.CDNRouteRule, 0, len(order))
+	for _, d := range order {
+		routes = append(routes, *ruleMap[d])
+	}
+
+	dispCfg.Routes = routes
+	dispCfg.Enabled = true
+	if dispCfg.ListenAddr == "" {
+		dispCfg.ListenAddr = ":9009"
+	}
+	if dispCfg.DefaultAction == "" {
+		dispCfg.DefaultAction = "404"
+	}
+
+	_ = c.dispatcher.ApplyConfig(dispCfg)
+	_ = c.saveDispatcherConfigLocked(dispCfg)
+	return nil
+}
+
+// ApplyDispatcherConfig atomically updates dispatcher routing rules and persists them without restarting Xray.
+func (c *Coordinator) ApplyDispatcherConfig(ctx context.Context, cfg cdndispatcher.Config) error {
+	txID := fmt.Sprintf("ing-disp-%d-%d", time.Now().UnixNano(), os.Getpid())
+	return c.withIngressLock(txID, func() error {
+		if c.recoveryNeeded {
+			return ErrRecoveryRequired
+		}
+		if c.dispatcher == nil {
+			return errors.New("dispatcher service unavailable")
+		}
+
+		if cfg.ListenAddr == "" {
+			cfg.ListenAddr = ":9009"
+		}
+		if cfg.DefaultAction == "" {
+			cfg.DefaultAction = "404"
+		}
+
+		// 1. Apply to dispatcher in memory (lock-free snapshot swap)
+		if err := c.dispatcher.ApplyConfig(cfg); err != nil {
+			return fmt.Errorf("apply dispatcher config: %w", err)
+		}
+
+		// 2. Persist to disk
+		if err := c.saveDispatcherConfigLocked(cfg); err != nil {
+			return fmt.Errorf("save dispatcher config: %w", err)
+		}
+
+		// 3. One-way projection to Xray and Telegram configs
+		var xrayDomains []string
+		var tgDomains []string
+		for _, r := range cfg.Routes {
+			if r.Enabled {
+				if r.RouteXray {
+					xrayDomains = append(xrayDomains, r.Domain)
+				}
+				if r.RouteTelegram {
+					tgDomains = append(tgDomains, r.Domain)
+				}
+			}
+		}
+
+		if c.xraySvc != nil {
+			if updater, ok := c.xraySvc.(interface{ UpdatePublicDomain(string) error }); ok {
+				_ = updater.UpdatePublicDomain(strings.Join(xrayDomains, ","))
+			}
+		}
+
+		if c.tgSvc != nil {
+			tgCfg := c.tgSvc.GetInternalConfig()
+			if len(tgDomains) > 0 {
+				tgCfg.PublicHostname = strings.Join(tgDomains, ",")
+			} else {
+				tgCfg.PublicHostname = ""
+			}
+			_ = c.tgSvc.UpdateConfig(tgCfg)
+		}
+
+		return nil
+	})
+}
+
 // ResolveMigration executes migration strategy under coordinator lock.
 func (c *Coordinator) ResolveMigration(ctx context.Context, strategy string, legacyCfg *xrayserver.Config) error {
 	txID := fmt.Sprintf("ing-mig-%d-%d", time.Now().UnixNano(), os.Getpid())

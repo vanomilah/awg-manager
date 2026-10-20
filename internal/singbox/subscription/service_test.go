@@ -384,7 +384,7 @@ func TestServiceSyncProxiesReallocatesForeignAndMigratesLegacyOwner(t *testing.T
 	if mutator.descriptions[7] != "user-created" {
 		t.Fatalf("foreign Proxy7 was overwritten: %q", mutator.descriptions[7])
 	}
-	if got := mutator.descriptions[gotForeign.ProxyIndex]; got != ProxyOwnershipDescription("subscription", foreign.ID) {
+	if got := mutator.descriptions[gotForeign.ProxyIndex]; got != FormatProxyDescription(foreign.Label, "subscription", foreign.ID) {
 		t.Fatalf("reallocated owner=%q", got)
 	}
 
@@ -392,7 +392,7 @@ func TestServiceSyncProxiesReallocatesForeignAndMigratesLegacyOwner(t *testing.T
 	if gotLegacy.ProxyIndex != 8 {
 		t.Fatalf("legacy Proxy8 unnecessarily moved to Proxy%d", gotLegacy.ProxyIndex)
 	}
-	if got := mutator.descriptions[8]; got != ProxyOwnershipDescription("subscription", legacy.ID) {
+	if got := mutator.descriptions[8]; got != FormatProxyDescription(legacy.Label, "subscription", legacy.ID) {
 		t.Fatalf("legacy owner was not migrated: %q", got)
 	}
 }
@@ -750,11 +750,14 @@ func TestService_ListActiveMemberTags_FiltersDisabledAndEmpty(t *testing.T) {
 	svc := NewService(store, &fakeMutator{})
 	withLegacySetupNoop(svc)
 	tags := svc.ListActiveMemberTags()
-	if len(tags) != 1 {
-		t.Fatalf("expected 1 active tag, got %d: %v", len(tags), tags)
+	if len(tags) != 2 {
+		t.Fatalf("expected 2 active tags (active member + selector), got %d: %v", len(tags), tags)
 	}
 	if tags[0] != "sub-A-1111" {
 		t.Errorf("got %q want sub-A-1111", tags[0])
+	}
+	if tags[1] != a.SelectorTag {
+		t.Errorf("got %q want %q", tags[1], a.SelectorTag)
 	}
 }
 
@@ -1532,7 +1535,7 @@ func TestUpdate_LabelChangeUpdatesProxyDescription(t *testing.T) {
 		t.Fatalf("expected 1 EnsureProxy call, got %d", len(mutator.ensuredProxies))
 	}
 	got := mutator.ensuredProxies[0]
-	wantDesc := ProxyOwnershipDescription("subscription", sub.ID)
+	wantDesc := FormatProxyDescription("Renamed Label", "subscription", sub.ID)
 	if got.description != wantDesc {
 		t.Errorf("EnsureProxy description=%q want %q", got.description, wantDesc)
 	}
@@ -2444,8 +2447,8 @@ func TestService_Refresh_FileMissing_KeepsMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if len(got.MemberTags) != 2 || got.LastError == "" {
-		t.Fatalf("members=%d lastError=%q", len(got.MemberTags), got.LastError)
+	if len(got.MemberTags) != 2 || (got.LastError == "" && got.RefreshError == "") {
+		t.Fatalf("members=%d lastError=%q refreshError=%q", len(got.MemberTags), got.LastError, got.RefreshError)
 	}
 }
 

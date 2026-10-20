@@ -12,12 +12,8 @@
 	import { api } from '$lib/api/client';
 	import { bindInterfaceLabel, directBindChoices } from '$lib/utils/bindInterface';
 
-	// Only urltest and selector are offered for new groups — `loadbalance`
-	// was removed in sing-box 1.13+ and FATALs on startup if present. Legacy
-	// loadbalance entries that may exist in older 20-router.json files are
-	// still tolerated at read time. When the user edits such an entry through
-	// this modal, the type narrows to urltest on open — that's a deliberate
-	// one-way migration, not an accidental data loss.
+	// Group types supported: urltest, fallback, load-balance, selector, direct.
+	// Sing-box 1.15+ custom binary includes native fallback and load-balance.
 
 	interface Props {
 		outbound?: SingboxRouterOutbound;
@@ -29,9 +25,15 @@
 	}
 	let { outbound, outbounds, outboundOptions, onClose, onSave }: Props = $props();
 
+	type OutboundType = 'urltest' | 'fallback' | 'load-balance' | 'selector' | 'direct';
+
 	// svelte-ignore state_referenced_locally
-	let type: 'urltest' | 'selector' | 'direct' = $state(
-		outbound?.type === 'selector' ? 'selector' : outbound?.type === 'direct' ? 'direct' : 'urltest'
+	let type: OutboundType = $state(
+		outbound?.type === 'selector' ? 'selector' :
+		outbound?.type === 'direct' ? 'direct' :
+		outbound?.type === 'fallback' ? 'fallback' :
+		(outbound?.type === 'load-balance' || outbound?.type === 'loadbalance') ? 'load-balance' :
+		'urltest'
 	);
 	// svelte-ignore state_referenced_locally
 	let tag = $state(outbound?.tag ?? '');
@@ -43,6 +45,8 @@
 	let interval = $state(outbound?.interval ?? '3m');
 	// svelte-ignore state_referenced_locally
 	let tolerance = $state(outbound?.tolerance ?? 50);
+	// svelte-ignore state_referenced_locally
+	let strategy = $state(outbound?.strategy ?? 'round-robin');
 	// svelte-ignore state_referenced_locally
 	let defaultOutbound = $state(outbound?.default ?? '');
 	// svelte-ignore state_referenced_locally
@@ -77,24 +81,30 @@
 	let memberPicker = $state('');
 
 	// Snapshot initial state for isDirty detection
-	let initialType: 'urltest' | 'selector' | 'direct' = $state('urltest');
+	let initialType: OutboundType = $state('urltest');
 	let initialTag = $state('');
 	let initialMembers = $state<string[]>([]);
 	let initialUrl = $state('https://www.gstatic.com/generate_204');
 	let initialInterval = $state('3m');
 	let initialTolerance = $state(50);
+	let initialStrategy = $state('round-robin');
 	let initialDefaultOutbound = $state('');
 	let initialBind = $state('');
 
 	// Initialize snapshot when modal opens
 	$effect(() => {
 		if (outbound) {
-			initialType = outbound.type === 'selector' ? 'selector' : outbound.type === 'direct' ? 'direct' : 'urltest';
+			initialType = outbound.type === 'selector' ? 'selector' :
+				outbound.type === 'direct' ? 'direct' :
+				outbound.type === 'fallback' ? 'fallback' :
+				(outbound.type === 'load-balance' || outbound.type === 'loadbalance') ? 'load-balance' :
+				'urltest';
 			initialTag = outbound.tag;
 			initialMembers = [...(outbound.outbounds ?? [])];
 			initialUrl = outbound.url ?? 'https://www.gstatic.com/generate_204';
 			initialInterval = outbound.interval ?? '3m';
 			initialTolerance = outbound.tolerance ?? 50;
+			initialStrategy = outbound.strategy ?? 'round-robin';
 			initialDefaultOutbound = outbound.default ?? '';
 			initialBind = outbound.bind_interface ?? '';
 		} else {
@@ -104,6 +114,7 @@
 			initialUrl = 'https://www.gstatic.com/generate_204';
 			initialInterval = '3m';
 			initialTolerance = 50;
+			initialStrategy = 'round-robin';
 			initialDefaultOutbound = '';
 			initialBind = '';
 		}
@@ -124,6 +135,7 @@
 			url !== initialUrl ||
 			interval !== initialInterval ||
 			tolerance !== initialTolerance ||
+			strategy !== initialStrategy ||
 			defaultOutbound !== initialDefaultOutbound ||
 			bindInterface !== initialBind
 		);
@@ -215,7 +227,15 @@
 					built.url = url;
 					built.interval = interval;
 					built.tolerance = tolerance;
-				} else {
+				} else if (type === 'fallback') {
+					built.url = url;
+					built.interval = interval;
+					built.interrupt_exist_connections = true;
+				} else if (type === 'load-balance') {
+					built.strategy = strategy || 'round-robin';
+					built.url = url;
+					built.interval = interval;
+				} else if (type === 'selector') {
 					built.default = defaultOutbound || members[0];
 				}
 			}
@@ -228,20 +248,29 @@
 		}
 	}
 
-	type OutboundType = 'urltest' | 'selector' | 'direct';
-
 	const typeOptions = $derived<SegmentedOption<OutboundType>[]>([
 		{ value: 'urltest', label: 'URLTest', disabled: !!outbound && outbound.type === 'direct' },
+		{ value: 'fallback', label: 'Fallback', disabled: !!outbound && outbound.type === 'direct' },
+		{ value: 'load-balance', label: 'Load-Balance', disabled: !!outbound && outbound.type === 'direct' },
 		{ value: 'selector', label: 'Selector', disabled: !!outbound && outbound.type === 'direct' },
 		{ value: 'direct', label: 'Интерфейс', disabled: !!outbound && outbound.type !== 'direct' },
 	]);
+
+	const strategyOptions: DropdownOption[] = [
+		{ value: 'round-robin', label: 'Round-Robin (поочерёдно)' },
+		{ value: 'consistent-hashing', label: 'Consistent Hashing (по сессиям / хешу)' },
+	];
 
 	const typeDescription = $derived(
 		type === 'direct'
 			? 'Прямое соединение через выбранный интерфейс (IPSec/IKEv2/др. VPN). Трафик правила пойдёт через этот интерфейс.'
 			: type === 'urltest'
 				? 'Периодически пингует каждого члена и автоматически направляет через самого быстрого.'
-				: 'Ручное переключение через Clash API. Новые подключения идут через выбранный default.'
+				: type === 'fallback'
+					? 'Резервирование: направляет трафик через первого доступного участника по порядку списка.'
+					: type === 'load-balance'
+						? 'Балансировка: распределяет подключения между всеми участниками по выбранной стратегии.'
+						: 'Ручное переключение через Clash API. Новые подключения идут через выбранный default.'
 	);
 </script>
 
@@ -325,7 +354,33 @@
 						<input type="number" bind:value={tolerance} />
 					</label>
 				</div>
-			{:else}
+			{:else if type === 'fallback'}
+				<label class="field">
+					<div class="lbl">Test URL</div>
+					<input bind:value={url} />
+				</label>
+				<label class="field">
+					<div class="lbl">Interval</div>
+					<input bind:value={interval} placeholder="30s" />
+				</label>
+			{:else if type === 'load-balance'}
+				<div class="field">
+					<div class="lbl">Стратегия балансировки</div>
+					<Dropdown
+						bind:value={strategy}
+						options={strategyOptions}
+						fullWidth
+					/>
+				</div>
+				<label class="field">
+					<div class="lbl">Test URL</div>
+					<input bind:value={url} />
+				</label>
+				<label class="field">
+					<div class="lbl">Interval</div>
+					<input bind:value={interval} placeholder="3m" />
+				</label>
+			{:else if type === 'selector'}
 				<div class="field">
 					<div class="lbl">Default (один из members)</div>
 					<Dropdown

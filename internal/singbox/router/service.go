@@ -1374,14 +1374,92 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 		existingTags[o.Tag] = true
 	}
 
-	mihomoOutbounds := make([]Outbound, 0)
 	mixedPort := settings.SingboxRouter.MihomoMixedPort
 	if mixedPort <= 0 {
 		mixedPort = 1099
 	}
 
+	// 1. ProxyGroups from Settings (abstract routing groups like fallback, load-balance, url-test, selector)
+	for _, pg := range settings.SingboxRouter.ProxyGroups {
+		if pg.Name != "" && !existingTags[pg.Name] {
+			var members []string
+			for _, m := range pg.Proxies {
+				switch strings.ToUpper(m) {
+				case "DIRECT":
+					members = append(members, "direct")
+				case "REJECT":
+					members = append(members, "block")
+				default:
+					members = append(members, m)
+				}
+			}
+			url := pg.URL
+			if url == "" {
+				url = "https://cp.cloudflare.com"
+			}
+			interval := "3m"
+			if pg.Interval > 0 {
+				interval = fmt.Sprintf("%ds", pg.Interval)
+			}
+			pgType := strings.ToLower(pg.Type)
+			switch pgType {
+			case "fallback":
+				materialized.Outbounds = append(materialized.Outbounds, Outbound{
+					Type:                       "fallback",
+					Tag:                        pg.Name,
+					Outbounds:                  members,
+					URL:                        url,
+					Interval:                   interval,
+					InterruptExistConnections:  true,
+				})
+			case "load-balance", "loadbalance":
+				strategy := pg.Strategy
+				if strategy == "" {
+					strategy = "round-robin"
+				}
+				materialized.Outbounds = append(materialized.Outbounds, Outbound{
+					Type:      "load-balance",
+					Tag:       pg.Name,
+					Outbounds: members,
+					Strategy:  strategy,
+					URL:       url,
+					Interval:  interval,
+				})
+			case "url-test", "urltest":
+				materialized.Outbounds = append(materialized.Outbounds, Outbound{
+					Type:      "urltest",
+					Tag:       pg.Name,
+					Outbounds: members,
+					URL:       url,
+					Interval:  interval,
+					Tolerance: pg.Tolerance,
+				})
+			case "select", "selector":
+				defaultMember := ""
+				if len(members) > 0 {
+					defaultMember = members[0]
+				}
+				materialized.Outbounds = append(materialized.Outbounds, Outbound{
+					Type:      "selector",
+					Tag:       pg.Name,
+					Outbounds: members,
+					Default:   defaultMember,
+				})
+			default:
+				materialized.Outbounds = append(materialized.Outbounds, Outbound{
+					Type:       "socks",
+					Tag:        pg.Name,
+					Server:     "127.0.0.1",
+					ServerPort: mixedPort,
+				})
+			}
+			existingTags[pg.Name] = true
+		}
+	}
+
+	mihomoOutbounds := make([]Outbound, 0)
 	if s.deps.MihomoNativeProxies != nil {
-		// 1. Mihomo Bridge Listeners (Proxies & Subscriptions with dedicated bridge ports)
+		// 2. Mihomo Bridge Listeners (Proxies & Subscriptions with dedicated bridge ports)
 		for _, bridge := range s.deps.MihomoNativeProxies.ConfigBridgeListeners() {
 			if bridge.Port > 0 && bridge.Proxy != "" && !existingTags[bridge.Proxy] {
 				mihomoOutbounds = append(mihomoOutbounds, Outbound{
@@ -1394,7 +1472,7 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 			}
 		}
 
-		// 2. Mihomo Native Proxy Groups (matched to loopback mixed listeners on 12100+i)
+		// 3. Mihomo Native Proxy Groups (matched to loopback mixed listeners on 12100+i)
 		baseGroupPort := 12100
 		for i, rawGroup := range s.deps.MihomoNativeProxies.ConfigProviderGroups() {
 			if name, ok := rawGroup["name"].(string); ok && name != "" && !existingTags[name] {
@@ -1408,7 +1486,7 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 			}
 		}
 
-		// 3. Standalone Mihomo Proxies without dedicated bridge listeners
+		// 4. Standalone Mihomo Proxies without dedicated bridge listeners
 		for _, rawProxy := range s.deps.MihomoNativeProxies.ConfigProxies() {
 			if name, ok := rawProxy["name"].(string); ok && name != "" && !existingTags[name] {
 				mihomoOutbounds = append(mihomoOutbounds, Outbound{
@@ -1419,19 +1497,6 @@ func (s *ServiceImpl) enrichMaterializedConfig(materialized *RouterConfig) {
 				})
 				existingTags[name] = true
 			}
-		}
-	}
-
-	// Legacy settings.SingboxRouter.ProxyGroups fallback
-	for _, pg := range settings.SingboxRouter.ProxyGroups {
-		if pg.Name != "" && !existingTags[pg.Name] {
-			mihomoOutbounds = append(mihomoOutbounds, Outbound{
-				Type:       "socks",
-				Tag:        pg.Name,
-				Server:     "127.0.0.1",
-				ServerPort: mixedPort,
-			})
-			existingTags[pg.Name] = true
 		}
 	}
 

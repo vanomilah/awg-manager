@@ -194,14 +194,24 @@ func (a *app) setupServer() {
 	xCfg := a.xrayServerService.GetConfig()
 	tCfg := a.tgWebProxyService.GetConfig()
 
-	a.cdnDispatcher.UpdateConfig(cdndispatcher.Config{
-		ListenAddr:     ":9009",
-		XrayTarget:     "http://127.0.0.1:9008",
-		TgTarget:       "http://127.0.0.1:8085",
-		XrayPathPrefix: "/cdn-bridge",
-		XrayPublicHost: xCfg.PublicDomain,
-		TgPublicHost:   tCfg.PublicHostname,
-	})
+	if err := a.ingressCoordinator.HydrateDispatcherRoutes(context.Background()); err != nil {
+		a.bootLog.Error("ingress_coordinator", "hydrate_dispatcher", err.Error())
+	}
+
+	dispCfg := a.cdnDispatcher.GetConfig()
+	if dispCfg.ListenAddr == "" {
+		dispCfg.ListenAddr = ":9009"
+	}
+	if dispCfg.XrayTarget == "" {
+		dispCfg.XrayTarget = "http://127.0.0.1:9008"
+	}
+	if dispCfg.TgTarget == "" {
+		dispCfg.TgTarget = "http://127.0.0.1:8085"
+	}
+	if dispCfg.XrayPathPrefix == "" {
+		dispCfg.XrayPathPrefix = "/cdn-bridge"
+	}
+	a.cdnDispatcher.UpdateConfig(dispCfg)
 
 	started, autoStartErr := serveringress.StartIngressIfSafe(
 		context.Background(),

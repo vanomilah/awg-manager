@@ -59,6 +59,15 @@ func preFilterOutbounds(outbounds []any, singboxFeatures []string) ([]any, []Dro
 	return kept, dropped
 }
 
+func isGroupOutbound(typ string) bool {
+	switch typ {
+	case "selector", "urltest", "fallback", "load-balance", "loadbalance":
+		return true
+	default:
+		return false
+	}
+}
+
 // classifyOutbound returns "" when the outbound passes Pass 1 rules,
 // or a short human-readable reason string when it should be dropped.
 func classifyOutbound(ob map[string]any) string {
@@ -67,7 +76,7 @@ func classifyOutbound(ob map[string]any) string {
 		return "missing type"
 	}
 	// Group outbounds: validated after leaf cleanup; skip here.
-	if typ == "selector" || typ == "urltest" {
+	if isGroupOutbound(typ) {
 		return ""
 	}
 	// Аутбаунд hysteria2 с реле адреса не имеет по построению: sing-box берёт
@@ -167,7 +176,7 @@ func classifyOutbound(ob map[string]any) string {
 // update sing-box to a version supporting naive".
 func classifyOutboundFeatureSupport(ob map[string]any, singboxFeatures []string) string {
 	typ, _ := ob["type"].(string)
-	if typ == "" || typ == "selector" || typ == "urltest" {
+	if typ == "" || isGroupOutbound(typ) {
 		return ""
 	}
 	required := singbox.OutboundTypeRequiresFeature(typ)
@@ -295,7 +304,7 @@ func cleanReferencesToTag(cfg *slotConfig, tag string) {
 			continue
 		}
 		typ, _ := ob["type"].(string)
-		if typ != "selector" && typ != "urltest" {
+		if !isGroupOutbound(typ) {
 			i++
 			continue
 		}

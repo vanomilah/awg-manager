@@ -4,7 +4,7 @@
 	import { notifications } from '$lib/stores/notifications';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { Button, Modal } from '$lib/components/ui';
-	import type { XrayConfig, XrayStatus, XrayClient, XrayMigrationStatus } from '$lib/types';
+	import type { XrayConfig, XrayStatus, XrayClient, XrayMigrationStatus, XHTTPTuning } from '$lib/types';
 	import XrayShareModal from './XrayShareModal.svelte';
 	import XrayAutoTunnelModal from './XrayAutoTunnelModal.svelte';
 	import XrayWizard from './xray-wizard/XrayWizard.svelte';
@@ -23,6 +23,7 @@
 		Check,
 		AlertTriangle,
 		Sparkles,
+		Zap,
 	} from 'lucide-svelte';
 
 	let status = $state<XrayStatus | null>(null);
@@ -50,6 +51,10 @@
 	let editConfig = $state<Partial<XrayConfig>>({});
 	let saveConfigLoading = $state(false);
 
+	// XHTTP Tuning
+	let tuning = $state<XHTTPTuning | null>(null);
+	let tuningSaving = $state(false);
+
 	onMount(() => {
 		void loadData();
 		const interval = setInterval(loadStatus, 5000);
@@ -59,14 +64,16 @@
 	async function loadData() {
 		loading = true;
 		try {
-			const [s, c, m] = await Promise.all([
+			const [s, c, m, t] = await Promise.all([
 				api.getXrayServerStatus(),
 				api.getXrayServerConfig(),
 				api.getXrayMigrationStatus().catch(() => null),
+				api.getXrayTuning().catch(() => null),
 			]);
 			status = s;
 			config = c;
 			migrationStatus = m;
+			if (t) tuning = t;
 		} catch (e) {
 			notifications.error(e instanceof Error ? e.message : 'Ошибка загрузки данных Xray');
 		} finally {
@@ -200,6 +207,55 @@
 		}
 	}
 
+	function selectPreset(preset: 'live_low_latency' | 'balanced' | 'custom') {
+		if (!tuning) {
+			tuning = {
+				preset,
+				uplink_method: 'GET',
+				min_posts_interval_ms: '5-10',
+				max_buffered_posts: 30,
+				stream_up_server_secs: '20-80',
+				stream_path_suffix: 'stream.ts',
+				enable_xmux: false,
+				x_padding_bytes: '100-1000',
+				x_padding_header: 'X-Padding',
+				x_padding_placement: 'header',
+			};
+		}
+		tuning.preset = preset;
+		if (preset === 'live_low_latency') {
+			tuning.uplink_method = 'GET';
+			tuning.min_posts_interval_ms = '5-10';
+			tuning.max_buffered_posts = 30;
+			tuning.stream_up_server_secs = '20-80';
+			tuning.stream_path_suffix = 'stream.ts';
+			tuning.enable_xmux = false;
+			tuning.x_padding_bytes = '100-1000';
+		} else if (preset === 'balanced') {
+			tuning.uplink_method = 'POST';
+			tuning.min_posts_interval_ms = '30-100';
+			tuning.max_buffered_posts = 50;
+			tuning.stream_up_server_secs = '20-80';
+			tuning.stream_path_suffix = '';
+			tuning.enable_xmux = true;
+			tuning.x_padding_bytes = '100-1000';
+		}
+	}
+
+	async function saveTuning() {
+		if (!tuning) return;
+		tuningSaving = true;
+		try {
+			tuning = await api.updateXrayTuning(tuning);
+			notifications.success('Параметры XHTTP применены, Xray перезапущен');
+			await loadData();
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : 'Ошибка сохранения параметров XHTTP');
+		} finally {
+			tuningSaving = false;
+		}
+	}
+
 	async function copy(text: string, label: string) {
 		if (await copyToClipboard(text)) {
 			notifications.success(`${label} скопирован`);
@@ -328,6 +384,136 @@
 			<span class="strip-label">Диспетчер Origin</span>
 			<span class="strip-val font-mono">Port {config?.dispatcher_port || 9009} &rarr; {config?.listen_port || 9008}</span>
 		</div>
+	</section>
+
+	<!-- XHTTP Tuning Section -->
+	<section class="tuning-section">
+		<div class="tuning-header">
+			<div class="tuning-title-group">
+				<div class="tuning-title">
+					<Zap size={15} class="text-amber-400" />
+					<span>Тонкая настройка XHTTP (Ultra-Low Latency)</span>
+				</div>
+				<span class="tuning-badge font-mono">
+					{tuning?.preset === 'live_low_latency' ? 'Live Low-Latency' : tuning?.preset === 'balanced' ? 'Balanced' : 'Custom'}
+				</span>
+			</div>
+			<Button
+				variant="primary"
+				size="sm"
+				onclick={saveTuning}
+				disabled={tuningSaving}
+			>
+				<RotateCw size={13} class={tuningSaving ? 'spin mr-1' : 'mr-1'} />
+				{tuningSaving ? 'Применение...' : 'Применить'}
+			</Button>
+		</div>
+
+		<!-- Preset Selector Tabs -->
+		<div class="preset-tabs">
+			<button
+				type="button"
+				class="preset-tab"
+				class:active={tuning?.preset === 'live_low_latency'}
+				onclick={() => selectPreset('live_low_latency')}
+			>
+				<div class="preset-name">Live Low-Latency (Рекомендуется)</div>
+				<div class="preset-desc">GET packet-up, 5-10ms интервал, суффикс stream.ts</div>
+			</button>
+			<button
+				type="button"
+				class="preset-tab"
+				class:active={tuning?.preset === 'balanced'}
+				onclick={() => selectPreset('balanced')}
+			>
+				<div class="preset-name">Сбалансированный</div>
+				<div class="preset-desc">POST uplink, 30-100ms интервал, включен xmux</div>
+			</button>
+			<button
+				type="button"
+				class="preset-tab"
+				class:active={tuning?.preset === 'custom'}
+				onclick={() => selectPreset('custom')}
+			>
+				<div class="preset-name">Пользовательский</div>
+				<div class="preset-desc">Ручная настройка параметров XHTTP</div>
+			</button>
+		</div>
+
+		<!-- Parameters Details (Editable if custom, read-only summary if preset) -->
+		{#if tuning}
+			<div class="tuning-params" class:custom-active={tuning.preset === 'custom'}>
+				<div class="form-row">
+					<label class="form-field">
+						<span class="field-label">Метод Uplink:</span>
+						{#if tuning.preset === 'custom'}
+							<select bind:value={tuning.uplink_method} class="select-input">
+								<option value="GET">GET (максимальная совместимость с CDN)</option>
+								<option value="POST">POST (стандартный HTTP-метод)</option>
+								<option value="DELETE">DELETE (должен быть разрешен на CDN)</option>
+							</select>
+						{:else}
+							<div class="readonly-pill font-mono">{tuning.uplink_method}</div>
+						{/if}
+						<span class="field-hint">HTTP-метод для отправки пакетов клиентом к Origin</span>
+					</label>
+					<label class="form-field">
+						<span class="field-label">Интервал отправки пакетов:</span>
+						{#if tuning.preset === 'custom'}
+							<input type="text" bind:value={tuning.min_posts_interval_ms} placeholder="5-10" class="text-input font-mono" />
+						{:else}
+							<div class="readonly-pill font-mono">{tuning.min_posts_interval_ms} ms</div>
+						{/if}
+						<span class="field-hint">Интервал задержки между пакетами (мс, диапазон вида 5-10)</span>
+					</label>
+				</div>
+
+				<div class="form-row">
+					<label class="form-field">
+						<span class="field-label">Макс. буфер сообщений:</span>
+						{#if tuning.preset === 'custom'}
+							<input type="number" min="1" max="1000" bind:value={tuning.max_buffered_posts} class="text-input font-mono" />
+						{:else}
+							<div class="readonly-pill font-mono">{tuning.max_buffered_posts}</div>
+						{/if}
+						<span class="field-hint">Количество пакетов в очереди перед принудительным сбросом (1..1000)</span>
+					</label>
+					<label class="form-field">
+						<span class="field-label">Суффикс потокового пути:</span>
+						{#if tuning.preset === 'custom'}
+							<input type="text" bind:value={tuning.stream_path_suffix} placeholder="stream.ts" class="text-input font-mono" />
+						{:else}
+							<div class="readonly-pill font-mono">{tuning.stream_path_suffix || '—'}</div>
+						{/if}
+						<span class="field-hint">Суффикс пути для маскировки под стриминг видео (например, stream.ts)</span>
+					</label>
+				</div>
+
+				<div class="form-row">
+					<label class="form-field">
+						<span class="field-label">Мультиплексирование соединений (xmux):</span>
+						{#if tuning.preset === 'custom'}
+							<label class="checkbox-label">
+								<input type="checkbox" bind:checked={tuning.enable_xmux} class="checkbox-input" />
+								<span>Включить xmux мультиплексирование</span>
+							</label>
+						{:else}
+							<div class="readonly-pill">{tuning.enable_xmux ? 'Включено' : 'Выключено (рекомендуется для live low-latency)'}</div>
+						{/if}
+						<span class="field-hint">Мультиплексирование TCP через единый канал</span>
+					</label>
+					<label class="form-field">
+						<span class="field-label">Рандомизация размера (X-Padding):</span>
+						{#if tuning.preset === 'custom'}
+							<input type="text" bind:value={tuning.x_padding_bytes} placeholder="100-1000" class="text-input font-mono" />
+						{:else}
+							<div class="readonly-pill font-mono">{tuning.x_padding_bytes || '100-1000'} B</div>
+						{/if}
+						<span class="field-hint">Диапазон байт паддинга для защиты от DPI (например, 100-1000)</span>
+					</label>
+				</div>
+			</div>
+		{/if}
 	</section>
 
 	<!-- Clients Section -->
@@ -937,7 +1123,128 @@
 		margin-right: 4px;
 	}
 
+	/* Tuning Section */
+	.tuning-section {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		background: var(--color-bg-primary);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		padding: 14px;
+	}
+
+	.tuning-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+
+	.tuning-title-group {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+
+	.tuning-title {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
+		font-weight: 600;
+		color: var(--color-text-primary);
+	}
+
+	.tuning-badge {
+		font-size: 10px;
+		padding: 2px 6px;
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		color: var(--color-accent);
+	}
+
+	.preset-tabs {
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 8px;
+	}
+
+	.preset-tab {
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		padding: 8px 10px;
+		text-align: left;
+		cursor: pointer;
+		transition: all var(--t-fast) ease;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.preset-tab:hover {
+		border-color: var(--color-accent);
+	}
+
+	.preset-tab.active {
+		border-color: var(--color-accent);
+		background: var(--color-accent-tint, rgba(99, 102, 241, 0.08));
+	}
+
+	.preset-name {
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--color-text-primary);
+	}
+
+	.preset-desc {
+		font-size: 11px;
+		color: var(--color-text-muted);
+		line-height: 1.3;
+	}
+
+	.tuning-params {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding-top: 8px;
+		border-top: 1px solid var(--color-border);
+	}
+
+	.readonly-pill {
+		background: var(--color-bg-secondary);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		padding: 7px 10px;
+		font-size: 12px;
+		color: var(--color-text-primary);
+	}
+
+	.checkbox-label {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 12px;
+		color: var(--color-text-primary);
+		cursor: pointer;
+		padding: 7px 0;
+	}
+
+	.checkbox-input {
+		width: 16px;
+		height: 16px;
+		accent-color: var(--color-accent);
+		cursor: pointer;
+	}
+
 	@media (max-width: 640px) {
+		.preset-tabs {
+			grid-template-columns: 1fr;
+		}
 		.form-row {
 			grid-template-columns: 1fr;
 		}

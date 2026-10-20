@@ -3,9 +3,9 @@
 	import { api } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications';
 	import { copyToClipboard } from '$lib/utils/clipboard';
-	import type { XrayShareLinks } from '$lib/types';
+	import type { XrayShareLinks, CDNRouteRule } from '$lib/types';
 	import QRCode from 'qrcode';
-	import { Copy, Download } from 'lucide-svelte';
+	import { Copy, Download, Send } from 'lucide-svelte';
 
 	interface Props {
 		open: boolean;
@@ -21,27 +21,54 @@
 	let activeTab = $state<'vless' | 'happ' | 'singbox' | 'mihomo'>('vless');
 	let qrDataUrl = $state('');
 	let qrGenerating = $state(false);
+	let cdnRoutes = $state<CDNRouteRule[]>([]);
+	let selectedDomain = $state('');
 
 	$effect(() => {
 		if (open && clientId) {
-			void loadLinks();
+			void initModal();
 		} else {
 			links = null;
 			qrDataUrl = '';
+			cdnRoutes = [];
+			selectedDomain = '';
 		}
 	});
 
-	async function loadLinks() {
+	async function initModal() {
 		loading = true;
 		try {
-			links = await api.getXrayClientLinks(clientId);
-			if (links?.vless_url) {
-				generateQR(links.vless_url);
+			const dispCfg = await api.getDispatcherConfig().catch(() => null);
+			if (dispCfg?.routes) {
+				cdnRoutes = dispCfg.routes.filter((r) => r.enabled && r.route_xray);
+			} else {
+				cdnRoutes = [];
+			}
+			if (cdnRoutes.length > 0 && !selectedDomain) {
+				selectedDomain = cdnRoutes[0].domain;
+			}
+			await loadLinks(selectedDomain || undefined);
+		} catch (e) {
+			notifications.error(e instanceof Error ? e.message : 'Ошибка загрузки данных подключения');
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function onDomainChange(domain: string) {
+		selectedDomain = domain;
+		await loadLinks(domain || undefined);
+	}
+
+	async function loadLinks(domainOverride?: string) {
+		try {
+			links = await api.getXrayClientLinks(clientId, domainOverride);
+			if (links) {
+				const content = activeTab === 'happ' ? links.happ_json : links.vless_url;
+				generateQR(content);
 			}
 		} catch (e) {
 			notifications.error(e instanceof Error ? e.message : 'Ошибка получения ссылок');
-		} finally {
-			loading = false;
 		}
 	}
 
@@ -86,6 +113,13 @@
 		if (text && (await copyToClipboard(text))) {
 			notifications.success(`${label} скопирована`);
 		}
+	}
+
+	function shareToTelegram() {
+		if (!links?.vless_url) return;
+		const label = selectedDomain ? `${clientRemark || 'Клиент'} · ${selectedDomain}` : clientRemark || 'Клиент';
+		const tgUrl = `https://t.me/share/url?url=${encodeURIComponent(links.vless_url)}&text=${encodeURIComponent(`VLESS CDN (${label})`)}`;
+		window.open(tgUrl, '_blank');
 	}
 
 	function downloadConfig() {
@@ -147,6 +181,29 @@
 
 			<!-- Format Tabs and Preview Section -->
 			<div class="data-col">
+				{#if cdnRoutes.length > 0}
+					<div class="endpoint-picker">
+						<span class="picker-label">CDN-эндпоинт (Диспетчер):</span>
+						<select
+							class="picker-select font-mono"
+							value={selectedDomain}
+							onchange={(e) => void onDomainChange(e.currentTarget.value)}
+						>
+							{#each cdnRoutes as route (route.id)}
+								<option value={route.domain}>
+									{route.domain}{route.description ? ` (${route.description})` : ''}
+								</option>
+							{/each}
+						</select>
+					</div>
+				{:else}
+					<div class="endpoint-picker endpoint-picker-empty">
+						<span class="picker-hint">
+							В карточке «Диспетчер» не включен ни один CDN-узел для Xray (используется домен по умолчанию).
+						</span>
+					</div>
+				{/if}
+
 				<div class="tabs">
 					<button
 						type="button"
@@ -205,6 +262,12 @@
 						<Download size={14} class="mr-1" />
 						Скачать
 					</Button>
+					<span class="tg-share-wrap">
+						<Button variant="secondary" size="sm" onclick={shareToTelegram}>
+							<Send size={14} class="mr-1" />
+							В Telegram
+						</Button>
+					</span>
 				</div>
 			</div>
 		</div>
@@ -348,6 +411,55 @@
 	.actions-row {
 		display: flex;
 		gap: 8px;
+	}
+
+	.endpoint-picker {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		margin-bottom: 4px;
+	}
+
+	.picker-label {
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.picker-hint {
+		font-size: 11px;
+		color: var(--color-warning, #f59e0b);
+		line-height: 1.4;
+		padding: 2px 0;
+	}
+
+	.picker-select {
+		background: var(--color-bg-primary);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		padding: 6px 10px;
+		font-size: 12px;
+		color: var(--color-text-primary);
+		outline: none;
+		cursor: pointer;
+	}
+	.picker-select:focus {
+		border-color: var(--color-accent);
+	}
+
+	.tg-share-wrap :global(button) {
+		color: #229ED9 !important;
+		border-color: rgba(34, 158, 217, 0.4) !important;
+	}
+	.tg-share-wrap :global(button:hover) {
+		background: rgba(34, 158, 217, 0.1) !important;
+		border-color: #229ED9 !important;
+	}
+
+	.font-mono {
+		font-family: var(--font-mono);
 	}
 
 	@media (max-width: 640px) {

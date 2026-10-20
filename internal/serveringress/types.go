@@ -3,7 +3,12 @@ package serveringress
 import (
 	"context"
 	"errors"
+
+	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
 )
+
+type CDNRouteRule = cdndispatcher.CDNRouteRule
+type CDNDispatcherConfig = cdndispatcher.Config
 
 var (
 	ErrRecoveryRequired = errors.New("recovery required: coordinator has pending recovery or conflict")
@@ -63,9 +68,11 @@ type IngressTransactionParams struct {
 
 // IngressTopology describes the desired or current cross-component ingress configuration.
 type IngressTopology struct {
-	DispatcherEnabled  bool   `json:"dispatcher_enabled"`
-	DispatcherAddress  string `json:"dispatcher_address,omitempty"`
-	DispatcherPort     int    `json:"dispatcher_port"` // Origin proxy port (e.g. 9009)
+	DispatcherEnabled       bool                         `json:"dispatcher_enabled"`
+	DispatcherAddress       string                       `json:"dispatcher_address,omitempty"`
+	DispatcherPort          int                          `json:"dispatcher_port"` // Origin proxy port (e.g. 9009)
+	DispatcherRoutes        []cdndispatcher.CDNRouteRule `json:"dispatcher_routes,omitempty"`
+	DispatcherDefaultAction string                       `json:"dispatcher_default_action,omitempty"`
 
 	XrayEnabled        bool   `json:"xray_enabled"`
 	XrayAddress        string `json:"xray_address"`     // Loopback or listen address (e.g. "127.0.0.1")

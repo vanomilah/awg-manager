@@ -827,3 +827,147 @@ func TestDispatcherXrayPaddingAndTrailingSlash(t *testing.T) {
 		t.Fatalf("expected preserved Referer, got %q", capturedReferer)
 	}
 }
+
+func TestDispatcherStructuredRoutesAndRejectAction(t *testing.T) {
+	xrayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend", "xray")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("xray-resp"))
+	}))
+	defer xrayServer.Close()
+
+	tgServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Backend", "tg")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("tg-resp"))
+	}))
+	defer tgServer.Close()
+
+	d := New(Config{
+		ListenAddr:     ":0",
+		XrayTarget:     xrayServer.URL,
+		TgTarget:       tgServer.URL,
+		XrayPathPrefix: "/cdn-bridge",
+		DefaultAction:  "reject",
+		Routes: []CDNRouteRule{
+			{
+				ID:            "r-xray-only",
+				Domain:        "xray.example.com",
+				Description:   "Xray only endpoint",
+				RouteXray:     true,
+				RouteTelegram: false,
+				Enabled:       true,
+			},
+			{
+				ID:            "r-tg-only",
+				Domain:        "tg.example.com",
+				Description:   "TG only endpoint",
+				RouteXray:     false,
+				RouteTelegram: true,
+				Enabled:       true,
+			},
+			{
+				ID:            "r-both",
+				Domain:        "both.example.com",
+				Description:   "Both services",
+				RouteXray:     true,
+				RouteTelegram: true,
+				Enabled:       true,
+			},
+			{
+				ID:            "r-disabled",
+				Domain:        "disabled.example.com",
+				Description:   "Disabled",
+				RouteXray:     true,
+				RouteTelegram: true,
+				Enabled:       false,
+			},
+		},
+	})
+
+	tests := []struct {
+		name         string
+		host         string
+		path         string
+		expectedCode int
+		expectedConn string
+		expectedBack string
+	}{
+		{
+			name:         "Xray-only domain: Xray path succeeds",
+			host:         "xray.example.com",
+			path:         "/cdn-bridge/vless",
+			expectedCode: http.StatusOK,
+			expectedBack: "xray",
+		},
+		{
+			name:         "Xray-only domain: Telegram path rejected with 403 Forbidden and Connection: close",
+			host:         "xray.example.com",
+			path:         "/",
+			expectedCode: http.StatusForbidden,
+			expectedConn: "close",
+		},
+		{
+			name:         "TG-only domain: Telegram path succeeds",
+			host:         "tg.example.com",
+			path:         "/api/v1/stream",
+			expectedCode: http.StatusOK,
+			expectedBack: "tg",
+		},
+		{
+			name:         "TG-only domain: Xray path rejected with 403 Forbidden",
+			host:         "tg.example.com",
+			path:         "/cdn-bridge/vless",
+			expectedCode: http.StatusForbidden,
+			expectedConn: "close",
+		},
+		{
+			name:         "Both domain: Xray path succeeds",
+			host:         "both.example.com:443",
+			path:         "/cdn-bridge",
+			expectedCode: http.StatusOK,
+			expectedBack: "xray",
+		},
+		{
+			name:         "Both domain: TG path succeeds",
+			host:         "both.example.com",
+			path:         "/tg/bridge",
+			expectedCode: http.StatusOK,
+			expectedBack: "tg",
+		},
+		{
+			name:         "Disabled domain rejected with 403 Forbidden",
+			host:         "disabled.example.com",
+			path:         "/cdn-bridge",
+			expectedCode: http.StatusForbidden,
+			expectedConn: "close",
+		},
+		{
+			name:         "Unknown domain rejected with 403 Forbidden",
+			host:         "foreign.example.com",
+			path:         "/cdn-bridge",
+			expectedCode: http.StatusForbidden,
+			expectedConn: "close",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Host = tc.host
+			w := httptest.NewRecorder()
+			d.ServeHTTP(w, req)
+
+			if w.Code != tc.expectedCode {
+				t.Fatalf("expected status %d, got %d", tc.expectedCode, w.Code)
+			}
+			if tc.expectedConn != "" && w.Header().Get("Connection") != tc.expectedConn {
+				t.Fatalf("expected Connection header %q, got %q", tc.expectedConn, w.Header().Get("Connection"))
+			}
+			if tc.expectedBack != "" && w.Header().Get("X-Backend") != tc.expectedBack {
+				t.Fatalf("expected backend %q, got %q", tc.expectedBack, w.Header().Get("X-Backend"))
+			}
+		})
+	}
+}
+

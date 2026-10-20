@@ -342,4 +342,39 @@ export interface TgWebProxyRevealData {
 	mtproxy_tme_url: string;
 }
 
+export interface CDNRouteRule {
+	id: string;
+	domain: string;
+	description: string;
+	route_xray: boolean;
+	route_telegram: boolean;
+	enabled: boolean;
+}
+
+export interface CDNDispatcherConfig {
+	enabled: boolean;
+	listen_addr: string;
+	xray_target: string;
+	tg_target: string;
+	routes: CDNRouteRule[];
+	default_action?: '404' | 'reject';
+	public_hostname?: string;
+	xray_public_host?: string;
+	tg_public_host?: string;
+	xray_path_prefix?: string;
+}
+
+export interface XHTTPTuning {
+	preset: 'live_low_latency' | 'balanced' | 'custom';
+	uplink_method: string;
+	min_posts_interval_ms: string;
+	max_buffered_posts: number;
+	stream_up_server_secs: string;
+	stream_path_suffix: string;
+	enable_xmux: boolean;
+	x_padding_bytes: string;
+	x_padding_header: string;
+	x_padding_placement: string;
+}
+
 // #endregion

@@ -82,7 +82,7 @@
 				label: label.trim(),
 				mode,
 				urlTest:
-					mode === 'urltest'
+					mode === 'urltest' || mode === 'fallback' || mode === 'load-balance'
 						? { url: utUrl, intervalSec: utIntervalSec, toleranceMs: utToleranceMs }
 						: undefined,
 				useSubscriptionIds: selectedIds,
@@ -177,8 +177,30 @@
 					<div class="mode-title">Ручной выбор</div>
 					<div class="mode-desc">Сервер переключается вручную из списка.</div>
 				</button>
+				<button
+					type="button"
+					role="radio"
+					aria-checked={mode === 'fallback'}
+					class="mode-card"
+					class:selected={mode === 'fallback'}
+					onclick={() => (mode = 'fallback')}
+				>
+					<div class="mode-title">Fallback</div>
+					<div class="mode-desc">Приоритет первого сервера с переходом на резервный.</div>
+				</button>
+				<button
+					type="button"
+					role="radio"
+					aria-checked={mode === 'load-balance'}
+					class="mode-card"
+					class:selected={mode === 'load-balance'}
+					onclick={() => (mode = 'load-balance')}
+				>
+					<div class="mode-title">Load-Balance</div>
+					<div class="mode-desc">Балансировка между всеми доступными серверами.</div>
+				</button>
 			</div>
-			{#if mode === 'urltest'}
+			{#if mode === 'urltest' || mode === 'fallback' || mode === 'load-balance'}
 				<div class="urltest-block">
 					<label class="row">
 						<span class="lbl">URL для проверки</span>

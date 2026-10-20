@@ -466,8 +466,8 @@
 						refreshHours: 0,
 						enabled,
 						mode,
-						testUrl: mode === 'urltest' ? utUrl : undefined,
-						testInterval: mode === 'urltest' ? utIntervalSec : undefined,
+						testUrl: mode !== 'selector' ? utUrl : undefined,
+						testInterval: mode !== 'selector' ? utIntervalSec : undefined,
 						testTolerance: mode === 'urltest' ? utToleranceMs : undefined,
 					});
 				} else {
@@ -491,8 +491,8 @@
 						enabled,
 						headers: parseHeadersText(headersText),
 						mode,
-						testUrl: mode === 'urltest' ? utUrl : undefined,
-						testInterval: mode === 'urltest' ? utIntervalSec : undefined,
+						testUrl: mode !== 'selector' ? utUrl : undefined,
+						testInterval: mode !== 'selector' ? utIntervalSec : undefined,
 						testTolerance: mode === 'urltest' ? utToleranceMs : undefined,
 						filterExclude,
 					});
@@ -513,7 +513,7 @@
 				enabled,
 				mode,
 				urlTest:
-					mode === 'urltest'
+					mode !== 'selector'
 						? { url: utUrl, intervalSec: utIntervalSec, toleranceMs: utToleranceMs }
 						: undefined,
 				excludedKeys: isInline ? undefined : [...excludedKeys],
@@ -830,10 +830,46 @@
 							</span>
 						{/if}
 					</button>
+					<button
+						type="button"
+						role="radio"
+						aria-checked={mode === 'fallback'}
+						class="mode-card"
+						class:selected={mode === 'fallback'}
+						onclick={() => (mode = 'fallback')}
+					>
+						<div class="mode-title">Fallback (приоритет)</div>
+						<div class="mode-desc">
+							Первый сервер в приоритете; при сбое переход на резервный.
+						</div>
+						{#if mode === 'fallback'}
+							<span class="mode-check" aria-hidden="true">
+								<Check size={12} strokeWidth={3} aria-hidden="true" />
+							</span>
+						{/if}
+					</button>
+					<button
+						type="button"
+						role="radio"
+						aria-checked={mode === 'load-balance'}
+						class="mode-card"
+						class:selected={mode === 'load-balance'}
+						onclick={() => (mode = 'load-balance')}
+					>
+						<div class="mode-title">Load-Balance</div>
+						<div class="mode-desc">
+							Балансировка трафика между всеми доступными серверами.
+						</div>
+						{#if mode === 'load-balance'}
+							<span class="mode-check" aria-hidden="true">
+								<Check size={12} strokeWidth={3} aria-hidden="true" />
+							</span>
+						{/if}
+					</button>
 				</div>
 			</div>
 
-			{#if mode === 'urltest'}
+			{#if mode === 'urltest' || mode === 'fallback' || mode === 'load-balance'}
 				<div class="urltest-block">
 					<label class="row">
 						<span class="lbl">URL для проверки</span>

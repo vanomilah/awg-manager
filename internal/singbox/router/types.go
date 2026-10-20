@@ -257,9 +257,10 @@ type Outbound struct {
 	Outbounds     []string `json:"outbounds,omitempty"`
 	URL           string   `json:"url,omitempty"`
 	Interval      string   `json:"interval,omitempty"`
-	Tolerance     int      `json:"tolerance,omitempty"`
-	Default       string   `json:"default,omitempty"`
-	Strategy      string   `json:"strategy,omitempty"`
+	Tolerance                  int      `json:"tolerance,omitempty"`
+	Default                    string   `json:"default,omitempty"`
+	Strategy                   string   `json:"strategy,omitempty"`
+	InterruptExistConnections bool     `json:"interrupt_exist_connections,omitempty"`
 	// Server and DomainResolver support fakeip-tun's domain_resolver guard:
 	// a hostname-bearing proxy outbound resolves its Server via the named
 	// resolver instead of the fakeip server. Both omitempty so v1 IP-bound

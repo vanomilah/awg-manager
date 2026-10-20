@@ -145,7 +145,7 @@
 				inline: sub.inline ?? '',
 				isInline: sub.format === 'share-links',
 				enabled: sub.enabled,
-				mode: (sub.mode === 'url-test' ? 'urltest' : 'selector') as SubscriptionMode,
+				mode: (sub.mode === 'url-test' || sub.mode === 'urltest' ? 'urltest' : sub.mode === 'fallback' ? 'fallback' : sub.mode === 'load-balance' ? 'load-balance' : 'selector') as SubscriptionMode,
 				urlTest: {
 					url: sub.testUrl || DEFAULT_SUBSCRIPTION_URLTEST.url,
 					intervalSec: sub.testInterval || DEFAULT_SUBSCRIPTION_URLTEST.intervalSec,

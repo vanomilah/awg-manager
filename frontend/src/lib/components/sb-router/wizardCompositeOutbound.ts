@@ -1,6 +1,6 @@
 import { DEFAULT_SUBSCRIPTION_URLTEST, type SingboxRouterOutbound } from '$lib/types';
 
-const COMPOSITE_TYPES = new Set(['selector', 'urltest', 'loadbalance']);
+const COMPOSITE_TYPES = new Set(['selector', 'urltest', 'loadbalance', 'fallback', 'load-balance']);
 
 export function sameOutboundMemberSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;

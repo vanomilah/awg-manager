@@ -109,14 +109,18 @@
 	// loadbalance choose automatically by latency, so no manual select.
 	const canSelect = $derived(live && compositeType === 'selector');
 
-	// Сабтайтл по типу группы (мокап): urltest → авто по задержке + интервал;
-	// selector → ручной выбор; loadbalance — честная формулировка.
+	// Сабтайтл по типу группы: urltest → авто по задержке + интервал;
+	// fallback → резервирование + интервал; selector → ручной выбор; loadbalance → балансировка.
 	const subtitle = $derived(
 		compositeType === 'urltest'
 			? `auto by latency${outbound.interval ? ` · interval ${outbound.interval}` : ''}`
-			: compositeType === 'selector'
-				? 'ручной выбор'
-				: 'балансировка нагрузки',
+			: compositeType === 'fallback'
+				? `fallback${outbound.interval ? ` · interval ${outbound.interval}` : ''}`
+				: compositeType === 'load-balance' || compositeType === 'loadbalance'
+					? `load-balance (${outbound.strategy || 'round-robin'})`
+					: compositeType === 'selector'
+						? 'ручной выбор'
+						: 'балансировка нагрузки',
 	);
 
 	function memberLabel(tag: string): string {

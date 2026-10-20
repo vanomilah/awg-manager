@@ -194,7 +194,8 @@ func (h *XrayServerHandler) GetLinks(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "missing client id")
 		return
 	}
-	links, err := h.svc.GenerateLinks(id)
+	domain := r.URL.Query().Get("domain")
+	links, err := h.svc.GenerateLinksForDomain(id, domain)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, err.Error())
 		return

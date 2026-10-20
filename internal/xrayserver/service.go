@@ -55,8 +55,22 @@ type Config struct {
 	XmuxMaxConnections int      `json:"xmux_max_connections"`         // Default: 2
 	OutboundMode       string   `json:"outbound_mode,omitempty"`      // "direct", "socks", "interface"
 	OutboundInterface  string   `json:"outbound_interface,omitempty"` // network device name (e.g. "nwg1")
-	OutboundSocksPort  int      `json:"outbound_socks_port"`          // Forwarding port (e.g., 1099 for mihomo/singbox policy routing, 0 for direct)
-	Clients            []Client `json:"clients"`
+	OutboundSocksPort  int          `json:"outbound_socks_port"`          // Forwarding port (e.g., 1099 for mihomo/singbox policy routing, 0 for direct)
+	Clients            []Client     `json:"clients"`
+	XHTTPTuning        *XHTTPTuning `json:"xhttp_tuning,omitempty"`
+}
+
+func (c Config) GetTuning() XHTTPTuning {
+	if c.XHTTPTuning != nil {
+		t := *c.XHTTPTuning
+		_ = ValidateAndNormalizeXHTTPTuning(&t)
+		return t
+	}
+	t := DefaultLiveLowLatencyTuning()
+	if c.UplinkMethod != "" {
+		t.UplinkMethod = c.UplinkMethod
+	}
+	return t
 }
 
 type Status struct {
@@ -702,6 +716,10 @@ func (s *Service) ToggleClient(id string, enabled bool) error {
 }
 
 func (s *Service) GenerateLinks(clientID string) (*ShareLinks, error) {
+	return s.GenerateLinksForDomain(clientID, "")
+}
+
+func (s *Service) GenerateLinksForDomain(clientID string, domainOverride string) (*ShareLinks, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -716,7 +734,11 @@ func (s *Service) GenerateLinks(clientID string) (*ShareLinks, error) {
 		return nil, errors.New("client not found")
 	}
 
-	return BuildShareLinks(s.config, *client)
+	cfg := s.config
+	if domainOverride != "" {
+		cfg.PublicDomain = domainOverride
+	}
+	return BuildShareLinks(cfg, *client)
 }
 
 // BuildShareLinks generates client share links from configuration and client metadata.
@@ -816,13 +838,66 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
     headers:
       Host: "%s"`, client.Remark, domain, port, client.ID, domain, path, domain)
 	} else {
-		// Standard VLESS URL format for XHTTP
-		// XHTTP's uplink method is not represented by a dedicated VLESS URL
-		// parameter.  Xray-compatible clients receive it through `extra`.
-		// Keep it in the share URI as well as in the JSON exports; otherwise
-		// clients silently fall back to their default (usually POST), which
-		// no longer matches a GET-configured server.
-		xhttpExtra, _ := json.Marshal(map[string]string{"uplinkHTTPMethod": method})
+		effectivePath := path
+		var xhttpExtra []byte
+		happXHTTP := map[string]interface{}{
+			"path":             effectivePath,
+			"host":             domain,
+			"mode":             mode,
+			"uplinkHTTPMethod": method,
+			"enableXmux":       true,
+		}
+
+		var tuning *XHTTPTuning
+		if cfg.XHTTPTuning != nil {
+			t := *cfg.XHTTPTuning
+			_ = ValidateAndNormalizeXHTTPTuning(&t)
+			tuning = &t
+
+			if tuning.UplinkMethod != "" {
+				method = tuning.UplinkMethod
+				happXHTTP["uplinkHTTPMethod"] = method
+			}
+			if tuning.StreamPathSuffix != "" && !strings.HasSuffix(effectivePath, tuning.StreamPathSuffix) {
+				effectivePath = strings.TrimRight(effectivePath, "/") + "/" + tuning.StreamPathSuffix
+				happXHTTP["path"] = effectivePath
+			}
+			happXHTTP["enableXmux"] = tuning.EnableXmux
+			if tuning.MinPostsIntervalMs != "" {
+				happXHTTP["scMinPostsIntervalMs"] = tuning.MinPostsIntervalMs
+			}
+			if tuning.MaxBufferedPosts > 0 {
+				happXHTTP["scMaxBufferedPosts"] = tuning.MaxBufferedPosts
+			}
+			if tuning.StreamUpServerSecs != "" {
+				happXHTTP["streamUpServerSecs"] = tuning.StreamUpServerSecs
+			}
+			if tuning.XPaddingBytes != "" {
+				happXHTTP["xPaddingBytes"] = tuning.XPaddingBytes
+			}
+
+			extraMap := map[string]interface{}{
+				"uplinkHTTPMethod": method,
+			}
+			if tuning.MinPostsIntervalMs != "" {
+				extraMap["scMinPostsIntervalMs"] = tuning.MinPostsIntervalMs
+			}
+			if tuning.MaxBufferedPosts > 0 {
+				extraMap["scMaxBufferedPosts"] = tuning.MaxBufferedPosts
+			}
+			if tuning.StreamUpServerSecs != "" {
+				extraMap["streamUpServerSecs"] = tuning.StreamUpServerSecs
+			}
+			extraMap["enableXmux"] = tuning.EnableXmux
+			extraMap["xmux"] = tuning.EnableXmux
+			if tuning.XPaddingBytes != "" {
+				extraMap["xPaddingBytes"] = tuning.XPaddingBytes
+			}
+			xhttpExtra, _ = json.Marshal(extraMap)
+		} else {
+			xhttpExtra, _ = json.Marshal(map[string]string{"uplinkHTTPMethod": method})
+		}
+
 		vlessURL = fmt.Sprintf(
 			"vless://%s@%s:%d?encryption=none&security=tls&sni=%s&alpn=http/1.1&type=xhttp&host=%s&path=%s&mode=%s&extra=%s#%s",
 			client.ID,
@@ -830,7 +905,7 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 			port,
 			domain,
 			domain,
-			url.QueryEscape(path),
+			url.QueryEscape(effectivePath),
 			mode,
 			url.QueryEscape(string(xhttpExtra)),
 			url.QueryEscape(client.Remark),
@@ -845,16 +920,23 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 			"sni":      domain,
 			"alpn":     []string{"http/1.1"},
 			"network":  "xhttp",
-			"xhttp": map[string]interface{}{
-				"path":             path,
-				"host":             domain,
-				"mode":             mode,
-				"uplinkHTTPMethod": method,
-				"enableXmux":       true,
-			},
-			"remark": client.Remark,
+			"xhttp":    happXHTTP,
+			"remark":   client.Remark,
 		}
 		happJSON, _ = json.MarshalIndent(happObj, "", "  ")
+
+		transportMap := map[string]interface{}{
+			"type": "xhttp",
+			"path": effectivePath,
+			"host": domain,
+			"mode": mode,
+		}
+		if method != "" {
+			transportMap["uplink_http_method"] = method
+		}
+		if tuning != nil && tuning.XPaddingBytes != "" {
+			transportMap["x_padding_bytes"] = tuning.XPaddingBytes
+		}
 
 		singboxObj := map[string]interface{}{
 			"type":        "vless",
@@ -867,12 +949,7 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
 				"server_name": domain,
 				"alpn":        []string{"http/1.1"},
 			},
-			"transport": map[string]interface{}{
-				"type": "xhttp",
-				"path": path,
-				"host": domain,
-				"mode": mode,
-			},
+			"transport": transportMap,
 		}
 		singboxJSON, _ = json.MarshalIndent(singboxObj, "", "  ")
 
@@ -891,7 +968,7 @@ func BuildShareLinks(cfg Config, client Client) (*ShareLinks, error) {
     mode: %s
     path: "%s"
     headers:
-      Host: "%s"`, client.Remark, domain, port, client.ID, domain, mode, path, domain)
+      Host: "%s"`, client.Remark, domain, port, client.ID, domain, mode, effectivePath, domain)
 	}
 
 	return &ShareLinks{
@@ -908,6 +985,46 @@ func (s *Service) notifyReload() {
 	if s.onReload != nil {
 		go s.onReload()
 	}
+}
+
+// GetTuning returns the active XHTTP tuning parameters.
+func (s *Service) GetTuning() XHTTPTuning {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.config.GetTuning()
+}
+
+// UpdateTuning updates the XHTTP tuning parameters, validates them, saves config,
+// and restarts only the xray-core process without disrupting other tunnels.
+func (s *Service) UpdateTuning(tuning XHTTPTuning) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := ValidateAndNormalizeXHTTPTuning(&tuning); err != nil {
+		return err
+	}
+
+	s.config.XHTTPTuning = &tuning
+	s.config.UplinkMethod = tuning.UplinkMethod
+
+	if err := s.saveConfig(); err != nil {
+		return err
+	}
+
+	var err error
+	if s.config.Enabled {
+		err = s.restartLocked()
+	}
+	s.notifyReload()
+	return err
+}
+
+// UpdatePublicDomain updates the public domain model and persists it without restarting xray-core.
+func (s *Service) UpdatePublicDomain(domain string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config.PublicDomain = domain
+	return s.saveConfig()
 }
 
 func (s *Service) Start() error {
@@ -1065,27 +1182,62 @@ func RenderRuntimeConfig(cfg Config) ([]byte, error) {
 			"wsSettings": wsSettings,
 		}
 	} else {
-		streamSettings = map[string]interface{}{
-			"network": "xhttp",
-			"xhttpSettings": map[string]interface{}{
-				"path":                 path,
-				"mode":                 mode,
-				"sessionIDPlacement":   "query",
-				"sessionIDKey":         "sid",
-				"seqPlacement":         "query",
-				"seqKey":               "page",
-				"scMaxBufferedPosts":   30,
-				"scStreamUpServerSecs": "20-80",
-				"xmux": map[string]interface{}{
-					"maxConcurrency":   0,
-					"maxConnections":   conns,
-					"cMaxReuseTimes":   0,
-					"hMaxRequestTimes": "100-200",
-					"hMaxReusableSecs": "300-600",
-					"hKeepAlivePeriod": 0,
-				},
-				"enableXmux": true,
+		serverPath := path
+		xhttpSettings := map[string]interface{}{
+			"path":               serverPath,
+			"mode":               mode,
+			"sessionIDPlacement": "query",
+			"sessionIDKey":       "sid",
+			"seqPlacement":       "query",
+			"seqKey":             "page",
+			"xmux": map[string]interface{}{
+				"maxConcurrency":   0,
+				"maxConnections":   conns,
+				"cMaxReuseTimes":   0,
+				"hMaxRequestTimes": "100-200",
+				"hMaxReusableSecs": "300-600",
+				"hKeepAlivePeriod": 0,
 			},
+			"enableXmux": true,
+		}
+
+		if cfg.XHTTPTuning != nil {
+			tuning := *cfg.XHTTPTuning
+			_ = ValidateAndNormalizeXHTTPTuning(&tuning)
+
+			if tuning.StreamPathSuffix != "" && !strings.HasSuffix(serverPath, tuning.StreamPathSuffix) {
+				serverPath = strings.TrimRight(serverPath, "/") + "/" + tuning.StreamPathSuffix
+				xhttpSettings["path"] = serverPath
+			}
+			if tuning.UplinkMethod != "" {
+				xhttpSettings["uplinkHTTPMethod"] = tuning.UplinkMethod
+			}
+			if tuning.MinPostsIntervalMs != "" {
+				xhttpSettings["scMinPostsIntervalMs"] = tuning.MinPostsIntervalMs
+			}
+			if tuning.MaxBufferedPosts > 0 {
+				xhttpSettings["scMaxBufferedPosts"] = tuning.MaxBufferedPosts
+			}
+			if tuning.StreamUpServerSecs != "" {
+				xhttpSettings["scStreamUpServerSecs"] = tuning.StreamUpServerSecs
+			}
+			xhttpSettings["enableXmux"] = tuning.EnableXmux
+			if tuning.XPaddingBytes != "" {
+				xhttpSettings["xPaddingBytes"] = tuning.XPaddingBytes
+				xhttpSettings["xPaddingHeader"] = tuning.XPaddingHeader
+				xhttpSettings["xPaddingPlacement"] = tuning.XPaddingPlacement
+				xhttpSettings["xPaddingObfsMode"] = true
+				xhttpSettings["xPaddingKey"] = "_dc"
+				xhttpSettings["xPaddingMethod"] = "tokenish"
+			}
+		} else {
+			xhttpSettings["scMaxBufferedPosts"] = 30
+			xhttpSettings["scStreamUpServerSecs"] = "20-80"
+		}
+
+		streamSettings = map[string]interface{}{
+			"network":       "xhttp",
+			"xhttpSettings": xhttpSettings,
 		}
 	}
 

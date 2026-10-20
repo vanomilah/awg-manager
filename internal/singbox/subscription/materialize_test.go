@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -89,7 +90,7 @@ func TestBuildURLTest_AppliesDefaultsForZeroValues(t *testing.T) {
 	if ob["url"] != def.URL {
 		t.Errorf("url default not applied: %v", ob["url"])
 	}
-	if ob["interval"] != "60s" {
+	if ob["interval"] != fmt.Sprintf("%ds", def.IntervalSec) {
 		t.Errorf("interval default not applied: %v", ob["interval"])
 	}
 }
