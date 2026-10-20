@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
+	"github.com/hoaxisr/awg-manager/internal/storage"
 )
 
 // ---------------------------------------------------------------------------
@@ -275,6 +276,18 @@ func (s *ServiceImpl) validateCompositeMembers(ctx context.Context, o Outbound, 
 }
 
 func (s *ServiceImpl) FakeIPDeleteCompositeOutbound(ctx context.Context, tag string, force bool) error {
+	if s.deps.Settings != nil {
+		_ = s.deps.Settings.Update(func(st *storage.Settings) error {
+			var updated []storage.ProxyGroup
+			for _, pg := range st.SingboxRouter.ProxyGroups {
+				if pg.Name != tag {
+					updated = append(updated, pg)
+				}
+			}
+			st.SingboxRouter.ProxyGroups = updated
+			return nil
+		})
+	}
 	return s.fakeipWithConfig(ctx, "outbounds", func(c *RouterConfig) error { return c.DeleteCompositeOutbound(tag, force) })
 }
 

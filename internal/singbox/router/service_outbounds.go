@@ -182,6 +182,20 @@ func (s *ServiceImpl) UpdateCompositeOutbound(ctx context.Context, tag string, o
 	}); err != nil {
 		return err
 	}
+	if s.deps.Settings != nil {
+		_ = s.deps.Settings.Update(func(st *storage.Settings) error {
+			for i, pg := range st.SingboxRouter.ProxyGroups {
+				if pg.Name == tag {
+					st.SingboxRouter.ProxyGroups[i].Name = o.Tag
+					st.SingboxRouter.ProxyGroups[i].Type = o.Type
+					st.SingboxRouter.ProxyGroups[i].Proxies = o.Outbounds
+					st.SingboxRouter.ProxyGroups[i].URL = o.URL
+					st.SingboxRouter.ProxyGroups[i].Strategy = o.Strategy
+				}
+			}
+			return nil
+		})
+	}
 	// A rename rewrites config references (renameOutboundReferences inside
 	// UpdateCompositeOutbound); mirror it for the settings-side QoS classes.
 	if newTag := strings.TrimSpace(o.Tag); newTag != "" && newTag != tag {
@@ -221,6 +235,19 @@ func (s *ServiceImpl) DeleteCompositeOutbound(ctx context.Context, tag string, f
 		if refs := s.qosClassesReferencing(tag); len(refs) > 0 {
 			return fmt.Errorf("%w: %q referenced by %s", ErrOutboundReferenced, tag, strings.Join(refs, ", "))
 		}
+	}
+	// Clean up from settings.SingboxRouter.ProxyGroups if present
+	if s.deps.Settings != nil {
+		_ = s.deps.Settings.Update(func(st *storage.Settings) error {
+			var updated []storage.ProxyGroup
+			for _, pg := range st.SingboxRouter.ProxyGroups {
+				if pg.Name != tag {
+					updated = append(updated, pg)
+				}
+			}
+			st.SingboxRouter.ProxyGroups = updated
+			return nil
+		})
 	}
 	if err := s.withConfig(ctx, "outbounds", func(c *RouterConfig) error { return c.DeleteCompositeOutbound(tag, force) }); err != nil {
 		return err

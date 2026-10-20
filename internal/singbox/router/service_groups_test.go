@@ -113,4 +113,30 @@ func TestEnrichMaterializedConfig_NativeProxyGroupsAndMixedInbound(t *testing.T)
 	}
 }
 
+func TestDeleteCompositeOutbound_RemovesFromSettingsProxyGroups(t *testing.T) {
+	svc := newQoSLifecycleService(t, storage.SingboxRouterSettings{
+		RoutingEngine: "sing-box",
+		ProxyGroups: []storage.ProxyGroup{
+			{Name: "group-to-delete", Type: "fallback", Proxies: []string{"member-x"}},
+			{Name: "group-to-keep", Type: "select", Proxies: []string{"member-x"}},
+		},
+	}, "group-to-delete", "group-to-keep")
+
+	err := svc.DeleteCompositeOutbound(t.Context(), "group-to-delete", false)
+	if err != nil {
+		t.Fatalf("DeleteCompositeOutbound failed: %v", err)
+	}
+
+	st, err := svc.deps.Settings.Load()
+	if err != nil {
+		t.Fatalf("store.Load failed: %v", err)
+	}
+	if len(st.SingboxRouter.ProxyGroups) != 1 {
+		t.Fatalf("expected 1 proxy group in settings, got %d", len(st.SingboxRouter.ProxyGroups))
+	}
+	if st.SingboxRouter.ProxyGroups[0].Name != "group-to-keep" {
+		t.Fatalf("expected group-to-keep retained, got: %s", st.SingboxRouter.ProxyGroups[0].Name)
+	}
+}
+
 
