@@ -218,8 +218,8 @@
 				stream_path_suffix: 'stream.ts',
 				enable_xmux: false,
 				x_padding_bytes: '100-1000',
-				x_padding_header: 'X-Padding',
-				x_padding_placement: 'header',
+				x_padding_header: 'Referer',
+				x_padding_placement: 'queryInHeader',
 			};
 		}
 		tuning.preset = preset;
