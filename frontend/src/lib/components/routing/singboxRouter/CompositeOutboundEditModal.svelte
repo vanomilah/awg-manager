@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Button, Dropdown, SegmentedControl, type DropdownOption } from '$lib/components/ui';
-	import { X } from 'lucide-svelte';
+	import { X, ChevronUp, ChevronDown } from 'lucide-svelte';
 	import type { SegmentedOption } from '$lib/components/ui/segmentedControl';
 	import SingboxSettingsModal from './SingboxSettingsModal.svelte';
 	import ForeignIfacePanel from './ForeignIfacePanel.svelte';
@@ -145,10 +145,15 @@
 	// Filter out tags already added so the user can't pick duplicates, and
 	// the group's own tag so it can't reference itself (self-reference
 	// FATALs sing-box with a circular-dependency error).
+	// Also filter out "direct" for urltest and load-balance (disallowed by validator).
 	const memberDropdownOptions = $derived<DropdownOption[]>(
 		outboundOptions.flatMap((g) =>
 			g.items
-				.filter((i) => !members.includes(i.value) && i.value !== tag.trim())
+				.filter((i) => {
+					if (members.includes(i.value) || i.value === tag.trim()) return false;
+					if ((type === 'urltest' || type === 'load-balance') && i.value === 'direct') return false;
+					return true;
+				})
 				.map((i) => ({ value: i.value, label: i.label, group: g.group }))
 		)
 	);
@@ -188,6 +193,17 @@
 		if (isSubscription) return;
 		members = members.filter((m) => m !== v);
 		if (defaultOutbound === v) defaultOutbound = '';
+	}
+
+	function moveMember(index: number, direction: -1 | 1): void {
+		if (isSubscription) return;
+		const targetIndex = index + direction;
+		if (targetIndex < 0 || targetIndex >= members.length) return;
+		const copy = [...members];
+		const temp = copy[index];
+		copy[index] = copy[targetIndex];
+		copy[targetIndex] = temp;
+		members = copy;
 	}
 
 	async function save(): Promise<void> {
@@ -307,19 +323,50 @@
 					{#if members.length === 0}
 						<span class="chips-placeholder">Участники не выбраны</span>
 					{:else}
-						{#each members as m (m)}
+						{#each members as m, i (m)}
 							<span class="member-chip" title={m}>
+								<span class="member-chip-order" class:primary={i === 0}>
+									{#if type === 'fallback'}
+										{i === 0 ? '#1 (Основной)' : `#${i + 1} (Резерв ${i})`}
+									{:else}
+										#{i + 1}
+									{/if}
+								</span>
 								<span class="member-chip-label">{memberLabel(m)}</span>
 								{#if !isSubscription}
-									<button
-										type="button"
-										class="member-chip-remove"
-										aria-label={`Удалить ${m}`}
-										title="Удалить"
-										onclick={() => removeMember(m)}
-									>
-										<X size={14} strokeWidth={2.5} aria-hidden="true" />
-									</button>
+									<div class="member-chip-actions">
+										{#if i > 0}
+											<button
+												type="button"
+												class="member-chip-nav"
+												aria-label="Вверх"
+												title="Поднять выше (к #1)"
+												onclick={() => moveMember(i, -1)}
+											>
+												<ChevronUp size={13} />
+											</button>
+										{/if}
+										{#if i < members.length - 1}
+											<button
+												type="button"
+												class="member-chip-nav"
+												aria-label="Вниз"
+												title="Опустить ниже"
+												onclick={() => moveMember(i, 1)}
+											>
+												<ChevronDown size={13} />
+											</button>
+										{/if}
+										<button
+											type="button"
+											class="member-chip-remove"
+											aria-label={`Удалить ${m}`}
+											title="Удалить"
+											onclick={() => removeMember(m)}
+										>
+											<X size={14} strokeWidth={2.5} aria-hidden="true" />
+										</button>
+									</div>
 								{/if}
 							</span>
 						{/each}

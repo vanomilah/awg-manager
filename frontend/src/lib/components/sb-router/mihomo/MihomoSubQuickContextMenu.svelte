@@ -424,6 +424,7 @@
           }
           await Promise.allSettled([
             subTag ? api.mihomoRuntimeSelect(subTag, server.tag) : Promise.resolve(),
+            subTag ? api.singboxRouterSelectProxy({ group: subTag, member: server.tag }).catch(() => {}) : Promise.resolve(),
             api.setSubscriptionActiveMember(matchedSingboxSub.id, server.tag),
           ]);
         }
