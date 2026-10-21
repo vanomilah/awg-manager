@@ -13,6 +13,8 @@
     open: boolean;
     subRef: string;
     triggerEl: HTMLElement | null;
+    subscription?: Subscription | null;
+    singboxSubscriptions?: Subscription[];
     mihomoSubscriptions?: MihomoNativeSubscription[];
     runtimeProxies?: MihomoRuntimeProxy[];
     onClose: () => void;
@@ -23,6 +25,8 @@
     open,
     subRef,
     triggerEl,
+    subscription = null,
+    singboxSubscriptions = [],
     mihomoSubscriptions = [],
     runtimeProxies = [],
     onClose,
@@ -33,8 +37,8 @@
   let testing = $state(false);
   let selectingTag = $state<string | null>(null);
   let localDelays = $state<Record<string, number>>({});
-  let activeMemberTag = $state<string | null>(null);
-  let currentMode = $state<'auto' | 'manual'>('auto');
+  let manualModeOverride = $state<'auto' | 'manual' | null>(null);
+  let manualActiveTag = $state<string | null>(null);
   let switchingMode = $state(false);
   let loadedSingboxSubs = $state<Subscription[]>([]);
   let loadedMihomoSubs = $state<MihomoNativeSubscription[]>([]);
@@ -48,7 +52,9 @@
     loadedMihomoSubs.length > 0 ? loadedMihomoSubs : mihomoSubscriptions
   );
   const allSingboxSubs = $derived(
-    loadedSingboxSubs.length > 0 ? loadedSingboxSubs : ($subscriptionsStore.data ?? [])
+    loadedSingboxSubs.length > 0
+      ? loadedSingboxSubs
+      : (singboxSubscriptions.length > 0 ? singboxSubscriptions : ($subscriptionsStore.data ?? []))
   );
 
   const matchedMihomoSub = $derived.by(() => {
@@ -64,6 +70,7 @@
   });
 
   const matchedSingboxSub = $derived.by(() => {
+    if (subscription) return subscription;
     if (!subRef) return null;
     return allSingboxSubs.find(
       (s) =>
@@ -73,6 +80,37 @@
         (subRef.startsWith('sub-') && s.id.startsWith(subRef.slice(4))) ||
         (s.id && subRef.includes(s.id.slice(0, 8)))
     ) ?? null;
+  });
+
+  const currentMode = $derived<'auto' | 'manual'>(() => {
+    if (manualModeOverride !== null) return manualModeOverride;
+    if (matchedMihomoSub) {
+      return matchedMihomoSub.mode === 'select' ? 'manual' : 'auto';
+    }
+    if (matchedSingboxSub) {
+      return matchedSingboxSub.mode === 'selector' ? 'manual' : 'auto';
+    }
+    return 'auto';
+  });
+
+  const activeMemberTag = $derived<string | null>(() => {
+    if (manualActiveTag !== null) return manualActiveTag;
+    if (matchedMihomoSub) {
+      const groupTarget = matchedMihomoSub.groupName || matchedMihomoSub.name || `Mihomo: ${matchedMihomoSub.name}`;
+      const grp = runtimeProxies.find((p) => p.name === groupTarget || p.name === matchedMihomoSub.groupName || p.name === matchedMihomoSub.name);
+      return grp?.now || matchedMihomoSub.members?.[0]?.label || matchedMihomoSub.members?.[0]?.tag || null;
+    }
+    if (matchedSingboxSub) {
+      const subTag = `sub-${matchedSingboxSub.id.slice(0, 8)}`;
+      const grp = runtimeProxies.find((p) =>
+        p.name === subRef ||
+        p.name === subTag ||
+        (p.name.startsWith('sub-') && matchedSingboxSub.id.startsWith(p.name.slice(4))) ||
+        (matchedSingboxSub.label && p.name === matchedSingboxSub.label)
+      );
+      return matchedSingboxSub.activeMember || grp?.now || matchedSingboxSub.members?.[0]?.tag || null;
+    }
+    return null;
   });
 
   const subName = $derived(
@@ -163,12 +201,13 @@
     const flip = menuHeight > spaceBelow && spaceAbove > spaceBelow;
     menuUp = flip;
 
-    if (flip) {
-      menuTop = Math.max(padding, rect.top - menuHeight - 4);
-    } else {
-      menuTop = rect.bottom + 4;
-    }
-    menuLeft = left;
+    const scrollY = window.scrollY || window.pageYOffset || document.documentElement.scrollTop || 0;
+    const scrollX = window.scrollX || window.pageXOffset || document.documentElement.scrollLeft || 0;
+
+    menuTop = flip
+      ? Math.max(padding, rect.top + scrollY - menuHeight - 4)
+      : rect.bottom + scrollY + 4;
+    menuLeft = left + scrollX;
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -182,6 +221,8 @@
     if (open) {
       untrack(() => {
         searchQuery = '';
+        manualModeOverride = null;
+        manualActiveTag = null;
         requestAnimationFrame(updatePosition);
 
         void (async () => {
@@ -223,32 +264,17 @@
           } catch {}
           requestAnimationFrame(updatePosition);
         })();
-
-        if (matchedMihomoSub) {
-          currentMode = matchedMihomoSub.mode === 'select' ? 'manual' : 'auto';
-          const groupTarget = matchedMihomoSub.groupName || matchedMihomoSub.name || `Mihomo: ${matchedMihomoSub.name}`;
-          const grp = runtimeProxies.find((p) => p.name === groupTarget || p.name === matchedMihomoSub.groupName || p.name === matchedMihomoSub.name);
-          activeMemberTag = grp?.now || matchedMihomoSub.members?.[0]?.label || matchedMihomoSub.members?.[0]?.tag || null;
-        } else if (matchedSingboxSub) {
-          currentMode = matchedSingboxSub.mode === 'selector' ? 'manual' : 'auto';
-          const subTag = `sub-${matchedSingboxSub.id.slice(0, 8)}`;
-          const grp = runtimeProxies.find((p) =>
-            p.name === subRef ||
-            p.name === subTag ||
-            (p.name.startsWith('sub-') && matchedSingboxSub.id.startsWith(p.name.slice(4))) ||
-            (matchedSingboxSub.label && p.name === matchedSingboxSub.label)
-          );
-          activeMemberTag = matchedSingboxSub.activeMember || grp?.now || matchedSingboxSub.members?.[0]?.tag || null;
-        }
       });
 
       window.addEventListener('keydown', handleKeydown);
       window.addEventListener('resize', updatePosition);
+      window.addEventListener('scroll', updatePosition, { passive: true, capture: true });
 
       return () => {
         delayAbortController?.abort();
         window.removeEventListener('keydown', handleKeydown);
         window.removeEventListener('resize', updatePosition);
+        window.removeEventListener('scroll', updatePosition, true);
       };
     }
   });
@@ -295,47 +321,50 @@
 
     try {
       const nextDelays: Record<string, number> = { ...localDelays };
-      if (matchedMihomoSub) {
-        if (matchedMihomoSub.providerName) {
-          await api.mihomoRuntimeProviderHealthcheck(matchedMihomoSub.providerName).catch(() => {});
-        }
-        if (signal.aborted) return;
-        const freshProviders = await api.mihomoRuntimeProviders().catch(() => null);
 
-        const provKey = matchedMihomoSub.providerName;
-        const rawProv = (provKey && freshProviders?.providers && typeof freshProviders.providers === 'object')
-          ? (freshProviders.providers as Record<string, any>)[provKey]
-          : null;
-        if (rawProv && Array.isArray(rawProv.proxies) && rawProv.proxies.length > 0) {
-          for (let i = 0; i < rawProv.proxies.length; i++) {
-            const px = rawProv.proxies[i];
-            const lastHist = px.history?.[px.history.length - 1];
-            const d = (lastHist && typeof lastHist.delay === 'number' && lastHist.delay > 0) ? lastHist.delay : 0;
-            if (i < servers.length) {
-              nextDelays[servers[i].tag] = d;
-              nextDelays[servers[i].label] = d;
-            }
-            for (const s of servers) {
-              if (s.label === px.name || s.tag === px.name || s.server === px.name) {
-                nextDelays[s.tag] = d;
-                nextDelays[s.label] = d;
+      // 1. Group-level test via Sing-box Clash API
+      const groupCandidates: string[] = [];
+      if (subRef) groupCandidates.push(subRef);
+      if (matchedSingboxSub) {
+        const subTag = `sub-${matchedSingboxSub.id.slice(0, 8)}`;
+        if (!groupCandidates.includes(subTag)) groupCandidates.push(subTag);
+        if (matchedSingboxSub.selectorTag && !groupCandidates.includes(matchedSingboxSub.selectorTag)) {
+          groupCandidates.push(matchedSingboxSub.selectorTag);
+        }
+      }
+
+      for (const grp of groupCandidates) {
+        if (signal.aborted) break;
+        try {
+          const res = await api.singboxRouterTestProxy({ group: grp });
+          if (res?.delays && Object.keys(res.delays).length > 0) {
+            for (const [tag, delay] of Object.entries(res.delays)) {
+              nextDelays[tag] = delay;
+              for (const s of servers) {
+                if (s.tag === tag || s.label === tag || s.server === tag) {
+                  nextDelays[s.tag] = delay;
+                  nextDelays[s.label] = delay;
+                }
               }
             }
           }
+        } catch {
+          // Continue to next candidate
         }
-      } else if (matchedSingboxSub) {
-        const targets = servers.slice(0, 30);
+      }
+
+      // 2. Individual server checks via sing-box delay check for any unmeasured servers
+      const targets = servers.filter((s) => nextDelays[s.tag] === undefined && nextDelays[s.label] === undefined).slice(0, 30);
+      if (targets.length > 0 && !signal.aborted) {
         await runWithConcurrency(targets, 3, async (s) => {
           if (signal.aborted) return;
           try {
-            const d = await api.mihomoRuntimeDelay(s.tag, 'https://www.gstatic.com/generate_204', 2500);
-            if (d > 0) {
-              nextDelays[s.tag] = d;
-              nextDelays[s.label] = d;
-            } else {
-              nextDelays[s.tag] = 0;
-              nextDelays[s.label] = 0;
-            }
+            const res = await api.singboxDelayCheck(s.tag).catch(async () => {
+              return await api.singboxDelayCheck(s.label);
+            });
+            const d = res?.delay ?? 0;
+            nextDelays[s.tag] = d;
+            nextDelays[s.label] = d;
           } catch {
             nextDelays[s.tag] = 0;
             nextDelays[s.label] = 0;
@@ -345,11 +374,15 @@
           }
         });
       }
+
       if (!signal.aborted) {
         localDelays = nextDelays;
+        notifications.success(`Задержки для «${subName}» обновлены`);
+        onUpdated?.();
       }
-    } catch {}
-    finally {
+    } catch (err) {
+      notifications.error(err instanceof Error ? err.message : 'Ошибка замера задержек');
+    } finally {
       testing = false;
     }
   }
@@ -357,18 +390,50 @@
   async function handleModeToggle(nextMode: 'auto' | 'manual') {
     if (nextMode === currentMode || switchingMode) return;
     switchingMode = true;
-    currentMode = nextMode;
-    notifications.success(
-      nextMode === 'auto'
-        ? `Автовыбор для «${subName}»`
-        : `Ручной выбор для «${subName}»`
-    );
-    onUpdated?.();
+    manualModeOverride = nextMode;
 
-    void (async () => {
-      try {
-        if (matchedMihomoSub) {
-          const mihomoMode = nextMode === 'auto' ? 'url-test' : 'select';
+    try {
+      if (matchedMihomoSub) {
+        const mihomoMode = nextMode === 'auto' ? 'url-test' : 'select';
+        await api.mihomoNativeUpdateSubscription(matchedMihomoSub.id, {
+          name: matchedMihomoSub.name,
+          url: matchedMihomoSub.url,
+          format: matchedMihomoSub.format,
+          enginePreference: matchedMihomoSub.enginePreference,
+          refreshHours: matchedMihomoSub.refreshHours,
+          enabled: matchedMihomoSub.enabled,
+          mode: mihomoMode,
+        });
+        matchedMihomoSub.mode = mihomoMode;
+      } else if (matchedSingboxSub) {
+        const sbMode = nextMode === 'auto' ? 'urltest' : 'selector';
+        await api.updateSubscription(matchedSingboxSub.id, { mode: sbMode });
+        matchedSingboxSub.mode = sbMode;
+      }
+      notifications.success(
+        nextMode === 'auto'
+          ? `Автовыбор для «${subName}»`
+          : `Ручной выбор для «${subName}»`
+      );
+      manualModeOverride = null;
+      await onUpdated?.();
+    } catch (e) {
+      manualModeOverride = null;
+      notifications.error(e instanceof Error ? e.message : 'Ошибка смены режима');
+    } finally {
+      switchingMode = false;
+    }
+  }
+
+  async function handleSelectServer(server: DisplayServer) {
+    if (selectingTag) return;
+    selectingTag = server.tag;
+    manualActiveTag = server.tag;
+
+    try {
+      if (matchedMihomoSub) {
+        if (currentMode === 'auto') {
+          manualModeOverride = 'manual';
           await api.mihomoNativeUpdateSubscription(matchedMihomoSub.id, {
             name: matchedMihomoSub.name,
             url: matchedMihomoSub.url,
@@ -376,64 +441,38 @@
             enginePreference: matchedMihomoSub.enginePreference,
             refreshHours: matchedMihomoSub.refreshHours,
             enabled: matchedMihomoSub.enabled,
-            mode: mihomoMode,
+            mode: 'select',
           });
-        } else if (matchedSingboxSub) {
-          const sbMode = nextMode === 'auto' ? 'urltest' : 'selector';
-          await api.updateSubscription(matchedSingboxSub.id, { mode: sbMode });
+          matchedMihomoSub.mode = 'select';
         }
-      } catch (e) {
-        notifications.error(e instanceof Error ? e.message : 'Ошибка смены режима');
-      } finally {
-        switchingMode = false;
-      }
-    })();
-  }
-
-  async function handleSelectServer(server: DisplayServer) {
-    if (selectingTag) return;
-    selectingTag = server.tag;
-    activeMemberTag = server.tag;
-    notifications.success(`Выбран: ${server.label}`);
-    onClose();
-    onUpdated?.();
-
-    void (async () => {
-      try {
-        if (matchedMihomoSub) {
-          if (currentMode === 'auto') {
-            await api.mihomoNativeUpdateSubscription(matchedMihomoSub.id, {
-              name: matchedMihomoSub.name,
-              url: matchedMihomoSub.url,
-              format: matchedMihomoSub.format,
-              enginePreference: matchedMihomoSub.enginePreference,
-              refreshHours: matchedMihomoSub.refreshHours,
-              enabled: matchedMihomoSub.enabled,
-              mode: 'select',
-            }).catch(() => {});
-            currentMode = 'manual';
-          }
-          const groupTarget = matchedMihomoSub.groupName || matchedMihomoSub.name;
-          const proxyTarget = server.label || server.tag;
-          await api.mihomoRuntimeSelect(groupTarget, proxyTarget);
-        } else if (matchedSingboxSub) {
-          const subTag = matchedSingboxSub.selectorTag || matchedSingboxSub.id;
-          if (currentMode === 'auto') {
-            await api.updateSubscription(matchedSingboxSub.id, { mode: 'selector' }).catch(() => {});
-            currentMode = 'manual';
-          }
-          await Promise.allSettled([
-            subTag ? api.mihomoRuntimeSelect(subTag, server.tag) : Promise.resolve(),
-            subTag ? api.singboxRouterSelectProxy({ group: subTag, member: server.tag }).catch(() => {}) : Promise.resolve(),
-            api.setSubscriptionActiveMember(matchedSingboxSub.id, server.tag),
-          ]);
+        const groupTarget = matchedMihomoSub.groupName || matchedMihomoSub.name;
+        const proxyTarget = server.label || server.tag;
+        await api.mihomoRuntimeSelect(groupTarget, proxyTarget);
+      } else if (matchedSingboxSub) {
+        const subTag = matchedSingboxSub.selectorTag || matchedSingboxSub.id;
+        if (currentMode === 'auto') {
+          manualModeOverride = 'manual';
+          await api.updateSubscription(matchedSingboxSub.id, { mode: 'selector' });
+          matchedSingboxSub.mode = 'selector';
         }
-      } catch (e) {
-        notifications.error(e instanceof Error ? e.message : 'Ошибка выбора сервера');
-      } finally {
-        selectingTag = null;
+        await Promise.allSettled([
+          subTag ? api.singboxRouterSelectProxy({ group: subTag, member: server.tag }).catch(() => {}) : Promise.resolve(),
+          api.setSubscriptionActiveMember(matchedSingboxSub.id, server.tag),
+        ]);
+        matchedSingboxSub.activeMember = server.tag;
       }
-    })();
+      notifications.success(`Выбран: ${server.label}`);
+      manualModeOverride = null;
+      manualActiveTag = null;
+      await onUpdated?.();
+      onClose();
+    } catch (e) {
+      manualActiveTag = null;
+      manualModeOverride = null;
+      notifications.error(e instanceof Error ? e.message : 'Ошибка выбора сервера');
+    } finally {
+      selectingTag = null;
+    }
   }
 
   function portal(node: HTMLElement) {
@@ -515,6 +554,17 @@
       </div>
     </div>
 
+    <!-- Mode note hint -->
+    {#if currentMode === 'auto'}
+      <div class="auto-mode-note">
+        В режиме «Автовыбор» лучший сервер выбирается автоматически по наименьшей задержке
+      </div>
+    {:else}
+      <div class="manual-mode-note">
+        Выберите сервер для постоянного использования:
+      </div>
+    {/if}
+
     <!-- Search filter if > 4 servers -->
     {#if servers.length > 4}
       <div class="search-box">
@@ -541,15 +591,24 @@
           <button
             type="button"
             class="server-item"
-            class:active={isActive}
+            class:active={currentMode === 'manual' && isActive}
+            class:auto-active={currentMode === 'auto' && isActive}
+            disabled={selectingTag !== null || switchingMode}
             onclick={() => handleSelectServer(s)}
+            title={currentMode === 'auto'
+              ? (isActive ? 'Действующий узел (нажмите, чтобы выбрать)' : 'Нажмите, чтобы переключить в ручной режим и выбрать этот сервер')
+              : (isActive ? 'Выбранный узел' : 'Нажмите для выбора')}
           >
             <div class="radio-indicator">
-              <span class="dot-ring" class:checked={isActive}>
-                {#if isActive}
-                  <span class="dot-core"></span>
-                {/if}
-              </span>
+              {#if currentMode === 'auto'}
+                <span class="auto-indicator-dot" class:active={isActive} title={isActive ? 'Текущий активный узел' : ''}></span>
+              {:else}
+                <span class="dot-ring" class:checked={isActive}>
+                  {#if isActive}
+                    <span class="dot-core"></span>
+                  {/if}
+                </span>
+              {/if}
             </div>
 
             <div class="server-text-col">
@@ -590,7 +649,7 @@
   }
 
   .sub-context-menu {
-    position: fixed;
+    position: absolute;
     z-index: 1000;
     width: 310px;
     background: var(--color-bg-primary, #ffffff);
@@ -849,6 +908,52 @@
   :global(.dark) .server-item.active {
     background: rgba(59, 130, 246, 0.18);
     border-color: rgba(59, 130, 246, 0.4);
+  }
+
+
+  .server-item.auto-active {
+    background: rgba(34, 197, 94, 0.06);
+    border-color: rgba(34, 197, 94, 0.2);
+  }
+
+  :global(.dark) .server-item.auto-active {
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.3);
+  }
+
+  .auto-indicator-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-border, #94a3b8);
+    flex-shrink: 0;
+    transition: all 0.15s ease;
+  }
+
+  .auto-indicator-dot.active {
+    background: var(--color-success, #22c55e);
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+  }
+
+  .auto-mode-note {
+    font-size: 10px;
+    color: var(--color-text-muted, #64748b);
+    background: rgba(0, 0, 0, 0.03);
+    border-radius: 4px;
+    padding: 3px 6px;
+    line-height: 1.3;
+  }
+
+  :global(.dark) .auto-mode-note {
+    background: rgba(255, 255, 255, 0.05);
+    color: #94a3b8;
+  }
+
+  .manual-mode-note {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--color-accent, #3b82f6);
+    padding: 1px 2px;
   }
 
   .radio-indicator {

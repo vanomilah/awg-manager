@@ -338,6 +338,8 @@
 
   onMount(() => {
     void singboxRouterStore.loadAll();
+    void subscriptionsStore.refetch();
+    void subscriptionGroupsStore.refetch();
     void loadDnsChainPreset();
     void loadActiveProxyCount();
     void loadAllInbounds();

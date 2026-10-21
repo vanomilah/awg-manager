@@ -12,6 +12,8 @@
   import { resolveMemberLabel } from '$lib/utils/memberLabel';
   import { singboxProxies, latencyHistory } from '$lib/stores/singboxProxies';
   import { singboxDelayHistory } from '$lib/stores/singbox';
+  import { subscriptionsStore } from '$lib/stores/subscriptions';
+  import { singboxRouter as singboxRouterStore } from '$lib/stores/singboxRouter';
   import { pluralize } from '$lib/utils/pluralize';
   import { isGroupOutbound, isSubscriptionOutbound, outboundDisplay } from './outboundLabel';
   import { outboundDeleteBlockReasons, type OutboundUsageInput } from './outboundUsage';
@@ -209,7 +211,7 @@
       {@const activeLabel = resolveMemberLabel(activeTag, subscriptions, outboundOptions)}
       {@const activeDelay = getMemberDelay(o.tag, activeTag)}
       {@const isTesting = !!testingGroups[o.tag]}
-      {@const isAuto = o.type !== 'selector' && sub?.mode !== 'selector'}
+      {@const isAuto = sub?.mode ? sub.mode !== 'selector' : o.type !== 'selector'}
 
       <div class="composite-card sub-card">
         <div class="composite-header">
@@ -477,13 +479,19 @@
     open={activeSubOpen}
     subRef={activeSubRef}
     triggerEl={activeSubTrigger}
+    subscription={subscriptions.find((s) => s.selectorTag === activeSubRef || s.id === activeSubRef || (activeSubRef.startsWith('sub-') && s.id.startsWith(activeSubRef.slice(4))))}
+    singboxSubscriptions={subscriptions}
     onClose={() => {
       activeSubOpen = false;
       activeSubRef = null;
       activeSubTrigger = null;
     }}
-    onUpdated={() => {
-      void singboxProxies.refetch();
+    onUpdated={async () => {
+      await Promise.allSettled([
+        subscriptionsStore.refetch(),
+        singboxProxies.refetch(),
+        singboxRouterStore.loadRulesSnapshot(),
+      ]);
     }}
   />
 {/if}
