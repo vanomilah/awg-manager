@@ -235,12 +235,14 @@
 				>
 					{#snippet badges()}<Badge variant="accent" size="sm">Sing-box</Badge>{/snippet}
 				</TunnelTitleRow>
-				<TunnelMetaText mono>
-					<span>{tunnel.proxyInterface || 'via sing-box'}</span>
-					{#if tunnel.kernelInterface}
-						<span class="meta-dot" aria-hidden="true">·</span><span>{tunnel.kernelInterface}</span>
-					{/if}
-				</TunnelMetaText>
+				{#if tunnel.proxyInterface}
+					<TunnelMetaText mono>
+						<span>{tunnel.proxyInterface}</span>
+						{#if tunnel.kernelInterface}
+							<span class="meta-dot" aria-hidden="true">·</span><span>{tunnel.kernelInterface}</span>
+						{/if}
+					</TunnelMetaText>
+				{/if}
 				<TunnelListEndpointLine host={tunnel.server} port={tunnel.port} bind:show={showServer} />
 			</div>
 		</td>
@@ -324,10 +326,12 @@
 				</TunnelTitleRow>
 			</div>
 			<div class="meta-tags-dense">
-				<span class="iface-dense" title="{tunnel.proxyInterface || 'via sing-box'}{tunnel.kernelInterface ? ` · ${tunnel.kernelInterface}` : ''}">
-					<span>{tunnel.proxyInterface || 'via sing-box'}</span>
-					{#if tunnel.kernelInterface}<span class="meta-dot" aria-hidden="true">·</span><span>{tunnel.kernelInterface}</span>{/if}
-				</span>
+				{#if tunnel.proxyInterface}
+					<span class="iface-dense" title="{tunnel.proxyInterface}{tunnel.kernelInterface ? ` · ${tunnel.kernelInterface}` : ''}">
+						<span>{tunnel.proxyInterface}</span>
+						{#if tunnel.kernelInterface}<span class="meta-dot" aria-hidden="true">·</span><span>{tunnel.kernelInterface}</span>{/if}
+					</span>
+				{/if}
 				<span class="badge b-{tunnel.protocol}">{protocolLabel}</span>
 				{#if tunnel.security === 'reality'}
 					<span class="badge b-reality">Reality</span>
@@ -475,12 +479,14 @@
 		</TunnelTitleRow>
 		<TunnelSingboxPingButton layout="compact" label={latText} state={cardState} {checking} onclick={triggerCheck} />
 	</div>
-	<div class="iface">
-		<span>{tunnel.proxyInterface || 'via sing-box'}</span>
-		{#if tunnel.kernelInterface}
-			<span class="meta-dot" aria-hidden="true">·</span><span>{tunnel.kernelInterface}</span>
-		{/if}
-	</div>
+	{#if tunnel.proxyInterface}
+		<div class="iface">
+			<span>{tunnel.proxyInterface}</span>
+			{#if tunnel.kernelInterface}
+				<span class="meta-dot" aria-hidden="true">·</span><span>{tunnel.kernelInterface}</span>
+			{/if}
+		</div>
+	{/if}
 
 	<div class="badges">
 		<span class="badge b-{tunnel.protocol}">{protocolLabel}</span>
