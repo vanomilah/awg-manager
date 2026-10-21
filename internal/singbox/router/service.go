@@ -1656,6 +1656,12 @@ func convertMihomoProxyToSingbox(raw map[string]interface{}) (Outbound, bool) {
 			sni = server
 		}
 		insecure, _ := raw["skip-cert-verify"].(bool)
+		quic, _ := raw["quic"].(bool)
+		if !quic {
+			if tr, _ := raw["transport"].(string); strings.EqualFold(tr, "quic") {
+				quic = true
+			}
+		}
 		return Outbound{
 			Type:       "trusttunnel",
 			Tag:        name,
@@ -1663,6 +1669,7 @@ func convertMihomoProxyToSingbox(raw map[string]interface{}) (Outbound, bool) {
 			ServerPort: port,
 			Username:   username,
 			Password:   password,
+			QUIC:       quic,
 			TLS: &OutboundTLS{
 				Enabled:    true,
 				ServerName: sni,

@@ -78,6 +78,7 @@ func TestWiringServer_ShutdownHookPreservesEnabledState(t *testing.T) {
 	}
 
 	reloadedTG := tgwebproxy.New(tmpDir, nil)
+	defer reloadedTG.Close()
 	if !reloadedTG.GetConfig().Enabled {
 		t.Errorf("expected persistent on-disk tgwebproxy Enabled to remain true across shutdown/reload")
 	}

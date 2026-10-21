@@ -273,6 +273,7 @@ type Outbound struct {
 	Username string       `json:"username,omitempty"`
 	Password string       `json:"password,omitempty"`
 	UUID     string       `json:"uuid,omitempty"`
+	QUIC     bool         `json:"quic,omitempty"`
 	TLS      *OutboundTLS `json:"tls,omitempty"`
 }
 

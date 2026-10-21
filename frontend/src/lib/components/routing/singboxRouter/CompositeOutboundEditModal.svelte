@@ -335,28 +335,30 @@
 								<span class="member-chip-label">{memberLabel(m)}</span>
 								{#if !isSubscription}
 									<div class="member-chip-actions">
-										{#if i > 0}
-											<button
-												type="button"
-												class="member-chip-nav"
-												aria-label="Вверх"
-												title="Поднять выше (к #1)"
-												onclick={() => moveMember(i, -1)}
-											>
-												<ChevronUp size={13} />
-											</button>
-										{/if}
-										{#if i < members.length - 1}
-											<button
-												type="button"
-												class="member-chip-nav"
-												aria-label="Вниз"
-												title="Опустить ниже"
-												onclick={() => moveMember(i, 1)}
-											>
-												<ChevronDown size={13} />
-											</button>
-										{/if}
+										<div class="member-chip-nav-col">
+											{#if i > 0}
+												<button
+													type="button"
+													class="member-chip-nav"
+													aria-label="Вверх"
+													title="Поднять выше (к #1)"
+													onclick={() => moveMember(i, -1)}
+												>
+													<ChevronUp size={11} />
+												</button>
+											{/if}
+											{#if i < members.length - 1}
+												<button
+													type="button"
+													class="member-chip-nav"
+													aria-label="Вниз"
+													title="Опустить ниже"
+													onclick={() => moveMember(i, 1)}
+												>
+													<ChevronDown size={11} />
+												</button>
+											{/if}
+										</div>
 										<button
 											type="button"
 											class="member-chip-remove"

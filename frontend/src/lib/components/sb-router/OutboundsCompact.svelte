@@ -661,24 +661,26 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: var(--color-bg-secondary, rgba(255, 255, 255, 0.06));
-    border: 1px solid var(--color-border, rgba(255, 255, 255, 0.14));
+    background: var(--color-bg-primary, #ffffff);
+    border: 1px solid var(--color-border, #cbd5e1);
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 4px 9px;
     font-size: 11.5px;
     font-weight: 500;
-    color: var(--text-primary, #0f172a);
+    color: var(--color-text-primary, #0f172a);
     text-align: left;
     transition: all 0.15s ease;
     user-select: none;
     max-width: 100%;
     opacity: 1 !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   }
 
   :global(.dark) .member-chip {
-    color: var(--text-primary, #f8fafc);
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.14);
+    color: #f8fafc;
+    background: #1e293b;
+    border-color: #475569;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   }
 
   .member-chip.selectable {
