@@ -159,7 +159,7 @@
 					<span class="badge badge-success">Порт 9009</span>
 				</div>
 				<p class="subtitle">
-					Маршрутизация входящего трафика между Xray VLESS и Telegram WebProxy
+					Маршрутизация входящего трафика между Sing-box VLESS и Telegram WebProxy
 				</p>
 			</div>
 		</div>
@@ -182,6 +182,15 @@
 			<span>Загрузка маршрутов...</span>
 		</div>
 	{:else if config}
+		<!-- Info Hint -->
+		<div class="info-box mb-4">
+			<p class="text-sm">
+				<strong>Как работает Диспетчер:</strong> Входящий трафик от клиентов через CDN (Selectel, Timeweb) приходит на порт 9009.
+				Диспетчер разделяет его по путям: запросы к <strong>Sing-box VLESS</strong> идут по пути <code>{config.xray_path_prefix || '/cdn-bridge'}/*</code>,
+				а запросы к <strong>Telegram WebProxy</strong> — по путям <code>/</code> и <code>/api/*</code>.
+			</p>
+		</div>
+
 		<!-- Routes Table -->
 		<section class="section">
 			<div class="section-header">
@@ -204,7 +213,7 @@
 							<tr>
 								<th>FQDN Домен</th>
 								<th>Название / Описание</th>
-								<th class="text-center">Xray VLESS<br><small class="text-xs text-muted">/cdn-bridge/*</small></th>
+								<th class="text-center">Sing-box VLESS<br><small class="text-xs text-muted">{config.xray_path_prefix || '/cdn-bridge'}/*</small></th>
 								<th class="text-center">Telegram WebProxy<br><small class="text-xs text-muted">/, /api/*</small></th>
 								<th class="text-center">Статус</th>
 								<th class="text-right">Действия</th>
@@ -221,7 +230,7 @@
 									</td>
 									<td class="text-center">
 										{#if route.route_xray}
-											<span class="badge badge-route-xray">Xray</span>
+											<span class="badge badge-route-xray">Sing-box</span>
 										{:else}
 											<span class="text-muted">—</span>
 										{/if}
@@ -344,11 +353,11 @@
 			<span class="form-label">Маршрутизация сервисов:</span>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={editingRoute.route_xray} />
-				<span>Проксировать <strong>Xray VLESS XHTTP</strong> (/cdn-bridge/*)</span>
+				<span>Проксировать <strong>Sing-box VLESS XHTTP</strong> <small class="text-xs text-muted">({config?.xray_path_prefix || '/cdn-bridge'}/*)</small></span>
 			</label>
 			<label class="checkbox-label">
 				<input type="checkbox" bind:checked={editingRoute.route_telegram} />
-				<span>Проксировать <strong>Telegram WebProxy</strong> (/, /api/*)</span>
+				<span>Проксировать <strong>Telegram WebProxy</strong> <small class="text-xs text-muted">(веб и API: /, /api/*)</small></span>
 			</label>
 		</div>
 

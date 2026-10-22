@@ -256,7 +256,7 @@
 								<Button size="sm" variant="secondary" onclick={() => copy(creds.happ_json!, 'happ')}>
 									Копировать
 								</Button>
-								<Button size="sm" variant="secondary" onclick={() => downloadJson('happ-xray.json', creds.happ_json!)}>
+								<Button size="sm" variant="secondary" onclick={() => downloadJson('happ-singbox.json', creds.happ_json!)}>
 									<Download size={14} class="mr-1" /> Скачать
 								</Button>
 							</div>

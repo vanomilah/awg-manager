@@ -42,7 +42,6 @@
 	import { mihomoNativeResources, mihomoInventoryStore, mihomoRuntimeStore } from '$lib/stores/mihomoNative';
 	import SubscriptionsTabSection from '$lib/components/subscriptions/SubscriptionsTabSection.svelte';
 	import SingboxTunnelsTabSection from '$lib/components/singbox/SingboxTunnelsTabSection.svelte';
-	import ProxyGroupsTabSection from '$lib/components/tunnels/ProxyGroupsTabSection.svelte';
 	import AwgTunnelsTabSection from '$lib/components/tunnels/AwgTunnelsTabSection.svelte';
 	import DashboardFlatSection from '$lib/components/tunnels/DashboardFlatSection.svelte';
 	import TunnelPageModals from '$lib/components/tunnels/TunnelPageModals.svelte';
@@ -118,7 +117,7 @@
 		type SubscriptionSortKey,
 	} from '$lib/stores/tunnelTableSort';
 
-	type TunnelTab = 'awg' | 'singbox' | 'subscriptions' | 'groups' | 'awg3';
+	type TunnelTab = 'awg' | 'singbox' | 'subscriptions' | 'awg3';
 	type AwgTunnelViewMode = 'cards' | 'compact' | 'list';
 	type TunnelSurfaceLayout = SingboxLayoutMode | 'cards';
 
@@ -763,18 +762,15 @@
 		return value === 'cards' || value === 'compact' || value === 'list';
 	}
 
-	// AWG | Прокси ▾ (Туннели / Подписки / WG endpoints)
+	// AWG | Sing-box ▾ (Туннели / Подписки / WG endpoints)
 	const showSingboxTunnelTabs = $derived(isSectionVisible($usageLevel, 'singboxTunnels'));
 	const singboxMenuChildren = $derived(
 		[
 			showSingboxTunnelTabs
-				? { id: 'singbox', label: 'Туннели', badge: singboxTunnelsList.length + mihomoStandaloneProxies.length }
+				? { id: 'singbox', label: 'Туннели', badge: singboxTunnelsList.length }
 				: null,
 			showSingboxTunnelTabs
-				? { id: 'subscriptions', label: 'Подписки', badge: subscriptionsList.length + mihomoSubscriptions.length }
-				: null,
-			showSingboxTunnelTabs
-				? { id: 'groups', label: 'Прокси-группы', badge: mihomoGroups.length }
+				? { id: 'subscriptions', label: 'Подписки', badge: subscriptionsList.length }
 				: null,
 			awg3Visible ? { id: 'awg3', label: 'WG endpoints', badge: awg3List.length } : null,
 		].filter((c): c is { id: string; label: string; badge: number } => c !== null),
@@ -787,7 +783,7 @@
 				singboxTabCluster
 					? {
 							id: singboxMenuChildren[0].id,
-							label: 'Прокси',
+							label: 'Sing-box',
 							separatorBefore: true,
 							children: singboxMenuChildren,
 						}
@@ -1609,9 +1605,6 @@
 		(!dashboardOn && activeTab === 'awg3') ||
 			(dashboardTypeSections && dashboardAwg3Tunnels.length > 0),
 	);
-	let showGroupsBlock = $derived(
-		(!dashboardOn && activeTab === 'groups') || (dashboardTypeSections && mihomoGroups.length > 0),
-	);
 
 	// Единый класс сетки для сплошного и тегового карточных видов — классы
 	// плотности не могут разъехаться между двумя разметками.
@@ -2001,19 +1994,6 @@
 				onImport={openAwg3Import}
 				bind:searchQuery={awg3TunnelsSearchQuery}
 				bind:layoutMode={awg3TunnelsLayoutMode}
-			/>
-		{/if}
-		{#if showGroupsBlock}
-			<ProxyGroupsTabSection
-				groups={mihomoGroups}
-				proxies={mihomoInventory?.proxies ?? []}
-				subscriptions={mihomoSubscriptions}
-				runtimeProxies={mihomoRuntimeProxies}
-				runtimeProviders={mihomoRuntimeProviders}
-				onGroupChanged={() => {
-					void mihomoInventoryStore.refetch();
-					void mihomoRuntimeStore.refetch();
-				}}
 			/>
 		{/if}
 </PageContainer>

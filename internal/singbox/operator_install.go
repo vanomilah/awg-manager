@@ -60,7 +60,10 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 	}
 	s.CurrentVersion = s.Version
 	s.RequiredVersion = o.RequiredVersion()
-	if o.inst != nil && s.CurrentVersion != "" && s.RequiredVersion != "" {
+	if strings.Contains(s.CurrentVersion, "aio") || strings.Contains(s.CurrentVersion, "awgm.34") {
+		s.UpdateAvailable = false
+		s.RequiredVersion = s.CurrentVersion
+	} else if o.inst != nil && s.CurrentVersion != "" && s.RequiredVersion != "" {
 		s.CurrentSHA256, _ = o.inst.CurrentSHA256()
 		s.RequiredSHA256 = o.inst.RequiredSHA256()
 		s.UpdateAvailable = s.CurrentVersion != s.RequiredVersion || !o.inst.MatchesPinnedBytes(s.CurrentVersion)
@@ -68,7 +71,11 @@ func (o *Operator) GetStatus(ctx context.Context) Status {
 		s.UpdateAvailable = s.CurrentVersion != "" && s.RequiredVersion != "" && s.CurrentVersion != s.RequiredVersion
 	}
 	if o.inst != nil {
-		s.InstallState = string(o.inst.EvaluateInstallState(s.CurrentVersion))
+		if strings.Contains(s.CurrentVersion, "aio") || strings.Contains(s.CurrentVersion, "awgm.34") {
+			s.InstallState = string(installer.InstallStateInstalled)
+		} else {
+			s.InstallState = string(o.inst.EvaluateInstallState(s.CurrentVersion))
+		}
 		s.RequiredBytes = o.inst.RequiredSize() + installer.SafetyMargin
 		if free, ok := o.inst.FreeBytes(); ok {
 			s.FreeBytes = free

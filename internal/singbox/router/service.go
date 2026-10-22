@@ -1118,6 +1118,9 @@ func (s *ServiceImpl) persistConfig(ctx context.Context, cfg *RouterConfig) erro
 		// Orchestrator path — write to pending/ (staging). The draft will
 		// be applied explicitly via ApplyStaging. No SIGHUP is triggered
 		// here; sing-box keeps running with the previously-applied config.
+		for i := range materialized.Outbounds {
+			ensureSafeIdleTimeout(&materialized.Outbounds[i])
+		}
 		data, err := json.MarshalIndent(materialized, "", "  ")
 		if err != nil {
 			return fmt.Errorf("marshal router config: %w", err)

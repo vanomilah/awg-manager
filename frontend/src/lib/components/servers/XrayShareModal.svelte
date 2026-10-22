@@ -107,7 +107,7 @@
 				break;
 			case 'mihomo':
 				text = links.mihomo_yaml;
-				label = 'Mihomo YAML';
+				label = 'Clash YAML';
 				break;
 		}
 		if (text && (await copyToClipboard(text))) {
@@ -131,7 +131,7 @@
 		switch (activeTab) {
 			case 'vless':
 				content = links.vless_url;
-				filename = `xray-${clientRemark || 'client'}.txt`;
+				filename = `vless-${clientRemark || 'client'}.txt`;
 				type = 'text/plain';
 				break;
 			case 'happ':
@@ -144,7 +144,7 @@
 				break;
 			case 'mihomo':
 				content = links.mihomo_yaml;
-				filename = `mihomo-proxy-${clientRemark || 'client'}.yaml`;
+				filename = `clash-proxy-${clientRemark || 'client'}.yaml`;
 				type = 'text/yaml';
 				break;
 		}
@@ -199,7 +199,7 @@
 				{:else}
 					<div class="endpoint-picker endpoint-picker-empty">
 						<span class="picker-hint">
-							В карточке «Диспетчер» не включен ни один CDN-узел для Xray (используется домен по умолчанию).
+							В карточке «Диспетчер» не включен ни один CDN-узел для VLESS (используется домен по умолчанию).
 						</span>
 					</div>
 				{/if}
@@ -235,7 +235,7 @@
 						class:active={activeTab === 'mihomo'}
 						onclick={() => { activeTab = 'mihomo'; }}
 					>
-						Mihomo
+						Clash YAML
 					</button>
 				</div>
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/childproc"
+	"github.com/hoaxisr/awg-manager/internal/singbox/orchestrator"
 	"github.com/hoaxisr/awg-manager/internal/xrayconfig"
 )
 
@@ -115,6 +116,7 @@ type Service struct {
 	validator           *xrayconfig.Validator
 	redactor            *xrayconfig.Redactor
 	parser              *xrayconfig.Parser
+	orch                *orchestrator.Orchestrator
 }
 
 func New(dataDir string, onReload func()) *Service {
@@ -196,6 +198,41 @@ func (s *Service) ClearRecoveryRequired() {
 	s.recoveryRequired = false
 	s.recoveryReason = ""
 	s.recoveryFingerprint = ""
+}
+
+func (s *Service) SetOrchestrator(orch *orchestrator.Orchestrator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.orch = orch
+}
+
+func (s *Service) Orchestrator() *orchestrator.Orchestrator {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.orch
+}
+
+func (s *Service) SyncToOrchestrator() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncToOrchestratorLocked()
+}
+
+func (s *Service) syncToOrchestratorLocked() error {
+	if s.orch == nil {
+		return nil
+	}
+	if !s.config.Enabled {
+		return s.orch.SetEnabled(orchestrator.SlotServerIngress, false)
+	}
+	data, err := RenderRuntimeConfigSingbox(s.config)
+	if err != nil {
+		return err
+	}
+	if err := s.orch.Save(orchestrator.SlotServerIngress, data); err != nil {
+		return err
+	}
+	return s.orch.SetEnabled(orchestrator.SlotServerIngress, true)
 }
 
 func (s *Service) IsRecoveryRequired() bool {
@@ -455,16 +492,26 @@ func (s *Service) GetStatus() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.ensureBinaryPathLocked()
-	installed := fileExists(s.binPath)
-	running, pid := s.checkRunningLocked()
-	version := ""
-	if installed {
-		out, err := exec.Command(s.binPath, "version").Output()
-		if err == nil {
-			lines := strings.Split(string(out), "\n")
-			if len(lines) > 0 {
-				version = strings.TrimSpace(lines[0])
+	var installed bool
+	var running bool
+	var pid int
+	var version string
+
+	if s.orch != nil {
+		installed = true
+		running = s.config.Enabled
+		version = "Sing-box 1.15.0-aio"
+	} else {
+		s.ensureBinaryPathLocked()
+		installed = fileExists(s.binPath)
+		running, pid = s.checkRunningLocked()
+		if installed {
+			out, err := exec.Command(s.binPath, "version").Output()
+			if err == nil {
+				lines := strings.Split(string(out), "\n")
+				if len(lines) > 0 {
+					version = strings.TrimSpace(lines[0])
+				}
 			}
 		}
 	}
@@ -1085,6 +1132,9 @@ func (s *Service) ShutdownRuntime(ctx context.Context) error {
 func (s *Service) IsRunning() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.orch != nil {
+		return s.config.Enabled
+	}
 	running, _ := s.checkRunningLocked()
 	return running
 }
@@ -1102,6 +1152,10 @@ func (s *Service) Restart() error {
 }
 
 func (s *Service) stopLocked() error {
+	if s.orch != nil {
+		_ = s.orch.SetEnabled(orchestrator.SlotServerIngress, false)
+	}
+
 	if s.proc != nil {
 		_ = s.proc.Stop(3 * time.Second)
 		s.proc = nil
@@ -1395,6 +1449,11 @@ func (s *Service) restartLocked() error {
 		return s.stopLocked()
 	}
 
+	if s.orch != nil {
+		_ = s.stopLocked()
+		return s.syncToOrchestratorLocked()
+	}
+
 	s.ensureBinaryPathLocked()
 	if !fileExists(s.binPath) {
 		return errors.New("xray binary not found at " + s.binPath)
@@ -1483,6 +1542,78 @@ func generateUUID() (string, error) {
 	b[6] = (b[6] & 0x0f) | 0x40 // Version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // Variant 10
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:]), nil
+}
+
+// RenderRuntimeConfigSingbox generates sing-box inbound JSON for 22-server-ingress.json
+func RenderRuntimeConfigSingbox(cfg Config) ([]byte, error) {
+	usersList := []map[string]interface{}{}
+	for _, c := range cfg.Clients {
+		if c.Enabled {
+			remark := c.Remark
+			if remark == "" {
+				remark = "client"
+			}
+			usersList = append(usersList, map[string]interface{}{
+				"name": remark,
+				"uuid": c.ID,
+			})
+		}
+	}
+
+	path := cfg.Path
+	if path == "" {
+		path = "/cdn-bridge/"
+	} else if !strings.HasSuffix(path, "/") {
+		path = path + "/"
+	}
+
+	mode := cfg.Mode
+	if mode == "" {
+		mode = "packet-up"
+	}
+
+	listenAddr := cfg.ListenAddress
+	if listenAddr == "" {
+		listenAddr = "127.0.0.1"
+	}
+
+	port := cfg.ListenPort
+	if port <= 0 {
+		port = 9008
+	}
+
+	inbounds := []map[string]interface{}{
+		{
+			"type":        "vless",
+			"tag":         "vless-in-9008",
+			"listen":      listenAddr,
+			"listen_port": port,
+			"users":       usersList,
+			"transport": map[string]interface{}{
+				"type": "xhttp",
+				"mode": mode,
+				"path": path,
+			},
+		},
+		{
+			"type":        "vless",
+			"tag":         "vless-in-9007",
+			"listen":      listenAddr,
+			"listen_port": 9007,
+			"users":       usersList,
+			"transport": map[string]interface{}{
+				"type": "xhttp",
+				"mode": mode,
+				"path": "/cdn-bridge/stream.ts",
+			},
+		},
+	}
+
+	doc := map[string]interface{}{
+		"inbounds": inbounds,
+	}
+
+	return json.MarshalIndent(doc, "", "  ")
 }
 
 func fileExists(p string) bool {

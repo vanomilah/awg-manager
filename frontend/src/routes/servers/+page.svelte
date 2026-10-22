@@ -202,12 +202,12 @@
 			});
 		}
 
-		// Xray Server (VLESS · CDN)
+		// Sing-box Server (VLESS · CDN)
 		const xrayClients = xrayStatus?.clients ?? [];
 		const activeClients = xrayClients.filter(c => c.enabled).length;
 		items.push({
 			id: '__xray_server__',
-			name: 'Xray VLESS',
+			name: 'Sing-box VLESS',
 			iface: 'CDN Bridge',
 			listenPort: xrayStatus?.port || 9008,
 			status: xrayStatus?.running ? 'running' : 'stopped',

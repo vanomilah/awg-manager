@@ -1205,7 +1205,7 @@ $effect(() => {
 					onupdateMihomo={updateMihomo}
 					onrestartMihomo={restartMihomo}
 					onuninstallMihomo={uninstallMihomo}
-					showMihomo={true}
+					showMihomo={false}
 					susaninStatus={susaninStatusValue}
 					{susaninStatusLoading}
 					{susaninInstalling}
@@ -1545,26 +1545,6 @@ $effect(() => {
 				</Button>
 			</div>
 
-			{#if mihomoInstalled}
-				<div class="setting-row">
-					<div class="flex flex-col gap-1">
-						<span class="font-medium">Mihomo</span>
-						<span class="setting-description">
-							{mihomoRunning ? "Процесс работает" : "Процесс остановлен"}
-						</span>
-					</div>
-					<div class="action-buttons">
-						<Button
-							variant="secondary"
-							size="sm"
-							onclick={restartMihomo}
-							loading={mihomoRestarting}
-						>
-							Перезапустить
-						</Button>
-					</div>
-				</div>
-			{/if}
 
 			{#if susaninInstalled}
 				<div class="setting-row">

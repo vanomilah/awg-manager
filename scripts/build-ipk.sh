@@ -173,11 +173,6 @@ build_ipk_one() {
         chmod 755 "$IPK_ROOT/opt/etc/init.d/S98susanin-sync"
         echo "Bundled S98susanin-sync"
     fi
-    if [[ -f "$PROJECT_ROOT/scripts/S97mihomo" ]]; then
-        cp "$PROJECT_ROOT/scripts/S97mihomo" "$IPK_ROOT/opt/etc/init.d/S97mihomo"
-        chmod 755 "$IPK_ROOT/opt/etc/init.d/S97mihomo"
-        echo "Bundled S97mihomo"
-    fi
 
     # wdtt/freeturn в IPK не кладём: бинари приезжают только с зеркала по пину
     # install.go, с проверкой SHA256. Бандл давал молчаливое расхождение —

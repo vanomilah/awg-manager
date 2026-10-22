@@ -325,13 +325,15 @@
 					{:else}
 						{#each members as m, i (m)}
 							<span class="member-chip" title={m}>
-								<span class="member-chip-order" class:primary={i === 0}>
-									{#if type === 'fallback'}
-										{i === 0 ? '#1 (Основной)' : `#${i + 1} (Резерв ${i})`}
-									{:else}
-										#{i + 1}
-									{/if}
-								</span>
+								{#if type !== 'load-balance' && type !== 'loadbalance'}
+									<span class="member-chip-order" class:primary={i === 0}>
+										{#if type === 'fallback'}
+											{i === 0 ? '#1 (Основной)' : `#${i + 1} (Резерв ${i})`}
+										{:else}
+											#{i + 1}
+										{/if}
+									</span>
+								{/if}
 								<span class="member-chip-label">{memberLabel(m)}</span>
 								{#if !isSubscription}
 									<div class="member-chip-actions">
@@ -341,7 +343,7 @@
 													type="button"
 													class="member-chip-nav"
 													aria-label="Вверх"
-													title="Поднять выше (к #1)"
+													title={type === 'load-balance' || type === 'loadbalance' ? 'Переместить раньше' : 'Поднять выше (к #1)'}
 													onclick={() => moveMember(i, -1)}
 												>
 													<ChevronUp size={11} />
@@ -352,7 +354,7 @@
 													type="button"
 													class="member-chip-nav"
 													aria-label="Вниз"
-													title="Опустить ниже"
+													title={type === 'load-balance' || type === 'loadbalance' ? 'Переместить позже' : 'Опустить ниже'}
 													onclick={() => moveMember(i, 1)}
 												>
 													<ChevronDown size={11} />

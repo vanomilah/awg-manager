@@ -257,6 +257,7 @@ type Outbound struct {
 	Outbounds     []string `json:"outbounds,omitempty"`
 	URL           string   `json:"url,omitempty"`
 	Interval      string   `json:"interval,omitempty"`
+	IdleTimeout   string   `json:"idle_timeout,omitempty"`
 	Tolerance                  int      `json:"tolerance,omitempty"`
 	Default                    string   `json:"default,omitempty"`
 	Strategy                   string   `json:"strategy,omitempty"`

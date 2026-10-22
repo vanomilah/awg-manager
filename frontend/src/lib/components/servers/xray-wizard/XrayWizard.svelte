@@ -261,7 +261,7 @@
 
 <WizardShell
 	bind:open
-	title="Мастер настройки Xray VLESS"
+	title="Мастер настройки Sing-box VLESS"
 	subtitle="Пошаговая настройка сервера VLESS через CDN для смартфонов, ПК и роутеров"
 	{steps}
 	currentStepIndex={currentStep}
@@ -424,11 +424,11 @@
 							</option>
 						{/each}
 					{:else}
-						<option value="socks">Локальный прокси Mihomo (:1099)</option>
+						<option value="socks">Локальный прокси Sing-box (:1099)</option>
 					{/if}
 				</select>
 				<p class="field-hint">
-					Выберите «Локальный прокси Mihomo (:1099)» для применения умных правил роутера или конкретный сетевой интерфейс/туннель.
+					Выберите «Локальный прокси Sing-box (:1099)» для применения умных правил роутера или конкретный сетевой интерфейс/туннель.
 				</p>
 			</div>
 		</div>
@@ -437,7 +437,7 @@
 		<!-- Step 2: Preflight Checks -->
 		<div class="wizard-step-content">
 			<p class="step-intro-text">
-				Проверка наличия бинарных файлов Xray, свободных локальных портов и шлюза Mihomo:
+				Проверка готовности сервисов, свободных локальных портов и шлюза:
 			</p>
 			{#if preflight}
 				<PreflightList checks={preflight.checks} />
@@ -448,7 +448,7 @@
 		<!-- Step 3: Plan Preview -->
 		<div class="wizard-step-content">
 			<p class="step-intro-text">
-				Проверьте планируемую конфигурацию Xray и диспетчера маршрутизации:
+				Проверьте планируемую конфигурацию Sing-box VLESS и диспетчера маршрутизации:
 			</p>
 			{#if planRecord?.plan}
 				<PlanSummary plan={planRecord.plan} />

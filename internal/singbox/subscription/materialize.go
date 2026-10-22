@@ -49,6 +49,9 @@ func BuildURLTest(selectorTag string, memberTags []string, cfg URLTestConfig) js
 	if cfg.ToleranceMs > 0 {
 		out["tolerance"] = cfg.ToleranceMs
 	}
+	if cfg.IntervalSec > 1800 {
+		out["idle_timeout"] = fmt.Sprintf("%ds", cfg.IntervalSec*2)
+	}
 	raw, _ := json.Marshal(out)
 	return raw
 }
@@ -69,6 +72,9 @@ func BuildFallback(selectorTag string, memberTags []string, cfg URLTestConfig) j
 		"url":                         cfg.URL,
 		"interval":                    fmt.Sprintf("%ds", cfg.IntervalSec),
 		"interrupt_exist_connections": true,
+	}
+	if cfg.IntervalSec > 1800 {
+		out["idle_timeout"] = fmt.Sprintf("%ds", cfg.IntervalSec*2)
 	}
 	raw, _ := json.Marshal(out)
 	return raw
@@ -92,6 +98,9 @@ func BuildLoadBalance(selectorTag string, memberTags []string, strategy string, 
 		"strategy":  strategy,
 		"url":       cfg.URL,
 		"interval":  fmt.Sprintf("%ds", cfg.IntervalSec),
+	}
+	if cfg.IntervalSec > 1800 {
+		out["idle_timeout"] = fmt.Sprintf("%ds", cfg.IntervalSec*2)
 	}
 	raw, _ := json.Marshal(out)
 	return raw

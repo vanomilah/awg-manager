@@ -241,6 +241,17 @@ func (s *Service) CommitPrepared(txID string) error {
 		return nil
 	}
 
+	if s.orch != nil {
+		s.config = manifest.CandidateConfig
+		_ = s.saveConfig()
+		if err := s.syncToOrchestratorLocked(); err != nil {
+			return fmt.Errorf("apply to singbox orchestrator: %w", err)
+		}
+		manifest.State = TxStateCommitted
+		_ = writeManifest(txPath, &manifest)
+		return nil
+	}
+
 	rollbackAndJoin := func(origErr error) error {
 		manifest.State = TxStateRollingBack
 		manifest.Error = origErr.Error()

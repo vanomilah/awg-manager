@@ -24,6 +24,7 @@ const (
 	SlotQoSRoutes     Slot = "qos-routes"    // 18-qos-routes.json
 	SlotRouter        Slot = "router"        // 20-router.json
 	SlotFakeIP        Slot = "fakeip"        // 21-fakeip.json
+	SlotServerIngress Slot = "server-ingress" // 22-server-ingress.json
 	SlotAdaptiveEgress Slot = "adaptive-egress" // 25-adaptive-egress.json
 	SlotDeviceProxy   Slot = "deviceproxy"   // 30-deviceproxy.json
 	SlotDownloadProxy Slot = "downloadproxy" // 35-download-proxy.json
@@ -79,6 +80,7 @@ func KnownSlots() []SlotMeta {
 		{Slot: SlotQoSRoutes, Filename: "18-qos-routes.json"},
 		{Slot: SlotRouter, Filename: "20-router.json"},
 		{Slot: SlotFakeIP, Filename: "21-fakeip.json"},
+		{Slot: SlotServerIngress, Filename: "22-server-ingress.json"},
 		{Slot: SlotAdaptiveEgress, Filename: "25-adaptive-egress.json"},
 		{Slot: SlotDeviceProxy, Filename: "30-deviceproxy.json"},
 		{Slot: SlotDownloadProxy, Filename: "35-download-proxy.json"},

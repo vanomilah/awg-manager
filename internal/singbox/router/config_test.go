@@ -587,3 +587,70 @@ func TestRouterConfig_CacheFileEnabledAlwaysEmitted(t *testing.T) {
 		t.Errorf("expected enabled:false to be emitted: %s", b)
 	}
 }
+
+func TestEnsureSafeIdleTimeout(t *testing.T) {
+	cases := []struct {
+		name        string
+		interval    string
+		idleTimeout string
+		wantIdle    string
+	}{
+		{
+			name:        "interval under 30m default kept empty",
+			interval:    "3m",
+			idleTimeout: "",
+			wantIdle:    "",
+		},
+		{
+			name:        "interval 30m exact kept empty",
+			interval:    "30m",
+			idleTimeout: "",
+			wantIdle:    "",
+		},
+		{
+			name:        "interval 60m exceeds default 30m -> auto doubled",
+			interval:    "60m",
+			idleTimeout: "",
+			wantIdle:    "7200s",
+		},
+		{
+			name:        "interval 3600s exceeds default 30m -> auto doubled",
+			interval:    "3600s",
+			idleTimeout: "",
+			wantIdle:    "7200s",
+		},
+		{
+			name:        "interval 1h exceeds default 30m -> auto doubled",
+			interval:    "1h",
+			idleTimeout: "",
+			wantIdle:    "7200s",
+		},
+		{
+			name:        "explicit idleTimeout larger than interval preserved",
+			interval:    "45m",
+			idleTimeout: "120m",
+			wantIdle:    "120m",
+		},
+		{
+			name:        "explicit idleTimeout smaller than interval bumped",
+			interval:    "10m",
+			idleTimeout: "5m",
+			wantIdle:    "1200s",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := Outbound{
+				Type:        "fallback",
+				Tag:         "test",
+				Interval:    tc.interval,
+				IdleTimeout: tc.idleTimeout,
+			}
+			ensureSafeIdleTimeout(&o)
+			if o.IdleTimeout != tc.wantIdle {
+				t.Errorf("got %q, want %q", o.IdleTimeout, tc.wantIdle)
+			}
+		})
+	}
+}

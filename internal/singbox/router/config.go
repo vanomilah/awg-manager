@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hoaxisr/awg-manager/internal/storage"
 )
@@ -64,7 +66,46 @@ func LoadConfig(path string) (*RouterConfig, error) {
 	return cfg, nil
 }
 
+func parseDurationSafe(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	if d, err := strconv.Atoi(s); err == nil {
+		return time.Duration(d) * time.Second, nil
+	}
+	return time.ParseDuration(s)
+}
+
+// ensureSafeIdleTimeout guards sing-box from fatal crashes on startup.
+// In sing-box, endpoint urltest and fallback require interval <= idle_timeout.
+// When idle_timeout is omitted, sing-box defaults to 30m. Any interval > 30m
+// crashes the service unless idle_timeout is explicitly configured.
+func ensureSafeIdleTimeout(o *Outbound) {
+	if o == nil || o.Interval == "" {
+		return
+	}
+	intDur, err := parseDurationSafe(o.Interval)
+	if err != nil || intDur <= 0 {
+		return
+	}
+	var idleDur time.Duration
+	if o.IdleTimeout != "" {
+		idleDur, _ = parseDurationSafe(o.IdleTimeout)
+	} else {
+		idleDur = 30 * time.Minute
+	}
+	if intDur > idleDur {
+		o.IdleTimeout = fmt.Sprintf("%ds", int(intDur.Seconds()*2))
+	}
+}
+
 func SaveConfig(path string, cfg *RouterConfig) error {
+	if cfg != nil {
+		for i := range cfg.Outbounds {
+			ensureSafeIdleTimeout(&cfg.Outbounds[i])
+		}
+	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
@@ -570,6 +611,7 @@ func (c *RouterConfig) SetRouteFinal(tag string) error {
 }
 
 func (c *RouterConfig) AddCompositeOutbound(o Outbound) error {
+	ensureSafeIdleTimeout(&o)
 	if err := validateOutbound(o); err != nil {
 		return err
 	}
@@ -587,6 +629,7 @@ func (c *RouterConfig) AddCompositeOutbound(o Outbound) error {
 }
 
 func (c *RouterConfig) UpdateCompositeOutbound(tag string, o Outbound) error {
+	ensureSafeIdleTimeout(&o)
 	if err := validateOutbound(o); err != nil {
 		return err
 	}

@@ -75,7 +75,7 @@
 			migrationStatus = m;
 			if (t) tuning = t;
 		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : 'Ошибка загрузки данных Xray');
+			notifications.error(e instanceof Error ? e.message : 'Ошибка загрузки данных Sing-box VLESS');
 		} finally {
 			loading = false;
 		}
@@ -88,7 +88,7 @@
 			if (res.success) {
 				notifications.success(
 					action === 'keep_new'
-						? 'Выбран новый Xray сервер'
+						? 'Выбран новый VLESS сервер'
 						: action === 'keep_legacy'
 						? 'Сохранена конфигурация Legacy'
 						: 'Настройки Legacy импортированы'
@@ -115,10 +115,10 @@
 		try {
 			const nextAction = status?.running ? 'stop' : 'start';
 			status = await api.xrayServerAction(nextAction);
-			notifications.success(status?.running ? 'Xray сервер запущен' : 'Xray сервер остановлен');
+			notifications.success(status?.running ? 'Sing-box VLESS запущен' : 'Sing-box VLESS остановлен');
 			if (config && status) config.enabled = status.running;
 		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : 'Ошибка управления Xray');
+			notifications.error(e instanceof Error ? e.message : 'Ошибка управления Sing-box VLESS');
 		} finally {
 			actionLoading = false;
 		}
@@ -128,9 +128,9 @@
 		actionLoading = true;
 		try {
 			status = await api.xrayServerAction('restart');
-			notifications.success('Xray сервер перезапущен');
+			notifications.success('Sing-box VLESS перезапущен');
 		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : 'Ошибка перезапуска Xray');
+			notifications.error(e instanceof Error ? e.message : 'Ошибка перезапуска Sing-box VLESS');
 		} finally {
 			actionLoading = false;
 		}
@@ -197,7 +197,7 @@
 		saveConfigLoading = true;
 		try {
 			config = await api.updateXrayServerConfig(editConfig);
-			notifications.success('Настройки Xray сохранены');
+			notifications.success('Настройки Sing-box VLESS сохранены');
 			settingsOpen = false;
 			await loadData();
 		} catch (e) {
@@ -247,7 +247,7 @@
 		tuningSaving = true;
 		try {
 			tuning = await api.updateXrayTuning(tuning);
-			notifications.success('Параметры XHTTP применены, Xray перезапущен');
+			notifications.success('Параметры XHTTP применены, Sing-box перезапущен');
 			await loadData();
 		} catch (e) {
 			notifications.error(e instanceof Error ? e.message : 'Ошибка сохранения параметров XHTTP');
@@ -269,11 +269,11 @@
 		<div class="header-left">
 			<div class="title-row">
 				<span class="led" class:led-running={status?.running} class:led-stopped={!status?.running}></span>
-				<h2 class="title">Xray VLESS · CDN</h2>
+				<h2 class="title">Sing-box VLESS · CDN</h2>
 				<span class="badge badge-{status?.running ? 'success' : 'neutral'}">
 					{status?.running ? 'Работает' : 'Остановлен'}
 				</span>
-				<span class="version-badge">Xray {status?.version || '26.7.28'}</span>
+				<span class="version-badge">Sing-box {status?.version || '1.15.0-aio'}</span>
 			</div>
 			<div class="subtitle">
 				VLESS-туннель через совместимый CDN с транспортом XHTTP
@@ -284,7 +284,7 @@
 			<button
 				type="button"
 				class="icon-btn"
-				title="Перезапустить Xray"
+				title="Перезапустить Sing-box VLESS"
 				onclick={restartServer}
 				disabled={actionLoading}
 			>
@@ -302,7 +302,7 @@
 				variant="secondary"
 				size="sm"
 				onclick={() => (wizardOpen = true)}
-				title="Пошаговый мастер настройки Xray VLESS"
+				title="Пошаговый мастер настройки VLESS"
 			>
 				<Sparkles size={14} class="mr-1 text-primary-400" />
 				Мастер настройки
@@ -333,11 +333,11 @@
 		<div class="alert-banner error">
 			<AlertTriangle size={18} class="banner-icon text-red-500" />
 			<div class="banner-content">
-				<div class="banner-title">Конфликт конфигурации Legacy Xray</div>
+				<div class="banner-title">Конфликт конфигурации Legacy</div>
 				<div class="banner-desc">{migrationStatus.discovery.conflict_reason || 'Обнаружена неподдерживаемая или неоднозначная конфигурация.'}</div>
 				<div class="banner-actions">
 					<Button variant="secondary" size="sm" disabled={conflictResolving} onclick={() => handleResolveConflict('keep_new')}>
-						Использовать новый Xray
+						Использовать Sing-box VLESS
 					</Button>
 					<Button variant="secondary" size="sm" disabled={conflictResolving} onclick={() => handleResolveConflict('keep_legacy')}>
 						Оставить Legacy (S99xray-cdn)
@@ -350,10 +350,10 @@
 			<AlertTriangle size={18} class="banner-icon text-blue-500" />
 			<div class="banner-content">
 				<div class="banner-title">Активна Legacy конфигурация (S99xray-cdn)</div>
-				<div class="banner-desc">Сервер управляется скриптом init.d. Вы можете переключиться на управляемый Xray или импортировать клиентов.</div>
+				<div class="banner-desc">Сервер управляется внешним скриптом init.d. Вы можете переключиться на встроенный Sing-box VLESS или импортировать клиентов.</div>
 				<div class="banner-actions">
 					<Button variant="primary" size="sm" disabled={conflictResolving} onclick={() => handleResolveConflict('keep_new')}>
-						Переключить на новый Xray
+						Переключить на Sing-box VLESS
 					</Button>
 					<Button variant="secondary" size="sm" disabled={conflictResolving} onclick={() => handleResolveConflict('import_legacy_draft')}>
 						Импортировать клиентов
@@ -597,7 +597,7 @@
 </div>
 
 <!-- Modal: Add Client -->
-<Modal bind:open={addClientOpen} title="Новый клиент Xray VLESS" onclose={() => addClientOpen = false} size="sm">
+<Modal bind:open={addClientOpen} title="Новый клиент VLESS" onclose={() => addClientOpen = false} size="sm">
 	<form onsubmit={(e) => { e.preventDefault(); void handleAddClient(); }} class="add-client-form">
 		<label class="form-field">
 			<span class="field-label">Имя / Назначение клиента:</span>
@@ -623,7 +623,7 @@
 </Modal>
 
 <!-- Modal: Settings -->
-<Modal bind:open={settingsOpen} title="Параметры Xray Сервера" onclose={() => settingsOpen = false} size="md">
+<Modal bind:open={settingsOpen} title="Параметры Sing-box VLESS Сервера" onclose={() => settingsOpen = false} size="md">
 	<div class="settings-form">
 		<div class="form-row">
 			<label class="form-field">
@@ -653,7 +653,7 @@
 
 		<div class="form-row">
 			<label class="form-field">
-				<span class="field-label">Порт Xray (Backend):</span>
+				<span class="field-label">Порт Sing-box (Backend):</span>
 				<input type="number" bind:value={editConfig.listen_port} class="text-input" />
 			</label>
 			<label class="form-field">

@@ -101,6 +101,12 @@ func (a *app) setupServer() {
 	}
 
 	a.xrayServerService = xrayserver.New(a.dataDir, onReload)
+	if a.sbOrch != nil {
+		a.xrayServerService.SetOrchestrator(a.sbOrch)
+		if a.xrayServerService.GetConfig().Enabled {
+			_ = a.xrayServerService.SyncToOrchestrator()
+		}
+	}
 	a.tgWebProxyService = tgwebproxy.New(a.dataDir, onReload)
 
 	telemtArch := detectArch()

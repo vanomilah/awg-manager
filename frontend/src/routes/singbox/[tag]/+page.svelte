@@ -330,7 +330,7 @@
 								checked={getFieldBool(['tls', 'reality', 'support_x25519mlkem768'])}
 								onchange={(e) => setField(['tls', 'reality', 'support_x25519mlkem768'], (e.target as HTMLInputElement).checked)}
 							/>
-							<span>X25519MLKEM768 (нужен серверам Xray 26.9.8+, только fingerprint chrome)</span>
+							<span>X25519MLKEM768 (Post-Quantum, только с fingerprint chrome)</span>
 						</label>
 					</section>
 				{/if}

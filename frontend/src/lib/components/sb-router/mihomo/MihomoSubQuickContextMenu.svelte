@@ -13,6 +13,8 @@
     open: boolean;
     subRef: string;
     triggerEl: HTMLElement | null;
+    activeMember?: string | null;
+    initialDelays?: Record<string, number>;
     subscription?: Subscription | null;
     singboxSubscriptions?: Subscription[];
     mihomoSubscriptions?: MihomoNativeSubscription[];
@@ -25,6 +27,8 @@
     open,
     subRef,
     triggerEl,
+    activeMember = null,
+    initialDelays = {},
     subscription = null,
     singboxSubscriptions = [],
     mihomoSubscriptions = [],
@@ -82,7 +86,7 @@
     ) ?? null;
   });
 
-  const currentMode = $derived<'auto' | 'manual'>(() => {
+  const currentMode = $derived.by<'auto' | 'manual'>(() => {
     if (manualModeOverride !== null) return manualModeOverride;
     if (matchedMihomoSub) {
       return matchedMihomoSub.mode === 'select' ? 'manual' : 'auto';
@@ -93,8 +97,9 @@
     return 'auto';
   });
 
-  const activeMemberTag = $derived<string | null>(() => {
+  const activeMemberTag = $derived.by<string | null>(() => {
     if (manualActiveTag !== null) return manualActiveTag;
+    if (activeMember) return activeMember;
     if (matchedMihomoSub) {
       const groupTarget = matchedMihomoSub.groupName || matchedMihomoSub.name || `Mihomo: ${matchedMihomoSub.name}`;
       const grp = runtimeProxies.find((p) => p.name === groupTarget || p.name === matchedMihomoSub.groupName || p.name === matchedMihomoSub.name);
@@ -223,6 +228,9 @@
         searchQuery = '';
         manualModeOverride = null;
         manualActiveTag = null;
+        if (initialDelays && Object.keys(initialDelays).length > 0) {
+          localDelays = { ...initialDelays, ...localDelays };
+        }
         requestAnimationFrame(updatePosition);
 
         void (async () => {
@@ -591,13 +599,19 @@
           <button
             type="button"
             class="server-item"
+            class:auto-mode={currentMode === 'auto'}
+            class:manual-mode={currentMode === 'manual'}
             class:active={currentMode === 'manual' && isActive}
             class:auto-active={currentMode === 'auto' && isActive}
-            disabled={selectingTag !== null || switchingMode}
-            onclick={() => handleSelectServer(s)}
+            disabled={currentMode === 'auto' || selectingTag !== null || switchingMode}
+            onclick={() => {
+              if (currentMode === 'manual') {
+                handleSelectServer(s);
+              }
+            }}
             title={currentMode === 'auto'
-              ? (isActive ? 'Действующий узел (нажмите, чтобы выбрать)' : 'Нажмите, чтобы переключить в ручной режим и выбрать этот сервер')
-              : (isActive ? 'Выбранный узел' : 'Нажмите для выбора')}
+              ? (isActive ? 'Текущий активный узел (выбран автоматически)' : 'В режиме «Автовыбор» лучший узел выбирается автоматически')
+              : (isActive ? 'Выбранный узел' : 'Нажмите для выбора этого узла')}
           >
             <div class="radio-indicator">
               {#if currentMode === 'auto'}
@@ -823,9 +837,10 @@
   }
 
   .toggle-opt.active {
-    background: var(--color-accent, #3b82f6);
-    color: #ffffff;
+    background: var(--color-accent, #3b82f6) !important;
+    color: #ffffff !important;
     font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   }
 
   .search-box {
@@ -883,7 +898,6 @@
     border: 1px solid transparent;
     background: transparent;
     color: var(--color-text-primary, #0f172a);
-    cursor: pointer;
     text-align: left;
     transition: all 0.12s ease;
   }
@@ -892,47 +906,66 @@
     color: #f1f5f9;
   }
 
-  .server-item:hover {
+  .server-item.auto-mode {
+    cursor: default;
+    opacity: 0.55;
+    user-select: none;
+  }
+
+  .server-item.auto-mode:hover {
+    background: transparent;
+  }
+
+  .server-item.auto-mode.auto-active {
+    opacity: 1;
+    background: rgba(34, 197, 94, 0.08);
+    border-color: rgba(34, 197, 94, 0.25);
+  }
+
+  :global(.dark) .server-item.auto-mode.auto-active {
+    background: rgba(34, 197, 94, 0.15);
+    border-color: rgba(34, 197, 94, 0.35);
+  }
+
+  .server-item.manual-mode {
+    cursor: pointer;
+    opacity: 1;
+  }
+
+  .server-item.manual-mode:hover {
     background: var(--color-bg-hover, #f1f5f9);
+    border-color: var(--color-border, #cbd5e1);
   }
 
-  :global(.dark) .server-item:hover {
+  :global(.dark) .server-item.manual-mode:hover {
     background: #334155;
+    border-color: #475569;
   }
 
-  .server-item.active {
+  .server-item.manual-mode.active {
     background: rgba(59, 130, 246, 0.08);
     border-color: rgba(59, 130, 246, 0.25);
   }
 
-  :global(.dark) .server-item.active {
+  :global(.dark) .server-item.manual-mode.active {
     background: rgba(59, 130, 246, 0.18);
     border-color: rgba(59, 130, 246, 0.4);
   }
 
-
-  .server-item.auto-active {
-    background: rgba(34, 197, 94, 0.06);
-    border-color: rgba(34, 197, 94, 0.2);
-  }
-
-  :global(.dark) .server-item.auto-active {
-    background: rgba(34, 197, 94, 0.12);
-    border-color: rgba(34, 197, 94, 0.3);
-  }
-
   .auto-indicator-dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    background: var(--color-border, #94a3b8);
+    background: #94a3b8;
+    opacity: 0.5;
     flex-shrink: 0;
     transition: all 0.15s ease;
   }
 
   .auto-indicator-dot.active {
     background: var(--color-success, #22c55e);
-    box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
+    opacity: 1;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.8);
   }
 
   .auto-mode-note {

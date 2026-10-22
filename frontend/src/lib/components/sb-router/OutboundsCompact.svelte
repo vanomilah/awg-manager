@@ -6,7 +6,7 @@
   import type { SingboxProxyGroup, SingboxRouterOutbound, Subscription, SubscriptionGroup } from '$lib/types';
   import type { OutboundGroup } from '$lib/components/routing/singboxRouter/outboundOptions';
   import { Badge } from '$lib/components/ui';
-  import { Edit3, Trash2, Zap, SlidersHorizontal, ChevronDown } from 'lucide-svelte';
+  import { Edit3, Trash2, Zap, SlidersHorizontal, ChevronDown, RefreshCw } from 'lucide-svelte';
   import { api } from '$lib/api/client';
   import { notifications } from '$lib/stores/notifications';
   import { resolveMemberLabel } from '$lib/utils/memberLabel';
@@ -47,6 +47,7 @@
   }: Props = $props();
 
   let testingGroups = $state<Record<string, boolean>>({});
+  let testingSingle = $state<Record<string, boolean>>({});
   let switching = $state<Record<string, boolean>>({});
   let localDelays = $state<Record<string, Record<string, number>>>({});
 
@@ -58,19 +59,50 @@
   function handleOpenSubMenu(tag: string, event: MouseEvent): void {
     event.stopPropagation();
     const currentTarget = event.currentTarget as HTMLElement;
+    const anchor = currentTarget.closest<HTMLElement>('.sub-action-group') || currentTarget;
     if (activeSubRef === tag && activeSubOpen) {
       activeSubOpen = false;
       activeSubRef = null;
       activeSubTrigger = null;
     } else {
-      activeSubTrigger = currentTarget;
+      activeSubTrigger = anchor;
       activeSubRef = tag;
       activeSubOpen = true;
     }
   }
 
+  async function handleTestSingleServer(
+    groupTag: string,
+    memberTag: string,
+    memberLabel: string,
+    e: MouseEvent
+  ): Promise<void> {
+    e.stopPropagation();
+    if (!memberTag || testingSingle[memberTag]) return;
+    testingSingle[memberTag] = true;
+    try {
+      const res = await api.singboxDelayCheck(memberTag);
+      const delay = res?.delay ?? 0;
+      localDelays[groupTag] = {
+        ...(localDelays[groupTag] ?? {}),
+        [memberTag]: delay,
+      };
+      if (delay > 0) {
+        notifications.success(`Задержка «${memberLabel}»: ${delay}ms`);
+      } else {
+        notifications.warning(`Сервер «${memberLabel}» не ответил (timeout)`);
+      }
+      void singboxProxies.refetch();
+    } catch (err) {
+      notifications.error(err instanceof Error ? err.message : 'Ошибка замера задержки сервера');
+    } finally {
+      testingSingle[memberTag] = false;
+    }
+  }
+
   function activeView(o: SingboxRouterOutbound) {
     if (!COMPOSITE_OUTBOUND_TYPES.has(o.type)) return null;
+    if (o.type === 'loadbalance' || o.type === 'load-balance') return null;
     const now = proxyGroups.find((g) => g.tag === o.tag)?.now;
     if (!now) return null;
     return resolveCompositeOutboundView(o.tag, outbounds, outboundOptions, subscriptions, proxyGroups);
@@ -122,6 +154,7 @@
   }
 
   function getActiveMemberTag(o: SingboxRouterOutbound, members: string[]): string {
+    if (o.type === 'loadbalance' || o.type === 'load-balance') return '';
     const live = proxyGroups.find((g) => g.tag === o.tag);
     if (live?.now) return live.now;
     const sub = findSubscription(o);
@@ -263,29 +296,48 @@
         </div>
 
         <div class="sub-active-row">
-          <button
-            type="button"
-            class="sub-active-btn"
-            onclick={(e) => handleOpenSubMenu(o.tag, e)}
-            title="Нажмите, чтобы выбрать сервер или переключить режим авто/ручной"
-          >
-            <span class="member-dot active"></span>
-            <span class="sub-mode-badge" class:auto={isAuto}>
-              {isAuto ? 'АВТО' : 'РУЧНОЙ'}
-            </span>
-            <span class="sub-active-name">{activeLabel}</span>
-            {#if activeDelay !== null}
-              {@const tone = getDelayTone(activeDelay)}
-              <span class="member-delay {tone}">
-                {activeDelay > 0 ? `${activeDelay}ms` : 'timeout'}
+          <div class="sub-action-group">
+            <button
+              type="button"
+              class="sub-server-test-btn"
+              class:testing={!!testingSingle[activeTag]}
+              disabled={!!testingSingle[activeTag] || !activeTag}
+              onclick={(e) => handleTestSingleServer(o.tag, activeTag, activeLabel, e)}
+              title={activeTag ? `Замерить задержку сервера «${activeLabel}»` : 'Сервер не выбран'}
+            >
+              <span class="member-dot active"></span>
+              <span class="sub-mode-badge" class:auto={isAuto}>
+                {isAuto ? 'АВТО' : 'РУЧНОЙ'}
               </span>
-            {/if}
-            <span class="sub-change-hint">
+              <span class="sub-active-name">{activeLabel}</span>
+              {#if testingSingle[activeTag]}
+                <span class="member-delay tone-none">
+                  <RefreshCw size={10} class="spin" />
+                  <span>тест...</span>
+                </span>
+              {:else if activeDelay !== null}
+                {@const tone = getDelayTone(activeDelay)}
+                <span class="member-delay {tone}">
+                  {activeDelay > 0 ? `${activeDelay}ms` : 'timeout'}
+                </span>
+              {:else}
+                <span class="sub-single-test-hint" title="Проверить пинг">
+                  <Zap size={11} />
+                </span>
+              {/if}
+            </button>
+
+            <button
+              type="button"
+              class="sub-menu-open-btn"
+              onclick={(e) => handleOpenSubMenu(o.tag, e)}
+              title="Выбрать сервер или изменить режим"
+            >
               <SlidersHorizontal size={12} />
               <span>Выбрать сервер</span>
               <ChevronDown size={12} />
-            </span>
-          </button>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -361,9 +413,10 @@
         </div>
 
         {#if members.length > 0}
+          {@const isLoadBalance = o.type === 'load-balance' || o.type === 'loadbalance'}
           <div class="members-grid">
             {#each members as m, idx (m)}
-              {@const isActive = m === activeTag}
+              {@const isActive = !isLoadBalance && m === activeTag}
               {@const delay = getMemberDelay(o.tag, m)}
               {@const tone = getDelayTone(delay)}
               {@const label = resolveMemberLabel(m, subscriptions, outboundOptions)}
@@ -392,16 +445,25 @@
                 <div
                   class="member-chip"
                   class:active={isActive}
-                  title={o.type === 'fallback' && idx === 0 ? `Основной узел: ${label}` : isActive ? `Активный узел: ${label}` : label}
+                  class:load-balance-member={isLoadBalance}
+                  title={isLoadBalance
+                    ? `Узел балансировки: ${label}`
+                    : o.type === 'fallback' && idx === 0
+                      ? `Основной узел: ${label}`
+                      : isActive
+                        ? `Активный узел: ${label}`
+                        : label}
                 >
-                  <span class="member-dot" class:active={isActive}></span>
-                  <span class="member-order" class:primary={idx === 0}>
-                    {#if o.type === 'fallback'}
-                      {idx === 0 ? '#1 (Основной)' : `#${idx + 1}`}
-                    {:else}
-                      #{idx + 1}
-                    {/if}
-                  </span>
+                  {#if !isLoadBalance}
+                    <span class="member-dot" class:active={isActive}></span>
+                    <span class="member-order" class:primary={idx === 0}>
+                      {#if o.type === 'fallback'}
+                        {idx === 0 ? '#1 (Основной)' : `#${idx + 1}`}
+                      {:else}
+                        #{idx + 1}
+                      {/if}
+                    </span>
+                  {/if}
                   <span class="member-label">{label}</span>
                   <span class="member-delay {tone}">
                     {delay !== null ? (delay > 0 ? `${delay}ms` : 'timeout') : '—'}
@@ -475,10 +537,15 @@
 </div>
 
 {#if activeSubOpen && activeSubRef && activeSubTrigger}
+  {@const currentOutbound = outbounds.find((o) => o.tag === activeSubRef)}
+  {@const currentMembers = currentOutbound ? getGroupMembers(currentOutbound) : []}
+  {@const currentActiveTag = currentOutbound ? getActiveMemberTag(currentOutbound, currentMembers) : null}
   <MihomoSubQuickContextMenu
     open={activeSubOpen}
     subRef={activeSubRef}
     triggerEl={activeSubTrigger}
+    activeMember={currentActiveTag}
+    initialDelays={activeSubRef ? localDelays[activeSubRef] : undefined}
     subscription={subscriptions.find((s) => s.selectorTag === activeSubRef || s.id === activeSubRef || (activeSubRef.startsWith('sub-') && s.id.startsWith(activeSubRef.slice(4))))}
     singboxSubscriptions={subscriptions}
     onClose={() => {
@@ -581,7 +648,7 @@
     cursor: not-allowed;
   }
 
-  .group-test-btn :global(.spin) {
+  :global(.spin) {
     animation: spin 1s linear infinite;
   }
 
@@ -597,31 +664,51 @@
     padding: 2px 0;
   }
 
-  .sub-active-btn {
+  .sub-action-group {
     display: inline-flex;
-    align-items: center;
-    gap: 8px;
+    align-items: stretch;
     background: var(--color-bg-secondary, rgba(255, 255, 255, 0.06));
     border: 1px solid var(--color-border, rgba(255, 255, 255, 0.15));
     border-radius: 6px;
+    max-width: 100%;
+    overflow: hidden;
+    transition: border-color 0.15s ease;
+  }
+
+  :global(.dark) .sub-action-group {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+
+  .sub-action-group:hover {
+    border-color: var(--color-border-hover, rgba(255, 255, 255, 0.25));
+  }
+
+  .sub-server-test-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: transparent;
+    border: none;
     padding: 5px 12px;
     font-size: 12px;
     font-weight: 500;
     color: var(--text-primary, #0f172a);
     cursor: pointer;
-    transition: all 0.15s ease;
-    max-width: 100%;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    min-width: 0;
   }
 
-  :global(.dark) .sub-active-btn {
+  :global(.dark) .sub-server-test-btn {
     color: var(--text-primary, #f8fafc);
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.16);
   }
 
-  .sub-active-btn:hover {
-    background: var(--color-bg-hover, rgba(255, 255, 255, 0.12));
-    border-color: var(--color-accent, #3b82f6);
+  .sub-server-test-btn:hover:not(:disabled) {
+    background: var(--color-bg-hover, rgba(255, 255, 255, 0.1));
+  }
+
+  .sub-server-test-btn:disabled {
+    cursor: default;
   }
 
   .sub-mode-badge {
@@ -631,6 +718,7 @@
     border-radius: 4px;
     background: var(--color-bg-tertiary, rgba(0, 0, 0, 0.08));
     color: var(--text-secondary, #64748b);
+    flex-shrink: 0;
   }
 
   .sub-mode-badge.auto {
@@ -646,16 +734,44 @@
     max-width: 320px;
   }
 
-  .sub-change-hint {
+  .sub-single-test-hint {
+    display: inline-flex;
+    align-items: center;
+    color: var(--color-text-muted, #94a3b8);
+    opacity: 0.6;
+    margin-left: 2px;
+    transition: opacity 0.15s ease, color 0.15s ease;
+  }
+
+  .sub-server-test-btn:hover .sub-single-test-hint {
+    color: var(--color-accent, #3b82f6);
+    opacity: 1;
+  }
+
+  .sub-menu-open-btn {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    margin-left: 6px;
-    padding-left: 8px;
+    background: transparent;
+    border: none;
     border-left: 1px solid var(--color-border, rgba(255, 255, 255, 0.15));
+    padding: 5px 10px;
     font-size: 11px;
-    color: var(--color-accent, #3b82f6);
     font-weight: 500;
+    color: var(--color-accent, #3b82f6);
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  :global(.dark) .sub-menu-open-btn {
+    border-left-color: rgba(255, 255, 255, 0.16);
+    color: var(--color-accent, #60a5fa);
+  }
+
+  .sub-menu-open-btn:hover {
+    background: var(--color-bg-hover, rgba(59, 130, 246, 0.12));
   }
 
   /* Members Grid */
