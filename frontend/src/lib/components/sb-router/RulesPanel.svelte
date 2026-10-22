@@ -252,6 +252,7 @@
       rulesList: prefill.rulesList,
       outboundCategory: prefill.outboundCategory,
       tunnelTags: prefill.tunnelTags,
+      compositeMode: prefill.compositeMode,
       existingInlineRuleSetTag: prefill.existingInlineRuleSetTag,
       wasInlineText: prefill.wasInlineText,
     });
