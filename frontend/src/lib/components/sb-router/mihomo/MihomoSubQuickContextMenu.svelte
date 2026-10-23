@@ -40,6 +40,7 @@
   let searchQuery = $state('');
   let testing = $state(false);
   let selectingTag = $state<string | null>(null);
+  let testingSingle = $state<Record<string, boolean>>({});
   let localDelays = $state<Record<string, number>>({});
   let manualModeOverride = $state<'auto' | 'manual' | null>(null);
   let manualActiveTag = $state<string | null>(null);
@@ -395,6 +396,30 @@
     }
   }
 
+  async function handleTestOneServer(server: DisplayServer, e: MouseEvent): Promise<void> {
+    e.stopPropagation();
+    const tag = server.tag || server.label;
+    if (!tag || testingSingle[tag]) return;
+    testingSingle[tag] = true;
+    try {
+      const res = await api.singboxDelayCheck(server.tag).catch(async () => {
+        return await api.singboxDelayCheck(server.label);
+      });
+      const d = res?.delay ?? 0;
+      localDelays = { ...localDelays, [server.tag]: d, [server.label]: d };
+      if (d > 0) {
+        notifications.success(`Задержка «${server.label}»: ${d}ms`);
+      } else {
+        notifications.warning(`Сервер «${server.label}» не ответил (timeout)`);
+      }
+      onUpdated?.();
+    } catch (err) {
+      notifications.error(err instanceof Error ? err.message : 'Ошибка замера задержки сервера');
+    } finally {
+      testingSingle[tag] = false;
+    }
+  }
+
   async function handleModeToggle(nextMode: 'auto' | 'manual') {
     if (nextMode === currentMode || switchingMode) return;
     switchingMode = true;
@@ -595,6 +620,7 @@
           {@const isActive = activeMemberTag === s.tag || activeMemberTag === s.label || activeMemberTag === s.server}
           {@const delay = getMemberDelay(s)}
           {@const tone = getDelayTone(delay)}
+          {@const isTestingThis = !!(testingSingle[s.tag] || testingSingle[s.label])}
 
           <button
             type="button"
@@ -603,15 +629,19 @@
             class:manual-mode={currentMode === 'manual'}
             class:active={currentMode === 'manual' && isActive}
             class:auto-active={currentMode === 'auto' && isActive}
-            disabled={currentMode === 'auto' || selectingTag !== null || switchingMode}
-            onclick={() => {
+            disabled={selectingTag !== null || switchingMode || isTestingThis}
+            onclick={(e) => {
               if (currentMode === 'manual') {
                 handleSelectServer(s);
+              } else {
+                handleTestOneServer(s, e);
               }
             }}
-            title={currentMode === 'auto'
-              ? (isActive ? 'Текущий активный узел (выбран автоматически)' : 'В режиме «Автовыбор» лучший узел выбирается автоматически')
-              : (isActive ? 'Выбранный узел' : 'Нажмите для выбора этого узла')}
+            title={isTestingThis
+              ? `Замер задержки «${s.label}»...`
+              : currentMode === 'auto'
+                ? (isActive ? `Текущий активный узел: ${s.label} (нажмите для проверки связи)` : `Замерить задержку «${s.label}»`)
+                : (isActive ? `Выбранный узел: ${s.label}` : `Нажмите для выбора: ${s.label}`)}
           >
             <div class="radio-indicator">
               {#if currentMode === 'auto'}
@@ -638,12 +668,47 @@
             </div>
 
             <div class="delay-wrap">
-              {#if delay !== null}
-                <span class="delay-pill tone-{tone}">
+              {#if isTestingThis}
+                <span class="delay-pill tone-none">
+                  <RefreshCw size={9} class="spin" />
+                  <span>тест...</span>
+                </span>
+              {:else if delay !== null}
+                <span
+                  class="delay-pill tone-{tone}"
+                  class:clickable={currentMode === 'manual'}
+                  role="button"
+                  tabindex="0"
+                  onclick={(e) => handleTestOneServer(s, e)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleTestOneServer(s, e as unknown as MouseEvent);
+                    }
+                  }}
+                  title="Замерить задержку «{s.label}»"
+                >
                   {delay > 0 ? `${delay}ms` : 'fail'}
                 </span>
               {:else}
-                <span class="delay-pill tone-none">—</span>
+                <span
+                  class="delay-pill tone-none"
+                  class:clickable={currentMode === 'manual'}
+                  role="button"
+                  tabindex="0"
+                  onclick={(e) => handleTestOneServer(s, e)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleTestOneServer(s, e as unknown as MouseEvent);
+                    }
+                  }}
+                  title="Замерить задержку «{s.label}»"
+                >
+                  —
+                </span>
               {/if}
             </div>
           </button>
@@ -907,13 +972,18 @@
   }
 
   .server-item.auto-mode {
-    cursor: default;
-    opacity: 0.55;
-    user-select: none;
+    cursor: pointer;
+    opacity: 0.8;
   }
 
   .server-item.auto-mode:hover {
-    background: transparent;
+    background: var(--color-bg-hover, #f1f5f9);
+    border-color: var(--color-border, #cbd5e1);
+  }
+
+  :global(.dark) .server-item.auto-mode:hover {
+    background: #334155;
+    border-color: #475569;
   }
 
   .server-item.auto-mode.auto-active {
@@ -1086,6 +1156,32 @@
     border-radius: 4px;
     background: transparent;
     border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .delay-pill.clickable {
+    cursor: pointer;
+    border: 1px solid var(--color-border, #cbd5e1);
+    background: var(--color-bg-secondary, #f8fafc);
+    transition: all 0.12s ease;
+  }
+
+  .delay-pill.clickable:hover {
+    border-color: var(--color-accent, #3b82f6);
+    background: rgba(59, 130, 246, 0.1);
+    transform: scale(1.05);
+  }
+
+  :global(.dark) .delay-pill.clickable {
+    border-color: #334155;
+    background: #0f172a;
+  }
+
+  :global(.dark) .delay-pill.clickable:hover {
+    border-color: var(--color-accent, #3b82f6);
+    background: rgba(59, 130, 246, 0.2);
   }
 
   .tone-good {

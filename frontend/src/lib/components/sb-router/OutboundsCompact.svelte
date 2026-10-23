@@ -81,12 +81,24 @@
     if (!memberTag || testingSingle[memberTag]) return;
     testingSingle[memberTag] = true;
     try {
-      const res = await api.singboxDelayCheck(memberTag);
+      const res = await api.singboxDelayCheck(memberTag).catch(async () => {
+        if (memberLabel && memberLabel !== memberTag) {
+          return await api.singboxDelayCheck(memberLabel);
+        }
+        throw new Error('Timeout');
+      });
       const delay = res?.delay ?? 0;
-      localDelays[groupTag] = {
-        ...(localDelays[groupTag] ?? {}),
-        [memberTag]: delay,
-      };
+      const next = { ...localDelays };
+      for (const ob of outbounds) {
+        const mems = getGroupMembers(ob);
+        if (mems.includes(memberTag) || ob.tag === memberTag || ob.tag === groupTag) {
+          next[ob.tag] = {
+            ...(next[ob.tag] ?? {}),
+            [memberTag]: delay,
+          };
+        }
+      }
+      localDelays = next;
       if (delay > 0) {
         notifications.success(`Задержка «${memberLabel}»: ${delay}ms`);
       } else {
@@ -421,6 +433,7 @@
               {@const tone = getDelayTone(delay)}
               {@const label = resolveMemberLabel(m, subscriptions, outboundOptions)}
               {@const isSwitching = !!switching[`${o.tag}:${m}`]}
+              {@const isTestingThis = !!testingSingle[m]}
 
               {#if isSelector}
                 <button
@@ -428,31 +441,71 @@
                   class="member-chip selectable"
                   class:active={isActive}
                   class:switching={isSwitching}
-                  disabled={isSwitching}
-                  onclick={() => handleSelectMember(o.tag, m, o)}
-                  title={isActive ? `Активный узел: ${label}` : `Нажмите для выбора: ${label}`}
+                  class:testing={isTestingThis}
+                  disabled={isSwitching || isTestingThis}
+                  onclick={(e) => {
+                    if (isActive) {
+                      handleTestSingleServer(o.tag, m, label, e);
+                    } else {
+                      handleSelectMember(o.tag, m, o);
+                    }
+                  }}
+                  title={isTestingThis
+                    ? `Замер задержки «${label}»...`
+                    : isActive
+                      ? `Активный узел: ${label} (нажмите для проверки связи)`
+                      : `Нажмите для выбора: ${label}`}
                 >
                   <span class="member-dot" class:active={isActive}></span>
                   <span class="member-order" class:primary={idx === 0}>
                     #{idx + 1}
                   </span>
                   <span class="member-label">{label}</span>
-                  <span class="member-delay {tone}">
-                    {delay !== null ? (delay > 0 ? `${delay}ms` : 'timeout') : '—'}
-                  </span>
+                  {#if isTestingThis}
+                    <span class="member-delay tone-none">
+                      <RefreshCw size={10} class="spin" />
+                      <span>тест...</span>
+                    </span>
+                  {:else}
+                    <span
+                      class="member-delay {tone} click-target"
+                      role="button"
+                      tabindex="0"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        handleTestSingleServer(o.tag, m, label, e);
+                      }}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          handleTestSingleServer(o.tag, m, label, e as unknown as MouseEvent);
+                        }
+                      }}
+                      title="Замерить задержку «{label}»"
+                    >
+                      {delay !== null ? (delay > 0 ? `${delay}ms` : 'timeout') : '—'}
+                    </span>
+                  {/if}
                 </button>
               {:else}
-                <div
-                  class="member-chip"
+                <button
+                  type="button"
+                  class="member-chip testable"
                   class:active={isActive}
                   class:load-balance-member={isLoadBalance}
-                  title={isLoadBalance
-                    ? `Узел балансировки: ${label}`
-                    : o.type === 'fallback' && idx === 0
-                      ? `Основной узел: ${label}`
-                      : isActive
-                        ? `Активный узел: ${label}`
-                        : label}
+                  class:testing={isTestingThis}
+                  disabled={isTestingThis}
+                  onclick={(e) => handleTestSingleServer(o.tag, m, label, e)}
+                  title={isTestingThis
+                    ? `Замер задержки «${label}»...`
+                    : isLoadBalance
+                      ? `Узел балансировки: ${label} (нажмите для замера задержки)`
+                      : o.type === 'fallback' && idx === 0
+                        ? `Основной узел: ${label} (нажмите для замера задержки)`
+                        : isActive
+                          ? `Активный узел: ${label} (нажмите для замера задержки)`
+                          : `Узел #${idx + 1}: ${label} (нажмите для замера задержки)`}
                 >
                   {#if !isLoadBalance}
                     <span class="member-dot" class:active={isActive}></span>
@@ -465,10 +518,17 @@
                     </span>
                   {/if}
                   <span class="member-label">{label}</span>
-                  <span class="member-delay {tone}">
-                    {delay !== null ? (delay > 0 ? `${delay}ms` : 'timeout') : '—'}
-                  </span>
-                </div>
+                  {#if isTestingThis}
+                    <span class="member-delay tone-none">
+                      <RefreshCw size={10} class="spin" />
+                      <span>тест...</span>
+                    </span>
+                  {:else}
+                    <span class="member-delay {tone}">
+                      {delay !== null ? (delay > 0 ? `${delay}ms` : 'timeout') : '—'}
+                    </span>
+                  {/if}
+                </button>
               {/if}
             {/each}
           </div>
@@ -479,6 +539,9 @@
 
     {:else}
       {@const av = activeView(o)}
+      {@const singleDelay = getMemberDelay(o.tag, o.tag)}
+      {@const tone = getDelayTone(singleDelay)}
+      {@const isTestingThis = !!testingSingle[o.tag]}
       <div class="row">
         <span class="dot" data-tone={toneFor(o.type)}></span>
         <button
@@ -502,8 +565,27 @@
             {/if}
           </div>
         </button>
+        {#if isTestingThis}
+          <span class="member-delay tone-none">
+            <RefreshCw size={10} class="spin" />
+            <span>тест...</span>
+          </span>
+        {:else if singleDelay !== null}
+          <span class="member-delay {tone}">{singleDelay > 0 ? `${singleDelay}ms` : 'timeout'}</span>
+        {/if}
         <Badge variant="default" size="sm">{kindLabel(o)}</Badge>
         <div class="actions">
+          <button
+            type="button"
+            class="group-test-btn"
+            class:spinning={isTestingThis}
+            disabled={isTestingThis}
+            onclick={(e) => handleTestSingleServer(o.tag, o.tag, d.title, e)}
+            title={`Замерить задержку «${d.title}»`}
+          >
+            <Zap size={12} class={isTestingThis ? 'spin' : ''} />
+            <span>{isTestingThis ? 'Замер...' : 'Тест'}</span>
+          </button>
           <button
             type="button"
             class="route-action-btn"
@@ -807,14 +889,41 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   }
 
-  .member-chip.selectable {
+  .member-chip.selectable,
+  .member-chip.testable {
     cursor: pointer;
+    font-family: inherit;
   }
 
-  .member-chip.selectable:hover {
+  .member-chip.selectable:hover,
+  .member-chip.testable:hover {
     background: var(--color-bg-hover, rgba(255, 255, 255, 0.12));
     border-color: var(--color-accent, #3b82f6);
     color: var(--text-primary, #fff);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+  }
+
+  :global(.dark) .member-chip.selectable:hover,
+  :global(.dark) .member-chip.testable:hover {
+    background: #334155;
+    border-color: var(--color-accent, #60a5fa);
+    color: #f8fafc;
+  }
+
+  .member-chip.testing {
+    opacity: 0.65 !important;
+    pointer-events: none;
+  }
+
+  .member-delay.click-target {
+    cursor: pointer;
+    transition: transform 0.15s ease, filter 0.15s ease;
+  }
+
+  .member-delay.click-target:hover {
+    filter: brightness(1.25);
+    text-decoration: underline;
   }
 
   .member-chip.active {
