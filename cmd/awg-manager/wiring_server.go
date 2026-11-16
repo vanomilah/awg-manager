@@ -16,6 +16,7 @@ import (
 	"github.com/hoaxisr/awg-manager/frontend"
 	"github.com/hoaxisr/awg-manager/internal/api"
 	"github.com/hoaxisr/awg-manager/internal/backup"
+	"github.com/hoaxisr/awg-manager/internal/cdndispatcher"
 	"github.com/hoaxisr/awg-manager/internal/deviceproxy"
 	"github.com/hoaxisr/awg-manager/internal/diagnostics"
 	"github.com/hoaxisr/awg-manager/internal/dnscheck"
@@ -24,6 +25,7 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/logging"
 	"github.com/hoaxisr/awg-manager/internal/monitoring"
 	"github.com/hoaxisr/awg-manager/internal/server"
+	"github.com/hoaxisr/awg-manager/internal/serveringress"
 	"github.com/hoaxisr/awg-manager/internal/singbox/awgoutbounds"
 	singboxcfg "github.com/hoaxisr/awg-manager/internal/singbox/configmerge"
 	"github.com/hoaxisr/awg-manager/internal/singbox/dnsrewrite"
@@ -33,7 +35,10 @@ import (
 	"github.com/hoaxisr/awg-manager/internal/singbox/subscription"
 	"github.com/hoaxisr/awg-manager/internal/storage"
 	"github.com/hoaxisr/awg-manager/internal/sys/osdetect"
+	"github.com/hoaxisr/awg-manager/internal/telemt"
+	"github.com/hoaxisr/awg-manager/internal/tgwebproxy"
 	"github.com/hoaxisr/awg-manager/internal/tunnel"
+	"github.com/hoaxisr/awg-manager/internal/vlessserver"
 )
 
 // setupServer registers routing snapshot providers and constructs the HTTP
@@ -71,6 +76,124 @@ func (a *app) setupServer() {
 		os.Exit(1)
 	}
 
+	// Initialize CDN Dispatcher, Xray Server and TG Web Proxy
+	cdnDisp := cdndispatcher.New(cdndispatcher.Config{
+		ListenAddr:     ":9009",
+		XrayTarget:     "http://127.0.0.1:9008",
+		TgTarget:       "http://127.0.0.1:8085",
+		PublicHostname: "",
+		XrayPathPrefix: "/cdn-bridge",
+	})
+	a.cdnDispatcher = cdnDisp
+
+	onReload := func() {
+		a.bootLog.Info("ingress", "on_reload", "service state changed")
+	}
+
+	// Inbound VLESS/XHTTP/FiniteProto always runs on the mandatory C daemon (awgm-xhttpd),
+	// independent of whether FIRC or Sing-box is selected as the outbound routing engine.
+	a.vlessServerService = vlessserver.New(a.dataDir, onReload)
+	if a.fircOp != nil {
+		a.vlessServerService.SetFircRoutingOverride(a.fircOp.LoadExtConfig().ServerRouting.IsServerEnabled("vless_xhttp_server"))
+	}
+	if a.sbOrch != nil {
+		a.vlessServerService.SetOrchestrator(a.sbOrch)
+	}
+	a.tgWebProxyService = tgwebproxy.New(a.dataDir, onReload)
+
+	telemtArch := detectArch()
+	a.telemtService = telemt.New(a.dataDir, telemtArch)
+	a.deferOnExit(func() {
+		_ = a.telemtService.Close()
+	})
+	_ = a.telemtService.StartIfEnabled(context.Background())
+	a.telemtHandler = api.NewTelemtHandler(a.telemtService)
+
+	// Cross-Component Ingress Coordinator and Crash Recovery
+	a.ingressCoordinator = serveringress.New(a.dataDir, a.vlessServerService, a.cdnDispatcher, a.tgWebProxyService)
+	if a.fircOp != nil {
+		a.ingressCoordinator.SetFircRouting(a.fircOp)
+	}
+	recoveryErr := a.ingressCoordinator.StartupRecovery(context.Background())
+	if recoveryErr != nil {
+		a.bootLog.Error("ingress_coordinator", "startup_recovery", recoveryErr.Error())
+	}
+
+	recoveryReq, recoveryReason := a.ingressCoordinator.IsRecoveryRequired()
+	if recoveryReq {
+		a.bootLog.Error("ingress_coordinator", "recovery_required", "skipping ingress service auto-start: "+recoveryReason)
+	}
+
+	vlessReq, vlessReason, _ := a.vlessServerService.RecoveryInfo()
+	if vlessReq {
+		a.bootLog.Error("vlessserver", "recovery_required", "skipping ingress service auto-start: "+vlessReason)
+	}
+
+	tgSt := a.tgWebProxyService.GetStatus()
+	if tgSt.RecoveryRequired {
+		a.bootLog.Error("tgwebproxy", "startup", "initialization entered recovery_required state: "+tgSt.LastStartupError)
+	}
+
+	xCfg := a.vlessServerService.GetConfig()
+	tCfg := a.tgWebProxyService.GetConfig()
+
+	if err := a.ingressCoordinator.HydrateDispatcherRoutes(context.Background()); err != nil {
+		a.bootLog.Error("ingress_coordinator", "hydrate_dispatcher", err.Error())
+	}
+
+	dispCfg := a.cdnDispatcher.GetConfig()
+	if dispCfg.ListenAddr == "" {
+		dispCfg.ListenAddr = ":9009"
+	}
+	if dispCfg.XrayTarget == "" {
+		dispCfg.XrayTarget = "http://127.0.0.1:9008"
+	}
+	if dispCfg.TgTarget == "" {
+		dispCfg.TgTarget = "http://127.0.0.1:8085"
+	}
+	if dispCfg.XrayPathPrefix == "" {
+		dispCfg.XrayPathPrefix = "/cdn-bridge"
+	}
+	a.cdnDispatcher.UpdateConfig(dispCfg)
+
+	started, autoStartErr := serveringress.StartIngressIfSafe(
+		context.Background(),
+		recoveryReq, recoveryReason,
+		vlessReq, vlessReason,
+		tgSt.RecoveryRequired, tgSt.LastStartupError,
+		xCfg.Enabled, a.vlessServerService,
+		tCfg.Enabled, a.tgWebProxyService,
+		a.cdnDispatcher,
+	)
+	if autoStartErr != nil {
+		a.bootLog.Error("ingress", "autostart", autoStartErr.Error())
+	} else if started {
+		a.bootLog.Info("ingress", "autostart", "ingress services started successfully")
+	}
+
+	if err := a.tgWebProxyService.ReconcileRuntime(); err != nil {
+		a.bootLog.Error("tgwebproxy", "reconcile", err.Error())
+	}
+
+	// Always ensure in-process Go Multiplexer for Telegram Web Proxy is active if enabled
+	a.tgWebProxyService.EnsureMuxRunning()
+
+	// Start background watcher for ingress configuration files (hot-reload without restart or rebuild)
+	a.ingressWatcher = a.ingressCoordinator.StartConfigWatcher(context.Background())
+	a.deferOnExit(func() {
+		if a.ingressWatcher != nil {
+			a.ingressWatcher.Stop()
+		}
+	})
+
+	a.deferOnExit(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownIngressRuntime(ctx, a.vlessServerService, a.tgWebProxyService, a.cdnDispatcher); err != nil {
+			a.bootLog.Error("ingress", "shutdown", err.Error())
+		}
+	})
+
 	a.srv = server.New(
 		server.Config{
 			Version:              version,
@@ -79,42 +202,48 @@ func (a *app) setupServer() {
 			SlowRequestThreshold: slowHTTPThreshold,
 		},
 		server.Deps{
-			TunnelService:       a.tunnelService,
-			ExternalService:     a.externalService,
-			TestingService:      a.testService,
-			Keenetic:            a.keeneticClient,
-			Sessions:            a.sessionStore,
-			Settings:            a.settingsStore,
-			Tunnels:             a.awgStore,
-			PingCheckService:    a.pingCheckFacade,
-			ProxyRecords:        a.proxyStore,
-			LoggingService:      a.loggingService,
-			KmodLoader:          a.kmodLoader,
-			UpdaterService:      a.updaterService,
-			NdmsQueries:         a.ndmsQueries,
-			NdmsCommands:        a.ndmsCommands,
-			TrafficHistory:      a.trafficHistory,
-			DnsRouteService:     a.dnsRouteService,
-			StaticRouteService:  a.staticRouteService,
-			SystemTunnelService: a.systemTunnelSvc,
-			ManagedService:      a.managedService,
-			ManagedServiceImpl:  a.managedService,
-			NwgOp:               a.nwgOp,
-			TerminalManager:     a.terminalManager,
-			AccessPolicySvc:     a.accessPolicySvc,
-			ClientRouteSvc:      a.clientRouteService,
-			Catalog:             a.catalog,
-			Orch:                a.orch,
-			Bus:                 a.eventBus,
-			HydraService:        a.hydraService,
-			ZapretService:       a.zapretService,
-			AutolistService:     a.autolistService,
-			SingboxHandler:      a.singboxHandler,
-			SingboxOrch:         a.sbOrch,
-			ClashProxy:          a.clashProxy,
-			SingboxConnsHandler: a.singboxConnsHandler,
-			MonitoringService:   a.monitoringService,
-			McpKeys:             a.mcpKeys,
+			TunnelService:            a.tunnelService,
+			ExternalService:          a.externalService,
+			TestingService:           a.testService,
+			Keenetic:                 a.keeneticClient,
+			Sessions:                 a.sessionStore,
+			Settings:                 a.settingsStore,
+			Tunnels:                  a.awgStore,
+			PingCheckService:         a.pingCheckFacade,
+			ProxyRecords:             a.proxyStore,
+			LoggingService:           a.loggingService,
+			KmodLoader:               a.kmodLoader,
+			UpdaterService:           a.updaterService,
+			NdmsQueries:              a.ndmsQueries,
+			NdmsCommands:             a.ndmsCommands,
+			TrafficHistory:           a.trafficHistory,
+			DnsRouteService:          a.dnsRouteService,
+			StaticRouteService:       a.staticRouteService,
+			SystemTunnelService:      a.systemTunnelSvc,
+			ManagedService:           a.managedService,
+			ManagedServiceImpl:       a.managedService,
+			NwgOp:                    a.nwgOp,
+			TerminalManager:          a.terminalManager,
+			AccessPolicySvc:          a.accessPolicySvc,
+			ClientRouteSvc:           a.clientRouteService,
+			Catalog:                  a.catalog,
+			Orch:                     a.orch,
+			Bus:                      a.eventBus,
+			HydraService:             a.hydraService,
+			ZapretService:            a.zapretService,
+			AutolistService:          a.autolistService,
+			SingboxHandler:           a.singboxHandler,
+			FircHandler:              a.fircHandler,
+			TelemtHandler:            a.telemtHandler,
+			VlessServerService:       a.vlessServerService,
+			TgWebProxyService:        a.tgWebProxyService,
+			CDNDispatcher:            a.cdnDispatcher,
+			ServerIngressCoordinator: a.ingressCoordinator,
+			SingboxOrch:              a.sbOrch,
+			ClashProxy:               a.clashProxy,
+			SingboxConnsHandler:      a.singboxConnsHandler,
+			MonitoringService:        a.monitoringService,
+			McpKeys:                  a.mcpKeys,
 			SingboxSubMembers: func() []diagnostics.SingboxSubMember {
 				subs := a.subSvc.List()
 				out := make([]diagnostics.SingboxSubMember, 0, len(subs)*2)
@@ -502,6 +631,11 @@ func (a *app) setupRouter() {
 
 	singboxRouterHandler := api.NewSingboxRouterHandler(routerSvc, a.loggingService)
 	singboxRouterHandler.SetOutboundRefCheckers(a.deviceProxySvc, routerSvc)
+	a.wireFircEngineCoordinator()
+	if a.fircHandler != nil {
+		singboxRouterHandler.SetEngineSwitcher(a.fircHandler.SwitchEngine)
+	}
+	singboxRouterHandler.SetOnSettingsUpdated(a.syncFircFromRouterSettings)
 	a.srv.SetSingboxRouterHandler(singboxRouterHandler)
 	// Атрибуция tproxy-потоков на странице соединений: connmark == PolicyMark
 	// активной sb-router-политики. Кэшируется внутри connections.Service (60s).
@@ -599,9 +733,22 @@ func (a *app) setupRouter() {
 
 }
 
+func assertProductionWiring(a *app) error {
+	if a.fircOp != nil && !a.fircOp.HasProductionEngineHooks() {
+		return errors.New("fircOp production engine-switch hooks must be configured before serving routes")
+	}
+	if a.fircHandler != nil && !a.fircHandler.HasInstaller() {
+		return errors.New("fircHandler OnDemandInstaller must be configured before serving routes")
+	}
+	return nil
+}
+
 // setupListen wires DNS rewrites, selects the HTTP port, applies the
 // listen spec and logs startup.
 func (a *app) setupListen() {
+	if err := assertProductionWiring(a); err != nil {
+		panic(err)
+	}
 	// DNS Rewrites — sing-box slot 17-dns-rewrites.json.
 	dnsRewriteStorePath := filepath.Join(a.dataDir, "dns_rewrites.json")
 	dnsRewriteStore := storage.NewDNSRewriteStore(dnsRewriteStorePath)
@@ -758,4 +905,28 @@ func (a *app) setupShutdown() {
 	a.srv.AddShutdownHook(a.trafficHistory.Stop)
 	a.srv.AddShutdownHook(func() { a.terminalManager.Shutdown(context.Background()) })
 
+}
+
+// shutdownIngressRuntime gracefully stops the runtime components without mutating their persistent on-disk configuration.
+func shutdownIngressRuntime(ctx context.Context, vless *vlessserver.Service, tg *tgwebproxy.Service, disp *cdndispatcher.Dispatcher) error {
+	var errs []error
+	if vless != nil {
+		if err := vless.ShutdownRuntime(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown vless server runtime: %w", err))
+		}
+	}
+	if tg != nil {
+		if err := tg.ShutdownRuntime(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("shutdown tgwebproxy runtime: %w", err))
+		}
+		if err := tg.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close tgwebproxy: %w", err))
+		}
+	}
+	if disp != nil {
+		if err := disp.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop cdn dispatcher: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }
