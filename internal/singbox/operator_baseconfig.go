@@ -1669,3 +1669,39 @@ func (o *Operator) checkOutboundFeatures() error {
 	}
 	return nil
 }
+
+// baseConfigSuppressesStderrStartLine reports whether 00-base.json suppresses
+// or redirects logs away from Process's stderr log file so sing-box will not
+// emit "sing-box started" onto sing-box.err.log.
+func (o *Operator) baseConfigSuppressesStderrStartLine() bool {
+	if o == nil || o.configPath == "" {
+		return false
+	}
+	base, ok := readSlotJSON("started-line-check", filepath.Join(o.configPath, "00-base.json"), nil)
+	if !ok {
+		return false
+	}
+	logCfg, _ := base["log"].(map[string]any)
+	if logCfg == nil {
+		return false
+	}
+	if disabled, _ := logCfg["disabled"].(bool); disabled {
+		return true
+	}
+	if lvl, _ := logCfg["level"].(string); lvl != "" {
+		switch strings.ToLower(strings.TrimSpace(lvl)) {
+		case "trace", "debug", "info":
+		default:
+			return true
+		}
+	}
+	if rawOut, _ := logCfg["output"].(string); rawOut != "" {
+		out := strings.TrimSpace(rawOut)
+		if out != "" && out != "stderr" && out != "/dev/stderr" {
+			if o.proc == nil || filepath.Clean(out) != filepath.Clean(o.proc.errLogPath()) {
+				return true
+			}
+		}
+	}
+	return false
+}

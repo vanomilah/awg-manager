@@ -2,6 +2,7 @@ package singbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -645,5 +646,56 @@ func TestOperator_ConfirmReadyByClash(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if op.LastError() == "" {
 		t.Fatal("при ожидаемой строке готовность решает stderr, а не Clash")
+	}
+}
+
+func TestOperator_StartedLineExpected_BaseLogOutputAndDisabled(t *testing.T) {
+	op := NewOperator(OperatorDeps{
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Dir: t.TempDir(),
+	})
+	t.Cleanup(op.Process().Close)
+	basePath := filepath.Join(op.configPath, "00-base.json")
+
+	writeBase := func(t *testing.T, body any) {
+		t.Helper()
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(basePath, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Default info log without output redirection -> expected true.
+	writeBase(t, map[string]any{"log": map[string]any{"level": "info", "timestamp": true}})
+	if !op.proc.StartedLineExpected() {
+		t.Fatal("expected StartedLineExpected=true when log.output is empty and level=info")
+	}
+
+	// log.output redirected to another file -> sing-box won't write to sing-box.err.log.
+	otherOut := filepath.Join(t.TempDir(), "custom.log")
+	writeBase(t, map[string]any{"log": map[string]any{"level": "info", "output": otherOut}})
+	if op.proc.StartedLineExpected() {
+		t.Fatal("expected StartedLineExpected=false when log.output redirects away from stderr")
+	}
+
+	// log.disabled=true -> no started line will ever be emitted.
+	writeBase(t, map[string]any{"log": map[string]any{"disabled": true, "level": "info"}})
+	if op.proc.StartedLineExpected() {
+		t.Fatal("expected StartedLineExpected=false when log.disabled=true")
+	}
+
+	// Explicit stderr redirection keeps expected=true.
+	writeBase(t, map[string]any{"log": map[string]any{"level": "info", "output": "stderr"}})
+	if !op.proc.StartedLineExpected() {
+		t.Fatal("expected StartedLineExpected=true when log.output is stderr")
+	}
+
+	// Explicit sing-box.err.log output keeps expected=true.
+	writeBase(t, map[string]any{"log": map[string]any{"level": "info", "output": op.proc.errLogPath()}})
+	if !op.proc.StartedLineExpected() {
+		t.Fatal("expected StartedLineExpected=true when log.output matches errLogPath")
 	}
 }

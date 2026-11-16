@@ -433,7 +433,10 @@ func (o *Operator) IsRunning() (bool, int) { return o.proc.IsRunning() }
 // SingboxController contract (router uses it when Orch is unwired in
 // tests, and the scheduler / RefreshRuleSet call it directly).
 func (o *Operator) Reload() error {
-	_, before := o.proc.IsRunning()
+	running, before := o.proc.IsRunning()
+	if !running && o.IsAutoStartSuppressed() {
+		return nil
+	}
 	if err := o.proc.Reload(); err != nil {
 		return err
 	}
@@ -514,9 +517,9 @@ func isExecutable(path string) bool {
 // needsOrphanCleanup делает тик сторожа (orphanCleanupIfFlagged).
 func (o *Operator) Reconcile(ctx context.Context) error {
 	defer perftrace.LogDuration(o.runtimeLogger, "perf", "Reconcile", "total", time.Now())
-	if o.manuallyStopped.Load() {
+	if o.IsAutoStartSuppressed() {
 		if o.runtimeLogger != nil {
-			o.runtimeLogger.Debug("reconcile", "", "skipped: manually stopped")
+			o.runtimeLogger.Debug("reconcile", "", fmt.Sprintf("skipped: auto-start suppressed (manual=%v engine=%v)", o.manuallyStopped.Load(), o.stoppedByEngine.Load()))
 		}
 		return nil
 	}
@@ -613,10 +616,9 @@ func (o *Operator) Reconcile(ctx context.Context) error {
 // process on timeout. waitClash=false spawns via Start (validate +
 // fork), leaving readiness gating to the caller.
 func (o *Operator) autoRestartIfCrashed(ctx context.Context, waitClash bool) (restarted, suppressed bool, err error) {
-	if o.manuallyStopped.Load() {
-		// Пользовательский Stop священен: авто-восстановление никогда не
-		// воскрешает демон, остановленный вручную (в т.ч. в fakeip/tproxy
-		// reconcile, где раньше этой защиты не было — issue #456).
+	if o.IsAutoStartSuppressed() {
+		// Авто-восстановление не должно воскрешать демон ни после
+		// пользовательского Stop, ни при удержании процесса другим движком.
 		return false, false, nil
 	}
 	if running, _ := o.proc.IsRunning(); running {
@@ -672,10 +674,9 @@ func (o *Operator) autoRestartIfCrashed(ctx context.Context, waitClash bool) (re
 		return false, false, nil
 	}
 	tok.Commit()
-	if o.manuallyStopped.Load() {
-		// Гонка с Control("stop") (FIX-A): пользователь нажал «Остановить»,
-		// пока start шёл — его намерение священно, только что поднятый
-		// процесс гасим (штатный deliberate-Stop, падением не считается).
+	if o.IsAutoStartSuppressed() {
+		// Гонка с Control("stop") или переключением движка: намерение
+		// подавить процесс уже зафиксировано, только что поднятый процесс гасим.
 		if e := o.stopProc(); e != nil && o.runtimeLogger != nil {
 			o.runtimeLogger.Warn("auto-restart", "", "stop after cancelled restart: "+e.Error())
 		}
@@ -699,6 +700,11 @@ func (o *Operator) stopProc() error {
 		return o.stopProcFn()
 	}
 	return o.proc.Stop()
+}
+
+// Stop stops the sing-box process to satisfy proxyengine.Engine interface.
+func (o *Operator) Stop() error {
+	return o.stopProc()
 }
 
 // hasCrashSince reports whether the crash ring holds an entry at or
@@ -751,6 +757,9 @@ func (o *Operator) Control(ctx context.Context, action string) error {
 		if err := o.setManualStop(false); err != nil {
 			return err
 		}
+		if err := o.SetStoppedByEngine(false); err != nil {
+			return err
+		}
 		// Явное намерение пользователя обнуляет анти-crash-loop backoff:
 		// ручной запуск никогда не откладывается историей падений.
 		o.restartBackoff.Reset()
@@ -777,32 +786,41 @@ func (o *Operator) Control(ctx context.Context, action string) error {
 		// Ручной Stop закрывает эпизод: следующая серия падений после
 		// следующего запуска считается с чистого листа.
 		o.restartBackoff.Reset()
-		// СВЕЖАЯ проверка ПОСЛЕ выставления намерения: снапшот running сверху
-		// мог устареть, пока in-flight авто-рестарт заканчивал запуск (гонка
-		// #456 FIX-A). Вторая половина окна (процесс ещё не виден в pid-файле)
-		// закрыта пере-проверкой manuallyStopped внутри autoRestartIfCrashed —
-		// вместе два зеркальных чека не оставляют интерливинга, при котором
-		// движок остаётся работать против воли пользователя. Скип при
-		// !running сохраняем: IsRunning сверяет /proc cmdline, а слепой
-		// proc.Stop сигналил бы невинный процесс по устаревшему pid-файлу.
-		if stillRunning, _ := o.IsRunning(); !stillRunning {
+		stopIfRunning := func() error {
+			// СВЕЖАЯ проверка ПОСЛЕ выставления намерения: снапшот running сверху
+			// мог устареть, пока in-flight авто-рестарт заканчивал запуск (гонка
+			// #456 FIX-A). Вторая половина окна (процесс ещё не виден в pid-файле)
+			// закрыта пере-проверкой manuallyStopped внутри autoRestartIfCrashed —
+			// вместе два зеркальных чека не оставляют интерливинга, при котором
+			// движок остаётся работать против воли пользователя. Скип при
+			// !running сохраняем: IsRunning сверяет /proc cmdline, а слепой
+			// proc.Stop сигналил бы невинный процесс по устаревшему pid-файлу.
+			if stillRunning, _ := o.IsRunning(); !stillRunning {
+				if o.runtimeLogger != nil {
+					o.runtimeLogger.Info("control", "", "stop skipped: already stopped")
+				}
+				return nil
+			}
+			if err := o.proc.Stop(); err != nil {
+				if o.runtimeLogger != nil {
+					o.runtimeLogger.Error("control", "", "stop failed: "+err.Error())
+				}
+				return err
+			}
 			if o.runtimeLogger != nil {
-				o.runtimeLogger.Info("control", "", "stop skipped: already stopped")
+				o.runtimeLogger.Info("control", "", "stop done")
 			}
 			return nil
 		}
-		if err := o.proc.Stop(); err != nil {
-			if o.runtimeLogger != nil {
-				o.runtimeLogger.Error("control", "", "stop failed: "+err.Error())
-			}
-			return err
+		if o.orch != nil {
+			return o.orch.SuppressAndStop(stopIfRunning)
 		}
-		if o.runtimeLogger != nil {
-			o.runtimeLogger.Info("control", "", "stop done")
-		}
-		return nil
+		return stopIfRunning()
 	case "restart":
 		if err := o.setManualStop(false); err != nil {
+			return err
+		}
+		if err := o.SetStoppedByEngine(false); err != nil {
 			return err
 		}
 		// Ручной «Перезапустить» — escape hatch из подавленного
@@ -840,6 +858,32 @@ func (o *Operator) Control(ctx context.Context, action string) error {
 // or watchdog tick. Used to plumb the intent into orchestrator.SetShouldRun.
 func (o *Operator) IsManuallyStopped() bool {
 	return o.manuallyStopped.Load()
+}
+
+// IsStoppedByEngine reports whether another routing engine (e.g. FIRC)
+// currently holds sing-box stopped.
+func (o *Operator) IsStoppedByEngine() bool {
+	return o.stoppedByEngine.Load()
+}
+
+// IsAutoStartSuppressed reports whether automatic sing-box startup/recovery
+// is suppressed by either user manual stop or routing-engine ownership.
+func (o *Operator) IsAutoStartSuppressed() bool {
+	return o.manuallyStopped.Load() || o.stoppedByEngine.Load()
+}
+
+// SetStoppedByEngine updates the in-memory engine-stop policy and persists it
+// through to settings.json cleanly, rolling back in-memory state on persist error.
+func (o *Operator) SetStoppedByEngine(v bool) error {
+	prev := o.stoppedByEngine.Swap(v)
+	if o.persistStoppedByEngine == nil {
+		return nil
+	}
+	if err := o.persistStoppedByEngine(v); err != nil {
+		o.stoppedByEngine.Store(prev)
+		return fmt.Errorf("persist engine-stop policy: %w", err)
+	}
+	return nil
 }
 
 // ClearManualStop clears the sticky manual-stop intent (in-memory mirror +

@@ -231,6 +231,12 @@ type Operator struct {
 	// short-circuits the action instead of leaving an unpersisted intent.
 	persistManualStop func(bool) error
 
+	// stoppedByEngine mirrors Settings.SingboxStoppedByEngine: true when
+	// another routing engine (e.g. FIRC via switch_and_stop) holds sing-box
+	// stopped across watchdog ticks and restarts, distinct from user manual stop.
+	stoppedByEngine        atomic.Bool
+	persistStoppedByEngine func(bool) error
+
 	// ndmsProxyEnabledFn is the late-bound closure from OperatorDeps.IsNDMSProxyEnabled.
 	// nil means "treat as enabled" for back-compat (pre-dates this field).
 	ndmsProxyEnabledFn func() bool
@@ -339,6 +345,11 @@ type OperatorDeps struct {
 	// to persist the new intent to settings.json. Optional — when nil,
 	// the in-memory flag still works but does not survive an awgm restart.
 	SetManuallyStopped func(bool) error
+	// InitialStoppedByEngine seeds whether another routing engine holds sing-box
+	// stopped on boot, distinct from user manual stop.
+	InitialStoppedByEngine bool
+	// SetStoppedByEngine persists engine-ownership stop policy to settings.json.
+	SetStoppedByEngine func(bool) error
 	// IsNDMSProxyEnabled returns the current value of the global toggle
 	// (Settings.CreateNDMSProxyForSingbox). Late-binding closure avoids
 	// circular construction between SettingsStore and Operator. When nil,
@@ -435,10 +446,15 @@ func NewOperator(d OperatorDeps) *Operator {
 		clash:                NewClashClient(ClashAddr(desiredClashPort)),
 		processLogger:        logging.NewScopedLogger(d.AppLogger, logging.GroupSingbox, logging.SubSBProcess),
 		runtimeLogger:        logging.NewScopedLogger(d.AppLogger, logging.GroupSingbox, logging.SubSBRuntime),
-		persistManualStop:    d.SetManuallyStopped,
-		bus:                  d.Bus,
+		persistManualStop:      d.SetManuallyStopped,
+		persistStoppedByEngine: d.SetStoppedByEngine,
+		bus:                    d.Bus,
+	}
+	if d.Dir != "" && filepath.Clean(dir) != filepath.Clean(defaultDir) {
+		op.proc.logDir = filepath.Join(dir, "run")
 	}
 	op.manuallyStopped.Store(d.InitialManuallyStopped)
+	op.stoppedByEngine.Store(d.InitialStoppedByEngine)
 	op.ndmsProxyEnabledFn = d.IsNDMSProxyEnabled
 	op.loadDeferredProxies()
 	if pm, ok := op.proxyMgr.(*ProxyManager); ok {
@@ -458,8 +474,12 @@ func NewOperator(d OperatorDeps) *Operator {
 	op.proc.ReloadNeedsRestart = func() bool {
 		return op.orch != nil && op.orch.CurrentHasTun() && !op.TunHotReload()
 	}
-	// Строку готовности «sing-box started» (F637) печатает только INFO и ниже.
+	// Строку готовности «sing-box started» (F637) печатает только INFO и ниже
+	// при условии, что 00-base.json не отключает и не уводит log.output в файл.
 	op.proc.StartedLineExpected = func() bool {
+		if op.baseConfigSuppressesStderrStartLine() {
+			return false
+		}
 		switch op.desiredSingboxLogLevel() {
 		case "trace", "debug", "info":
 			return true

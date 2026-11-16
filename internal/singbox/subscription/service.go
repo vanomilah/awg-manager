@@ -2460,3 +2460,8 @@ func sanitizeMemberTunnelTag(label, proto, server string, port int) string {
 	}
 	return "tunnel"
 }
+
+// ParseSubscriptionBody parses a subscription body into sing-box outbounds.
+func ParseSubscriptionBody(body []byte, ct string) vlink.BatchResult {
+	return parseSubscriptionBody(body, ct)
+}
